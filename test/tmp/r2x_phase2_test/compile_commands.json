@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/root/src/poc_trans/path_b/riscv2x86/test/tmp/r2x_phase2_test",
+    "command": "clang -target riscv64-unknown-linux-gnu -march=rv64gc -mabi=lp64d -std=gnu11 -fsyntax-only phase2_atomic_case.c",
+    "file": "phase2_atomic_case.c"
+  }
+]

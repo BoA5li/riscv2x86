@@ -1,0 +1,1605 @@
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 class CExpressionConstraintValidationError 行范围:30 ~ 61
+================================================================================
+class CExpressionConstraintValidationError(ValueError):
+    """
+    Raised when a purported pure C-expression constraint is internally invalid.
+
+    A caller should normally receive a structured
+    TargetConstraintDerivationResult from the public Phase 6C deriver.
+    This exception is intended for local intrinsic validation failures while
+    constructing a CExpressionConstraint.
+    """
+
+    def __init__(
+        self,
+        reason_code: TargetConstraintReasonCode,
+        *,
+        details: Mapping[str, TargetConstraintDetailValue] | None = None,
+        message: str | None = None,
+    ) -> None:
+        if not isinstance(reason_code, TargetConstraintReasonCode):
+            raise TypeError(
+                "reason_code must be TargetConstraintReasonCode, got "
+                f"{type(reason_code).__name__}"
+            )
+
+        frozen_details = _freeze_details(details)
+
+        self.reason_code = reason_code
+        self.details = frozen_details
+
+        if message is None:
+            message = reason_code.value
+
+        super().__init__(message)
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 class CExpressionOperationKind 行范围:69 ~ 91
+================================================================================
+class CExpressionOperationKind(str, Enum):
+    """Operations that Phase 6C may represent as pure C expressions."""
+
+    COPY = "copy"
+
+    BIT_NOT = "bit_not"
+    BIT_AND = "bit_and"
+    BIT_OR = "bit_or"
+    BIT_XOR = "bit_xor"
+
+    UNSIGNED_ADD = "unsigned_add"
+    UNSIGNED_SUB = "unsigned_sub"
+    UNSIGNED_MUL = "unsigned_mul"
+
+    ZERO_EXTEND = "zero_extend"
+    TRUNCATE = "truncate"
+
+    UNSIGNED_EQUAL = "unsigned_equal"
+    UNSIGNED_NOT_EQUAL = "unsigned_not_equal"
+    UNSIGNED_LESS_THAN = "unsigned_less_than"
+    UNSIGNED_LESS_EQUAL = "unsigned_less_equal"
+    UNSIGNED_GREATER_THAN = "unsigned_greater_than"
+    UNSIGNED_GREATER_EQUAL = "unsigned_greater_equal"
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function derive_c_expression_constraint 行范围:1070 ~ 1110
+================================================================================
+def derive_c_expression_constraint(
+    *,
+    operation_kind: CExpressionOperationKind,
+    input_bindings: Iterable[CExpressionOperandBinding],
+    result_binding: CExpressionOperandBinding,
+    result_type: CExpressionTypeContract,
+    definedness: CExpressionDefinednessContract,
+    requires_memory_access: bool = False,
+    requires_address_computation: bool = False,
+    requires_barrier: bool = False,
+    requires_condition_code_read: bool = False,
+    requires_condition_code_write: bool = False,
+    requires_implicit_machine_state: bool = False,
+) -> CExpressionConstraint:
+    """
+    Construct and intrinsically validate a pure C-expression constraint.
+
+    This function is intentionally not the public Phase 6C deriver.
+
+    It does not inspect SourceSemanticModel, TargetLoweringPlan, or
+    TargetEnvironment itself.  Instead, the eventual public Phase 6C deriver
+    must derive validated operation/type/definedness facts from those three
+    allowed inputs and then call this helper.
+
+    Any memory, address, barrier, condition-code, or implicit-machine-state
+    requirement is rejected by CExpressionConstraint validation.
+    """
+
+    return CExpressionConstraint(
+        operation_kind=operation_kind,
+        input_bindings=tuple(input_bindings),
+        result_binding=result_binding,
+        result_type=result_type,
+        definedness=definedness,
+        requires_memory_access=requires_memory_access,
+        requires_address_computation=requires_address_computation,
+        requires_barrier=requires_barrier,
+        requires_condition_code_read=requires_condition_code_read,
+        requires_condition_code_write=requires_condition_code_write,
+        requires_implicit_machine_state=requires_implicit_machine_state,
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_public_inputs 行范围:1315 ~ 1350
+================================================================================
+def _validate_public_inputs(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+    target_environment: TargetEnvironment,
+) -> TargetConstraintDerivationResult | None:
+    if not isinstance(source_model, SourceSemanticModel):
+        return _failure(
+            candidate_plan=None,
+            reason_code=TargetConstraintReasonCode.INVALID_SOURCE_MODEL,
+            details={
+                "actual_type": type(source_model).__name__,
+            },
+        )
+
+    if not isinstance(candidate_plan, TargetLoweringPlan):
+        return _failure(
+            candidate_plan=None,
+            reason_code=TargetConstraintReasonCode.INVALID_CANDIDATE_PLAN,
+            details={
+                "actual_type": type(candidate_plan).__name__,
+            },
+        )
+
+    if not isinstance(target_environment, TargetEnvironment):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.INVALID_TARGET_ENVIRONMENT
+            ),
+            details={
+                "actual_type": type(target_environment).__name__,
+            },
+        )
+
+    return None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_target_environment 行范围:1352 ~ 1395
+================================================================================
+def _validate_target_environment(
+    *,
+    candidate_plan: TargetLoweringPlan,
+    target_environment: TargetEnvironment,
+) -> TargetConstraintDerivationResult | None:
+    """
+    C expression lowering does not itself require GNU inline asm support,
+    but it remains constrained by the project's fixed target profile.
+    """
+
+    if target_environment.architecture is not TargetArchitecture.X86_64:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_TARGET_UNSUPPORTED
+            ),
+            details={
+                "architecture": target_environment.architecture.value,
+            },
+        )
+
+    if target_environment.asm_dialect is not TargetAsmDialect.GNU_ATT:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_TARGET_UNSUPPORTED
+            ),
+            details={
+                "asm_dialect": target_environment.asm_dialect.value,
+            },
+        )
+
+    if target_environment.abi is not TargetAbi.SYSV_AMD64:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_TARGET_UNSUPPORTED
+            ),
+            details={
+                "abi": target_environment.abi.value,
+            },
+        )
+
+    return None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_candidate_features 行范围:1397 ~ 1432
+================================================================================
+def _validate_candidate_features(
+    *,
+    candidate_plan: TargetLoweringPlan,
+    target_environment: TargetEnvironment,
+) -> TargetConstraintDerivationResult | None:
+    available = target_environment.available_features
+
+    missing_required = (
+        candidate_plan.required_features - available
+    )
+    if missing_required:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.PLAN_REQUIRED_FEATURE_MISSING
+            ),
+            details={
+                "feature": sorted(missing_required)[0],
+            },
+        )
+
+    forbidden_present = (
+        candidate_plan.forbidden_features & available
+    )
+    if forbidden_present:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.PLAN_FORBIDDEN_FEATURE_PRESENT
+            ),
+            details={
+                "feature": sorted(forbidden_present)[0],
+            },
+        )
+
+    return None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_source_operation_category 行范围:1434 ~ 1560
+================================================================================
+def _validate_source_operation_category(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> TargetConstraintDerivationResult | None:
+    operation_kind = source_model.operation.kind
+
+    if operation_kind is SourceOperationKind.REGISTER_ONLY:
+        return None
+
+    if operation_kind in (
+        SourceOperationKind.LOAD,
+        SourceOperationKind.STORE,
+        SourceOperationKind.MEMORY_READ_MODIFY_WRITE,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_MEMORY_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind in (
+        SourceOperationKind.ATOMIC_LOAD,
+        SourceOperationKind.ATOMIC_STORE,
+        SourceOperationKind.ATOMIC_READ_MODIFY_WRITE,
+        SourceOperationKind.ATOMIC_COMPARE_EXCHANGE,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_ATOMIC_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind in (
+        SourceOperationKind.COMPILER_BARRIER,
+        SourceOperationKind.HARDWARE_BARRIER,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_BARRIER_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind is SourceOperationKind.CONTROL_FLOW:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_CONTROL_FLOW_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind is SourceOperationKind.CALL:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_CALL_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind is SourceOperationKind.RETURN:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_RETURN_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind in (
+        SourceOperationKind.STACK_FRAME,
+        SourceOperationKind.HELPER_REQUIRED,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_HELPER_ABI_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    if operation_kind in (
+        SourceOperationKind.OPAQUE,
+        SourceOperationKind.UNKNOWN,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERATION_UNKNOWN
+            ),
+            details={
+                "source_operation_kind": operation_kind.value,
+            },
+        )
+
+    return _failure(
+        candidate_plan=candidate_plan,
+        reason_code=(
+            TargetConstraintReasonCode.C_EXPRESSION_OPERATION_UNSUPPORTED
+        ),
+        details={
+            "source_operation_kind": operation_kind.value,
+        },
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _derive_authoritative_c_expression_operation 行范围:1597 ~ 1882
+================================================================================
+def _derive_authoritative_c_expression_operation(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> _DerivedCExpressionOperation | TargetConstraintDerivationResult:
+    """
+    Read and validate authoritative source-level pure-value operation facts.
+
+    This function consumes only SourceSemanticModel.value_operation.
+
+    It does not inspect or infer facts from:
+
+      * raw asm;
+      * instruction mnemonics;
+      * p-code;
+      * LiftResult or LiftedInsn;
+      * CFG / Block / IR summaries;
+      * register allocation;
+      * source operand ordering guesses;
+      * renderer behavior;
+      * host C expression width;
+      * TranslationRuntimeFacts implementation.
+
+    This function does not construct CExpressionTypeContract values because
+    SourceValueOperationModel does not itself provide enough information to
+    prove the complete C type and conversion contract.
+    """
+
+    value_operation = source_model.value_operation
+
+    if value_operation is None:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERATION_INCOMPLETE,
+            ),
+            details={
+                "reason": "missing_source_value_operation",
+            },
+        )
+
+    if not value_operation.complete:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERATION_INCOMPLETE,
+            ),
+            details={
+                "reason": "source_value_operation_incomplete",
+                "missing_fact_codes": tuple(
+                    value_operation.missing_fact_codes
+                ),
+            },
+        )
+
+    # SourceValueOperationModel.__post_init__ already validates these fields.
+    # The checks below are retained as a fail-closed boundary in case an
+    # object was constructed through an unsafe deserialization path or future
+    # model evolution weakens upstream validation.
+
+    if not isinstance(
+        value_operation.operation_kind,
+        CExpressionOperationKind,
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERATION_UNKNOWN,
+            ),
+            details={
+                "actual_type": type(
+                    value_operation.operation_kind
+                ).__name__,
+            },
+        )
+
+    if not isinstance(
+        value_operation.input_source_operand_indexes,
+        tuple,
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERANDS_INCOMPLETE,
+            ),
+            details={
+                "reason": "input_source_operand_indexes_not_tuple",
+                "actual_type": type(
+                    value_operation.input_source_operand_indexes
+                ).__name__,
+            },
+        )
+
+    if not value_operation.input_source_operand_indexes:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERANDS_INCOMPLETE,
+            ),
+            details={
+                "reason": "empty_input_source_operand_indexes",
+            },
+        )
+
+    if not all(
+        isinstance(index, int)
+        and not isinstance(index, bool)
+        and index >= 0
+        for index in value_operation.input_source_operand_indexes
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_BINDING_MISSING,
+            ),
+            details={
+                "reason": "invalid_input_source_operand_index",
+            },
+        )
+
+    if (
+        not isinstance(
+            value_operation.result_source_operand_index,
+            int,
+        )
+        or isinstance(
+            value_operation.result_source_operand_index,
+            bool,
+        )
+        or value_operation.result_source_operand_index < 0
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_BINDING_MISSING,
+            ),
+            details={
+                "reason": "invalid_result_source_operand_index",
+            },
+        )
+
+    if not isinstance(value_operation.input_width_bits, tuple):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_WIDTH_MISSING,
+            ),
+            details={
+                "reason": "input_width_bits_not_tuple",
+                "actual_type": type(
+                    value_operation.input_width_bits
+                ).__name__,
+            },
+        )
+
+    if (
+        len(value_operation.input_source_operand_indexes)
+        != len(value_operation.input_width_bits)
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_WIDTH_MISMATCH,
+            ),
+            details={
+                "input_operand_count": len(
+                    value_operation.input_source_operand_indexes
+                ),
+                "input_width_count": len(
+                    value_operation.input_width_bits
+                ),
+            },
+        )
+
+    if not all(
+        isinstance(width_bits, int)
+        and not isinstance(width_bits, bool)
+        and width_bits > 0
+        for width_bits in value_operation.input_width_bits
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_WIDTH_MISSING,
+            ),
+            details={
+                "reason": "invalid_input_width_bits",
+            },
+        )
+
+    if (
+        not isinstance(value_operation.result_width_bits, int)
+        or isinstance(value_operation.result_width_bits, bool)
+        or value_operation.result_width_bits <= 0
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_WIDTH_MISSING,
+            ),
+            details={
+                "reason": "invalid_result_width_bits",
+            },
+        )
+
+    if not isinstance(value_operation.input_signedness, tuple):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_OPERAND_SIGNEDNESS_MISSING,
+            ),
+            details={
+                "reason": "input_signedness_not_tuple",
+                "actual_type": type(
+                    value_operation.input_signedness
+                ).__name__,
+            },
+        )
+
+    if (
+        len(value_operation.input_source_operand_indexes)
+        != len(value_operation.input_signedness)
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_OPERAND_SIGNEDNESS_MISSING,
+            ),
+            details={
+                "input_operand_count": len(
+                    value_operation.input_source_operand_indexes
+                ),
+                "input_signedness_count": len(
+                    value_operation.input_signedness
+                ),
+            },
+        )
+
+    if not all(
+        isinstance(signedness, SourceSignedness)
+        for signedness in value_operation.input_signedness
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_OPERAND_SIGNEDNESS_UNSUPPORTED,
+            ),
+            details={
+                "reason": "invalid_input_signedness",
+            },
+        )
+
+    if not isinstance(
+        value_operation.result_signedness,
+        SourceSignedness,
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_OPERAND_SIGNEDNESS_UNSUPPORTED,
+            ),
+            details={
+                "reason": "invalid_result_signedness",
+                "actual_type": type(
+                    value_operation.result_signedness
+                ).__name__,
+            },
+        )
+
+    return _DerivedCExpressionOperation(
+        operation_kind=value_operation.operation_kind,
+        input_source_operand_indexes=(
+            value_operation.input_source_operand_indexes
+        ),
+        result_source_operand_index=(
+            value_operation.result_source_operand_index
+        ),
+        input_width_bits=value_operation.input_width_bits,
+        result_width_bits=value_operation.result_width_bits,
+        input_signedness=value_operation.input_signedness,
+        result_signedness=value_operation.result_signedness,
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _derive_authoritative_c_expression_definedness 行范围:1885 ~ 1941
+================================================================================
+def _derive_authoritative_c_expression_definedness(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+    operation: _DerivedCExpressionOperation,
+) -> CExpressionDefinednessContract | TargetConstraintDerivationResult:
+    """
+    Fail closed because SourceValueOperationModel currently does not contain
+    an authoritative CExpressionDefinednessContract.
+
+    Width and signedness alone are not sufficient to prove C definedness.
+
+    In particular, this phase must not guess the legality of:
+
+      * signed addition, subtraction, multiplication, or negation;
+      * signed left shift;
+      * shift count range;
+      * signed division overflow, including INT_MIN / -1;
+      * division or remainder by zero;
+      * C integer promotions;
+      * usual arithmetic conversions;
+      * narrowing conversion semantics;
+      * signed-to-unsigned or unsigned-to-signed conversion obligations;
+      * boolean result normalization;
+      * any operation-specific poison, trap, or undefined behavior rule.
+
+    A future authoritative source model must provide either:
+
+      1. c_expression_definedness:
+             CExpressionDefinednessContract
+
+         or
+
+      2. sufficiently structured per-operation semantic facts from which this
+         exact contract can be derived without inspecting forbidden inputs and
+         without relying on renderer behavior.
+
+    Until then, successful pure C-expression lowering is intentionally
+    unavailable.
+    """
+
+    del source_model
+
+    return TargetConstraintDerivationResult.failure(
+        plan_id=candidate_plan.plan_id,
+        reason_codes=(
+            TargetConstraintReasonCode
+            .C_EXPRESSION_C_DEFINEDNESS_UNPROVEN,
+        ),
+        details={
+            "operation_kind": operation.operation_kind.value,
+            "reason": (
+                "source_value_operation_has_no_authoritative_"
+                "c_expression_definedness_contract"
+            ),
+        },
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _derive_c_expression_bindings 行范围:1943 ~ 2097
+================================================================================
+def _derive_c_expression_bindings(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+    operation: _DerivedCExpressionOperation,
+) -> (
+    tuple[
+        tuple[CExpressionOperandBinding, ...],
+        CExpressionOperandBinding,
+    ]
+    | TargetConstraintDerivationResult
+):
+    source_bindings = _get_authoritative_operand_bindings(
+        source_model.operands,
+    )
+
+    binding_by_index = {
+        binding.source_operand_index: binding
+        for binding in source_bindings
+    }
+
+    if len(binding_by_index) != len(source_bindings):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERANDS_INCOMPLETE
+            ),
+            details={
+                "reason": "duplicate_source_operand_index",
+            },
+        )
+
+    if (
+        len(operation.input_source_operand_indexes)
+        != len(operation.input_types)
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERATION_INCOMPLETE
+            ),
+            details={
+                "reason": "input_index_type_arity_mismatch",
+            },
+        )
+
+    expected_arity = _expected_input_arity(
+        operation.operation_kind,
+    )
+    if len(operation.input_source_operand_indexes) != expected_arity:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERANDS_INCOMPLETE
+            ),
+            details={
+                "operation_kind": operation.operation_kind.value,
+                "expected_input_arity": expected_arity,
+                "actual_input_arity": len(
+                    operation.input_source_operand_indexes
+                ),
+            },
+        )
+
+    if (
+        operation.result_source_operand_index
+        not in binding_by_index
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_OPERAND_BINDING_MISSING
+            ),
+            details={
+                "source_operand_index": (
+                    operation.result_source_operand_index
+                ),
+                "role": "result",
+            },
+        )
+
+    input_bindings: list[CExpressionOperandBinding] = []
+
+    for source_operand_index, expected_type in zip(
+        operation.input_source_operand_indexes,
+        operation.input_types,
+        strict=True,
+    ):
+        source_binding = binding_by_index.get(source_operand_index)
+        if source_binding is None:
+            return _failure(
+                candidate_plan=candidate_plan,
+                reason_code=(
+                    TargetConstraintReasonCode
+                    .C_EXPRESSION_OPERAND_BINDING_MISSING
+                ),
+                details={
+                    "source_operand_index": source_operand_index,
+                    "role": "input",
+                },
+            )
+
+        input_failure = _validate_input_operand_for_c_expression(
+            source_binding=source_binding,
+            expected_type=expected_type,
+            candidate_plan=candidate_plan,
+        )
+        if input_failure is not None:
+            return input_failure
+
+        input_bindings.append(
+            CExpressionOperandBinding(
+                source_operand_index=source_binding.source_operand_index,
+                operand_kind=source_binding.kind,
+                type_contract=expected_type,
+
+                # A C expression input binding is a value-read role.
+                reads_value=True,
+                writes_value=False,
+                is_result_lvalue=False,
+            )
+        )
+
+    result_source_binding = binding_by_index[
+        operation.result_source_operand_index
+    ]
+
+    result_failure = _validate_result_operand_for_c_expression(
+        source_binding=result_source_binding,
+        expected_type=operation.result_type,
+        candidate_plan=candidate_plan,
+    )
+    if result_failure is not None:
+        return result_failure
+
+    result_binding = CExpressionOperandBinding(
+        source_operand_index=result_source_binding.source_operand_index,
+        operand_kind=result_source_binding.kind,
+        type_contract=operation.result_type,
+
+        # Phase 6C models result assignment as a pure result lvalue write.
+        #
+        # If an operation semantically reads its destination, that read must
+        # appear explicitly as an input binding in the authoritative source
+        # value-operation contract.  It must not be inferred from generic
+        # source operand metadata.
+        reads_value=False,
+        writes_value=True,
+        is_result_lvalue=True,
+    )
+
+    return (
+        tuple(input_bindings),
+        result_binding,
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_source_completeness 行范围:2408 ~ 2468
+================================================================================
+def _validate_source_completeness(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> TargetConstraintDerivationResult | None:
+    operation = source_model.operation
+    operands = source_model.operands
+
+    if not operation.complete:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .SOURCE_OPERATION_FACTS_INCOMPLETE
+            ),
+            details={
+                "reason": "source_operation_incomplete",
+            },
+        )
+
+    if not operands.complete:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .SOURCE_OPERAND_FACTS_INCOMPLETE
+            ),
+            details={
+                "missing_fact_code": (
+                    operands.missing_fact_codes[0]
+                    if operands.missing_fact_codes
+                    else "unknown"
+                ),
+            },
+        )
+
+    if operation.has_return is None:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .SOURCE_OPERATION_FACTS_INCOMPLETE
+            ),
+            details={
+                "missing_fact": "has_return",
+            },
+        )
+
+    if operation.may_trap is None:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .SOURCE_OPERATION_FACTS_INCOMPLETE
+            ),
+            details={
+                "missing_fact": "may_trap",
+            },
+        )
+
+    return None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_no_memory_atomic_or_barrier_semantics 行范围:2470 ~ 2520
+================================================================================
+def _validate_no_memory_atomic_or_barrier_semantics(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> TargetConstraintDerivationResult | None:
+    operation = source_model.operation
+
+    if operation.reads_memory or operation.writes_memory:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_MEMORY_UNSUPPORTED
+            ),
+            details={
+                "reads_memory": operation.reads_memory,
+                "writes_memory": operation.writes_memory,
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    if operation.kind in (
+        SourceOperationKind.ATOMIC_LOAD,
+        SourceOperationKind.ATOMIC_STORE,
+        SourceOperationKind.ATOMIC_READ_MODIFY_WRITE,
+        SourceOperationKind.ATOMIC_COMPARE_EXCHANGE,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_ATOMIC_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    if operation.kind in (
+        SourceOperationKind.COMPILER_BARRIER,
+        SourceOperationKind.HARDWARE_BARRIER,
+    ):
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_BARRIER_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    return None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_control_flow_and_runtime_semantics 行范围:2522 ~ 2586
+================================================================================
+def _validate_control_flow_and_runtime_semantics(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> TargetConstraintDerivationResult | None:
+    operation = source_model.operation
+
+    if operation.has_control_flow:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_CONTROL_FLOW_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    if operation.has_call:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_CALL_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    if operation.has_return:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_RETURN_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    if operation.may_trap:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode.C_EXPRESSION_MAY_TRAP_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    if operation.requires_helper_abi_contract:
+        return _failure(
+            candidate_plan=candidate_plan,
+            reason_code=(
+                TargetConstraintReasonCode
+                .C_EXPRESSION_HELPER_ABI_UNSUPPORTED
+            ),
+            details={
+                "source_operation_kind": operation.kind.value,
+            },
+        )
+
+    return None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_shell_neutrality 行范围:3341 ~ 3364
+================================================================================
+def _validate_shell_neutrality(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> Optional[TargetConstraintDerivationResult]:
+    """
+    Fail closed because current source DTOs do not express shell neutrality.
+    """
+
+    del source_model
+
+    return _failure(
+        candidate_plan=candidate_plan,
+        reason_code=(
+            TargetConstraintReasonCode
+            .C_EXPRESSION_SHELL_NEUTRALITY_UNPROVEN
+        ),
+        details={
+            "reason": (
+                "No authoritative source semantic fact proves that the "
+                "candidate has no inline-asm/compiler-shell semantics."
+            ),
+        },
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/c_module/phase6c_c_expression.py】 function _validate_machine_state_requirements 行范围:3367 ~ 3392
+================================================================================
+def _validate_machine_state_requirements(
+    *,
+    source_model: SourceSemanticModel,
+    candidate_plan: TargetLoweringPlan,
+) -> Optional[TargetConstraintDerivationResult]:
+    """
+    Fail closed because current source DTOs do not express hidden machine-state
+    or preservation requirements.
+    """
+
+    del source_model
+
+    return _failure(
+        candidate_plan=candidate_plan,
+        reason_code=(
+            TargetConstraintReasonCode
+            .C_EXPRESSION_MACHINE_STATE_REQUIREMENTS_UNPROVEN
+        ),
+        details={
+            "reason": (
+                "No authoritative source semantic fact proves that the "
+                "candidate has no hidden machine-state, fixed-register, "
+                "condition-code, or preservation requirements."
+            ),
+        },
+    )
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/source_model.py】 class SourceSemanticModel 行范围:153 ~ 201
+================================================================================
+class SourceSemanticModel:
+    """
+    Authoritative Phase-6 source semantic contract.
+
+    Downstream Phase 6B-F code must consume only this model.
+
+    Forbidden downstream inputs include:
+
+      * AsmFragment;
+      * Block;
+      * CFGResult;
+      * IRSummary;
+      * TranslationRuntimeFacts;
+      * raw asm text;
+      * raw instruction mnemonic;
+      * p-code text;
+      * LiftResult;
+      * LiftedInsn.
+    """
+
+    # Compiler-shell semantic facts.
+    shell: SourceShellModel
+
+    # Validated runtime-fact status, not raw runtime-fact implementation.
+    runtime_facts: RuntimeFactStatus
+
+    # Newly explicit 6C-1 semantic facts.
+    operands: SourceOperandModel
+    operation: SourceOperationModel
+    atomic: SourceAtomicOperationModel
+    barrier: SourceBarrierModel
+    implicit_state: SourceImplicitStateModel
+
+    # Existing structured source semantic facts.
+    control_flow: SourceControlFlowModel
+    memory: SourceMemoryModel
+    microarch: SourceMicroArchModel
+    registers: SourceRegisterModel
+    completeness: SourceAnalysisCompletenessModel
+
+    features: FrozenSet[SemanticFeature]
+    reasons: Tuple[str, ...]
+    reason_codes: Tuple[str, ...]
+
+    preservation: PreservationDecision
+
+    # Source architecture width. This is not an operand width substitute.
+    xlen: Optional[int]
+    value_operation: SourceValueOperationModel | None
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/plan_types.py】 class TargetLoweringKind 行范围:9 ~ 45
+================================================================================
+class TargetLoweringKind(str, Enum):
+    """
+    Phase 6B 产生的候选 target-lowering strategy。
+
+    注意：
+      * 这不是最终 rendered C / GNU asm text；
+      * 这不是具体 x86 instruction；
+      * 这不包含 target constraint、register allocation 或 proof result；
+      * 它只表达某类可供后续 6C/6D 消费的 lowering 语义策略。
+    """
+
+    # 无需 target inline asm 的纯 C / structured expression replacement。
+    C_EXPRESSION = "c_expression"
+
+    # structured C statement / block replacement。
+    C_STRUCTURED = "c_structured"
+
+    # C compiler builtin / intrinsic replacement。
+    C_BUILTIN = "c_builtin"
+
+    # x86 GNU inline asm，普通 register / ALU / memory-capable lowering。
+    X86_GNU_INLINE_ASM = "x86_gnu_inline_asm"
+
+    # x86 atomic instruction 或受约束的 atomic inline asm lowering。
+    X86_ATOMIC = "x86_atomic"
+
+    # x86 fence / barrier-specific lowering。
+    X86_BARRIER = "x86_barrier"
+
+    # 需要 helper ABI contract 的 helper-call lowering。
+    HELPER_CALL = "helper_call"
+
+    # 对 structured multi-block CFG 的 future plan family。
+    STRUCTURED_CONTROL_FLOW = "structured_control_flow"
+
+    # 显式保留 unsupported，而不是猜测性 lower。
+    UNSUPPORTED = "unsupported"
+
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/plan_types.py】 class TargetLoweringPlan 行范围:450 ~ 708
+================================================================================
+class TargetLoweringPlan:
+    """
+    Phase 6B candidate target-lowering plan。
+
+    本对象只表达“可能采用的 lowering strategy”。它不包含：
+
+      * GNU asm outputs / inputs / clobbers；
+      * volatile 标记；
+      * target constraints；
+      * x86 register allocation；
+      * GNU asm constraint text；
+      * asm template、mnemonic 或 rendered C / asm text；
+      * Phase 6D proof result；
+      * approved / rejected 状态。
+
+    正确的数据流必须是：
+
+        candidate_plan = TargetLoweringPlan(...)
+
+        constraints = derive_target_constraints(
+            source_model=source_model,
+            candidate_plan=candidate_plan,
+        )
+
+        proof = run_semantic_proof_gate(
+            source_model=source_model,
+            candidate_plan=candidate_plan,
+            constraints=constraints,
+        )
+
+        if proof.approved:
+            ...
+
+    metadata 只允许存储 plan-specific 的 immutable structured semantic
+    metadata，例如 builtin family、helper ABI identifier、atomic semantic
+    mode 或 structured-C lowering shape。它不得成为保存 Phase 6C/6D/6F
+    数据的旁路。
+    """
+
+    plan_id: str
+    kind: TargetLoweringKind
+    family: TargetLoweringFamily
+
+    priority_tier: PlanPriorityTier
+    deterministic_rank: int
+
+    required_features: FrozenSet[str] = frozenset()
+    forbidden_features: FrozenSet[str] = frozenset()
+
+    requirements: FrozenSet[PlanRequirement] = frozenset()
+
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    rationale: Tuple[str, ...] = ()
+    reason_codes: Tuple[str, ...] = ()
+
+    _KIND_TO_FAMILY: ClassVar[
+        Mapping[TargetLoweringKind, TargetLoweringFamily]
+    ] = _KIND_TO_FAMILY
+
+    _FAMILY_TO_PRIORITY_TIER: ClassVar[
+        Mapping[TargetLoweringFamily, PlanPriorityTier]
+    ] = _FAMILY_TO_PRIORITY_TIER
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.plan_id, str)
+            or not self.plan_id.strip()
+            or self.plan_id != self.plan_id.strip()
+        ):
+            raise TypeError(
+                "TargetLoweringPlan.plan_id must be a non-empty stripped str"
+            )
+
+        if not isinstance(self.kind, TargetLoweringKind):
+            raise TypeError(
+                "TargetLoweringPlan.kind must be a TargetLoweringKind, "
+                f"got {type(self.kind).__name__}"
+            )
+
+        if not isinstance(self.family, TargetLoweringFamily):
+            raise TypeError(
+                "TargetLoweringPlan.family must be a TargetLoweringFamily, "
+                f"got {type(self.family).__name__}"
+            )
+
+        if not isinstance(self.priority_tier, PlanPriorityTier):
+            raise TypeError(
+                "TargetLoweringPlan.priority_tier must be a PlanPriorityTier, "
+                f"got {type(self.priority_tier).__name__}"
+            )
+
+        if (
+            isinstance(self.deterministic_rank, bool)
+            or not isinstance(self.deterministic_rank, int)
+            or self.deterministic_rank < 0
+        ):
+            raise TypeError(
+                "TargetLoweringPlan.deterministic_rank must be a "
+                "non-negative int"
+            )
+
+        expected_family = self._KIND_TO_FAMILY[self.kind]
+        if self.family is not expected_family:
+            raise ValueError(
+                "TargetLoweringPlan.kind/family mismatch: "
+                f"kind {self.kind.value!r} requires family "
+                f"{expected_family.value!r}, got {self.family.value!r}"
+            )
+
+        expected_tier = self._FAMILY_TO_PRIORITY_TIER[self.family]
+        if self.priority_tier is not expected_tier:
+            raise ValueError(
+                "TargetLoweringPlan.family/priority_tier mismatch: "
+                f"family {self.family.value!r} requires tier "
+                f"{expected_tier.name!r}, got {self.priority_tier.name!r}"
+            )
+
+        normalized_required_features = _normalize_string_set(
+            self.required_features,
+            field_name="TargetLoweringPlan.required_features",
+        )
+        normalized_forbidden_features = _normalize_string_set(
+            self.forbidden_features,
+            field_name="TargetLoweringPlan.forbidden_features",
+        )
+
+        overlap = (
+            normalized_required_features
+            & normalized_forbidden_features
+        )
+        if overlap:
+            raise ValueError(
+                "TargetLoweringPlan.required_features and "
+                "forbidden_features must be disjoint; "
+                f"overlap: {tuple(sorted(overlap))!r}"
+            )
+
+        normalized_requirements = _normalize_requirements(
+            self.requirements
+        )
+        frozen_metadata = _freeze_metadata(self.metadata)
+        normalized_rationale = _normalize_string_tuple(
+            self.rationale,
+            field_name="TargetLoweringPlan.rationale",
+        )
+        normalized_reason_codes = _normalize_reason_codes(
+            self.reason_codes,
+            field_name="reason_codes",
+        )
+
+        object.__setattr__(
+            self,
+            "required_features",
+            normalized_required_features,
+        )
+        object.__setattr__(
+            self,
+            "forbidden_features",
+            normalized_forbidden_features,
+        )
+        object.__setattr__(
+            self,
+            "requirements",
+            normalized_requirements,
+        )
+        object.__setattr__(
+            self,
+            "metadata",
+            frozen_metadata,
+        )
+        object.__setattr__(
+            self,
+            "rationale",
+            normalized_rationale,
+        )
+        object.__setattr__(
+            self,
+            "reason_codes",
+            normalized_reason_codes,
+        )
+
+    @property
+    def sort_key(self) -> Tuple[int, int, str]:
+        """
+        Phase 6E 可使用的稳定候选排序键。
+
+        此排序键不代表 approved 状态。Phase 6E 必须先过滤掉未通过
+        Phase 6D semantic proof 的 candidate，再使用该 key 选择结果。
+        """
+        return (
+            int(self.priority_tier),
+            self.deterministic_rank,
+            self.plan_id,
+        )
+
+    @property
+    def is_unsupported(self) -> bool:
+        """
+        是否为显式 unsupported candidate。
+
+        UNSUPPORTED 仍是一个合法 Phase 6B candidate，用于 fail-closed
+        diagnostics；它不表示任何 lowering 已获批准。
+        """
+        return self.kind is TargetLoweringKind.UNSUPPORTED
+
+    def requires(
+        self,
+        requirement: PlanRequirement,
+    ) -> bool:
+        """
+        返回该 candidate 是否声明了指定的后续 requirement。
+        """
+        if not isinstance(requirement, PlanRequirement):
+            raise TypeError(
+                "requirement must be a PlanRequirement, "
+                f"got {type(requirement).__name__}"
+            )
+        return requirement in self.requirements
+
+    def supports_features(
+        self,
+        available_features: Iterable[str],
+    ) -> bool:
+        """
+        仅执行 candidate feature gate，不执行 semantic proof。
+
+        返回 True 表示：
+
+          * required_features 均存在；
+          * forbidden_features 均不存在。
+
+        返回 True 不等于该 plan 已被证明正确，更不等于 approved。
+        """
+        available = _normalize_string_set(
+            available_features,
+            field_name="available_features",
+        )
+        return (
+            self.required_features <= available
+            and not (self.forbidden_features & available)
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            (
+                self.plan_id,
+                self.kind,
+                self.family,
+                self.priority_tier,
+                self.deterministic_rank,
+                self.required_features,
+                self.forbidden_features,
+                self.requirements,
+                _metadata_hashable(self.metadata),
+                self.rationale,
+                self.reason_codes,
+            )
+        )
+================================================================================
+【/root/src/poc_trans/path_b/riscv2x86/pytools/riscv2x86_py/phase6c_constraints.py】 class TargetConstraintDerivationResult 行范围:499 ~ 619
+================================================================================
+class TargetConstraintDerivationResult:
+    """
+    Result of Phase 6C constraint derivation.
+
+    success=True:
+        constraints is present;
+        reason_codes is empty.
+
+    success=False:
+        constraints is None;
+        reason_codes is non-empty;
+        caller must reject the candidate or keep it unavailable.
+
+    A failed Phase 6C result must never cause fallback to:
+
+      * raw source asm;
+      * guessed GNU asm constraints;
+      * generic register-only lowering;
+      * inferred operand ordering;
+      * inferred host expression width.
+
+    `details` contains stable scalar diagnostics. Program logic must branch on
+    `reason_codes`, never on human-readable detail text.
+    """
+
+    success: bool
+    plan_id: str | None
+    constraints: TargetConstraintModel | None
+
+    reason_codes: Tuple[TargetConstraintReasonCode, ...] = ()
+    details: Mapping[str, TargetConstraintDetailValue] = (
+        MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.success, bool):
+            raise TypeError("success must be bool")
+
+        if self.plan_id is not None:
+            if (
+                not isinstance(self.plan_id, str)
+                or not self.plan_id.strip()
+                or self.plan_id != self.plan_id.strip()
+            ):
+                raise TypeError(
+                    "plan_id must be None or a non-empty stripped str"
+                )
+
+        if self.constraints is not None:
+            if not isinstance(
+                self.constraints,
+                TargetConstraintModel,
+            ):
+                raise TypeError(
+                    "constraints must be None or TargetConstraintModel"
+                )
+
+        normalized_codes = _normalize_reason_codes(
+            self.reason_codes,
+            field_name="reason_codes",
+        )
+        frozen_details = _freeze_details(self.details)
+
+        if self.success:
+            if self.constraints is None:
+                raise ValueError(
+                    "successful result requires constraints"
+                )
+
+            if normalized_codes:
+                raise ValueError(
+                    "successful result must not contain failure reasons"
+                )
+
+            if self.plan_id != self.constraints.plan_id:
+                raise ValueError(
+                    "successful result plan_id must match "
+                    "constraints.plan_id"
+                )
+        else:
+            if self.constraints is not None:
+                raise ValueError(
+                    "failed result must not contain constraints"
+                )
+
+            if not normalized_codes:
+                raise ValueError(
+                    "failed result requires at least one reason code"
+                )
+
+        object.__setattr__(self, "reason_codes", normalized_codes)
+        object.__setattr__(self, "details", frozen_details)
+
+    @classmethod
+    def failure(
+        cls,
+        *,
+        plan_id: str | None,
+        reason_codes: Iterable[TargetConstraintReasonCode],
+        details: (
+            Mapping[str, TargetConstraintDetailValue] | None
+        ) = None,
+    ) -> "TargetConstraintDerivationResult":
+        return cls(
+            success=False,
+            plan_id=plan_id,
+            constraints=None,
+            reason_codes=tuple(reason_codes),
+            details={} if details is None else details,
+        )
+
+    @classmethod
+    def succeeded(
+        cls,
+        constraints: TargetConstraintModel,
+    ) -> "TargetConstraintDerivationResult":
+        return cls(
+            success=True,
+            plan_id=constraints.plan_id,
+            constraints=constraints,
+        )
+

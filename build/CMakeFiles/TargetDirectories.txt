@@ -1,0 +1,5 @@
+/root/src/poc_trans/path_b/riscv2x86/build/CMakeFiles/intrinsics_gen.dir
+/root/src/poc_trans/path_b/riscv2x86/build/CMakeFiles/clang-tablegen-targets.dir
+/root/src/poc_trans/path_b/riscv2x86/build/CMakeFiles/riscv2x86.dir
+/root/src/poc_trans/path_b/riscv2x86/build/CMakeFiles/edit_cache.dir
+/root/src/poc_trans/path_b/riscv2x86/build/CMakeFiles/rebuild_cache.dir

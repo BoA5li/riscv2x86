@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_add_tied.c",
+      "fileName": "rv_add_tied.c",
+      "line": 4,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 72,
+      "rewriteEndOffset": 159,
+      "rawSourceText": "__asm__(\n        \"add %0, %0, %1\"\n        : \"+r\"(value)\n        : \"r\"(increment)\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "add %0, %0, %1",
+        "asmText": "add %0, %0, %1",
+        "isVolatile": false,
+        "fileName": "rv_add_tied.c",
+        "line": 4,
+        "column": 5,
+        "beginOffset": 72,
+        "endOffset": 159,
+        "enclosingFunction": "rv_add_tied",
+        "id": "rv_add_tied.c:4:5",
+        "outputs": [{"constraint":"+r","exprText":"value","symbolicName":"","isOutput":true,"isTied":false,"isEarlyClobber":false}],
+        "inputs": [{"constraint":"r","exprText":"increment","symbolicName":"","isOutput":false,"isTied":false,"isEarlyClobber":false}],
+        "clobbers": [],
+        "gotoLabels": []
+      }
+    }
+  ]
+}

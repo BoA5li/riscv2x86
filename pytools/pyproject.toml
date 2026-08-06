@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riscv2x86-py"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+analysis = [
+    "pypcode>=2.0",
+    "angr>=9.2",
+    "z3-solver>=4.12",
+    "pyelftools",
+]
+
+[project.scripts]
+riscv2x86-py = "riscv2x86_py.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["riscv2x86_py*"]

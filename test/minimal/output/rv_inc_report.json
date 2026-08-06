@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_inc.c",
+      "fileName": "rv_inc.c",
+      "line": 4,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 52,
+      "rewriteEndOffset": 114,
+      "rawSourceText": "__asm__(\n        \"addi %0, %0, 1\"\n        : \"+r\"(value)\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "addi %0, %0, 1",
+        "asmText": "addi %0, %0, 1",
+        "isVolatile": false,
+        "fileName": "rv_inc.c",
+        "line": 4,
+        "column": 5,
+        "beginOffset": 52,
+        "endOffset": 114,
+        "enclosingFunction": "rv_inc",
+        "id": "rv_inc.c:4:5",
+        "outputs": [{"constraint":"+r","exprText":"value","symbolicName":"","isOutput":true,"isTied":false,"isEarlyClobber":false}],
+        "inputs": [],
+        "clobbers": [],
+        "gotoLabels": []
+      }
+    }
+  ]
+}

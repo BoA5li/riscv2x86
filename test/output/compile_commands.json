@@ -1,0 +1,5 @@
+[
+  {"directory":"/root/src/poc_trans/path_b/riscv2x86/test/input","command":"clang -c sample_atomic.c","file":"sample_atomic.c"},
+  {"directory":"/root/src/poc_trans/path_b/riscv2x86/test/input","command":"clang -c sample_pure.c","file":"sample_pure.c"},
+  {"directory":"/root/src/poc_trans/path_b/riscv2x86/test/input","command":"clang -c sample_inline_asm.c","file":"sample_inline_asm.c"}
+]

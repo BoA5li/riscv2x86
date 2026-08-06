@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_memory_clobber.c",
+      "fileName": "rv_memory_clobber.c",
+      "line": 4,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 61,
+      "rewriteEndOffset": 135,
+      "rawSourceText": "__asm__ volatile(\n        \"\"\n        :\n        :\n        : \"memory\"\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "",
+        "asmText": "",
+        "isVolatile": true,
+        "fileName": "rv_memory_clobber.c",
+        "line": 4,
+        "column": 5,
+        "beginOffset": 61,
+        "endOffset": 135,
+        "enclosingFunction": "rv_memory_barrier_like",
+        "id": "rv_memory_clobber.c:4:5",
+        "outputs": [],
+        "inputs": [],
+        "clobbers": ["memory"],
+        "gotoLabels": []
+      }
+    }
+  ]
+}

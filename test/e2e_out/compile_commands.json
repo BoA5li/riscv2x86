@@ -1,0 +1,1 @@
+[{"directory":"/root/src/poc_trans/path_b/riscv2x86/test/e2e","command":"clang-10 --target=riscv64 -march=rv64gc -c sample.c","file":"sample.c"}]

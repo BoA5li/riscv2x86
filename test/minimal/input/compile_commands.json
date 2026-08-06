@@ -1,0 +1,7 @@
+[
+    {
+      "directory": "/root/src/poc_trans/path_b/riscv2x86/test/minimal/input",
+      "command": "clang-10 --target=riscv64-unknown-elf -march=rv64gc -mabi=lp64d -std=gnu11 -c rv_add_early_clobber.c",
+      "file": "rv_add_early_clobber.c"
+    }
+]

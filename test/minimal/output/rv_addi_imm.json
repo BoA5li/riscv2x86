@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_addi_imm.c",
+      "fileName": "rv_addi_imm.c",
+      "line": 6,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 74,
+      "rewriteEndOffset": 167,
+      "rawSourceText": "__asm__(\n        \"addi %0, %1, %2\"\n        : \"=r\"(result)\n        : \"r\"(value), \"i\"(7)\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "addi %0, %1, %2",
+        "asmText": "addi %0, %1, %2",
+        "isVolatile": false,
+        "fileName": "rv_addi_imm.c",
+        "line": 6,
+        "column": 5,
+        "beginOffset": 74,
+        "endOffset": 167,
+        "enclosingFunction": "rv_addi_imm",
+        "id": "rv_addi_imm.c:6:5",
+        "outputs": [{"constraint":"=r","exprText":"result","symbolicName":"","isOutput":true,"isTied":false,"isEarlyClobber":false}],
+        "inputs": [{"constraint":"r","exprText":"value","symbolicName":"","isOutput":false,"isTied":false,"isEarlyClobber":false},{"constraint":"i","exprText":"7","symbolicName":"","isOutput":false,"isTied":false,"isEarlyClobber":false}],
+        "clobbers": [],
+        "gotoLabels": []
+      }
+    }
+  ]
+}

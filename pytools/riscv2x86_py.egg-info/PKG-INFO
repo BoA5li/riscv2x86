@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: riscv2x86-py
+Version: 0.1.0
+Requires-Python: >=3.10
+Provides-Extra: analysis
+Requires-Dist: pypcode>=2.0; extra == "analysis"
+Requires-Dist: angr>=9.2; extra == "analysis"
+Requires-Dist: z3-solver>=4.12; extra == "analysis"
+Requires-Dist: pyelftools; extra == "analysis"

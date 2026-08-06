@@ -1,0 +1,592 @@
+{
+  "findings": [
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 4,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "amoadd.w %0, %2, %1",
+        "outputs": [
+          {
+            "constraint": "=r",
+            "exprText": "old",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "+A",
+            "exprText": "*p",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "v",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": true,
+        "fileName": "sample.c",
+        "line": 4,
+        "column": 5,
+        "beginOffset": 67,
+        "endOffset": 203,
+        "enclosingFunction": "amo_add",
+        "id": "sample.c:4:5",
+        "fragmentId": "sample.c:4:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "old = __atomic_fetch_add(&(*p), v, __ATOMIC_RELAXED);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "2fa5c500",
+      "pcodeText": "0x10000 amoadd.w a0,a2,(a1)\n  _ = IMARK(ram[0x10000]:4)\n  unique[0x100]:4 = COPY(register[0x2060]:4)\n  unique[0x4780]:8 = COPY(register[0x2058]:8)\n  unique[0x4800]:4 = COPY(unique[0x100]:4)\n  unique[0x4900]:4 = LOAD(const[0x5627b8a80950]:8, unique[0x4780]:8)\n  register[0x2050]:8 = INT_SEXT(unique[0x4900]:4)\n  unique[0x4900]:4 = INT_ADD(unique[0x4900]:4, unique[0x4800]:4)\n  _ = STORE(const[0x5627b8a80950]:8, unique[0x4780]:8, unique[0x4900]:4)",
+      "translationKind": "pure_c",
+      "verificationStatus": "verified",
+      "verificationDetail": "Z3 proved functional RMW equivalence for amoadd (width=32); lowered as __ATOMIC_RELAXED; memory-order equivalence not modeled",
+      "notes": [
+        "matched single-insn AMO: op=amoadd suffix=plain lowered_order=__ATOMIC_RELAXED"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 11,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "fence rw,rw",
+        "outputs": [],
+        "inputs": [],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": true,
+        "fileName": "sample.c",
+        "line": 11,
+        "column": 5,
+        "beginOffset": 248,
+        "endOffset": 297,
+        "enclosingFunction": "barrier",
+        "id": "sample.c:11:5",
+        "fragmentId": "sample.c:11:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "__atomic_thread_fence(__ATOMIC_SEQ_CST);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "0f003003",
+      "pcodeText": "0x10000 fence 0x3,0x3\n  _ = IMARK(ram[0x10000]:4)\n  _ = CALLOTHER(const[0x4]:4)",
+      "translationKind": "pure_c",
+      "verificationStatus": "verified",
+      "verificationDetail": "full-fence semantics matched __ATOMIC_SEQ_CST thread fence",
+      "notes": [
+        "matched fence -> seq_cst thread fence"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 18,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "1: lr.w %0, %1\n   bne  %0, %3, 2f\n   sc.w %2, %4, %1\n   bnez %2, 1b\n2:\n",
+        "outputs": [
+          {
+            "constraint": "=&r",
+            "exprText": "old",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": true
+          },
+          {
+            "constraint": "+A",
+            "exprText": "*p",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "=&r",
+            "exprText": "sc",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": true
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "expected",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "r",
+            "exprText": "desired",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": true,
+        "fileName": "sample.c",
+        "line": 18,
+        "column": 5,
+        "beginOffset": 419,
+        "endOffset": 672,
+        "enclosingFunction": "cas_strong",
+        "id": "sample.c:18:5",
+        "fragmentId": "sample.c:18:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  __typeof__(expected) __r2x_old_32 = (expected);\n  (void)__atomic_compare_exchange_n(&(*p), &__r2x_old_32, (desired), /*weak=*/0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);\n  old = __r2x_old_32;\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "2fa505106315d5002fa6e51875fa",
+      "pcodeText": "0x10000 lr.w a0,(a1)\n  _ = IMARK(ram[0x10000]:4)\n  register[0x1010]:8 = COPY(register[0x2058]:8)\n  register[0x1018]:1 = COPY(const[0x1]:1)\n  register[0x101c]:1 = COPY(const[0x4]:1)\n  unique[0x5d80]:4 = LOAD(const[0x5627b91506f0]:8, register[0x2058]:8)\n  register[0x2050]:8 = INT_SEXT(unique[0x5d80]:4)\n0x10004 bne a0,a3,0x1000e\n  _ = IMARK(ram[0x10004]:4)\n  unique[0x2100]:1 = INT_NOTEQUAL(register[0x2050]:8, register[0x2068]:8)\n  _ = CBRANCH(ram[0x1000e]:8, unique[0x2100]:1)\n0x10008 sc.w a2,a4,(a1)\n  _ = IMARK(ram[0x10008]:4)\n  unique[0x100]:4 = COPY(register[0x2070]:4)\n  unique[0x5e00]:4 = COPY(unique[0x100]:4)\n  unique[0x5e80]:8 = COPY(register[0x2058]:8)\n  register[0x2060]:8 = COPY(const[0x1]:8)\n  unique[0x5f00]:1 = INT_EQUAL(register[0x1018]:1, const[0x0]:1)\n  unique[0x5f80]:1 = INT_NOTEQUAL(register[0x1010]:8, unique[0x5e80]:8)\n  unique[0x6000]:1 = BOOL_OR(unique[0x5f00]:1, unique[0x5f80]:1)\n  unique[0x6080]:1 = INT_NOTEQUAL(register[0x101c]:1, const[0x4]:1)\n  unique[0x6100]:1 = BOOL_OR(unique[0x6000]:1, unique[0x6080]:1)\n  _ = CBRANCH(ram[0x1000c]:8, unique[0x6100]:1)\n  _ = STORE(const[0x5627b91506f0]:8, unique[0x5e80]:8, unique[0x5e00]:4)\n  register[0x2060]:8 = COPY(const[0x0]:8)\n  register[0x1010]:8 = COPY(const[0x0]:8)\n  register[0x1018]:1 = COPY(const[0x0]:1)\n  register[0x101c]:1 = COPY(const[0x0]:1)\n0x1000c c.bnez a2,0x10000\n  _ = IMARK(ram[0x1000c]:2)\n  unique[0x15d00]:1 = INT_NOTEQUAL(register[0x2060]:8, const[0x0]:8)\n  _ = CBRANCH(ram[0x10000]:8, unique[0x15d00]:1)",
+      "translationKind": "pure_c",
+      "verificationStatus": "verified",
+      "verificationDetail": "Z3 proved LR/SC↔compare_exchange equivalence (width=32, strong)",
+      "notes": [
+        "LR/SC retry CAS width=32 succ=__ATOMIC_RELAXED fail=__ATOMIC_RELAXED",
+        "weak=False success=__ATOMIC_RELAXED failure=__ATOMIC_RELAXED"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 34,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "lr.w %0, %1\nbne  %0, %3, 2f\nsc.w %2, %4, %1\n2:\n",
+        "outputs": [
+          {
+            "constraint": "=&r",
+            "exprText": "old",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": true
+          },
+          {
+            "constraint": "+A",
+            "exprText": "*p",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "=&r",
+            "exprText": "sc",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": true
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "expected",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "r",
+            "exprText": "desired",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": true,
+        "fileName": "sample.c",
+        "line": 34,
+        "column": 5,
+        "beginOffset": 785,
+        "endOffset": 1002,
+        "enclosingFunction": "cas_weak",
+        "id": "sample.c:34:5",
+        "fragmentId": "sample.c:34:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  __typeof__(expected) __r2x_old_32 = (expected);\n  (void)__atomic_compare_exchange_n(&(*p), &__r2x_old_32, (desired), /*weak=*/1, __ATOMIC_RELAXED, __ATOMIC_RELAXED);\n  old = __r2x_old_32;\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "2fa505106314d5002fa6e518",
+      "pcodeText": "0x10000 lr.w a0,(a1)\n  _ = IMARK(ram[0x10000]:4)\n  register[0x1010]:8 = COPY(register[0x2058]:8)\n  register[0x1018]:1 = COPY(const[0x1]:1)\n  register[0x101c]:1 = COPY(const[0x4]:1)\n  unique[0x5d80]:4 = LOAD(const[0x5627b93510a0]:8, register[0x2058]:8)\n  register[0x2050]:8 = INT_SEXT(unique[0x5d80]:4)\n0x10004 bne a0,a3,0x1000c\n  _ = IMARK(ram[0x10004]:4)\n  unique[0x2100]:1 = INT_NOTEQUAL(register[0x2050]:8, register[0x2068]:8)\n  _ = CBRANCH(ram[0x1000c]:8, unique[0x2100]:1)\n0x10008 sc.w a2,a4,(a1)\n  _ = IMARK(ram[0x10008]:4)\n  unique[0x100]:4 = COPY(register[0x2070]:4)\n  unique[0x5e00]:4 = COPY(unique[0x100]:4)\n  unique[0x5e80]:8 = COPY(register[0x2058]:8)\n  register[0x2060]:8 = COPY(const[0x1]:8)\n  unique[0x5f00]:1 = INT_EQUAL(register[0x1018]:1, const[0x0]:1)\n  unique[0x5f80]:1 = INT_NOTEQUAL(register[0x1010]:8, unique[0x5e80]:8)\n  unique[0x6000]:1 = BOOL_OR(unique[0x5f00]:1, unique[0x5f80]:1)\n  unique[0x6080]:1 = INT_NOTEQUAL(register[0x101c]:1, const[0x4]:1)\n  unique[0x6100]:1 = BOOL_OR(unique[0x6000]:1, unique[0x6080]:1)\n  _ = CBRANCH(ram[0x1000c]:8, unique[0x6100]:1)\n  _ = STORE(const[0x5627b93510a0]:8, unique[0x5e80]:8, unique[0x5e00]:4)\n  register[0x2060]:8 = COPY(const[0x0]:8)\n  register[0x1010]:8 = COPY(const[0x0]:8)\n  register[0x1018]:1 = COPY(const[0x0]:1)\n  register[0x101c]:1 = COPY(const[0x0]:1)",
+      "translationKind": "pure_c",
+      "verificationStatus": "verified",
+      "verificationDetail": "Z3 proved LR/SC↔compare_exchange equivalence (width=32, weak)",
+      "notes": [
+        "LR/SC one-shot CAS width=32 succ=__ATOMIC_RELAXED fail=__ATOMIC_RELAXED",
+        "weak=True success=__ATOMIC_RELAXED failure=__ATOMIC_RELAXED"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 49,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "add %0, %1, %2",
+        "outputs": [
+          {
+            "constraint": "=r",
+            "exprText": "r",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "a",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "r",
+            "exprText": "b",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [],
+        "gotoLabels": [],
+        "isVolatile": false,
+        "fileName": "sample.c",
+        "line": 49,
+        "column": 5,
+        "beginOffset": 1134,
+        "endOffset": 1187,
+        "enclosingFunction": "simple_add",
+        "id": "sample.c:49:5",
+        "fragmentId": "sample.c:49:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  uint64_t __r2x_in_x10 = (uint64_t)(0);\n  uint64_t __r2x_in_x11 = (uint64_t)(a);\n  uint64_t __r2x_in_x12 = (uint64_t)(b);\n  uint64_t __r2x_state_a0 = ((uint64_t)__r2x_in_x10);\n  uint64_t __r2x_t0 = (uint64_t)((((uint64_t)__r2x_in_x11) + ((uint64_t)__r2x_in_x12)));\n  __r2x_state_a0 = ((uint64_t)__r2x_t0);\n  r = ((uint64_t)__r2x_state_a0);\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "3385c500",
+      "pcodeText": "0x10000 add a0,a1,a2\n  _ = IMARK(ram[0x10000]:4)\n  register[0x2050]:8 = INT_ADD(register[0x2058]:8, register[0x2060]:8)",
+      "translationKind": "pure_c",
+      "verificationStatus": "build_only",
+      "verificationDetail": "structural pass; integer block validated by E2E diff",
+      "notes": [
+        "single-block integer lowering"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 54,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "addw %0, %1, %2",
+        "outputs": [
+          {
+            "constraint": "=r",
+            "exprText": "r",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "a",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "r",
+            "exprText": "b",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [],
+        "gotoLabels": [],
+        "isVolatile": false,
+        "fileName": "sample.c",
+        "line": 54,
+        "column": 5,
+        "beginOffset": 1248,
+        "endOffset": 1302,
+        "enclosingFunction": "addw_sx",
+        "id": "sample.c:54:5",
+        "fragmentId": "sample.c:54:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  uint64_t __r2x_in_x10 = (uint64_t)(0);\n  uint64_t __r2x_in_x11 = (uint64_t)(a);\n  uint64_t __r2x_in_x12 = (uint64_t)(b);\n  uint64_t __r2x_state_a0 = ((uint64_t)__r2x_in_x10);\n  uint64_t __r2x_t0 = (uint64_t)(((int64_t)(int32_t)((uint32_t)((uint64_t)__r2x_in_x11) + (uint32_t)((uint64_t)__r2x_in_x12))));\n  __r2x_state_a0 = ((uint64_t)__r2x_t0);\n  r = ((uint64_t)__r2x_state_a0);\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "3b85c500",
+      "pcodeText": "0x10000 addw a0,a1,a2\n  _ = IMARK(ram[0x10000]:4)\n  unique[0xe100]:4 = INT_ADD(register[0x2058]:4, register[0x2060]:4)\n  register[0x2050]:8 = INT_SEXT(unique[0xe100]:4)",
+      "translationKind": "pure_c",
+      "verificationStatus": "build_only",
+      "verificationDetail": "structural pass; integer block validated by E2E diff",
+      "notes": [
+        "single-block integer lowering"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 61,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "lw %0, 8(%1)",
+        "outputs": [
+          {
+            "constraint": "=r",
+            "exprText": "r",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "base",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": false,
+        "fileName": "sample.c",
+        "line": 61,
+        "column": 5,
+        "beginOffset": 1389,
+        "endOffset": 1446,
+        "enclosingFunction": "load_off",
+        "id": "sample.c:61:5",
+        "fragmentId": "sample.c:61:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  uint64_t __r2x_in_x10 = (uint64_t)(0);\n  uint64_t __r2x_in_x11 = (uint64_t)(base);\n  uint64_t __r2x_state_a0 = ((uint64_t)__r2x_in_x10);\n  uint64_t __r2x_t0 = (uint64_t)(((int64_t)*(int32_t*)((char*)((uint64_t)__r2x_in_x11) + (8))));\n  __r2x_state_a0 = ((uint64_t)__r2x_t0);\n  r = ((uint64_t)__r2x_state_a0);\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "8845",
+      "pcodeText": "0x10000 c.lw a0,0x8(a1)\n  _ = IMARK(ram[0x10000]:2)\n  unique[0x1380]:8 = COPY(const[0x8]:8)\n  unique[0x16600]:8 = INT_ADD(unique[0x1380]:8, register[0x2058]:8)\n  unique[0x16680]:4 = LOAD(const[0x5627b90b3000]:8, unique[0x16600]:8)\n  register[0x2050]:8 = INT_SEXT(unique[0x16680]:4)",
+      "translationKind": "pure_c",
+      "verificationStatus": "build_only",
+      "verificationDetail": "structural pass; integer block validated by E2E diff",
+      "notes": [
+        "single-block integer lowering"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 65,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "sw %0, 0(%1)",
+        "outputs": [],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "v",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "r",
+            "exprText": "base",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": false,
+        "fileName": "sample.c",
+        "line": 65,
+        "column": 5,
+        "beginOffset": 1502,
+        "endOffset": 1559,
+        "enclosingFunction": "store_off",
+        "id": "sample.c:65:5",
+        "fragmentId": "sample.c:65:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  uint64_t __r2x_in_x10 = (uint64_t)(v);\n  uint64_t __r2x_in_x11 = (uint64_t)(base);\n  *(uint32_t*)((char*)((uint64_t)__r2x_in_x11) + (0)) = (uint32_t)((uint64_t)__r2x_in_x10);\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "88c1",
+      "pcodeText": "0x10000 c.sw a0,0x0(a1)\n  _ = IMARK(ram[0x10000]:2)\n  unique[0x1380]:8 = COPY(const[0x0]:8)\n  unique[0x17080]:8 = INT_ADD(unique[0x1380]:8, register[0x2058]:8)\n  _ = STORE(const[0x5627b98f1730]:8, unique[0x17080]:8, register[0x2050]:4)",
+      "translationKind": "pure_c",
+      "verificationStatus": "build_only",
+      "verificationDetail": "structural pass; integer block validated by E2E diff",
+      "notes": [
+        "single-block integer lowering"
+      ]
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "sample.c",
+      "line": 71,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "sllw %0, %1, %2",
+        "outputs": [
+          {
+            "constraint": "=r",
+            "exprText": "r",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "x",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "r",
+            "exprText": "1L",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [],
+        "gotoLabels": [],
+        "isVolatile": false,
+        "fileName": "sample.c",
+        "line": 71,
+        "column": 5,
+        "beginOffset": 1633,
+        "endOffset": 1688,
+        "enclosingFunction": "sllw_neg",
+        "id": "sample.c:71:5",
+        "fragmentId": "sample.c:71:5",
+        "predecessorFragmentId": null,
+        "successorFragmentId": null,
+        "outputBindings": [],
+        "hasRetryLoop": false,
+        "symbols": []
+      },
+      "suggestedReplacement": "do {\n  uint64_t __r2x_in_x10 = (uint64_t)(0);\n  uint64_t __r2x_in_x11 = (uint64_t)(x);\n  uint64_t __r2x_in_x12 = (uint64_t)(1L);\n  uint64_t __r2x_state_a0 = ((uint64_t)__r2x_in_x10);\n  uint64_t __r2x_t0 = (uint64_t)(((int64_t)(int32_t)((uint32_t)((uint64_t)__r2x_in_x11) << (((uint64_t)__r2x_in_x12) & 31))));\n  __r2x_state_a0 = ((uint64_t)__r2x_t0);\n  r = ((uint64_t)__r2x_state_a0);\n} while (0);",
+      "ruleName": "phase6.pure_c",
+      "machineCodeHex": "3b95c500",
+      "pcodeText": "0x10000 sllw a0,a1,a2\n  _ = IMARK(ram[0x10000]:4)\n  unique[0xe880]:8 = INT_AND(register[0x2060]:8, const[0x1f]:8)\n  unique[0xe900]:4 = COPY(register[0x2058]:4)\n  unique[0xe900]:4 = INT_LEFT(unique[0xe900]:4, unique[0xe880]:8)\n  register[0x2050]:8 = INT_SEXT(unique[0xe900]:4)",
+      "translationKind": "pure_c",
+      "verificationStatus": "build_only",
+      "verificationDetail": "structural pass; integer block validated by E2E diff",
+      "notes": [
+        "single-block integer lowering"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+      "major": 3,
+      "minor": 16,
+      "patch": 0
+    },
+    "configurePresets": [
+      {
+        "name": "llvm10-clang10",
+        "displayName": "LLVM 10 + Clang 10",
+        "generator": "Unix Makefiles",
+        "binaryDir": "${sourceDir}/build",
+        "cacheVariables": {
+          "CMAKE_BUILD_TYPE": "Debug",
+          "CMAKE_C_COMPILER": "/usr/bin/clang-10",
+          "CMAKE_CXX_COMPILER": "/usr/bin/clang++-10",
+          "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+          "LLVM_DIR": "/usr/lib/llvm-10/lib/cmake/llvm",
+          "Clang_DIR": "/usr/lib/llvm-10/lib/cmake/clang"
+        }
+      }
+    ],
+    "buildPresets": [
+      {
+        "name": "llvm10-clang10",
+        "configurePreset": "llvm10-clang10",
+        "jobs": 8
+      }
+    ]
+  }

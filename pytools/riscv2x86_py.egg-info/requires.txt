@@ -1,0 +1,6 @@
+
+[analysis]
+pypcode>=2.0
+angr>=9.2
+z3-solver>=4.12
+pyelftools

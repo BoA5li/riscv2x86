@@ -1,0 +1,2 @@
+[console_scripts]
+riscv2x86-py = riscv2x86_py.cli:main

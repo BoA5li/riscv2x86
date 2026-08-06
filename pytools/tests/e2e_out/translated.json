@@ -1,0 +1,96 @@
+{
+  "findings": [
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "/root/src/poc_trans/path_b/riscv2x86/pytools/tests/e2e/sample.c",
+      "line": 4,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "amoadd.w %0, %2, %1",
+        "outputs": [
+          {
+            "constraint": "=r",
+            "exprText": "old",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          },
+          {
+            "constraint": "+A",
+            "exprText": "*p",
+            "symbolicName": "",
+            "isOutput": true,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "inputs": [
+          {
+            "constraint": "r",
+            "exprText": "v",
+            "symbolicName": "",
+            "isOutput": false,
+            "isTied": false,
+            "isEarlyClobber": false
+          }
+        ],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": true,
+        "fileName": "/root/src/poc_trans/path_b/riscv2x86/pytools/tests/e2e/sample.c",
+        "line": 4,
+        "column": 5,
+        "beginOffset": 67,
+        "endOffset": 203,
+        "enclosingFunction": "amo_add",
+        "id": "/root/src/poc_trans/path_b/riscv2x86/pytools/tests/e2e/sample.c:4:5"
+      },
+      "suggestedReplacement": "old = __atomic_fetch_add(&(*p), v, __ATOMIC_SEQ_CST);",
+      "ruleName": "atomic.amoadd",
+      "machineCodeHex": "",
+      "pcodeText": "",
+      "translationKind": "",
+      "verificationStatus": "",
+      "verificationDetail": "",
+      "notes": []
+    },
+    {
+      "category": "ReplaceableByRule",
+      "description": "GCC inline asm",
+      "fileName": "/root/src/poc_trans/path_b/riscv2x86/pytools/tests/e2e/sample.c",
+      "line": 11,
+      "column": 5,
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "fence rw,rw",
+        "outputs": [],
+        "inputs": [],
+        "clobbers": [
+          "memory"
+        ],
+        "gotoLabels": [],
+        "isVolatile": true,
+        "fileName": "/root/src/poc_trans/path_b/riscv2x86/pytools/tests/e2e/sample.c",
+        "line": 11,
+        "column": 5,
+        "beginOffset": 248,
+        "endOffset": 297,
+        "enclosingFunction": "barrier",
+        "id": "/root/src/poc_trans/path_b/riscv2x86/pytools/tests/e2e/sample.c:11:5"
+      },
+      "suggestedReplacement": "__atomic_thread_fence(__ATOMIC_SEQ_CST);",
+      "ruleName": "atomic.fence",
+      "machineCodeHex": "",
+      "pcodeText": "",
+      "translationKind": "",
+      "verificationStatus": "",
+      "verificationDetail": "",
+      "notes": []
+    }
+  ]
+}

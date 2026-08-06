@@ -1,0 +1,50 @@
+[
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/main.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/main.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/main.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/main.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/Classifier.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/Classifier.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/Classifier.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/Classifier.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/Rewriter.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/Rewriter.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/Rewriter.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/Rewriter.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/RuleEngine.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/RuleEngine.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/RuleEngine.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/RuleEngine.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/Report.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/Report.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/Report.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/Report.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/ReportLoad.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/ReportLoad.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/ReportLoad.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/ReportLoad.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/rules/BuiltinRules.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/rules/BuiltinRules.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/rules/BuiltinRules.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/rules/BuiltinRules.cpp.o"
+},
+{
+  "directory": "/root/src/poc_trans/path_b/riscv2x86/build",
+  "command": "/usr/bin/clang++-10  -I/usr/lib/llvm-10/include -I/root/src/poc_trans/path_b/riscv2x86/include -g -std=c++17   -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/riscv2x86.dir/src/rules/AtomicRules.cpp.o -c /root/src/poc_trans/path_b/riscv2x86/src/rules/AtomicRules.cpp",
+  "file": "/root/src/poc_trans/path_b/riscv2x86/src/rules/AtomicRules.cpp",
+  "output": "CMakeFiles/riscv2x86.dir/src/rules/AtomicRules.cpp.o"
+}
+]

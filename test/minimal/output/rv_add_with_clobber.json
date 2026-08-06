@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_add_with_clobber.c",
+      "fileName": "rv_add_with_clobber.c",
+      "line": 6,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 85,
+      "rewriteEndOffset": 197,
+      "rawSourceText": "__asm__ volatile(\n        \"add %0, %1, %2\"\n        : \"=r\"(result)\n        : \"r\"(a), \"r\"(b)\n        : \"t0\"\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "add %0, %1, %2",
+        "asmText": "add %0, %1, %2",
+        "isVolatile": true,
+        "fileName": "rv_add_with_clobber.c",
+        "line": 6,
+        "column": 5,
+        "beginOffset": 85,
+        "endOffset": 197,
+        "enclosingFunction": "rv_add_with_clobber",
+        "id": "rv_add_with_clobber.c:6:5",
+        "outputs": [{"constraint":"=r","exprText":"result","symbolicName":"","isOutput":true,"isTied":false,"isEarlyClobber":false}],
+        "inputs": [{"constraint":"r","exprText":"a","symbolicName":"","isOutput":false,"isTied":false,"isEarlyClobber":false},{"constraint":"r","exprText":"b","symbolicName":"","isOutput":false,"isTied":false,"isEarlyClobber":false}],
+        "clobbers": ["t0"],
+        "gotoLabels": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_asm_goto.c",
+      "fileName": "rv_asm_goto.c",
+      "line": 2,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 29,
+      "rewriteEndOffset": 129,
+      "rawSourceText": "__asm__ goto(\n        \"beqz %0, %l[zero]\"\n        :\n        : \"r\"(x)\n        :\n        : zero\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineGoto",
+        "rawAsmText": "beqz %0, %l[zero]",
+        "asmText": "beqz %0, %l[zero]",
+        "isVolatile": false,
+        "fileName": "rv_asm_goto.c",
+        "line": 2,
+        "column": 5,
+        "beginOffset": 29,
+        "endOffset": 129,
+        "enclosingFunction": "rv_asm_goto",
+        "id": "rv_asm_goto.c:2:5",
+        "outputs": [],
+        "inputs": [{"constraint":"r","exprText":"x","symbolicName":"","isOutput":false,"isTied":false,"isEarlyClobber":false}],
+        "clobbers": [],
+        "gotoLabels": ["zero"]
+      }
+    }
+  ]
+}

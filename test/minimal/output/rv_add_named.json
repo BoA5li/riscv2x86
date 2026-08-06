@@ -1,0 +1,42 @@
+{
+  "findings": [
+    {
+      "category": "NeedsAsmTranslation",
+      "file": "rv_add_named.c",
+      "fileName": "rv_add_named.c",
+      "line": 6,
+      "column": 5,
+      "description": "GCC inline asm",
+      "rule": "",
+      "ruleName": "",
+      "replacement": "",
+      "suggestedReplacement": "",
+      "subjectKind": "AsmFragment",
+      "symbolName": "",
+      "hasRewriteRange": true,
+      "rewriteBeginOffset": 78,
+      "rewriteEndOffset": 206,
+      "rawSourceText": "__asm__(\n        \"add %[out], %[lhs], %[rhs]\"\n        : [out] \"=r\"(result)\n        : [lhs] \"r\"(a),\n          [rhs] \"r\"(b)\n    );",
+      "fromMacroExpansion": false,
+      "macroName": "",
+      "arguments": [],
+      "fragment": {
+        "kind": "InlineExtended",
+        "rawAsmText": "add %[out], %[lhs], %[rhs]",
+        "asmText": "add %[out], %[lhs], %[rhs]",
+        "isVolatile": false,
+        "fileName": "rv_add_named.c",
+        "line": 6,
+        "column": 5,
+        "beginOffset": 78,
+        "endOffset": 206,
+        "enclosingFunction": "rv_add_named",
+        "id": "rv_add_named.c:6:5",
+        "outputs": [{"constraint":"=r","exprText":"result","symbolicName":"out","isOutput":true,"isTied":false,"isEarlyClobber":false}],
+        "inputs": [{"constraint":"r","exprText":"a","symbolicName":"lhs","isOutput":false,"isTied":false,"isEarlyClobber":false},{"constraint":"r","exprText":"b","symbolicName":"rhs","isOutput":false,"isTied":false,"isEarlyClobber":false}],
+        "clobbers": [],
+        "gotoLabels": []
+      }
+    }
+  ]
+}
