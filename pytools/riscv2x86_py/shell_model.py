@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Tuple
 
-from schema import AsmFragment, AsmOperand
+try:
+    from .schema import AsmFragment, AsmOperand
+except ImportError:  # pragma: no cover - direct-module compatibility
+    from schema import AsmFragment, AsmOperand
 
 
 def _text(value: Any) -> str:
