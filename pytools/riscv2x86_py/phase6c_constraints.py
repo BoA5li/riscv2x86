@@ -1977,6 +1977,14 @@ __all__ = (
     "derive_target_constraints",
 )
 
+# ---------------------------------------------------------------------------
+# Deprecated private C-expression compatibility helpers below this marker are
+# not part of the Phase 6C public dispatch and must not be used by new code.
+# The authoritative implementation is c_module.phase6c_c_expression.
+# They remain temporarily for source compatibility only; Phase 6C dispatch
+# reaches the module implementation exclusively through _derive_c_expression_0.
+# ---------------------------------------------------------------------------
+
 def _reject_if_operand_facts_incomplete(
     *,
     source_model: SourceSemanticModel,
