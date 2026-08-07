@@ -47,6 +47,21 @@ _FRAME_REGISTERS: FrozenSet[str] = frozenset(
 )
 
 @dataclass(frozen=True)
+class SourceControlFlowSuccessor:
+    """A source-CFG edge already normalized before Phase 6C."""
+    source_block_address: int
+    successor_address: int
+    edge_kind: str
+
+
+@dataclass(frozen=True)
+class SourceAsmGotoLabelBinding:
+    """Authoritative asm-goto label to source-successor association."""
+    label: str
+    successor_address: int
+
+
+@dataclass(frozen=True)
 class SourceControlFlowModel:
     """
     Structured source control-flow semantic snapshot.
@@ -81,6 +96,12 @@ class SourceControlFlowModel:
     has_external_control_flow: bool
     has_multiple_exits: bool
     has_non_local_control_dependency: bool
+
+    # Phase 6C-7 consumes these facts and must not read CFGResult itself.
+    successors: Tuple[SourceControlFlowSuccessor, ...] = ()
+    successors_complete: bool = False
+    asm_goto_label_bindings: Tuple[SourceAsmGotoLabelBinding, ...] = ()
+    asm_goto_label_bindings_complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -672,6 +693,16 @@ def _build_control_flow_model(
         )
     )
 
+    successors = tuple(
+        SourceControlFlowSuccessor(
+            source_block_address=node.addr,
+            successor_address=successor,
+            edge_kind=node.successor_kinds.get(successor, "unknown"),
+        )
+        for node in cfg.nodes.values()
+        for successor in node.successors
+    ) if cfg_ok else ()
+
     return SourceControlFlowModel(
         cfg_ok=cfg_ok,
         cfg_entry=cfg_entry,
@@ -690,6 +721,13 @@ def _build_control_flow_model(
         has_non_local_control_dependency=bool(
             shell.has_non_local_control_dependency
         ),
+        successors=successors,
+        successors_complete=cfg_ok and not has_unknown_target,
+        # CFG nodes identify successor addresses but do not authoritatively
+        # bind GNU asm-goto labels to those addresses.  Keep this incomplete
+        # until an upstream normalized shell/CFG adapter supplies the mapping.
+        asm_goto_label_bindings=(),
+        asm_goto_label_bindings_complete=not shell.has_asm_goto,
     )
 
 def _build_memory_model(
