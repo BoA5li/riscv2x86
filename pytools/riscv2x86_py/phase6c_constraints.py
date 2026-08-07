@@ -419,6 +419,14 @@ class TargetConstraintReasonCode(str, Enum):
     X86_BARRIER_FEATURE_UNAVAILABLE = "phase6c.x86_barrier_feature_unavailable"
     X86_BARRIER_INSTRUCTION_STREAM_UNSUPPORTED = "phase6c.x86_barrier_instruction_stream_unsupported"
     X86_BARRIER_SEMANTICS_UNSUPPORTED = "phase6c.x86_barrier_semantics_unsupported"
+    STRUCTURED_CONTROL_FLOW_PLAN_KIND_MISMATCH = "phase6c.structured_control_flow_plan_kind_mismatch"
+    STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE = "phase6c.structured_control_flow_source_incomplete"
+    STRUCTURED_CONTROL_FLOW_UNKNOWN_TARGET = "phase6c.structured_control_flow_unknown_target"
+    STRUCTURED_CONTROL_FLOW_INDIRECT_UNSUPPORTED = "phase6c.structured_control_flow_indirect_unsupported"
+    STRUCTURED_CONTROL_FLOW_CALL_OR_RETURN_UNSUPPORTED = "phase6c.structured_control_flow_call_or_return_unsupported"
+    STRUCTURED_CONTROL_FLOW_SUCCESSORS_INCOMPLETE = "phase6c.structured_control_flow_successors_incomplete"
+    STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE = "phase6c.structured_control_flow_label_bindings_incomplete"
+    STRUCTURED_CONTROL_FLOW_ASM_GOTO_UNAVAILABLE = "phase6c.structured_control_flow_asm_goto_unavailable"
 
 def _normalize_feature_set(
     value: Iterable[str],
@@ -679,6 +687,7 @@ class TargetEnvironment:
     abi: TargetAbi
 
     supports_gnu_inline_asm: bool = True
+    supports_gnu_asm_goto: bool = False
     available_features: FrozenSet[str] = frozenset()
     builtin_capabilities: FrozenSet[str] = frozenset()
 
@@ -704,6 +713,8 @@ class TargetEnvironment:
             raise TypeError(
                 "TargetEnvironment.supports_gnu_inline_asm must be bool"
             )
+        if not isinstance(self.supports_gnu_asm_goto, bool):
+            raise TypeError("TargetEnvironment.supports_gnu_asm_goto must be bool")
 
         object.__setattr__(
             self,
@@ -721,6 +732,7 @@ class TargetEnvironment:
         *,
         available_features: Iterable[str] = (),
         supports_gnu_inline_asm: bool = True,
+        supports_gnu_asm_goto: bool = False,
         builtin_capabilities: Iterable[str] = (),
     ) -> "TargetEnvironment":
         """
@@ -735,6 +747,7 @@ class TargetEnvironment:
             asm_dialect=TargetAsmDialect.GNU_ATT,
             abi=TargetAbi.SYSV_AMD64,
             supports_gnu_inline_asm=supports_gnu_inline_asm,
+            supports_gnu_asm_goto=supports_gnu_asm_goto,
             available_features=frozenset(available_features),
             builtin_capabilities=frozenset(builtin_capabilities),
         )
@@ -1094,6 +1107,7 @@ class TargetConstraintModel:
     x86_memory_inline_asm_contract: object | None = None
     x86_atomic_contract: object | None = None
     x86_barrier_contract: object | None = None
+    structured_control_flow_contract: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1178,6 +1192,10 @@ class TargetConstraintModel:
             from .c_module.phase6c_x86_atomic_barrier import X86BarrierContract
             if not isinstance(self.x86_barrier_contract, X86BarrierContract):
                 raise TypeError("x86_barrier_contract must be X86BarrierContract or None")
+        if self.structured_control_flow_contract is not None:
+            from .c_module.phase6c_structured_control_flow import StructuredControlFlowContract
+            if not isinstance(self.structured_control_flow_contract, StructuredControlFlowContract):
+                raise TypeError("structured_control_flow_contract must be StructuredControlFlowContract or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
         specialized_contracts = (
@@ -1187,6 +1205,7 @@ class TargetConstraintModel:
             self.x86_memory_inline_asm_contract,
             self.x86_atomic_contract,
             self.x86_barrier_contract,
+            self.structured_control_flow_contract,
         )
         if sum(contract is not None for contract in specialized_contracts) > 1:
             raise ValueError("target constraints must contain exactly one lowering contract")
@@ -1529,15 +1548,11 @@ def _derive_structured_control_flow_0(
     candidate_plan: TargetLoweringPlan,
     target_environment: TargetEnvironment,
 ) -> TargetConstraintDerivationResult:
-    del source_model
-
-    return _not_implemented(
-        candidate_plan=candidate_plan,
-        target_environment=target_environment,
-        reason_code=(
-            TargetConstraintReasonCode
-            .STRUCTURED_CONTROL_FLOW_NOT_IMPLEMENTED
-        ),
+    from .c_module.phase6c_structured_control_flow import (
+        derive_structured_control_flow_constraints,
+    )
+    return derive_structured_control_flow_constraints(
+        source_model, candidate_plan, target_environment
     )
 
 
