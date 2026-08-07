@@ -227,6 +227,107 @@ class SourceSemanticModel:
     xlen: Optional[int]
     value_operation: SourceValueOperationModel | None
 
+    @property
+    def phase6b_candidate_facts(self):
+        """Return the Phase-6A-owned, immutable input contract for Phase 6B.
+
+        The import is intentionally lazy: candidate_plans imports this module,
+        while this authoritative Phase-6A adapter constructs its DTO.
+        Phase 6B must not reconstruct these facts from lower-level artifacts.
+        """
+        from .candidate_plans import Phase6BCandidateFacts
+
+        operand_facts_complete = (
+            self.operands.complete
+            and self.completeness.runtime_facts_structurally_valid
+            and not self.completeness.missing_operand_binding_registers
+            and not self.completeness.missing_operand_width_registers
+        )
+        control_unknown = (
+            not self.control_flow.cfg_ok
+            or self.control_flow.has_unknown_target
+            or self.control_flow.has_indirect_control_flow is None
+        )
+        opaque = self.operation.kind in {
+            SourceOperationKind.OPAQUE,
+            SourceOperationKind.UNKNOWN,
+        }
+        unmodelled = any((
+            not self.operation.complete,
+            not self.implicit_state.complete,
+            self.memory.has_unknown_barrier,
+            self.registers.has_unresolved_register_identity,
+            control_unknown,
+        ))
+        shell_known = isinstance(self.shell, SourceShellModel)
+        stack_sensitive = (
+            self.registers.reads_or_writes_stack_pointer
+            or self.implicit_state.reads_stack_pointer
+            or self.implicit_state.writes_stack_pointer
+        )
+        frame_sensitive = (
+            self.registers.reads_or_writes_frame_pointer
+            or self.implicit_state.reads_frame_pointer
+            or self.implicit_state.writes_frame_pointer
+        )
+        microarch_known = all(
+            value is not None
+            for value in (
+                self.microarch.has_timing_source,
+                self.microarch.has_cache_operation,
+                self.microarch.has_speculation_control,
+            )
+        )
+        c_expression_eligible = bool(
+            self.value_operation is not None
+            and self.value_operation.complete
+            and self.operation.kind is SourceOperationKind.REGISTER_ONLY
+            and not self.operation.reads_memory
+            and not self.operation.writes_memory
+            and not self.atomic.present
+            and not self.barrier.present
+            and not self.operation.has_control_flow
+            and self.operation.has_return is False
+            and self.operation.may_trap is False
+            and shell_known
+            and not self.shell.requires_shell_aware_lowering
+            and operand_facts_complete
+        )
+        return Phase6BCandidateFacts(
+            model_is_consistent=not unmodelled,
+            has_global_fail_closed_state=opaque or unmodelled,
+            has_opaque_semantics=opaque,
+            has_unmodelled_semantics=unmodelled,
+            operand_bindings_are_authoritative=operand_facts_complete,
+            operand_widths_are_authoritative=operand_facts_complete,
+            target_is_x86=True,
+            microarch_classification_is_known=microarch_known,
+            has_microarch_sensitive_semantics=(
+                self.microarch.explicitly_microarch_sensitive
+                or self.microarch.has_structured_microarch_intent
+            ),
+            has_stack_sensitive_semantics=stack_sensitive,
+            has_frame_sensitive_semantics=frame_sensitive,
+            has_control_flow_semantics=self.operation.has_control_flow,
+            has_asm_goto_semantics=self.control_flow.has_asm_goto,
+            has_call_semantics=self.control_flow.has_call,
+            has_return_semantics=self.control_flow.has_return is True,
+            has_branch_semantics=self.control_flow.has_internal_branch,
+            has_atomic_semantics=self.atomic.present,
+            has_barrier_semantics=self.barrier.present,
+            has_non_atomic_memory_semantics=(
+                (self.memory.reads_memory or self.memory.writes_memory)
+                and not self.atomic.present
+            ),
+            shell_semantics_are_known=shell_known,
+            is_shell_neutral=(
+                shell_known and not self.shell.requires_shell_aware_lowering
+            ),
+            c_semantics_are_defined=c_expression_eligible,
+            c_expression_eligible=c_expression_eligible,
+            c_structured_eligible=False,
+        )
+
 def _normalize_register_name(value: object) -> str:
     """
     Normalize a structured register name for ABI-sensitive comparisons.
