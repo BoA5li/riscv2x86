@@ -326,6 +326,15 @@ def _normalize_string_tuple(
     return items
 
 
+def _normalize_reason_codes(
+    value: Iterable[str],
+    *,
+    field_name: str,
+) -> Tuple[str, ...]:
+    """Normalize stable plan diagnostic codes without using their messages."""
+    return _normalize_string_tuple(value, field_name=field_name)
+
+
 def _freeze_metadata_value(
     value: Any,
     *,
