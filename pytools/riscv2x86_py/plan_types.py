@@ -112,6 +112,7 @@ class PlanRequirement(str, Enum):
     PRESERVE_ATOMIC_ORDERING = "preserve_atomic_ordering"
     PRESERVE_CONTROL_FLOW = "preserve_control_flow"
     PRESERVE_ASM_GOTO = "preserve_asm_goto"
+    PRESERVE_STACK_FRAME = "preserve_stack_frame"
 
     PRESERVE_MICROARCH_INTENT = "preserve_microarch_intent"
     PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY = (
