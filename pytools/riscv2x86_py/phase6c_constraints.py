@@ -394,6 +394,13 @@ class TargetConstraintReasonCode(str, Enum):
     X86_INLINE_ASM_SHELL_UNSUPPORTED = "phase6c.x86_inline_asm_shell_unsupported"
     X86_INLINE_ASM_OPERAND_UNSUPPORTED = "phase6c.x86_inline_asm_operand_unsupported"
     X86_INLINE_ASM_BINDING_INCOMPLETE = "phase6c.x86_inline_asm_binding_incomplete"
+    X86_MEMORY_ASM_PLAN_KIND_MISMATCH = "phase6c.x86_memory_asm_plan_kind_mismatch"
+    X86_MEMORY_ASM_FEATURE_UNAVAILABLE = "phase6c.x86_memory_asm_feature_unavailable"
+    X86_MEMORY_ASM_SOURCE_INCOMPLETE = "phase6c.x86_memory_asm_source_incomplete"
+    X86_MEMORY_ASM_HARDWARE_SEMANTICS_UNSUPPORTED = "phase6c.x86_memory_asm_hardware_semantics_unsupported"
+    X86_MEMORY_ASM_CONTROL_FLOW_UNSUPPORTED = "phase6c.x86_memory_asm_control_flow_unsupported"
+    X86_MEMORY_ASM_ADDRESS_BINDING_MISSING = "phase6c.x86_memory_asm_address_binding_missing"
+    X86_MEMORY_ASM_ALIAS_UNKNOWN = "phase6c.x86_memory_asm_alias_unknown"
 
 def _normalize_feature_set(
     value: Iterable[str],
@@ -1066,6 +1073,7 @@ class TargetConstraintModel:
     c_expression_constraint: object | None = None
     c_builtin_constraint: object | None = None
     x86_gnu_inline_asm_contract: object | None = None
+    x86_memory_inline_asm_contract: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1138,6 +1146,10 @@ class TargetConstraintModel:
             from .c_module.phase6c_x86_gnu_inline_asm import X86GnuInlineAsmContract
             if not isinstance(self.x86_gnu_inline_asm_contract, X86GnuInlineAsmContract):
                 raise TypeError("x86_gnu_inline_asm_contract must be X86GnuInlineAsmContract or None")
+        if self.x86_memory_inline_asm_contract is not None:
+            from .c_module.phase6c_x86_memory_inline_asm import X86MemoryInlineAsmContract
+            if not isinstance(self.x86_memory_inline_asm_contract, X86MemoryInlineAsmContract):
+                raise TypeError("x86_memory_inline_asm_contract must be X86MemoryInlineAsmContract or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
 
@@ -1410,6 +1422,9 @@ def _derive_x86_gnu_inline_asm_0(
       * do not derive width from xlen;
       * do not infer memory/clobbers from raw asm mnemonics.
     """
+    if source_model.operation.reads_memory or source_model.operation.writes_memory or source_model.memory.reads_memory or source_model.memory.writes_memory:
+        from .c_module.phase6c_x86_memory_inline_asm import derive_x86_memory_inline_asm_constraints
+        return derive_x86_memory_inline_asm_constraints(source_model, candidate_plan, target_environment)
     from .c_module.phase6c_x86_gnu_inline_asm import derive_x86_gnu_inline_asm_constraints
     return derive_x86_gnu_inline_asm_constraints(source_model, candidate_plan, target_environment)
 
