@@ -392,6 +392,7 @@ def _generate_abi_aware_candidates(
                 {
                     PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
                     PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                    PlanRequirement.PRESERVE_STACK_FRAME,
                     PlanRequirement.PROVE_HELPER_ABI_CONTRACT,
                     PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
                 }
