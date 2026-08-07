@@ -10,7 +10,7 @@ from .plan_types import (
     TargetLoweringPlan,
 )
 from .source_model import SourceSemanticModel
-from .c_module.phase6c_c_expression import (
+from .phase6c_c_expression import (
     CExpressionConstraint,
     CExpressionConstraintValidationError,
     validate_c_expression_constraint,
@@ -1334,50 +1334,15 @@ def _derive_c_expression_0(
         )
 
     precheck_failure = _environment_precheck(
-        source_model=source_model,
         candidate_plan=candidate_plan,
         target_environment=target_environment,
     )
     if precheck_failure is not None:
         return precheck_failure
 
-    try:
-        c_expression_constraint = (
-            _build_c_expression_constraint_from_authoritative_facts(
-                source_model=source_model,
-                candidate_plan=candidate_plan,
-            )
-        )
-
-        constraints = TargetConstraintModel(
-            plan_id=candidate_plan.plan_id,
-            environment=target_environment,
-
-            operand_constraints=(),
-            memory_constraint=TargetMemoryConstraint(),
-            control_flow_constraint=TargetControlFlowConstraint(),
-
-            c_expression_constraint=c_expression_constraint,
-
-            preserve_volatile=False,
-            preserve_cc_clobber=False,
-            preserve_implicit_machine_state=False,
-        )
-
-    except CExpressionConstraintValidationError as exc:
-        return _c_expression_constraint_failure(
-            candidate_plan=candidate_plan,
-            exc=exc,
-        )
-
-    except (TypeError, ValueError) as exc:
-        return _c_expression_constraint_failure(
-            candidate_plan=candidate_plan,
-            exc=exc,
-        )
-
-    return TargetConstraintDerivationResult.succeeded(
-        constraints
+    from .phase6c_c_expression import derive_c_expression_constraints
+    return derive_c_expression_constraints(
+        source_model, candidate_plan, target_environment
     )
 
 def _derive_c_structured_0(
@@ -2253,35 +2218,9 @@ def _require_c_expression_source_eligibility(
             },
         )
         
-_SOURCE_TO_C_EXPRESSION_OPERATION: Mapping[
-    SourceOperationKind,
-    CExpressionOperationKind,
-] = {
-    SourceOperationKind.COPY: CExpressionOperationKind.COPY,
-    SourceOperationKind.BIT_NOT: CExpressionOperationKind.BIT_NOT,
-
-    SourceOperationKind.BIT_AND: CExpressionOperationKind.BIT_AND,
-    SourceOperationKind.BIT_OR: CExpressionOperationKind.BIT_OR,
-    SourceOperationKind.BIT_XOR: CExpressionOperationKind.BIT_XOR,
-
-    SourceOperationKind.ADD: CExpressionOperationKind.ADD,
-    SourceOperationKind.SUB: CExpressionOperationKind.SUB,
-    SourceOperationKind.MUL: CExpressionOperationKind.MUL,
-
-    SourceOperationKind.ZERO_EXTEND:
-        CExpressionOperationKind.ZERO_EXTEND,
-    SourceOperationKind.TRUNCATE:
-        CExpressionOperationKind.TRUNCATE,
-
-    SourceOperationKind.UNSIGNED_LESS_THAN:
-        CExpressionOperationKind.UNSIGNED_LESS_THAN,
-    SourceOperationKind.UNSIGNED_LESS_EQUAL:
-        CExpressionOperationKind.UNSIGNED_LESS_EQUAL,
-    SourceOperationKind.UNSIGNED_GREATER_THAN:
-        CExpressionOperationKind.UNSIGNED_GREATER_THAN,
-    SourceOperationKind.UNSIGNED_GREATER_EQUAL:
-        CExpressionOperationKind.UNSIGNED_GREATER_EQUAL,
-}
+# C-expression mapping lives in phase6c_c_expression.py.  Keep this legacy
+# name inert so old private helpers cannot become a second semantic source.
+_SOURCE_TO_C_EXPRESSION_OPERATION: Mapping[object, object] = {}
 
 def _map_source_operation_to_c_expression_operation(
     operation: SourceOperation | None,
