@@ -208,6 +208,7 @@ class SourceSemanticModel:
     atomic: SourceAtomicOperationModel
     barrier: SourceBarrierModel
     implicit_state: SourceImplicitStateModel
+    helper_abi: SourceHelperAbiModel
 
     # Existing structured source semantic facts.
     control_flow: SourceControlFlowModel
@@ -551,6 +552,11 @@ def build_source_semantic_model(
         atomic=atomic,
         barrier=barrier,
         implicit_state=implicit_state,
+        helper_abi=_build_helper_abi_model(
+            summary=summary,
+            operation=operation,
+            registers=registers,
+        ),
 
         control_flow=control_flow,
         memory=memory,
@@ -2069,6 +2075,14 @@ class SourceBarrierScope(str, Enum):
     THREAD = "thread"
     SYSTEM = "system"
 
+
+class SourceHelperMemoryEffect(str, Enum):
+    NONE = "none"
+    READS = "reads"
+    WRITES = "writes"
+    READS_WRITES = "reads_writes"
+    UNKNOWN = "unknown"
+
 @dataclass(frozen=True)
 class SourceExpressionBinding:
     """
@@ -2491,11 +2505,37 @@ class SourceBarrierModel:
                     self.ordering is not None,
                     self.scope is not None,
                 )
+
             ):
                 raise ValueError(
                     "non-barrier SourceBarrierModel must not contain "
                     "barrier semantics"
                 )
+
+
+@dataclass(frozen=True)
+class SourceHelperAbiModel:
+    """Versioned source-proven helper contract consumed by Phase 6C-8."""
+    present: bool; helper_symbol: Optional[str]; semantic_version: Optional[str]
+    calling_convention: Optional[str]; parameter_operand_indexes: Tuple[int, ...]
+    return_operand_index: Optional[int]; memory_effect: SourceHelperMemoryEffect
+    may_return: Optional[bool]; may_unwind: Optional[bool]
+    required_stack_alignment_bytes: Optional[int]
+    preserves_stack_pointer: Optional[bool]; preserves_frame_pointer: Optional[bool]
+    caller_saved_registers: Tuple[str, ...]; callee_saved_registers: Tuple[str, ...]
+    pic_plt_compatible: Optional[bool]; runtime_available: Optional[bool]; complete: bool
+
+
+def _build_helper_abi_model(*, summary: IRSummary, operation: SourceOperationModel,
+                            registers: SourceRegisterModel) -> SourceHelperAbiModel:
+    """Adapt explicit Phase-6A helper metadata; never infer from a symbol."""
+    raw = getattr(summary, "helper_abi_semantics", None)
+    required = operation.requires_helper_abi_contract or registers.reads_or_writes_stack_pointer or registers.reads_or_writes_frame_pointer
+    if raw is None:
+        return SourceHelperAbiModel(required, None, None, None, (), None, SourceHelperMemoryEffect.UNKNOWN, None, None, None, None, None, (), (), None, None, not required)
+    memory_effect = getattr(raw, "memory_effect", SourceHelperMemoryEffect.UNKNOWN)
+    if not isinstance(memory_effect, SourceHelperMemoryEffect): memory_effect = SourceHelperMemoryEffect.UNKNOWN
+    return SourceHelperAbiModel(True, getattr(raw, "helper_symbol", None), getattr(raw, "semantic_version", None), getattr(raw, "calling_convention", None), tuple(getattr(raw, "parameter_operand_indexes", ())), getattr(raw, "return_operand_index", None), memory_effect, getattr(raw, "may_return", None), getattr(raw, "may_unwind", None), getattr(raw, "required_stack_alignment_bytes", None), getattr(raw, "preserves_stack_pointer", None), getattr(raw, "preserves_frame_pointer", None), tuple(getattr(raw, "caller_saved_registers", ())), tuple(getattr(raw, "callee_saved_registers", ())), getattr(raw, "pic_plt_compatible", None), getattr(raw, "runtime_available", None), bool(getattr(raw, "complete", False)))
 
 
 @dataclass(frozen=True)
