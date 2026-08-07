@@ -9,7 +9,11 @@ from .plan_types import (
     TargetLoweringKind,
     TargetLoweringPlan,
 )
-from .source_model import SourceSemanticModel
+from .source_model import (
+    SourceBarrierScope,
+    SourceMemoryOrdering,
+    SourceSemanticModel,
+)
 
 
 # ============================================================================
@@ -401,6 +405,20 @@ class TargetConstraintReasonCode(str, Enum):
     X86_MEMORY_ASM_CONTROL_FLOW_UNSUPPORTED = "phase6c.x86_memory_asm_control_flow_unsupported"
     X86_MEMORY_ASM_ADDRESS_BINDING_MISSING = "phase6c.x86_memory_asm_address_binding_missing"
     X86_MEMORY_ASM_ALIAS_UNKNOWN = "phase6c.x86_memory_asm_alias_unknown"
+
+    # Phase 6C-6 keeps atomic and barrier contracts separate from ordinary
+    # memory inline asm.  These reason codes are stable routing outcomes.
+    X86_ATOMIC_PLAN_KIND_MISMATCH = "phase6c.x86_atomic_plan_kind_mismatch"
+    X86_ATOMIC_SOURCE_INCOMPLETE = "phase6c.x86_atomic_source_incomplete"
+    X86_ATOMIC_FACTS_INCOMPLETE = "phase6c.x86_atomic_facts_incomplete"
+    X86_ATOMIC_FEATURE_UNAVAILABLE = "phase6c.x86_atomic_feature_unavailable"
+    X86_ATOMIC_ORDERING_UNSUPPORTED = "phase6c.x86_atomic_ordering_unsupported"
+    X86_BARRIER_PLAN_KIND_MISMATCH = "phase6c.x86_barrier_plan_kind_mismatch"
+    X86_BARRIER_SOURCE_INCOMPLETE = "phase6c.x86_barrier_source_incomplete"
+    X86_BARRIER_UNKNOWN = "phase6c.x86_barrier_unknown"
+    X86_BARRIER_FEATURE_UNAVAILABLE = "phase6c.x86_barrier_feature_unavailable"
+    X86_BARRIER_INSTRUCTION_STREAM_UNSUPPORTED = "phase6c.x86_barrier_instruction_stream_unsupported"
+    X86_BARRIER_SEMANTICS_UNSUPPORTED = "phase6c.x86_barrier_semantics_unsupported"
 
 def _normalize_feature_set(
     value: Iterable[str],
@@ -1074,6 +1092,8 @@ class TargetConstraintModel:
     c_builtin_constraint: object | None = None
     x86_gnu_inline_asm_contract: object | None = None
     x86_memory_inline_asm_contract: object | None = None
+    x86_atomic_contract: object | None = None
+    x86_barrier_contract: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1150,8 +1170,26 @@ class TargetConstraintModel:
             from .c_module.phase6c_x86_memory_inline_asm import X86MemoryInlineAsmContract
             if not isinstance(self.x86_memory_inline_asm_contract, X86MemoryInlineAsmContract):
                 raise TypeError("x86_memory_inline_asm_contract must be X86MemoryInlineAsmContract or None")
+        if self.x86_atomic_contract is not None:
+            from .c_module.phase6c_x86_atomic_barrier import X86AtomicContract
+            if not isinstance(self.x86_atomic_contract, X86AtomicContract):
+                raise TypeError("x86_atomic_contract must be X86AtomicContract or None")
+        if self.x86_barrier_contract is not None:
+            from .c_module.phase6c_x86_atomic_barrier import X86BarrierContract
+            if not isinstance(self.x86_barrier_contract, X86BarrierContract):
+                raise TypeError("x86_barrier_contract must be X86BarrierContract or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
+        specialized_contracts = (
+            self.c_expression_constraint,
+            self.c_builtin_constraint,
+            self.x86_gnu_inline_asm_contract,
+            self.x86_memory_inline_asm_contract,
+            self.x86_atomic_contract,
+            self.x86_barrier_contract,
+        )
+        if sum(contract is not None for contract in specialized_contracts) > 1:
+            raise ValueError("target constraints must contain exactly one lowering contract")
 
         for field_name in (
             "preserve_volatile",
@@ -1435,12 +1473,11 @@ def _derive_x86_atomic_0(
     candidate_plan: TargetLoweringPlan,
     target_environment: TargetEnvironment,
 ) -> TargetConstraintDerivationResult:
-    del source_model
-
-    return _not_implemented(
-        candidate_plan=candidate_plan,
-        target_environment=target_environment,
-        reason_code=TargetConstraintReasonCode.X86_ATOMIC_NOT_IMPLEMENTED,
+    from .c_module.phase6c_x86_atomic_barrier import (
+        derive_x86_atomic_constraints,
+    )
+    return derive_x86_atomic_constraints(
+        source_model, candidate_plan, target_environment
     )
 
 
@@ -1450,12 +1487,11 @@ def _derive_x86_barrier_0(
     candidate_plan: TargetLoweringPlan,
     target_environment: TargetEnvironment,
 ) -> TargetConstraintDerivationResult:
-    del source_model
-
-    return _not_implemented(
-        candidate_plan=candidate_plan,
-        target_environment=target_environment,
-        reason_code=TargetConstraintReasonCode.X86_BARRIER_NOT_IMPLEMENTED,
+    from .c_module.phase6c_x86_atomic_barrier import (
+        derive_x86_barrier_constraints,
+    )
+    return derive_x86_barrier_constraints(
+        source_model, candidate_plan, target_environment
     )
 
 
