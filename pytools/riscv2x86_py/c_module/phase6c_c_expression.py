@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 import re
-from .phase6c_constraints import TargetConstraintReasonCode, TargetConstraintDetailValue, _freeze_details 
+from ..phase6c_constraints import TargetConstraintReasonCode, TargetConstraintDetailValue, _freeze_details
 from typing import Iterable, Optional, Tuple,  Mapping, Sequence
 try:
     # Package import.
-    from .source_model import (
+    from ..source_model import (
         SourceOperandKind,
         SourceSignedness,
     )
@@ -114,7 +115,7 @@ class CExpressionOperandRole(str, Enum):
 _PURE_C_EXPRESSION_OPERAND_KINDS = frozenset(
     {
         SourceOperandKind.REGISTER,
-        SourceOperandKind.TEMPORARY,
+        SourceOperandKind.EXPRESSION,
         SourceOperandKind.IMMEDIATE,
     }
 )
@@ -3407,4 +3408,18 @@ __all__ = (
     "is_c_expression_operation_kind",
     "validate_c_expression_constraint",
     "validate_c_expression_operand_bindings",
+)
+
+# Phase 6C-2 audited entry point.  The legacy DTO and validation helpers
+# remain available, while this public entry uses the conservative contract
+# implementation after the parent dispatcher is fully initialized.
+from .._phase6c_c_expression_impl import (
+    CExpressionConstraint,
+    CExpressionConstraintValidationError,
+    CExpressionDefinednessContract,
+    CExpressionOperandBinding,
+    CExpressionOperationKind,
+    CExpressionTypeContract,
+    derive_c_expression_constraints,
+    validate_c_expression_constraint,
 )
