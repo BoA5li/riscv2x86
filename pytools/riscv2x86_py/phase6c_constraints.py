@@ -427,6 +427,13 @@ class TargetConstraintReasonCode(str, Enum):
     STRUCTURED_CONTROL_FLOW_SUCCESSORS_INCOMPLETE = "phase6c.structured_control_flow_successors_incomplete"
     STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE = "phase6c.structured_control_flow_label_bindings_incomplete"
     STRUCTURED_CONTROL_FLOW_ASM_GOTO_UNAVAILABLE = "phase6c.structured_control_flow_asm_goto_unavailable"
+    HELPER_ABI_PLAN_KIND_MISMATCH = "phase6c.helper_abi_plan_kind_mismatch"
+    HELPER_ABI_SOURCE_INCOMPLETE = "phase6c.helper_abi_source_incomplete"
+    HELPER_ABI_CONTRACT_INCOMPLETE = "phase6c.helper_abi_contract_incomplete"
+    HELPER_ABI_RUNTIME_UNAVAILABLE = "phase6c.helper_abi_runtime_unavailable"
+    HELPER_ABI_SEMANTIC_VERSION_UNAVAILABLE = "phase6c.helper_abi_semantic_version_unavailable"
+    HELPER_ABI_CONTROL_FLOW_MISMATCH = "phase6c.helper_abi_control_flow_mismatch"
+    HELPER_ABI_STACK_FRAME_UNSUPPORTED = "phase6c.helper_abi_stack_frame_unsupported"
 
 def _normalize_feature_set(
     value: Iterable[str],
@@ -690,6 +697,7 @@ class TargetEnvironment:
     supports_gnu_asm_goto: bool = False
     available_features: FrozenSet[str] = frozenset()
     builtin_capabilities: FrozenSet[str] = frozenset()
+    helper_contract_capabilities: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.architecture, TargetArchitecture):
@@ -725,6 +733,7 @@ class TargetEnvironment:
             ),
         )
         object.__setattr__(self, "builtin_capabilities", _normalize_feature_set(self.builtin_capabilities, field_name="TargetEnvironment.builtin_capabilities"))
+        object.__setattr__(self, "helper_contract_capabilities", _normalize_feature_set(self.helper_contract_capabilities, field_name="TargetEnvironment.helper_contract_capabilities"))
 
     @classmethod
     def fixed_sysv_amd64_gnu_att(
@@ -734,6 +743,7 @@ class TargetEnvironment:
         supports_gnu_inline_asm: bool = True,
         supports_gnu_asm_goto: bool = False,
         builtin_capabilities: Iterable[str] = (),
+        helper_contract_capabilities: Iterable[str] = (),
     ) -> "TargetEnvironment":
         """
         Create the only currently supported target profile.
@@ -750,6 +760,7 @@ class TargetEnvironment:
             supports_gnu_asm_goto=supports_gnu_asm_goto,
             available_features=frozenset(available_features),
             builtin_capabilities=frozenset(builtin_capabilities),
+            helper_contract_capabilities=frozenset(helper_contract_capabilities),
         )
 
 
@@ -1108,6 +1119,7 @@ class TargetConstraintModel:
     x86_atomic_contract: object | None = None
     x86_barrier_contract: object | None = None
     structured_control_flow_contract: object | None = None
+    helper_abi_contract: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1196,6 +1208,10 @@ class TargetConstraintModel:
             from .c_module.phase6c_structured_control_flow import StructuredControlFlowContract
             if not isinstance(self.structured_control_flow_contract, StructuredControlFlowContract):
                 raise TypeError("structured_control_flow_contract must be StructuredControlFlowContract or None")
+        if self.helper_abi_contract is not None:
+            from .c_module.phase6c_helper_abi import HelperAbiContract
+            if not isinstance(self.helper_abi_contract, HelperAbiContract):
+                raise TypeError("helper_abi_contract must be HelperAbiContract or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
         specialized_contracts = (
@@ -1206,6 +1222,7 @@ class TargetConstraintModel:
             self.x86_atomic_contract,
             self.x86_barrier_contract,
             self.structured_control_flow_contract,
+            self.helper_abi_contract,
         )
         if sum(contract is not None for contract in specialized_contracts) > 1:
             raise ValueError("target constraints must contain exactly one lowering contract")
@@ -1533,12 +1550,9 @@ def _derive_helper_call_0(
       * clobber model;
       * memory and control-flow proof obligations.
     """
-    del source_model
-
-    return _not_implemented(
-        candidate_plan=candidate_plan,
-        target_environment=target_environment,
-        reason_code=TargetConstraintReasonCode.HELPER_CALL_NOT_IMPLEMENTED,
+    from .c_module.phase6c_helper_abi import derive_helper_abi_constraints
+    return derive_helper_abi_constraints(
+        source_model, candidate_plan, target_environment
     )
 
 
