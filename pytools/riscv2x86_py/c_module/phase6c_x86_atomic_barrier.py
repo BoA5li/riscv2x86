@@ -1,0 +1,151 @@
+"""Phase 6C-6 x86 atomic and barrier contracts, derived fail-closed."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from ..plan_types import TargetLoweringKind, TargetLoweringPlan
+from ..source_model import (
+    SourceAtomicKind,
+    SourceBarrierScope,
+    SourceMemoryOrdering,
+    SourceSemanticModel,
+)
+
+if TYPE_CHECKING:
+    from ..phase6c_constraints import TargetConstraintDerivationResult, TargetEnvironment
+
+
+@dataclass(frozen=True)
+class X86AtomicContract:
+    """A renderer-independent atomic contract; not an instruction selection."""
+    kind: SourceAtomicKind
+    object_operand_index: int
+    width_bits: int
+    alignment_bytes: int
+    success_ordering: SourceMemoryOrdering
+    failure_ordering: SourceMemoryOrdering | None
+    value_operand_index: int | None
+    expected_operand_index: int | None
+    desired_operand_index: int | None
+    result_operand_index: int | None
+    requires_lock_semantics: bool
+    requires_compiler_barrier: bool
+    requires_hardware_ordering: bool
+    required_target_feature: str
+
+
+@dataclass(frozen=True)
+class X86BarrierContract:
+    """Compiler and hardware barrier obligations remain explicitly separate."""
+    compiler_barrier: bool
+    hardware_memory_fence: bool
+    ordering: SourceMemoryOrdering | None
+    scope: SourceBarrierScope | None
+    instruction_serializing: bool
+    speculation_control: bool
+    required_target_feature: str | None
+
+
+def _failure(plan: TargetLoweringPlan, name: str, details=None):
+    from ..phase6c_constraints import (
+        TargetConstraintDerivationResult,
+        TargetConstraintReasonCode,
+    )
+    return TargetConstraintDerivationResult.failure(
+        plan_id=plan.plan_id,
+        reason_codes=(getattr(TargetConstraintReasonCode, name),),
+        details={} if details is None else details,
+    )
+
+
+def _atomic_required_fields_present(atom) -> bool:
+    base = (
+        atom.complete and atom.kind is not None and atom.width_bits is not None
+        and atom.alignment_bytes is not None and atom.address_operand_index is not None
+        and atom.success_ordering is not None
+    )
+    if not base:
+        return False
+    if atom.kind is SourceAtomicKind.STORE:
+        return atom.value_operand_index is not None
+    if atom.kind is SourceAtomicKind.READ_MODIFY_WRITE:
+        return atom.value_operand_index is not None and atom.result_operand_index is not None
+    if atom.kind is SourceAtomicKind.COMPARE_EXCHANGE:
+        return (atom.expected_operand_index is not None and atom.desired_operand_index is not None
+                and atom.result_operand_index is not None and atom.failure_ordering is not None)
+    return atom.kind is SourceAtomicKind.LOAD and atom.result_operand_index is not None
+
+
+def _operand_indexes_exist(source_model: SourceSemanticModel, indexes: tuple[int | None, ...]) -> bool:
+    available = {operand.source_operand_index for operand in source_model.operands.operands}
+    return all(index is None or index in available for index in indexes)
+
+
+def derive_x86_atomic_constraints(source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: "TargetEnvironment") -> "TargetConstraintDerivationResult":
+    """Derive an atomic contract without treating clobbers as ordering proof."""
+    from ..phase6c_constraints import TargetConstraintModel, TargetMemoryConstraint, TargetControlFlowConstraint, TargetConstraintDerivationResult
+    if candidate_plan.kind is not TargetLoweringKind.X86_ATOMIC:
+        return _failure(candidate_plan, "X86_ATOMIC_PLAN_KIND_MISMATCH")
+    if (not source_model.operands.complete or not source_model.operation.complete
+            or source_model.operation.has_control_flow or source_model.operation.has_call
+            or source_model.operation.has_return is not False):
+        return _failure(candidate_plan, "X86_ATOMIC_SOURCE_INCOMPLETE")
+    atom = source_model.atomic
+    if not atom.present or not _atomic_required_fields_present(atom):
+        return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE")
+    if not _operand_indexes_exist(source_model, (atom.address_operand_index, atom.value_operand_index,
+            atom.expected_operand_index, atom.desired_operand_index, atom.result_operand_index)):
+        return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE")
+    if atom.width_bits not in {8, 16, 32, 64, 128} or atom.alignment_bytes <= 0:
+        return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE")
+    if atom.success_ordering is SourceMemoryOrdering.CONSUME:
+        return _failure(candidate_plan, "X86_ATOMIC_ORDERING_UNSUPPORTED")
+    if "x86:atomic" not in target_environment.available_features:
+        return _failure(candidate_plan, "X86_ATOMIC_FEATURE_UNAVAILABLE", {"feature": "x86:atomic"})
+    requires_lock = atom.kind in {SourceAtomicKind.READ_MODIFY_WRITE, SourceAtomicKind.COMPARE_EXCHANGE}
+    contract = X86AtomicContract(atom.kind, atom.address_operand_index, atom.width_bits, atom.alignment_bytes,
+        atom.success_ordering, atom.failure_ordering, atom.value_operand_index, atom.expected_operand_index,
+        atom.desired_operand_index, atom.result_operand_index, requires_lock, True, True, "x86:atomic")
+    memory = TargetMemoryConstraint(requires_memory_clobber=True, requires_atomic_ordering=True,
+        requires_compiler_barrier=True, requires_hardware_barrier=True,
+        atomic_success_ordering=atom.success_ordering, atomic_failure_ordering=atom.failure_ordering,
+        required_atomic_width_bits=atom.width_bits, required_alignment_bytes=atom.alignment_bytes)
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,
+        environment=target_environment, x86_atomic_contract=contract, memory_constraint=memory,
+        control_flow_constraint=TargetControlFlowConstraint()))
+
+
+def derive_x86_barrier_constraints(source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: "TargetEnvironment") -> "TargetConstraintDerivationResult":
+    """Derive explicit barrier obligations; never infer an mfence mapping."""
+    from ..phase6c_constraints import TargetConstraintModel, TargetMemoryConstraint, TargetControlFlowConstraint, TargetConstraintDerivationResult
+    if candidate_plan.kind is not TargetLoweringKind.X86_BARRIER:
+        return _failure(candidate_plan, "X86_BARRIER_PLAN_KIND_MISMATCH")
+    if (not source_model.operation.complete or not source_model.barrier.complete
+            or source_model.operation.has_control_flow or source_model.operation.has_call
+            or source_model.operation.has_return is not False):
+        return _failure(candidate_plan, "X86_BARRIER_SOURCE_INCOMPLETE")
+    barrier = source_model.barrier
+    if source_model.memory.has_unknown_barrier or not barrier.present:
+        return _failure(candidate_plan, "X86_BARRIER_UNKNOWN")
+    if barrier.instruction_serializing or barrier.speculation_control or source_model.memory.has_instruction_barrier:
+        return _failure(candidate_plan, "X86_BARRIER_INSTRUCTION_STREAM_UNSUPPORTED")
+    if source_model.atomic.present or (not barrier.compiler_barrier and not barrier.hardware_memory_barrier):
+        return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED")
+    if barrier.hardware_memory_barrier and (barrier.ordering is None or barrier.scope is None):
+        return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED")
+    feature = "x86:hardware_fence" if barrier.hardware_memory_barrier else None
+    if feature is not None and feature not in target_environment.available_features:
+        return _failure(candidate_plan, "X86_BARRIER_FEATURE_UNAVAILABLE", {"feature": feature})
+    # A target hardware fence contract also states a compiler barrier explicitly;
+    # neither requirement is used as a substitute for the other.
+    compiler_barrier = True
+    contract = X86BarrierContract(compiler_barrier, barrier.hardware_memory_barrier,
+        barrier.ordering, barrier.scope, False, False, feature)
+    memory = TargetMemoryConstraint(requires_memory_clobber=compiler_barrier,
+        requires_compiler_barrier=compiler_barrier,
+        requires_hardware_barrier=barrier.hardware_memory_barrier,
+        barrier_scope=barrier.scope)
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,
+        environment=target_environment, x86_barrier_contract=contract, memory_constraint=memory,
+        control_flow_constraint=TargetControlFlowConstraint()))
