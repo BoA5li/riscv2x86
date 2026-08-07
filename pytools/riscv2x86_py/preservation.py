@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AbstractSet, Sequence
+from collections.abc import Set as AbstractSet, Sequence
 
 from .semantic_types import (
     PreservationDecision,
