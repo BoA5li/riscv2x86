@@ -10,11 +10,6 @@ from .plan_types import (
     TargetLoweringPlan,
 )
 from .source_model import SourceSemanticModel
-from .phase6c_c_expression import (
-    CExpressionConstraint,
-    CExpressionConstraintValidationError,
-    validate_c_expression_constraint,
-)
 
 
 # ============================================================================
@@ -1047,7 +1042,7 @@ class TargetConstraintModel:
     #
     # This is structured C semantic information, not rendered C text.
     # It must not be combined with GNU inline-asm-specific constraints.
-    c_expression_constraint: CExpressionConstraint | None = None
+    c_expression_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1108,17 +1103,10 @@ class TargetConstraintModel:
                 "TargetControlFlowConstraint"
             )
 
-        if (
-            self.c_expression_constraint is not None
-            and not isinstance(
-                self.c_expression_constraint,
-                CExpressionConstraint,
-            )
-        ):
-            raise TypeError(
-                "c_expression_constraint must be "
-                "CExpressionConstraint or None"
-            )
+        if self.c_expression_constraint is not None:
+            from .c_module.phase6c_c_expression import CExpressionConstraint
+            if not isinstance(self.c_expression_constraint, CExpressionConstraint):
+                raise TypeError("c_expression_constraint must be CExpressionConstraint or None")
 
         for field_name in (
             "preserve_volatile",
@@ -1340,7 +1328,7 @@ def _derive_c_expression_0(
     if precheck_failure is not None:
         return precheck_failure
 
-    from .phase6c_c_expression import derive_c_expression_constraints
+    from .c_module.phase6c_c_expression import derive_c_expression_constraints
     return derive_c_expression_constraints(
         source_model, candidate_plan, target_environment
     )
