@@ -378,6 +378,14 @@ class TargetConstraintReasonCode(str, Enum):
         "c_expression_machine_state_requirements_unproven"
     )
 
+    C_BUILTIN_PLAN_KIND_MISMATCH = "phase6c.c_builtin_plan_kind_mismatch"
+    C_BUILTIN_SOURCE_INCOMPLETE = "phase6c.c_builtin_source_incomplete"
+    C_BUILTIN_OPERATION_UNSUPPORTED = "phase6c.c_builtin_operation_unsupported"
+    C_BUILTIN_CAPABILITY_UNAVAILABLE = "phase6c.c_builtin_capability_unavailable"
+    C_BUILTIN_ATOMIC_FACTS_INCOMPLETE = "phase6c.c_builtin_atomic_facts_incomplete"
+    C_BUILTIN_ATOMIC_TYPE_UNSUPPORTED = "phase6c.c_builtin_atomic_type_unsupported"
+    C_BUILTIN_BARRIER_UNSUPPORTED = "phase6c.c_builtin_barrier_unsupported"
+
 def _normalize_feature_set(
     value: Iterable[str],
     *,
@@ -638,6 +646,7 @@ class TargetEnvironment:
 
     supports_gnu_inline_asm: bool = True
     available_features: FrozenSet[str] = frozenset()
+    builtin_capabilities: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not isinstance(self.architecture, TargetArchitecture):
@@ -670,6 +679,7 @@ class TargetEnvironment:
                 field_name="TargetEnvironment.available_features",
             ),
         )
+        object.__setattr__(self, "builtin_capabilities", _normalize_feature_set(self.builtin_capabilities, field_name="TargetEnvironment.builtin_capabilities"))
 
     @classmethod
     def fixed_sysv_amd64_gnu_att(
@@ -677,6 +687,7 @@ class TargetEnvironment:
         *,
         available_features: Iterable[str] = (),
         supports_gnu_inline_asm: bool = True,
+        builtin_capabilities: Iterable[str] = (),
     ) -> "TargetEnvironment":
         """
         Create the only currently supported target profile.
@@ -691,6 +702,7 @@ class TargetEnvironment:
             abi=TargetAbi.SYSV_AMD64,
             supports_gnu_inline_asm=supports_gnu_inline_asm,
             available_features=frozenset(available_features),
+            builtin_capabilities=frozenset(builtin_capabilities),
         )
 
 
@@ -1043,6 +1055,7 @@ class TargetConstraintModel:
     # This is structured C semantic information, not rendered C text.
     # It must not be combined with GNU inline-asm-specific constraints.
     c_expression_constraint: object | None = None
+    c_builtin_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1107,6 +1120,12 @@ class TargetConstraintModel:
             from .c_module.phase6c_c_expression import CExpressionConstraint
             if not isinstance(self.c_expression_constraint, CExpressionConstraint):
                 raise TypeError("c_expression_constraint must be CExpressionConstraint or None")
+        if self.c_builtin_constraint is not None:
+            from .c_module.phase6c_c_builtin import CBuiltinContract
+            if not isinstance(self.c_builtin_constraint, CBuiltinContract):
+                raise TypeError("c_builtin_constraint must be CBuiltinContract or None")
+        if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
+            raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
 
         for field_name in (
             "preserve_volatile",
@@ -1356,15 +1375,8 @@ def _derive_c_builtin_0(
     candidate_plan: TargetLoweringPlan,
     target_environment: TargetEnvironment,
 ) -> TargetConstraintDerivationResult:
-    del source_model
-
-    return _not_implemented(
-        candidate_plan=candidate_plan,
-        target_environment=target_environment,
-        reason_code=(
-            TargetConstraintReasonCode.C_BUILTIN_NOT_IMPLEMENTED
-        ),
-    )
+    from .c_module.phase6c_c_builtin import derive_c_builtin_constraints
+    return derive_c_builtin_constraints(source_model, candidate_plan, target_environment)
 
 
 def _derive_x86_gnu_inline_asm_0(
