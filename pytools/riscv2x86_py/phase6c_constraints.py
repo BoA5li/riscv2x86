@@ -385,6 +385,15 @@ class TargetConstraintReasonCode(str, Enum):
     C_BUILTIN_ATOMIC_FACTS_INCOMPLETE = "phase6c.c_builtin_atomic_facts_incomplete"
     C_BUILTIN_ATOMIC_TYPE_UNSUPPORTED = "phase6c.c_builtin_atomic_type_unsupported"
     C_BUILTIN_BARRIER_UNSUPPORTED = "phase6c.c_builtin_barrier_unsupported"
+    X86_INLINE_ASM_PLAN_KIND_MISMATCH = "phase6c.x86_inline_asm_plan_kind_mismatch"
+    X86_INLINE_ASM_FEATURE_UNAVAILABLE = "phase6c.x86_inline_asm_feature_unavailable"
+    X86_INLINE_ASM_SOURCE_INCOMPLETE = "phase6c.x86_inline_asm_source_incomplete"
+    X86_INLINE_ASM_NON_REGISTER_SEMANTICS = "phase6c.x86_inline_asm_non_register_semantics"
+    X86_INLINE_ASM_CONTROL_FLOW_UNSUPPORTED = "phase6c.x86_inline_asm_control_flow_unsupported"
+    X86_INLINE_ASM_IMPLICIT_STATE_UNSUPPORTED = "phase6c.x86_inline_asm_implicit_state_unsupported"
+    X86_INLINE_ASM_SHELL_UNSUPPORTED = "phase6c.x86_inline_asm_shell_unsupported"
+    X86_INLINE_ASM_OPERAND_UNSUPPORTED = "phase6c.x86_inline_asm_operand_unsupported"
+    X86_INLINE_ASM_BINDING_INCOMPLETE = "phase6c.x86_inline_asm_binding_incomplete"
 
 def _normalize_feature_set(
     value: Iterable[str],
@@ -1056,6 +1065,7 @@ class TargetConstraintModel:
     # It must not be combined with GNU inline-asm-specific constraints.
     c_expression_constraint: object | None = None
     c_builtin_constraint: object | None = None
+    x86_gnu_inline_asm_contract: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1124,6 +1134,10 @@ class TargetConstraintModel:
             from .c_module.phase6c_c_builtin import CBuiltinContract
             if not isinstance(self.c_builtin_constraint, CBuiltinContract):
                 raise TypeError("c_builtin_constraint must be CBuiltinContract or None")
+        if self.x86_gnu_inline_asm_contract is not None:
+            from .c_module.phase6c_x86_gnu_inline_asm import X86GnuInlineAsmContract
+            if not isinstance(self.x86_gnu_inline_asm_contract, X86GnuInlineAsmContract):
+                raise TypeError("x86_gnu_inline_asm_contract must be X86GnuInlineAsmContract or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
 
@@ -1396,15 +1410,8 @@ def _derive_x86_gnu_inline_asm_0(
       * do not derive width from xlen;
       * do not infer memory/clobbers from raw asm mnemonics.
     """
-    del source_model
-
-    return _not_implemented(
-        candidate_plan=candidate_plan,
-        target_environment=target_environment,
-        reason_code=(
-            TargetConstraintReasonCode.X86_GNU_INLINE_ASM_NOT_IMPLEMENTED
-        ),
-    )
+    from .c_module.phase6c_x86_gnu_inline_asm import derive_x86_gnu_inline_asm_constraints
+    return derive_x86_gnu_inline_asm_constraints(source_model, candidate_plan, target_environment)
 
 
 def _derive_x86_atomic_0(
