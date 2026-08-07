@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
-from runtime_facts import TranslationRuntimeFacts
+try:
+    from .runtime_facts import TranslationRuntimeFacts
+except ImportError:  # pragma: no cover - direct-module compatibility
+    from runtime_facts import TranslationRuntimeFacts
 
 
 def _text(value: Any) -> str:
