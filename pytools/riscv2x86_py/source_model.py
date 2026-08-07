@@ -5,12 +5,17 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import FrozenSet, Iterable, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
-from cfg import CFGResult
-from pcode_ir import Block, IRSummary
-from runtime_facts import TranslationRuntimeFacts
-from schema import AsmFragment
+try:
+    from .cfg import CFGResult
+    from .pcode_ir import Block, IRSummary
+    from .runtime_facts import TranslationRuntimeFacts
+    from .schema import AsmFragment
+except ImportError:  # pragma: no cover - direct-module compatibility
+    from cfg import CFGResult
+    from pcode_ir import Block, IRSummary
+    from runtime_facts import TranslationRuntimeFacts
+    from schema import AsmFragment
 
-from .preservation import derive_preservation_decision
 from .runtime_fact_model import RuntimeFactStatus
 from .semantic_types import (
     PreservationDecision,
@@ -509,6 +514,7 @@ def build_source_semantic_model(
         completeness=completeness,
     )
 
+    from .preservation import derive_preservation_decision
     preservation = derive_preservation_decision(
         features=features,
         reasons=reasons,
@@ -538,6 +544,10 @@ def build_source_semantic_model(
         preservation=preservation,
 
         xlen=xlen,
+        # Phase 6A does not yet derive an exact value-operation contract for
+        # every lifted fragment.  Phase 6C-2 must reject these conservatively
+        # until that structured fact is supplied.
+        value_operation=None,
     )
 
 def _build_control_flow_model(
@@ -1973,6 +1983,20 @@ class SourceOperationKind(str, Enum):
     UNKNOWN = "unknown"
 
 
+class SourceValueOperationKind(str, Enum):
+    """Operations explicitly admitted to the Phase 6C-2 C subset."""
+    COPY = "copy"
+    BIT_NOT = "bit_not"
+    BIT_AND = "bit_and"
+    BIT_OR = "bit_or"
+    BIT_XOR = "bit_xor"
+    UNSIGNED_ADD = "unsigned_add"
+    UNSIGNED_SUB = "unsigned_sub"
+    UNSIGNED_MUL = "unsigned_mul"
+    ZERO_EXTEND = "zero_extend"
+    TRUNCATE = "truncate"
+
+
 class SourceAtomicKind(str, Enum):
     LOAD = "load"
     STORE = "store"
@@ -2231,6 +2255,25 @@ class SourceOperationModel:
                 raise TypeError(
                     f"{field_name} must be bool or None"
                 )
+
+
+@dataclass(frozen=True)
+class SourceValueOperationModel:
+    """Exact source-proven pure value operation consumed by Phase 6C-2."""
+    kind: SourceValueOperationKind
+    input_operand_indexes: Tuple[int, ...]
+    result_operand_index: int
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SourceValueOperationKind):
+            raise TypeError("kind must be SourceValueOperationKind")
+        if not isinstance(self.complete, bool):
+            raise TypeError("complete must be bool")
+        if isinstance(self.result_operand_index, bool) or not isinstance(self.result_operand_index, int) or self.result_operand_index < 0:
+            raise TypeError("result_operand_index must be a non-negative int")
+        if not self.input_operand_indexes or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in self.input_operand_indexes):
+            raise TypeError("input_operand_indexes must contain non-negative ints")
 
 
 @dataclass(frozen=True)
