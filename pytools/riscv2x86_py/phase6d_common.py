@@ -18,6 +18,7 @@ class SemanticProofReasonCode(str, Enum):
     CONTROL_FLOW_UNPRESERVED="phase6d.control_flow_unpreserved"; ABI_UNPRESERVED="phase6d.abi_unpreserved"
     MICROARCH_UNPRESERVED="phase6d.microarch_unpreserved"; PLAN_CONTRACT_MISSING="phase6d.plan_contract_missing"
     UNSUPPORTED_PLAN_KIND="phase6d.unsupported_plan_kind"; INTERNAL_INVARIANT="phase6d.internal_invariant"
+    REQUIREMENT_UNPROVEN="phase6d.requirement_unproven"; BINDING_UNSAFE="phase6d.binding_unsafe"
 
 class PreservationConclusion(str, Enum):
     ARCHITECTURE_EQUIVALENT="architecture_equivalent"; SHELL_PRESERVED="shell_preserved"
@@ -54,20 +55,30 @@ class SemanticProofRequest:
     helper_contract_registry: HelperSemanticContractRegistry | None = None
 
 @dataclass(frozen=True)
+class ProofEvidence:
+    """Stable, renderer-independent identity and per-dimension proof record."""
+    source_model_id: str; preservation_level: str; plan_id: str
+    constraints_plan_id: str; target_environment_id: str
+    target_catalog_version: str; compiler_capability_id: str
+    helper_registry_version: str | None
+    dimensions: tuple[str,...]; proved_requirements: tuple[str,...]
+
+@dataclass(frozen=True)
 class SemanticProofResult:
     approved: bool
     plan_id: str | None
     conclusions: tuple[PreservationConclusion,...] = ()
     reason_codes: tuple[SemanticProofReasonCode,...] = ()
     details: Mapping[str,str|int|bool|None] = MappingProxyType({})
+    evidence: ProofEvidence | None = None
     def __post_init__(self):
-        if self.approved and self.reason_codes: raise ValueError("approved proof has reason codes")
+        if self.approved and (self.reason_codes or self.evidence is None): raise ValueError("approved proof requires evidence and no reason codes")
         if not self.approved and not self.reason_codes: raise ValueError("failed proof needs reason code")
         object.__setattr__(self,"conclusions",tuple(sorted(set(self.conclusions),key=lambda x:x.value)))
         object.__setattr__(self,"reason_codes",tuple(sorted(set(self.reason_codes),key=lambda x:x.value)))
         object.__setattr__(self,"details",MappingProxyType(dict(self.details)))
     @classmethod
-    def passed(cls, plan_id, conclusions): return cls(True,plan_id,tuple(conclusions))
+    def passed(cls, plan_id, conclusions, evidence): return cls(True,plan_id,tuple(conclusions),(),{},evidence)
     @classmethod
     def failed(cls, plan_id, code, details=None): return cls(False,plan_id,(PreservationConclusion.NOT_PRESERVED,),(code,),{} if details is None else details)
 
@@ -79,6 +90,20 @@ class ApprovedTargetLoweringPlan:
 
 def reject(request, code, details=None): return SemanticProofResult.failed(getattr(getattr(request,"candidate_plan",None),"plan_id",None),code,details)
 
+def _evidence(request, conclusions, requirements):
+    e=request.target_environment
+    return ProofEvidence(
+        source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)))),
+        preservation_level=request.preservation_decision.level.value,
+        plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id,
+        target_environment_id=f"{e.architecture.value}:{e.abi.value}:{e.asm_dialect.value}",
+        target_catalog_version=request.target_semantic_catalog.version+":"+",".join(sorted(request.target_semantic_catalog.semantic_contract_ids)),
+        compiler_capability_id=f"asm={request.compiler_capabilities.supports_gnu_inline_asm};goto={request.compiler_capabilities.supports_asm_goto}",
+        helper_registry_version=None if request.helper_contract_registry is None else request.helper_contract_registry.version,
+        dimensions=tuple(sorted(x.value for x in conclusions)),
+        proved_requirements=tuple(sorted(x.value for x in requirements)),
+    )
+
 def validate_common(request: SemanticProofRequest):
     if not isinstance(request,SemanticProofRequest): return SemanticProofResult.failed(None,SemanticProofReasonCode.INVALID_REQUEST)
     s,p,c,e=request.source_model,request.candidate_plan,request.constraints,request.target_environment
@@ -87,15 +112,53 @@ def validate_common(request: SemanticProofRequest):
     if c.plan_id != p.plan_id or c.environment != e: return reject(request,SemanticProofReasonCode.PLAN_CONSTRAINT_MISMATCH)
     if not p.supports_features(e.available_features): return reject(request,SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if p.kind not in request.target_semantic_catalog.supported_plan_kinds: return reject(request,SemanticProofReasonCode.TARGET_SEMANTICS_MISSING)
-    if not s.operation.complete or not s.operands.complete or not s.implicit_state.complete: return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    if not all((s.operation.complete,s.operands.complete,s.implicit_state.complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,s.control_flow.has_indirect_control_flow is not None,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    if (s.atomic.present and not s.atomic.complete) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    if s.microarch.explicitly_microarch_sensitive and any(value is None for value in (s.microarch.has_timing_source,s.microarch.has_cache_operation,s.microarch.has_speculation_control)): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    return None
+
+def _validate_requirements(request):
+    s,p,c=request.source_model,request.candidate_plan,request.constraints
+    checks={
+        PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS: s.operands.complete,
+        PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS: all(x.width_bits is not None for x in s.operands.operands),
+        PlanRequirement.PRESERVE_VOLATILE: (not s.shell.is_volatile or c.preserve_volatile),
+        PlanRequirement.PRESERVE_CC_CLOBBER: (not s.shell.has_cc_clobber or c.preserve_cc_clobber),
+        PlanRequirement.PRESERVE_MEMORY_CLOBBER: (not s.shell.has_memory_clobber or c.memory_constraint.requires_memory_clobber),
+        PlanRequirement.PRESERVE_MEMORY_ORDERING: (not s.barrier.present or c.memory_constraint.requires_compiler_barrier or c.memory_constraint.requires_hardware_barrier),
+        PlanRequirement.PRESERVE_ATOMIC_ORDERING: (not s.atomic.present or c.memory_constraint.requires_atomic_ordering),
+        PlanRequirement.PRESERVE_CONTROL_FLOW: (not s.operation.has_control_flow or c.control_flow_constraint.preserve_control_flow),
+        PlanRequirement.PRESERVE_ASM_GOTO: (not s.control_flow.has_asm_goto or c.control_flow_constraint.preserve_asm_goto),
+        PlanRequirement.PRESERVE_STACK_FRAME: (not (s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer) or (c.control_flow_constraint.preserve_stack_pointer and c.control_flow_constraint.preserve_frame_pointer)),
+        PlanRequirement.PRESERVE_MICROARCH_INTENT: (not s.microarch.explicitly_microarch_sensitive or s.microarch.has_structured_microarch_intent),
+        PlanRequirement.PROVE_HELPER_ABI_CONTRACT: (p.kind is not TargetLoweringKind.HELPER_CALL or c.helper_abi_contract is not None),
+        PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY: all(x.width_bits is not None for x in s.operands.operands),
+        PlanRequirement.PROVE_DEFINED_C_SEMANTICS: (p.kind is not TargetLoweringKind.C_EXPRESSION or (s.value_operation is not None and s.value_operation.complete)),
+    }
+    for requirement in p.requirements:
+        if requirement in checks and not checks[requirement]: return reject(request,SemanticProofReasonCode.REQUIREMENT_UNPROVEN,{"requirement":requirement.value})
+    return None
+
+def _validate_operand_bindings(request):
+    available={x.source_operand_index:x for x in request.source_model.operands.operands}
+    for target in request.constraints.operand_constraints:
+        source=available.get(target.source_operand_index)
+        if source is None or (target.required_width_bits is not None and target.required_width_bits != source.width_bits): return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
+        if target.tied_to_source_operand_index != source.tied_to_source_operand_index or target.early_clobber != source.early_clobber: return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
+        if target.role.value != source.access.value: return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
     return None
 
 def finalize(request, conclusions):
+    required=_validate_requirements(request)
+    if required is not None:return required
+    bindings=_validate_operand_bindings(request)
+    if bindings is not None:return bindings
     from .phase6d_microarchitecture import preserve_microarchitecture
     result=preserve_microarchitecture(request)
     if result is not None:return result
     extra=() if not request.source_model.microarch.explicitly_microarch_sensitive else (PreservationConclusion.MICROARCH_INTENT_PRESERVED,)
-    return SemanticProofResult.passed(request.candidate_plan.plan_id,tuple(conclusions)+extra)
+    final=tuple(conclusions)+extra
+    return SemanticProofResult.passed(request.candidate_plan.plan_id,final,_evidence(request,final,request.candidate_plan.requirements))
 
 def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None):
     """D0-D4 then exactly one plan-specific proof; unknowns reject."""
