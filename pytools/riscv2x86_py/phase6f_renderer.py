@@ -16,6 +16,7 @@ from .phase6c_constraints import (
 )
 from .phase6d_common import SemanticProofResult, constraint_identity
 from .phase6e_selection import ApprovedTargetLoweringPlan
+from .phase6e_selection import FinalSelectionKind, FinalSelectionResult
 from .plan_types import TargetLoweringKind
 
 
@@ -54,11 +55,33 @@ class RenderReasonCode(str, Enum):
     LABEL_BINDING_MISSING = "phase6f.label_binding_missing"
     HELPER_CONTRACT_MISSING = "phase6f.helper_contract_missing"
     PLAN_KIND_CONTRACT_MISMATCH = "phase6f.plan_kind_contract_mismatch"
+    ASM_GOTO_LABEL_CONTRACT_MISMATCH = "phase6f.asm_goto_label_contract_mismatch"
+    SELECTION_RESULT_INCONSISTENT = "phase6f.selection_result_inconsistent"
+
+
+@dataclass(frozen=True)
+class COperandRef:
+    operand_index: int
+
+
+@dataclass(frozen=True)
+class CBinaryExpression:
+    operator: str
+    left: "CExpressionNode"
+    right: "CExpressionNode"
+
+
+@dataclass(frozen=True)
+class CLiteralExpression:
+    spelling: str
+
+
+CExpressionNode = COperandRef | CBinaryExpression | CLiteralExpression
 
 
 @dataclass(frozen=True)
 class CExpressionRecipe:
-    expression: str
+    expression: CExpressionNode
     result_operand_index: int | None = None
 
 
@@ -78,7 +101,13 @@ class GnuInlineAsmRecipe:
 
 @dataclass(frozen=True)
 class GnuAsmGotoRecipe(GnuInlineAsmRecipe):
-    label_names: tuple[str, ...] = ()
+    label_bindings: tuple["GnuAsmGotoLabelBinding", ...] = ()
+
+
+@dataclass(frozen=True)
+class GnuAsmGotoLabelBinding:
+    label: str
+    target_continuation_id: str
 
 
 @dataclass(frozen=True)
@@ -90,8 +119,14 @@ class HelperCallRecipe:
 
 @dataclass(frozen=True)
 class StructuredControlFlowRecipe:
-    structured_text: str
-    label_names: tuple[str, ...] = ()
+    statements: tuple["StructuredStatement", ...]
+    label_bindings: tuple[GnuAsmGotoLabelBinding, ...] = ()
+
+
+@dataclass(frozen=True)
+class StructuredStatement:
+    kind: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -110,6 +145,7 @@ class RendererContext:
     operand_bindings: Mapping[int, str]
     renderer_id: str = "phase6f.gnu-att"
     renderer_version: str = "1"
+    source_fragment_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -185,6 +221,18 @@ def _binding(context: RendererContext, index: int) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _render_c_expression(node: CExpressionNode, context: RendererContext) -> str | None:
+    if isinstance(node, COperandRef):
+        return _binding(context, node.operand_index)
+    if isinstance(node, CLiteralExpression):
+        return node.spelling if node.spelling.strip() else None
+    if isinstance(node, CBinaryExpression):
+        left, right = _render_c_expression(node.left, context), _render_c_expression(node.right, context)
+        if left is None or right is None or not node.operator.strip(): return None
+        return f"({left} {node.operator} {right})"
+    return None
+
+
 def _operand_map(c: TargetConstraintModel) -> dict[int, TargetOperandConstraint]:
     return {x.source_operand_index: x for x in c.operand_constraints}
 
@@ -247,9 +295,14 @@ def _render_gnu(request: Phase6FRenderRequest, recipe: GnuInlineAsmRecipe, *, is
             code = RenderReasonCode.TIED_OUTPUT_MISSING if op is not None and op.tied_to_source_operand_index is not None else RenderReasonCode.OPERAND_BINDING_MISSING
             return _failure(request, code, internal=True)
         inputs.append(rendered)
-    labels = recipe.label_names if isinstance(recipe, GnuAsmGotoRecipe) else ()
+    labels = tuple(item.label for item in recipe.label_bindings) if isinstance(recipe, GnuAsmGotoRecipe) else ()
+    source_labels = getattr(a.constraints.structured_control_flow_contract, "asm_goto_labels", ())
+    expected_labels = {(item.label, item.target_continuation_id) for item in source_labels}
+    recipe_labels = {(item.label, item.target_continuation_id) for item in getattr(recipe, "label_bindings", ())}
     if is_goto and (not labels or not a.constraints.control_flow_constraint.preserve_asm_goto):
         return _failure(request, RenderReasonCode.LABEL_BINDING_MISSING, internal=True)
+    if is_goto and (not expected_labels or expected_labels != recipe_labels):
+        return _failure(request, RenderReasonCode.ASM_GOTO_LABEL_CONTRACT_MISMATCH, internal=True)
     clobbers = (() if not a.constraints.preserve_cc_clobber else ("cc",)) + (() if not a.constraints.memory_constraint.requires_memory_clobber else ("memory",))
     node = GnuAsmNode(recipe.template, a.constraints.preserve_volatile, tuple(outputs), tuple(inputs), clobbers, labels)
     return RenderedReplacement(RenderedReplacementKind.GNU_ASM_GOTO if is_goto else RenderedReplacementKind.GNU_INLINE_ASM, node, _serialize_asm(node, is_goto=is_goto), (), a.source_model_id, a.plan.plan_id, ctx.renderer_id, ctx.renderer_version)
@@ -269,7 +322,9 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
     if kind is RendererContractKind.GNU_ASM_GOTO and isinstance(p, GnuAsmGotoRecipe): return _render_gnu(request, p, is_goto=True)
     if kind is RendererContractKind.C_EXPRESSION and isinstance(p, CExpressionRecipe):
         result = _binding(ctx, p.result_operand_index) if p.result_operand_index is not None else None
-        text = f"{result} = {p.expression};" if result is not None else f"{p.expression};"
+        expression = _render_c_expression(p.expression, ctx)
+        if expression is None:return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
+        text = f"{result} = {expression};" if result is not None else f"{expression};"
         return RenderedReplacement(RenderedReplacementKind.C_EXPRESSION, p, text, (), a.source_model_id, a.plan.plan_id, ctx.renderer_id, ctx.renderer_version)
     if kind is RendererContractKind.C_BUILTIN and isinstance(p, CBuiltinRecipe):
         args = [_binding(ctx, i) for i in p.argument_operand_indexes]
@@ -285,7 +340,8 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         return RenderedReplacement(RenderedReplacementKind.HELPER_CALL,p,(f"{result} = {call};" if result else f"{call};"),(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
     if kind is RendererContractKind.STRUCTURED_CONTROL_FLOW and isinstance(p, StructuredControlFlowRecipe):
         if not a.constraints.control_flow_constraint.preserve_control_flow:return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
-        return RenderedReplacement(RenderedReplacementKind.STRUCTURED_CONTROL_FLOW,p,p.structured_text,(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
+        if not p.statements:return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        return RenderedReplacement(RenderedReplacementKind.STRUCTURED_CONTROL_FLOW,p,"\n".join(item.text for item in p.statements),(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
     return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
 
 
@@ -300,3 +356,27 @@ def render_approved_target_lowering(request: Phase6FRenderRequest) -> RenderedRe
     if contract.plan_id != request.approved_plan.plan.plan_id:return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
     if not contract.required_features.issubset(request.target_environment.available_features):return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
     return _render_contract(request, contract)
+
+
+def render_final_selection_result(
+    selection: FinalSelectionResult,
+    *,
+    target_environment: TargetEnvironment,
+    renderer_context: RendererContext,
+) -> RenderedReplacement:
+    """Encode a Phase-6E final result without reopening candidate selection."""
+    if not isinstance(selection, FinalSelectionResult):
+        raise TypeError("Phase 6F requires FinalSelectionResult")
+    if selection.kind is FinalSelectionKind.SELECTED:
+        if selection.selected_plan is None:
+            return RenderedReplacement(RenderedReplacementKind.INTERNAL_ERROR, None, None, (RenderReasonCode.SELECTION_RESULT_INCONSISTENT,), "", None, renderer_context.renderer_id, renderer_context.renderer_version)
+        return render_approved_target_lowering(Phase6FRenderRequest(selection.selected_plan, target_environment, renderer_context))
+    if selection.kind is FinalSelectionKind.KEEP:
+        text = "/* translator: keep-original\n * source_fragment: " + renderer_context.source_fragment_id + "\n */"
+        return RenderedReplacement(RenderedReplacementKind.KEEP_ANNOTATION, text, text, (), "", None, renderer_context.renderer_id, renderer_context.renderer_version)
+    if selection.kind is FinalSelectionKind.UNSUPPORTED:
+        code = selection.primary_reason_code or "phase6e.no_approved_plan"
+        reasons = ", ".join((code,) + selection.secondary_reason_codes)
+        text = "/* translator unsupported\n * codes: " + reasons + "\n * source_fragment: " + renderer_context.source_fragment_id + "\n */"
+        return RenderedReplacement(RenderedReplacementKind.UNSUPPORTED_DIAGNOSTIC, text, text, (), "", None, renderer_context.renderer_id, renderer_context.renderer_version)
+    return RenderedReplacement(RenderedReplacementKind.INTERNAL_ERROR, None, None, (RenderReasonCode.SELECTION_RESULT_INCONSISTENT,), "", None, renderer_context.renderer_id, renderer_context.renderer_version)
