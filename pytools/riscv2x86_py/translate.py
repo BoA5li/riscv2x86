@@ -68,6 +68,8 @@ from .phase6e_selection import (
     select_final_target_lowering_plan,
 )
 from .phase6f_renderer import (
+    CBinaryExpression, CExpressionRecipe, COperandRef, RendererContract,
+    RendererContractKind,
     Phase6FRenderRequest,
     RenderedReplacementKind,
     RendererContext,
@@ -3038,12 +3040,44 @@ def _translate_phase6_proof_pipeline(
         text = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context or RendererContext({}, {})).emitted_text or ""
         return _output(kind="keep", replacement=text, context=context, route="phase6e_keep", notes=["Phase 6E policy selected keep"], reason_codes=["TR_PHASE6E_KEEP"], build_family="", requires_build_check=False, requires_block_proof=False, metadata={"attempts": attempt_metadata})
     if renderer_context is None:
-        return _unsupported(context, reason="selected approved plan has no registered Phase-6F renderer context", reason_code="TR_PHASE6F_RENDERER_CONTEXT_REQUIRED")
+        renderer_context = _make_phase6f_context_from_approved_contract(context, selection.selected_plan)
+    if renderer_context is None:
+        return _unsupported(context, reason="selected approved plan has no registered Phase-6F renderer contract", reason_code="TR_PHASE6F_RENDERER_CONTEXT_REQUIRED")
     rendered = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context)
     if rendered.kind in {RenderedReplacementKind.INTERNAL_ERROR, RenderedReplacementKind.UNSUPPORTED_DIAGNOSTIC} or rendered.emitted_text is None:
         code = rendered.diagnostics[0].value if rendered.diagnostics else "TR_PHASE6F_RENDER_FAILURE"
         return _unsupported(context, reason="Phase-6F could not faithfully encode the selected approved contract", reason_code=code)
-    return _output(kind="replacement", replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata})
+    kind = "x86_inline_asm" if rendered.kind in {RenderedReplacementKind.GNU_INLINE_ASM, RenderedReplacementKind.GNU_ASM_GOTO} else "c"
+    return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata})
+
+
+def _make_phase6f_context_from_approved_contract(context: TranslationContext, approved) -> Optional[RendererContext]:
+    """Register only a recipe mechanically implied by an approved 6C contract.
+
+    Unsupported contract families intentionally return None; this helper never
+    uses asm text, mnemonics, or plan metadata to invent a renderer recipe.
+    """
+    if approved is None or approved.constraints.c_expression_constraint is None:
+        return None
+    contract = approved.constraints.c_expression_constraint
+    if any((contract.result_type.requires_explicit_width_cast, contract.result_type.requires_explicit_unsigned_cast)):
+        return None
+    operands = tuple(item.source_operand_index for item in contract.input_bindings)
+    if any(item.type_contract.requires_explicit_width_cast or item.type_contract.requires_explicit_unsigned_cast for item in contract.input_bindings):
+        return None
+    from .c_module.phase6c_c_expression import CExpressionOperationKind
+    binary = {CExpressionOperationKind.BIT_AND:"&", CExpressionOperationKind.BIT_OR:"|", CExpressionOperationKind.BIT_XOR:"^", CExpressionOperationKind.UNSIGNED_ADD:"+", CExpressionOperationKind.UNSIGNED_SUB:"-", CExpressionOperationKind.UNSIGNED_MUL:"*", CExpressionOperationKind.UNSIGNED_EQUAL:"==", CExpressionOperationKind.UNSIGNED_NOT_EQUAL:"!=", CExpressionOperationKind.UNSIGNED_LESS_THAN:"<", CExpressionOperationKind.UNSIGNED_LESS_EQUAL:"<=", CExpressionOperationKind.UNSIGNED_GREATER_THAN:">", CExpressionOperationKind.UNSIGNED_GREATER_EQUAL:">="}
+    if contract.operation_kind is CExpressionOperationKind.COPY and len(operands) == 1:
+        expression = COperandRef(operands[0])
+    elif contract.operation_kind in binary and len(operands) == 2:
+        expression = CBinaryExpression(binary[contract.operation_kind], COperandRef(operands[0]), COperandRef(operands[1]))
+    else:
+        return None
+    bindings = {index: context.bindings.expr(index) for index in range(len(context.bindings.operands))}
+    if any(value is None for value in bindings.values()): return None
+    recipe = CExpressionRecipe(expression, contract.result_binding.source_operand_index)
+    renderer_contract = RendererContract("phase6f:" + approved.plan.plan_id, approved.plan.plan_id, RendererContractKind.C_EXPRESSION, recipe)
+    return RendererContext({approved.plan.plan_id: renderer_contract}, bindings, source_fragment_id=context.fragment.id)
 
 def _translate_legacy_bridge(
     context: TranslationContext,
