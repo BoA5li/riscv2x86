@@ -46,6 +46,34 @@ from .semantic_types import (
     PreservationDecision,
 )
 from .source_model import build_source_semantic_model, SourceSemanticModel
+from .candidate_plans import generate_candidate_plans
+from .phase6c_constraints import (
+    FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT,
+    TargetConstraintDerivationResult,
+    TargetEnvironment,
+    derive_target_constraints,
+)
+from .phase6d_common import (
+    CompilerCapabilityModel,
+    HelperSemanticContractRegistry,
+    SemanticProofResult,
+    TargetSemanticCatalog,
+    run_semantic_proof_gate,
+)
+from .phase6e_selection import (
+    FinalSelectionKind,
+    Phase6ESelectionPolicy,
+    Phase6ESelectionRequest,
+    ProvenCandidate,
+    select_final_target_lowering_plan,
+)
+from .phase6f_renderer import (
+    Phase6FRenderRequest,
+    RenderedReplacementKind,
+    RendererContext,
+    render_final_selection_result,
+)
+from .plan_types import TargetLoweringKind, TargetLoweringPlan
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -304,6 +332,26 @@ class StrategyResult:
 
 
 TranslationStrategy = Callable[[TranslationContext], StrategyResult]
+
+
+@dataclass(frozen=True)
+class TargetLoweringAttempt:
+    """Stable audit record for a 6C or 6D rejected concrete candidate."""
+    plan_id: str
+    stage: str
+    reason_codes: tuple[str, ...]
+
+    @classmethod
+    def from_constraint_failure(
+        cls, plan: TargetLoweringPlan, result: TargetConstraintDerivationResult
+    ) -> "TargetLoweringAttempt":
+        return cls(plan.plan_id, "phase6c", tuple(x.value for x in result.reason_codes))
+
+    @classmethod
+    def from_proof_failure(
+        cls, plan: TargetLoweringPlan, proof: SemanticProofResult
+    ) -> "TargetLoweringAttempt":
+        return cls(plan.plan_id, "phase6d", tuple(x.value for x in proof.reason_codes))
 
 
 # =============================================================================
@@ -2747,6 +2795,12 @@ def translate(
     blocks: Optional[Sequence[Block]] = None,
     cfg: Optional[CFGResult] = None,
     runtime_facts: Optional[TranslationRuntimeFacts] = None,
+    target_environment: TargetEnvironment = FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT,
+    target_semantic_catalog: Optional[TargetSemanticCatalog] = None,
+    compiler_capabilities: Optional[CompilerCapabilityModel] = None,
+    helper_contract_registry: Optional[HelperSemanticContractRegistry] = None,
+    selection_policy: Phase6ESelectionPolicy = Phase6ESelectionPolicy(),
+    renderer_context: Optional[RendererContext] = None,
 ) -> TranslationOutput:
     """
     Phase 6 / 7 translation entry.
@@ -2889,22 +2943,107 @@ def translate(
     context.sourceModel = source_model
     context.decision = source_model.preservation
 
-    # ------------------------------------------------------------------
-    # Transitional Phase-6A compatibility bridge.
-    #
-    # Once Phase 6B through Phase 6F are implemented, replace this with:
-    #
-    #   candidate_plans = _phase6b_generate_candidate_plans(
-    #       context,
-    #       source_model,
-    #   )
-    #   ...
-    #   return _phase6f_render_selected_plan(...)
-    #
-    # This bridge must not call the former full _classify_preservation()
-    # implementation and must not cause a second source-semantic scan.
-    # ------------------------------------------------------------------
-    return _translate_legacy_bridge(context)
+    return _translate_phase6_proof_pipeline(
+        context=context,
+        target_environment=target_environment,
+        target_semantic_catalog=target_semantic_catalog,
+        compiler_capabilities=compiler_capabilities,
+        helper_contract_registry=helper_contract_registry,
+        selection_policy=selection_policy,
+        renderer_context=renderer_context,
+    )
+
+
+def _translate_phase6_proof_pipeline(
+    *,
+    context: TranslationContext,
+    target_environment: TargetEnvironment,
+    target_semantic_catalog: Optional[TargetSemanticCatalog],
+    compiler_capabilities: Optional[CompilerCapabilityModel],
+    helper_contract_registry: Optional[HelperSemanticContractRegistry],
+    selection_policy: Phase6ESelectionPolicy,
+    renderer_context: Optional[RendererContext],
+) -> TranslationOutput:
+    """Execute 6B--6F without a legacy or guessed-code fallback path."""
+    source_model = context.sourceModel
+    if source_model is None or context.decision != source_model.preservation:
+        return _unsupported(context, reason="Phase-6A source model/decision binding is unavailable", reason_code="TR_PHASE6A_ARTIFACT_INCONSISTENT")
+    if not isinstance(target_environment, TargetEnvironment):
+        return _unsupported(context, reason="target environment is not a structured TargetEnvironment", reason_code="TR_INVALID_TARGET_ENVIRONMENT")
+    if not isinstance(selection_policy, Phase6ESelectionPolicy):
+        return _unsupported(context, reason="selection policy is invalid", reason_code="TR_INVALID_PHASE6E_SELECTION_POLICY")
+
+    catalog = target_semantic_catalog or TargetSemanticCatalog(
+        supported_plan_kinds=frozenset(TargetLoweringKind),
+        semantic_contract_ids=frozenset(),
+        version="phase6-default-catalog-v1",
+    )
+    capabilities = compiler_capabilities or CompilerCapabilityModel(
+        supports_gnu_inline_asm=target_environment.supports_gnu_inline_asm,
+        supports_asm_goto=target_environment.supports_gnu_asm_goto,
+        builtin_capabilities=target_environment.builtin_capabilities,
+    )
+    if not isinstance(catalog, TargetSemanticCatalog) or not isinstance(capabilities, CompilerCapabilityModel):
+        return _unsupported(context, reason="Phase-6D target catalog or compiler capability artifact is invalid", reason_code="TR_INVALID_PHASE6D_ENVIRONMENT_ARTIFACT")
+
+    candidate_plans = generate_candidate_plans(source_model)
+    candidates: list[ProvenCandidate] = []
+    rejected_attempts: list[TargetLoweringAttempt] = []
+    for plan in candidate_plans:
+        constraint_result = derive_target_constraints(
+            source_model=source_model,
+            candidate_plan=plan,
+            target_environment=target_environment,
+        )
+        if not constraint_result.success:
+            rejected_attempts.append(TargetLoweringAttempt.from_constraint_failure(plan, constraint_result))
+            continue
+        assert constraint_result.constraints is not None
+        proof = run_semantic_proof_gate(
+            source_model=source_model,
+            preservation_decision=source_model.preservation,
+            candidate_plan=plan,
+            constraints=constraint_result.constraints,
+            target_environment=target_environment,
+            target_semantic_catalog=catalog,
+            compiler_capabilities=capabilities,
+            helper_contract_registry=helper_contract_registry,
+        )
+        candidates.append(ProvenCandidate(plan, constraint_result, proof))
+        if not proof.approved:
+            rejected_attempts.append(TargetLoweringAttempt.from_proof_failure(plan, proof))
+
+    catalog_id = catalog.version + ":" + ",".join(sorted(catalog.semantic_contract_ids))
+    capability_id = f"asm={capabilities.supports_gnu_inline_asm};goto={capabilities.supports_asm_goto}"
+    selection = select_final_target_lowering_plan(Phase6ESelectionRequest(
+        source_model=source_model,
+        preservation_decision=source_model.preservation,
+        target_environment=target_environment,
+        candidates=tuple(candidates),
+        generated_plan_ids=frozenset(plan.plan_id for plan in candidate_plans),
+        target_catalog_version=catalog_id,
+        compiler_capability_id=capability_id,
+        helper_registry_version=None if helper_contract_registry is None else helper_contract_registry.version,
+        selection_policy=selection_policy,
+    ))
+    attempt_metadata = tuple({"planId": item.plan_id, "stage": item.stage, "reasonCodes": item.reason_codes} for item in rejected_attempts)
+    if selection.kind is FinalSelectionKind.NEEDS_ROUTE:
+        return _needs_route(context, route=selection.route_target or "registered_route", reason="no local proven lowering; Phase 6E selected registered route", reason_code="TR_PHASE6E_NEEDS_ROUTE", metadata={"attempts": attempt_metadata, "candidatePlanCount": len(candidate_plans)})
+    if selection.kind is FinalSelectionKind.INVARIANT_VIOLATION:
+        return _unsupported(context, reason="Phase-6E artifact consistency validation failed", reason_code="TR_PHASE6E_ARTIFACT_INCONSISTENT")
+    if selection.kind is FinalSelectionKind.UNSUPPORTED:
+        text = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context or RendererContext({}, {})).emitted_text or ""
+        return _output(kind="unsupported", replacement=text, context=context, route="phase6e_unsupported", notes=["no target lowering passed the Phase-6 semantic proof gate"], reason_codes=[selection.primary_reason_code or "TR_NO_PROVEN_TARGET_LOWERING_PLAN"], build_family="", requires_build_check=False, requires_block_proof=False, metadata={"attempts": attempt_metadata, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 0})
+    if selection.kind is FinalSelectionKind.KEEP:
+        text = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context or RendererContext({}, {})).emitted_text or ""
+        return _output(kind="keep", replacement=text, context=context, route="phase6e_keep", notes=["Phase 6E policy selected keep"], reason_codes=["TR_PHASE6E_KEEP"], build_family="", requires_build_check=False, requires_block_proof=False, metadata={"attempts": attempt_metadata})
+    if renderer_context is None:
+        return _unsupported(context, reason="selected approved plan has no registered Phase-6F renderer context", reason_code="TR_PHASE6F_RENDERER_CONTEXT_REQUIRED")
+    rendered = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context)
+    if rendered.kind in {RenderedReplacementKind.INTERNAL_ERROR, RenderedReplacementKind.UNSUPPORTED_DIAGNOSTIC} or rendered.emitted_text is None:
+        code = rendered.diagnostics[0].value if rendered.diagnostics else "TR_PHASE6F_RENDER_FAILURE"
+        return _unsupported(context, reason="Phase-6F could not faithfully encode the selected approved contract", reason_code=code)
+    return _output(kind="replacement", replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata})
 
 def _translate_legacy_bridge(
     context: TranslationContext,
