@@ -13,6 +13,7 @@ from .translate import translate, _replacement_has_early_clobber_output_constrai
 from .runtime_facts import build_translation_runtime_facts
 from .verify import verify
 from .cfg import build_cfg_from_blocks
+from .phase6c_constraints import TargetEnvironment
 
 
 
@@ -32,6 +33,7 @@ _X86_INLINE_ASM_KINDS = {
     "x86_inline_asm",
     "x86_inline_asm_att",
     "lower_to_x86_inline_asm",
+    "x86_inline_asm",
 }
 
 _TIED_DIGIT_RE = re.compile(r"(?:^|[^A-Za-z0-9_])\d+(?:$|[^A-Za-z0-9_])")
@@ -717,6 +719,7 @@ def run(
     language: Any = None,
     register_name_resolver: Optional[RegisterNameResolver] = None,
     verify_enabled: bool = True,
+    target_environment: TargetEnvironment | None = None,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
     stats = {
@@ -1032,6 +1035,11 @@ def run(
             },
         )
 
+        environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
+            available_features={"x86:gpr_inline_asm", "compiler:atomic-builtin", "compiler:barrier-builtin"},
+            builtin_capabilities={"c_builtin:atomic", "c_builtin:compiler_barrier"},
+            supports_gnu_asm_goto=True,
+        )
         tr = translate(
             frag=f.fragment,
             lift=lr,
@@ -1046,6 +1054,7 @@ def run(
             # 这样 Phase 5 / Phase 6 / 后续 report serialization 都消费
             # 同一个 authoritative facts source。
             runtime_facts=f.translationRuntimeFacts,
+            target_environment=environment,
         )
 
         # 先读取 translate 结果，但不要立刻把 replacement 写入 finding。
