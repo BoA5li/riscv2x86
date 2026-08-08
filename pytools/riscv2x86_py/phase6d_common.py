@@ -57,7 +57,7 @@ class SemanticProofRequest:
 @dataclass(frozen=True)
 class ProofEvidence:
     """Stable, renderer-independent identity and per-dimension proof record."""
-    source_model_id: str; preservation_level: str; plan_id: str
+    source_model_id: str; preservation_level: str; preservation_decision_id: str; plan_id: str
     constraints_plan_id: str; target_environment_id: str
     target_catalog_version: str; compiler_capability_id: str
     helper_registry_version: str | None
@@ -95,6 +95,7 @@ def _evidence(request, conclusions, requirements):
     return ProofEvidence(
         source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)))),
         preservation_level=request.preservation_decision.level.value,
+        preservation_decision_id=request.preservation_decision.level.value+":"+",".join(sorted(request.preservation_decision.reason_codes)),
         plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id,
         target_environment_id=f"{e.architecture.value}:{e.abi.value}:{e.asm_dialect.value}",
         target_catalog_version=request.target_semantic_catalog.version+":"+",".join(sorted(request.target_semantic_catalog.semantic_contract_ids)),
