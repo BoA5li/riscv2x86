@@ -5,7 +5,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
 from .phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintModel, TargetEnvironment
-from .phase6d_common import PreservationConclusion, SemanticProofResult
+from .phase6d_common import PreservationConclusion, SemanticProofResult, constraint_identity
 from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .semantic_types import PreservationDecision
 from .source_model import SourceSemanticModel
@@ -28,6 +28,7 @@ class Phase6ESelectionPolicy:
     policy_id: str="phase6e.semantic-fidelity"
     policy_version: str="1"
     allow_best_effort: bool=False
+    allow_strengthened: bool=False
     allow_needs_route: bool=False
     allow_keep: bool=False
     registered_route_targets: tuple[str,...]=()
@@ -39,6 +40,9 @@ class Phase6ESelectionRequest:
     target_environment: TargetEnvironment
     candidates: tuple[ProvenCandidate,...]
     generated_plan_ids: frozenset[str]
+    target_catalog_version: str=""
+    compiler_capability_id: str=""
+    helper_registry_version: str | None=None
     selection_policy: Phase6ESelectionPolicy=Phase6ESelectionPolicy()
 
 @dataclass(frozen=True)
@@ -82,7 +86,8 @@ def _artifact_error(r,c):
     if c.constraint_result.plan_id != p.plan_id:return "constraint_plan_id_mismatch"
     if c.constraint_result.success and (c.constraint_result.constraints is None or c.constraint_result.constraints.environment != r.target_environment):return "constraint_environment_mismatch"
     if c.proof_result.approved and e is None:return "approved_proof_without_evidence"
-    if e is not None and (e.plan_id != p.plan_id or e.constraints_plan_id != p.plan_id or e.source_model_id != _source_id(r.source_model) or e.preservation_decision_id != _preservation_id(r.preservation_decision) or e.target_environment_id != _environment_id(r.target_environment)):return "proof_binding_mismatch"
+    if e is not None and c.constraint_result.constraints is None:return "proof_without_constraints"
+    if e is not None and (e.plan_id != p.plan_id or e.constraints_plan_id != p.plan_id or e.constraints_id != constraint_identity(c.constraint_result.constraints) or e.source_model_id != _source_id(r.source_model) or e.preservation_decision_id != _preservation_id(r.preservation_decision) or e.target_environment_id != _environment_id(r.target_environment) or e.target_catalog_version != r.target_catalog_version or e.compiler_capability_id != r.compiler_capability_id or e.helper_registry_version != r.helper_registry_version):return "proof_binding_mismatch"
     return None
 
 def _policy_allows(r,c):
@@ -92,7 +97,9 @@ def _policy_allows(r,c):
     if PreservationConclusion.NOT_PRESERVED in x:return False
     if PreservationConclusion.ARCHITECTURE_EQUIVALENT not in x:return False
     if r.source_model.microarch.explicitly_microarch_sensitive and PreservationConclusion.MICROARCH_INTENT_PRESERVED not in x:return False
-    return r.selection_policy.allow_best_effort or PreservationConclusion.BEST_EFFORT not in x
+    if PreservationConclusion.BEST_EFFORT in x and not r.selection_policy.allow_best_effort:return False
+    if PreservationConclusion.MICROARCH_STRENGTHENED in x and not r.selection_policy.allow_strengthened:return False
+    return True
 
 def _tier(c):
     x=set(c.proof_result.conclusions); k=c.plan.kind
