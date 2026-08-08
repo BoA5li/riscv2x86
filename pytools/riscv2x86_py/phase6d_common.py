@@ -58,7 +58,7 @@ class SemanticProofRequest:
 class ProofEvidence:
     """Stable, renderer-independent identity and per-dimension proof record."""
     source_model_id: str; preservation_level: str; preservation_decision_id: str; plan_id: str
-    constraints_plan_id: str; target_environment_id: str
+    constraints_plan_id: str; constraints_id: str; target_environment_id: str
     target_catalog_version: str; compiler_capability_id: str
     helper_registry_version: str | None
     dimensions: tuple[str,...]; proved_requirements: tuple[str,...]
@@ -90,13 +90,20 @@ class ApprovedTargetLoweringPlan:
 
 def reject(request, code, details=None): return SemanticProofResult.failed(getattr(getattr(request,"candidate_plan",None),"plan_id",None),code,details)
 
+def constraint_identity(c):
+    """Deterministic Phase-6C constraint identity; no renderer data involved."""
+    operands=",".join(f"{x.source_operand_index}:{x.role.value}:{','.join(sorted(y.value for y in x.allowed_classes))}:{x.required_width_bits}:{x.required_signedness}:{x.tied_to_source_operand_index}:{x.early_clobber}:{x.fixed_register_name}" for x in c.operand_constraints)
+    memory=c.memory_constraint
+    control=c.control_flow_constraint
+    return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), ",".join(sorted(type(x).__name__ for x in (c.c_expression_constraint,c.c_builtin_constraint,c.x86_gnu_inline_asm_contract,c.x86_memory_inline_asm_contract,c.x86_atomic_contract,c.x86_barrier_contract,c.structured_control_flow_contract,c.helper_abi_contract) if x is not None))))
+
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
     return ProofEvidence(
         source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)))),
         preservation_level=request.preservation_decision.level.value,
         preservation_decision_id=request.preservation_decision.level.value+":"+",".join(sorted(request.preservation_decision.reason_codes)),
-        plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id,
+        plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id, constraints_id=constraint_identity(request.constraints),
         target_environment_id=f"{e.architecture.value}:{e.abi.value}:{e.asm_dialect.value}",
         target_catalog_version=request.target_semantic_catalog.version+":"+",".join(sorted(request.target_semantic_catalog.semantic_contract_ids)),
         compiler_capability_id=f"asm={request.compiler_capabilities.supports_gnu_inline_asm};goto={request.compiler_capabilities.supports_asm_goto}",
