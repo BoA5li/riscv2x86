@@ -20,6 +20,15 @@ struct BuiltinFinding {
     std::vector<std::string> args;
 };
 
+struct TranslationApprovalArtifact {
+    bool present = false;
+    std::string artifactVersion, proofStatus, sourceFragmentId, sourceModelId;
+    std::string preservationDecisionId, planId, constraintsId, targetEnvironmentId;
+    std::string targetCatalogVersion, selectionPolicyId, selectionPolicyVersion;
+    std::string selectionTier, rendererId, rendererVersion, replacementKind;
+    std::string replacementDigest, sourceSliceDigest;
+};
+
 struct Finding {
     Category category = Category::NeedsAsmTranslation;
     std::string description;
@@ -53,6 +62,7 @@ struct Finding {
     // 是否来自宏展开
     bool fromMacroExpansion = false;
     std::string macroName;
+    TranslationApprovalArtifact approvalArtifact;
 };
 
 struct ClassificationReport {
