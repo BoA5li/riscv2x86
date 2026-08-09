@@ -106,6 +106,11 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
 
         if (auto b = o->getBoolean("fromMacroExpansion")) f.fromMacroExpansion = *b;
         if (auto s = o->getString("macroName")) f.macroName = s->str();
+        if (auto *a = o->getObject("approvalArtifact")) {
+            auto get = [&](const char *key, std::string &out) { if (auto s = a->getString(key)) out = s->str(); };
+            f.approvalArtifact.present = true;
+            get("artifactVersion", f.approvalArtifact.artifactVersion); get("proofStatus", f.approvalArtifact.proofStatus); get("sourceFragmentId", f.approvalArtifact.sourceFragmentId); get("sourceModelId", f.approvalArtifact.sourceModelId); get("preservationDecisionId", f.approvalArtifact.preservationDecisionId); get("planId", f.approvalArtifact.planId); get("constraintsId", f.approvalArtifact.constraintsId); get("targetEnvironmentId", f.approvalArtifact.targetEnvironmentId); get("targetCatalogVersion", f.approvalArtifact.targetCatalogVersion); get("selectionPolicyId", f.approvalArtifact.selectionPolicyId); get("selectionPolicyVersion", f.approvalArtifact.selectionPolicyVersion); get("selectionTier", f.approvalArtifact.selectionTier); get("rendererId", f.approvalArtifact.rendererId); get("rendererVersion", f.approvalArtifact.rendererVersion); get("replacementKind", f.approvalArtifact.replacementKind); get("replacementDigest", f.approvalArtifact.replacementDigest); get("sourceSliceDigest", f.approvalArtifact.sourceSliceDigest);
+        }
 
         loadStringArray(o, "arguments", f.arguments);
 
