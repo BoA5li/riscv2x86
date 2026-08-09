@@ -3048,7 +3048,34 @@ def _translate_phase6_proof_pipeline(
         code = rendered.diagnostics[0].value if rendered.diagnostics else "TR_PHASE6F_RENDER_FAILURE"
         return _unsupported(context, reason="Phase-6F could not faithfully encode the selected approved contract", reason_code=code)
     kind = "x86_inline_asm" if rendered.kind in {RenderedReplacementKind.GNU_INLINE_ASM, RenderedReplacementKind.GNU_ASM_GOTO} else "c"
-    return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata})
+    proof = selection.selected_plan.proof
+    evidence = proof.evidence
+    artifact = {
+        "artifactVersion": "phase6-approval-v1", "proofStatus": "approved",
+        "sourceFragmentId": context.fragment.id,
+        "sourceModelId": selection.selected_plan.source_model_id,
+        "preservationDecisionId": selection.selected_plan.preservation_decision_id,
+        "planId": selection.selected_plan.plan.plan_id,
+        "constraintsId": evidence.constraints_id,
+        "targetEnvironmentId": selection.selected_plan.target_environment_id,
+        "targetCatalogVersion": evidence.target_catalog_version,
+        "selectionPolicyId": selection.selected_plan.selection_policy_id,
+        "selectionPolicyVersion": selection.selected_plan.selection_policy_version,
+        "selectionTier": selection.selected_plan.selection_tier.name,
+        "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version,
+        "replacementKind": rendered.kind.value,
+        "replacementDigest": _approval_digest(rendered.emitted_text),
+        "sourceSliceDigest": _approval_digest(context.fragment.rawAsmText),
+    }
+    return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata, "approvalArtifact": artifact})
+
+
+def _approval_digest(value: str) -> str:
+    """Cross-language FNV-1a-64 digest for report/apply integrity checks."""
+    state = 14695981039346656037
+    for byte in value.encode("utf-8"):
+        state = ((state ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"fnv1a64:{state:016x}"
 
 
 def _make_phase6f_context_from_approved_contract(context: TranslationContext, approved) -> Optional[RendererContext]:
