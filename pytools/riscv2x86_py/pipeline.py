@@ -15,6 +15,12 @@ from .verify import verify
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
 
+def _approval_digest(value: str) -> str:
+    state = 14695981039346656037
+    for byte in value.encode("utf-8"):
+        state = ((state ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"fnv1a64:{state:016x}"
+
 
 
 _DEFERRED_DETAIL = (
@@ -1068,6 +1074,9 @@ def run(
         translation_notes = list(getattr(tr, "notes", None) or [])
 
         f.translationKind = translation_kind
+        f.approvalArtifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        if f.approvalArtifact:
+            f.approvalArtifact["sourceSliceDigest"] = _approval_digest(f.rawSourceText)
         f.notes.extend(translation_notes)
 
         # Phase 7: inline-asm 外壳语义检查。
