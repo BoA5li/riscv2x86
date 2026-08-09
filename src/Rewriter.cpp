@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <map>
 #include <sstream>
 #include <system_error>
@@ -15,6 +17,23 @@ namespace fs = std::filesystem;
 namespace riscv2x86 {
 
 namespace {
+static std::string approvalDigest(const std::string &value) {
+    std::uint64_t state = 14695981039346656037ULL;
+    for (unsigned char byte : value) state = (state ^ byte) * 1099511628211ULL;
+    std::ostringstream out; out << "fnv1a64:" << std::hex << std::nouppercase << std::setw(16) << std::setfill('0') << state;
+    return out.str();
+}
+
+static bool validApprovalArtifact(const Finding &f, const std::string &sourceSlice) {
+    const auto &a = f.approvalArtifact;
+    // Phase 2 public rules predate Phase 6 and retain their own RuleEngine
+    // contract.  Every Phase 6-produced replacement is proof-gated here.
+    if (f.ruleName.rfind("phase6.", 0) != 0) return true;
+    if (!a.present || a.artifactVersion != "phase6-approval-v1" || a.proofStatus != "approved") return false;
+    if (a.sourceFragmentId.empty() || a.planId.empty() || a.constraintsId.empty() || a.targetEnvironmentId.empty() || a.rendererId.empty() || a.rendererVersion.empty() || a.replacementKind.empty()) return false;
+    if (!f.fragment.has_value() || a.sourceFragmentId != f.fragment->id) return false;
+    return a.replacementDigest == approvalDigest(f.suggestedReplacement) && a.sourceSliceDigest == approvalDigest(sourceSlice);
+}
 
 fs::path normalizePath(const fs::path &p) {
     std::error_code ec;
@@ -316,6 +335,7 @@ int SourceRewriter::rewrite(const ClassificationReport &report) {
         std::string replacement;
         std::string ruleName;
         ApplyMode mode;
+        const Finding *finding;
     };
 
     std::map<std::string, std::vector<Edit>> byFile;
@@ -359,7 +379,7 @@ int SourceRewriter::rewrite(const ClassificationReport &report) {
             endOffset,
             f.suggestedReplacement,
             f.ruleName,
-            mode
+            mode, &f
         });
     }
 
@@ -412,6 +432,11 @@ int SourceRewriter::rewrite(const ClassificationReport &report) {
                 std::cerr << "[rewrite] offset out of range in " << path
                           << " [" << e.beginOffset << ", " << e.endOffset
                           << "), file size=" << content.size() << "\n";
+                continue;
+            }
+            const std::string sourceSlice = content.substr(e.beginOffset, e.endOffset - e.beginOffset);
+            if (!validApprovalArtifact(*e.finding, sourceSlice)) {
+                std::cerr << "[rewrite] reject unapproved or mismatched Phase-6 artifact in " << path << "\n";
                 continue;
             }
 
