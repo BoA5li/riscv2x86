@@ -131,6 +131,10 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
 
         os << "      \"fromMacroExpansion\": " << (f.fromMacroExpansion ? "true" : "false") << ",\n";
         os << "      \"macroName\": \"" << escape(f.macroName) << "\",\n";
+        if (f.approvalArtifact.present) {
+            const auto &a = f.approvalArtifact;
+            os << "      \"approvalArtifact\": {\"artifactVersion\":\"" << escape(a.artifactVersion) << "\",\"proofStatus\":\"" << escape(a.proofStatus) << "\",\"sourceFragmentId\":\"" << escape(a.sourceFragmentId) << "\",\"sourceModelId\":\"" << escape(a.sourceModelId) << "\",\"preservationDecisionId\":\"" << escape(a.preservationDecisionId) << "\",\"planId\":\"" << escape(a.planId) << "\",\"constraintsId\":\"" << escape(a.constraintsId) << "\",\"targetEnvironmentId\":\"" << escape(a.targetEnvironmentId) << "\",\"targetCatalogVersion\":\"" << escape(a.targetCatalogVersion) << "\",\"selectionPolicyId\":\"" << escape(a.selectionPolicyId) << "\",\"selectionPolicyVersion\":\"" << escape(a.selectionPolicyVersion) << "\",\"selectionTier\":\"" << escape(a.selectionTier) << "\",\"rendererId\":\"" << escape(a.rendererId) << "\",\"rendererVersion\":\"" << escape(a.rendererVersion) << "\",\"replacementKind\":\"" << escape(a.replacementKind) << "\",\"replacementDigest\":\"" << escape(a.replacementDigest) << "\",\"sourceSliceDigest\":\"" << escape(a.sourceSliceDigest) << "\"},\n";
+        }
 
         dumpStringArrayJSON(os, "arguments", f.arguments, 6);
 
