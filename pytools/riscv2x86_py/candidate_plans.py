@@ -476,7 +476,7 @@ def _generate_atomic_candidates(
 ) -> list[TargetLoweringPlan]:
     candidates = [
         _plan(
-            plan_id="c-builtin.atomic",
+            plan_id="c-builtin.atomic-load-n",
             kind=TargetLoweringKind.C_BUILTIN,
             family=TargetLoweringFamily.C_BUILTIN,
             priority_tier=PlanPriorityTier.C_BUILTIN,
@@ -494,14 +494,41 @@ def _generate_atomic_candidates(
             ),
             metadata={
                 "strategy": "compiler_atomic_builtin",
+                "renderer_semantic_contract_id": "c.builtin.atomic-load-n.u32-u64.v1",
             },
             rationale=(
-                "Atomic semantics require preservation of atomic and memory "
-                "ordering; this candidate is not an approval of any "
-                "particular builtin spelling.",
+                "Atomic load is a candidate only for the registered "
+                "__atomic_load_n typed-object and memory-order contract.",
             ),
-            reason_codes=("atomic-lowering-required",),
-        )
+            reason_codes=("atomic-load-builtin-candidate",),
+        ),
+        _plan(
+            plan_id="c-builtin.atomic-store-n",
+            kind=TargetLoweringKind.C_BUILTIN,
+            family=TargetLoweringFamily.C_BUILTIN,
+            priority_tier=PlanPriorityTier.C_BUILTIN,
+            deterministic_rank=11,
+            required_features=frozenset({"compiler:atomic-builtin"}),
+            requirements=frozenset(
+                {
+                    PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+                    PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                    PlanRequirement.PRESERVE_ATOMIC_ORDERING,
+                    PlanRequirement.PRESERVE_MEMORY_ORDERING,
+                    PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
+                    PlanRequirement.PROVE_DEFINED_C_SEMANTICS,
+                }
+            ),
+            metadata={
+                "strategy": "compiler_atomic_builtin",
+                "renderer_semantic_contract_id": "c.builtin.atomic-store-n.u32-u64.v1",
+            },
+            rationale=(
+                "Atomic store is a candidate only for the registered "
+                "__atomic_store_n typed-object and memory-order contract.",
+            ),
+            reason_codes=("atomic-store-builtin-candidate",),
+        ),
     ]
 
     if facts.target_is_x86:
@@ -556,10 +583,12 @@ def _generate_barrier_candidates(
             ),
             metadata={
                 "strategy": "compiler_barrier_builtin",
+                "renderer_semantic_contract_id": "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
             },
             rationale=(
-                "Barrier semantics require preservation of ordering and may "
-                "not be reduced to an ordinary C expression.",
+                "A compiler-only barrier is a candidate only for the "
+                "registered __atomic_signal_fence contract; hardware "
+                "barriers remain on their own fail-closed route.",
             ),
             reason_codes=("barrier-lowering-required",),
         )
