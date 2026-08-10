@@ -37,6 +37,73 @@ def _fail(plan, code, details=None):
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintReasonCode
     return TargetConstraintDerivationResult.failure(plan_id=plan.plan_id, reason_codes=(getattr(TargetConstraintReasonCode, code),), details={} if details is None else details)
 
+
+_SUPPORTED_RENDERER_CONTRACTS = frozenset({
+    "x86.gnu-att.gpr.rw-gpr-binary.v1",
+    "x86.gnu-att.gpr.rw-immediate-binary.v1",
+    "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+})
+
+
+def _validate_renderer_operand_contract(candidate_plan, operands, target_operands):
+    """Validate the concrete contract selected by Phase 6B.
+
+    This is a derivation-time compatibility check, not renderer inference:
+    unknown variants and operand shapes without a registered proof-compatible
+    recipe are rejected before they can reach Phase 6D/6E.
+    """
+    semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if semantic_id not in _SUPPORTED_RENDERER_CONTRACTS:
+        return _fail(candidate_plan, "X86_INLINE_ASM_SEMANTIC_CONTRACT_UNSUPPORTED", {
+            "renderer_semantic_contract_id": str(semantic_id),
+        })
+
+    outputs = [op for op in target_operands if op.role.name == "READ_WRITE"]
+    inputs = [op for op in target_operands if op.role.name == "INPUT"]
+    if len(outputs) != 1 or len(inputs) != 1:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": semantic_id,
+            "expected": "one_read_write_output_and_one_input",
+        })
+
+    output, input_ = outputs[0], inputs[0]
+    if output.required_width_bits not in {32, 64} or input_.required_width_bits != output.required_width_bits:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": semantic_id,
+            "expected": "matching_32_or_64_bit_operands",
+        })
+    if output.tied_to_source_operand_index is not None or input_.tied_to_source_operand_index is not None:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": semantic_id,
+            "expected": "no_tied_operand",
+        })
+    if output.requires_fixed_register or input_.requires_fixed_register:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": semantic_id,
+            "expected": "no_fixed_register",
+        })
+    if TargetOperandClass.GENERAL_REGISTER not in output.allowed_classes:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": semantic_id,
+            "expected": "gpr_read_write_output",
+        })
+
+    if semantic_id == "x86.gnu-att.gpr.rw-gpr-binary.v1":
+        ok = (TargetOperandClass.GENERAL_REGISTER in input_.allowed_classes and
+              not output.early_clobber and not input_.early_clobber)
+    elif semantic_id == "x86.gnu-att.gpr.rw-immediate-binary.v1":
+        ok = (TargetOperandClass.IMMEDIATE in input_.allowed_classes and
+              not output.early_clobber and not input_.early_clobber)
+    else:
+        ok = (TargetOperandClass.GENERAL_REGISTER in input_.allowed_classes and
+              output.early_clobber and not input_.early_clobber)
+    if not ok:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": semantic_id,
+            "expected": "registered_operand_variant",
+        })
+    return None
+
 def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: "TargetEnvironment") -> "TargetConstraintDerivationResult":
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintModel, TargetMemoryConstraint, TargetControlFlowConstraint, TargetOperandConstraint, TargetOperandRole, TargetOperandClass
     if candidate_plan.kind is not TargetLoweringKind.X86_GNU_INLINE_ASM: return _fail(candidate_plan,"X86_INLINE_ASM_PLAN_KIND_MISMATCH")
@@ -65,4 +132,9 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
         operands.append(X86GprOperandContract(op.source_operand_index,role,op.width_bits,op.signedness.value,host,"zero_extend" if op.width_bits==32 else "preserve",op.fixed_register_name,op.tied_to_source_operand_index,op.early_clobber,op.kind is SourceOperandKind.IMMEDIATE))
         allowed = frozenset({TargetOperandClass.IMMEDIATE}) if op.kind is SourceOperandKind.IMMEDIATE else frozenset({TargetOperandClass.GENERAL_REGISTER})
         target_operands.append(TargetOperandConstraint(op.source_operand_index, {X86OperandRole.INPUT:TargetOperandRole.INPUT,X86OperandRole.OUTPUT:TargetOperandRole.OUTPUT,X86OperandRole.READ_WRITE:TargetOperandRole.READ_WRITE}[role], allowed, op.tied_to_source_operand_index, op.early_clobber, op.width_bits, op.signedness, op.kind is SourceOperandKind.FIXED_REGISTER, op.fixed_register_name))
+    contract_failure = _validate_renderer_operand_contract(
+        candidate_plan, operands, target_operands,
+    )
+    if contract_failure is not None:
+        return contract_failure
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber,feature,source_model.value_operation.kind),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber))
