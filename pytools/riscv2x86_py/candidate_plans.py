@@ -707,26 +707,61 @@ def _generate_register_only_candidates(
         )
 
     if facts.target_is_x86:
-        candidates.append(
-            _plan(
-                plan_id="x86.register-only-inline-asm",
-                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
-                family=TargetLoweringFamily.X86_INLINE_ASM,
-                priority_tier=PlanPriorityTier.X86_INLINE_ASM,
-                deterministic_rank=40,
-                required_features=frozenset({"target:x86"}),
-                requirements=_x86_requirements(preserve_cc=True),
-                metadata={
-                    "strategy": "x86_register_only_inline_asm",
-                    "renderer_semantic_contract_id": "x86.gnu-att.gpr.rw-binary.v1",
-                },
-                rationale=(
-                    "Register-only x86 inline asm remains a candidate until "
-                    "constraints and semantic equivalence are proven."
-                ),
-                reason_codes=("x86-register-only-candidate",),
-            )
+        # These are deliberately separate candidates.  Phase 6C validates the
+        # exact operand-contract precondition selected here; Phase 6F must
+        # never select a recipe from the incidental shape of an operand.
+        #
+        # The current catalogue intentionally covers only 32/64-bit binary
+        # read-write GPR operations.  Input-only, write-only, tied-only,
+        # fixed-register and 8/16-bit forms require source/target contracts
+        # that are not yet modeled completely, so no candidate is generated
+        # for them (fail closed).
+        operand_variants = (
+            (
+                "rw-gpr",
+                "x86.gnu-att.gpr.rw-gpr-binary.v1",
+                40,
+                "general-register read-write output and register input",
+            ),
+            (
+                "rw-immediate",
+                "x86.gnu-att.gpr.rw-immediate-binary.v1",
+                41,
+                "general-register read-write output and immediate input",
+            ),
+            (
+                "rw-early-clobber",
+                "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+                42,
+                "early-clobber general-register read-write output",
+            ),
         )
+        for variant, semantic_contract_id, rank, description in operand_variants:
+            candidates.append(
+                _plan(
+                    plan_id=f"x86.register-only-inline-asm.{variant}",
+                    kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+                    family=TargetLoweringFamily.X86_INLINE_ASM,
+                    priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+                    deterministic_rank=rank,
+                    required_features=frozenset({"x86:gpr_inline_asm"}),
+                    requirements=_x86_requirements(preserve_cc=True),
+                    metadata={
+                        "strategy": "x86_register_only_inline_asm",
+                        "operand_contract_variant": variant,
+                        "renderer_semantic_contract_id": semantic_contract_id,
+                    },
+                    rationale=(
+                        "Register-only x86 inline asm candidate with an "
+                        f"explicit {description} contract; constraints and "
+                        "semantic equivalence must still be proven.",
+                    ),
+                    reason_codes=(
+                        "x86-register-only-candidate",
+                        f"x86-operand-contract-{variant}",
+                    ),
+                )
+            )
 
     if not candidates:
         candidates.append(
