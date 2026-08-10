@@ -297,8 +297,43 @@ def _x86_lock_atomic_recipe(approved: ApprovedTargetLoweringPlan):
     )
 
 
+def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode only the concrete approved full-fence/serialize route."""
+    semantic_id = approved.plan.metadata.get("renderer_semantic_contract_id")
+    contract = approved.constraints.x86_barrier_contract
+    memory = approved.constraints.memory_constraint
+    routes = {
+        "x86.gnu-att.mfence.full-system-seq-cst.v1": ("mfence", "full_hardware_fence", "x86:hardware_fence"),
+        "x86.gnu-att.serialize.instruction-serialization.v1": ("serialize", "instruction_serialization", "x86:serialize"),
+    }
+    expected = routes.get(semantic_id)
+    if expected is None or contract is None:
+        return None
+    template, route, feature = expected
+    if (contract.semantic_contract_id != semantic_id or
+            contract.route != route or contract.required_target_feature != feature or
+            not contract.compiler_barrier or
+            not memory.requires_memory_clobber or
+            not memory.requires_compiler_barrier):
+        return None
+    if route == "full_hardware_fence":
+        if (not contract.hardware_memory_fence or not memory.requires_hardware_barrier or
+                contract.ordering is not SourceMemoryOrdering.SEQ_CST or
+                contract.scope is None or contract.scope.value != "system" or
+                contract.instruction_serializing or memory.requires_instruction_serialization):
+            return None
+    else:
+        if (contract.hardware_memory_fence or memory.requires_hardware_barrier or
+                not contract.instruction_serializing or
+                not memory.requires_instruction_serialization):
+            return None
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=template, output_operand_indexes=(), input_operand_indexes=(),
+    ))
+
+
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
-    registry_id="phase6f.target-contracts", version="x86-lock-atomic-contracts-v1",
+    registry_id="phase6f.target-contracts", version="barrier-serialization-contracts-v1",
     entries=(
         RegisteredRendererContract(
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
@@ -360,6 +395,22 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             _x86_lock_atomic_recipe,
             "x86_atomic_contract",
             frozenset({"x86:atomic"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.mfence.full-system-seq-cst.v1",
+            TargetLoweringKind.X86_BARRIER,
+            "x86.gnu-att.mfence.full-system-seq-cst",
+            _x86_barrier_recipe,
+            "x86_barrier_contract",
+            frozenset({"x86:hardware_fence"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.serialize.instruction-serialization.v1",
+            TargetLoweringKind.X86_BARRIER,
+            "x86.gnu-att.serialize.instruction-serialization",
+            _x86_barrier_recipe,
+            "x86_barrier_contract",
+            frozenset({"x86:serialize"}),
         ),
     ),
 )
