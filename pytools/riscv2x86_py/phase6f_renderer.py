@@ -118,6 +118,10 @@ class GnuInlineAsmRecipe:
     template: str
     output_operand_indexes: tuple[int, ...]
     input_operand_indexes: tuple[int, ...]
+    # A registered atomic recipe may explicitly turn a proven address binding
+    # into the C lvalue used by a GNU "m" operand.  Renderer never guesses
+    # this from the operand class or template.
+    memory_dereference_operand_indexes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -305,12 +309,16 @@ def _render_gnu(request: Phase6FRenderRequest, recipe: GnuInlineAsmRecipe, *, is
     ops = _operand_map(a.constraints); outputs = []
     for i in recipe.output_operand_indexes:
         op, binding = ops.get(i), _binding(ctx, i)
+        if binding is not None and i in recipe.memory_dereference_operand_indexes:
+            binding = f"*({binding})"
         rendered = None if op is None or binding is None else _output(op, binding)
         if rendered is None:return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
         outputs.append(rendered)
     output_indexes = {i: n for n, i in enumerate(recipe.output_operand_indexes)}; inputs=[]
     for i in recipe.input_operand_indexes:
         op, binding = ops.get(i), _binding(ctx, i)
+        if binding is not None and i in recipe.memory_dereference_operand_indexes:
+            binding = f"*({binding})"
         rendered = None if op is None or binding is None else _input(op, binding, output_indexes)
         if rendered is None:
             code = RenderReasonCode.TIED_OUTPUT_MISSING if op is not None and op.tied_to_source_operand_index is not None else RenderReasonCode.OPERAND_BINDING_MISSING
