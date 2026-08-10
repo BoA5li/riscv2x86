@@ -533,6 +533,7 @@ public:
                 SM, Ctx.getLangOpts()).str();
             f.arguments.push_back(std::move(argText));
         }
+        f.builtin = BuiltinFinding{name, f.arguments};
 
         f.fromMacroExpansion = CE->getBeginLoc().isMacroID() || CE->getEndLoc().isMacroID();
         if (f.fromMacroExpansion) {
