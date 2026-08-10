@@ -1,0 +1,40 @@
+"""Launcher strictness tests for generic-C/no-op translations."""
+from __future__ import annotations
+
+import pytest
+
+from riscv2x86_py.riscv2x86_translate import (
+    TranslationError,
+    validate_translated_report,
+)
+
+
+def test_empty_report_is_a_successful_generic_c_noop() -> None:
+    assert validate_translated_report({"findings": []}, allow_untranslated=False) == 0
+
+
+def test_explicit_phase6_keep_is_a_successful_noop() -> None:
+    report = {
+        "findings": [{
+            "category": "ReplaceableByRule",
+            "translationKind": "keep",
+            "suggestedReplacement": "",
+        }]
+    }
+    assert validate_translated_report(report, allow_untranslated=False) == 0
+
+
+def test_untranslated_architecture_finding_remains_strictly_rejected() -> None:
+    with pytest.raises(TranslationError, match="translation is incomplete"):
+        validate_translated_report(
+            {"findings": [{"category": "NeedsAsmTranslation"}]},
+            allow_untranslated=False,
+        )
+
+
+def test_actionable_replacement_still_requires_text_and_range() -> None:
+    with pytest.raises(TranslationError, match="invalid ReplaceableByRule"):
+        validate_translated_report(
+            {"findings": [{"category": "ReplaceableByRule", "suggestedReplacement": ""}]},
+            allow_untranslated=False,
+        )
