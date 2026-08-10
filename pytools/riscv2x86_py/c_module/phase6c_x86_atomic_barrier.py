@@ -55,6 +55,8 @@ class X86BarrierContract:
     instruction_serializing: bool
     speculation_control: bool
     required_target_feature: str | None
+    semantic_contract_id: str
+    route: str
 
 
 def _failure(plan: TargetLoweringPlan, name: str, details=None):
@@ -202,24 +204,48 @@ def derive_x86_barrier_constraints(source_model: SourceSemanticModel, candidate_
     barrier = source_model.barrier
     if source_model.memory.has_unknown_barrier or not barrier.present:
         return _failure(candidate_plan, "X86_BARRIER_UNKNOWN")
-    if barrier.instruction_serializing or barrier.speculation_control or source_model.memory.has_instruction_barrier:
+    # Instruction-stream synchronization is distinct from serialization and
+    # must not fall back to mfence (e.g. RISC-V fence.i != x86 mfence).
+    if source_model.memory.has_instruction_barrier:
+        return _failure(candidate_plan, "X86_BARRIER_INSTRUCTION_STREAM_UNSUPPORTED")
+    if barrier.speculation_control:
         return _failure(candidate_plan, "X86_BARRIER_INSTRUCTION_STREAM_UNSUPPORTED")
     if source_model.atomic.present or (not barrier.compiler_barrier and not barrier.hardware_memory_barrier):
         return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED")
     if barrier.hardware_memory_barrier and (barrier.ordering is None or barrier.scope is None):
         return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED")
-    feature = "x86:hardware_fence" if barrier.hardware_memory_barrier else None
-    if feature is not None and feature not in target_environment.available_features:
-        return _failure(candidate_plan, "X86_BARRIER_FEATURE_UNAVAILABLE", {"feature": feature})
-    # A target hardware fence contract also states a compiler barrier explicitly;
-    # neither requirement is used as a substitute for the other.
-    compiler_barrier = True
-    contract = X86BarrierContract(compiler_barrier, barrier.hardware_memory_barrier,
-        barrier.ordering, barrier.scope, False, False, feature)
-    memory = TargetMemoryConstraint(requires_memory_clobber=compiler_barrier,
-        requires_compiler_barrier=compiler_barrier,
-        requires_hardware_barrier=barrier.hardware_memory_barrier,
-        barrier_scope=barrier.scope)
+    if not target_environment.supports_gnu_inline_asm:
+        return _failure(candidate_plan, "X86_BARRIER_FEATURE_UNAVAILABLE", {"feature": "gnu_inline_asm"})
+
+    if barrier.instruction_serializing:
+        semantic_id = "x86.gnu-att.serialize.instruction-serialization.v1"
+        feature, route = "x86:serialize", "instruction_serialization"
+        if (candidate_plan.metadata.get("renderer_semantic_contract_id") != semantic_id or
+                feature not in target_environment.available_features):
+            return _failure(candidate_plan, "X86_BARRIER_FEATURE_UNAVAILABLE", {"feature": feature})
+        contract = X86BarrierContract(True, False, barrier.ordering, barrier.scope,
+            True, False, feature, semantic_id, route)
+        memory = TargetMemoryConstraint(requires_memory_clobber=True,
+            requires_compiler_barrier=True, requires_instruction_serialization=True,
+            barrier_scope=barrier.scope)
+    else:
+        # This is deliberately the narrow SYSTEM + seq_cst full-fence route.
+        # Load/store-only ordering lacks an authoritative direction model and
+        # is therefore not guessed as lfence/sfence.
+        semantic_id = "x86.gnu-att.mfence.full-system-seq-cst.v1"
+        feature, route = "x86:hardware_fence", "full_hardware_fence"
+        if (not barrier.hardware_memory_barrier or
+                barrier.ordering is not SourceMemoryOrdering.SEQ_CST or
+                barrier.scope is not SourceBarrierScope.SYSTEM):
+            return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED", {"expected": "system_seq_cst_full_fence"})
+        if (candidate_plan.metadata.get("renderer_semantic_contract_id") != semantic_id or
+                feature not in target_environment.available_features):
+            return _failure(candidate_plan, "X86_BARRIER_FEATURE_UNAVAILABLE", {"feature": feature})
+        contract = X86BarrierContract(True, True, barrier.ordering, barrier.scope,
+            False, False, feature, semantic_id, route)
+        memory = TargetMemoryConstraint(requires_memory_clobber=True,
+            requires_compiler_barrier=True, requires_hardware_barrier=True,
+            barrier_scope=barrier.scope)
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,
         environment=target_environment, x86_barrier_contract=contract, memory_constraint=memory,
-        control_flow_constraint=TargetControlFlowConstraint()))
+        control_flow_constraint=TargetControlFlowConstraint(), preserve_volatile=True))
