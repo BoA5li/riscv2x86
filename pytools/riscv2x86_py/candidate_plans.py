@@ -532,34 +532,43 @@ def _generate_atomic_candidates(
     ]
 
     if facts.target_is_x86:
-        candidates.append(
-            _plan(
-                plan_id="x86.atomic",
-                kind=TargetLoweringKind.X86_ATOMIC,
-                family=TargetLoweringFamily.X86_ATOMIC,
-                priority_tier=PlanPriorityTier.X86_ATOMIC_OR_BARRIER,
-                deterministic_rank=20,
-                required_features=frozenset({"target:x86"}),
-                requirements=frozenset(
-                    {
-                        *_x86_requirements(
-                            preserve_memory=True,
-                            preserve_cc=True,
-                        ),
-                        PlanRequirement.PRESERVE_ATOMIC_ORDERING,
-                        PlanRequirement.PRESERVE_MEMORY_ORDERING,
-                    }
-                ),
-                metadata={
-                    "strategy": "x86_atomic",
-                },
-                rationale=(
-                    "Target-specific atomic lowering remains subject to "
-                    "Phase 6C constraints and Phase 6D ordering proof.",
-                ),
-                reason_codes=("x86-atomic-candidate",),
-            )
+        # Every lock-based form has an independent semantic contract.  Phase
+        # 6C rejects all except the one matching the authoritative RMW fact.
+        lock_variants = (
+            ("lock-xadd", "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1", 20),
+            ("xchg", "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1", 21),
         )
+        for variant, semantic_contract_id, rank in lock_variants:
+            candidates.append(
+                _plan(
+                    plan_id=f"x86.atomic.{variant}",
+                    kind=TargetLoweringKind.X86_ATOMIC,
+                    family=TargetLoweringFamily.X86_ATOMIC,
+                    priority_tier=PlanPriorityTier.X86_ATOMIC_OR_BARRIER,
+                    deterministic_rank=rank,
+                    required_features=frozenset({"x86:atomic"}),
+                    requirements=frozenset(
+                        {
+                            *_x86_requirements(
+                                preserve_memory=True,
+                                preserve_cc=True,
+                            ),
+                            PlanRequirement.PRESERVE_ATOMIC_ORDERING,
+                            PlanRequirement.PRESERVE_MEMORY_ORDERING,
+                        }
+                    ),
+                    metadata={
+                        "strategy": "x86_lock_atomic",
+                        "renderer_semantic_contract_id": semantic_contract_id,
+                    },
+                    rationale=(
+                        "Lock-based x86 atomic candidate with a specific "
+                        "operation, compiler-barrier and hardware-ordering "
+                        "contract; it is not a generic memory-asm fallback.",
+                    ),
+                    reason_codes=("x86-lock-atomic-candidate", f"x86-atomic-{variant}"),
+                )
+            )
 
     return candidates
 
