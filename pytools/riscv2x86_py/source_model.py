@@ -2149,6 +2149,14 @@ class SourceAtomicKind(str, Enum):
     COMPARE_EXCHANGE = "compare_exchange"
 
 
+class SourceAtomicRmwOperation(str, Enum):
+    """Structured RMW operation identity; never an instruction mnemonic."""
+    FETCH_ADD = "fetch_add"
+    FETCH_OR = "fetch_or"
+    FETCH_AND = "fetch_and"
+    EXCHANGE = "exchange"
+
+
 class SourceMemoryOrdering(str, Enum):
     RELAXED = "relaxed"
     CONSUME = "consume"
@@ -2440,6 +2448,7 @@ class SourceAtomicOperationModel:
     present: bool
 
     kind: Optional[SourceAtomicKind]
+    rmw_operation: Optional[SourceAtomicRmwOperation]
 
     width_bits: Optional[int]
     alignment_bytes: Optional[int]
@@ -2467,6 +2476,19 @@ class SourceAtomicOperationModel:
             raise TypeError(
                 "kind must be None or SourceAtomicKind"
             )
+
+        if self.rmw_operation is not None and not isinstance(
+            self.rmw_operation,
+            SourceAtomicRmwOperation,
+        ):
+            raise TypeError(
+                "rmw_operation must be None or SourceAtomicRmwOperation"
+            )
+        if self.kind is SourceAtomicKind.READ_MODIFY_WRITE and self.complete:
+            if self.rmw_operation is None:
+                raise ValueError("read-modify-write atomic requires rmw_operation")
+        elif self.rmw_operation is not None and self.complete:
+            raise ValueError("rmw_operation is valid only for read-modify-write atomic")
 
         for field_name in (
             "width_bits",
@@ -2527,6 +2549,7 @@ class SourceAtomicOperationModel:
         if not self.present:
             unexpected = (
                 self.kind,
+                self.rmw_operation,
                 self.width_bits,
                 self.alignment_bytes,
                 self.address_operand_index,
@@ -3233,6 +3256,7 @@ def _build_atomic_operation_model(
         return SourceAtomicOperationModel(
             present=False,
             kind=None,
+            rmw_operation=None,
             width_bits=None,
             alignment_bytes=None,
             address_operand_index=None,
@@ -3256,6 +3280,7 @@ def _build_atomic_operation_model(
         return SourceAtomicOperationModel(
             present=True,
             kind=None,
+            rmw_operation=None,
             width_bits=None,
             alignment_bytes=None,
             address_operand_index=None,
@@ -3274,6 +3299,7 @@ def _build_atomic_operation_model(
     return SourceAtomicOperationModel(
         present=True,
         kind=getattr(structured_atomic, "kind", None),
+        rmw_operation=getattr(structured_atomic, "rmw_operation", None),
         width_bits=getattr(structured_atomic, "width_bits", None),
         alignment_bytes=getattr(
             structured_atomic,
