@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 from ..plan_types import TargetLoweringKind, TargetLoweringPlan
-from ..source_model import SourceOperandAccess, SourceOperandKind, SourceSemanticModel
+from ..source_model import SourceOperandAccess, SourceOperandKind, SourceSemanticModel, SourceValueOperationKind
 
 if TYPE_CHECKING:
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetEnvironment
@@ -31,13 +31,14 @@ class X86GnuInlineAsmContract:
     volatile: bool
     cc_clobber: bool
     required_target_feature: str
+    value_operation_kind: SourceValueOperationKind
 
 def _fail(plan, code, details=None):
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintReasonCode
     return TargetConstraintDerivationResult.failure(plan_id=plan.plan_id, reason_codes=(getattr(TargetConstraintReasonCode, code),), details={} if details is None else details)
 
 def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: "TargetEnvironment") -> "TargetConstraintDerivationResult":
-    from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintModel, TargetMemoryConstraint, TargetControlFlowConstraint
+    from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintModel, TargetMemoryConstraint, TargetControlFlowConstraint, TargetOperandConstraint, TargetOperandRole, TargetOperandClass
     if candidate_plan.kind is not TargetLoweringKind.X86_GNU_INLINE_ASM: return _fail(candidate_plan,"X86_INLINE_ASM_PLAN_KIND_MISMATCH")
     feature="x86:gpr_inline_asm"
     if feature not in target_environment.available_features: return _fail(candidate_plan,"X86_INLINE_ASM_FEATURE_UNAVAILABLE",{"feature":feature})
@@ -49,7 +50,9 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if source_model.registers.reads_or_writes_stack_pointer or source_model.registers.reads_or_writes_frame_pointer or st.reads_stack_pointer or st.writes_stack_pointer or st.reads_frame_pointer or st.writes_frame_pointer or st.reads_implicit_machine_state or st.writes_implicit_machine_state: return _fail(candidate_plan,"X86_INLINE_ASM_IMPLICIT_STATE_UNSUPPORTED")
     shell=source_model.shell
     if shell.has_memory_clobber or shell.has_asm_goto or shell.has_external_control_flow: return _fail(candidate_plan,"X86_INLINE_ASM_SHELL_UNSUPPORTED")
-    operands=[]
+    if source_model.value_operation is None or not source_model.value_operation.complete:
+        return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
+    operands=[]; target_operands=[]
     for op in source_model.operands.operands:
         if op.kind not in {SourceOperandKind.REGISTER,SourceOperandKind.IMMEDIATE,SourceOperandKind.FIXED_REGISTER} or op.width_bits not in {8,16,32,64} or op.signedness.value == "unknown": return _fail(candidate_plan,"X86_INLINE_ASM_OPERAND_UNSUPPORTED",{"source_operand_index":op.source_operand_index})
         if op.access is SourceOperandAccess.INPUT: role=X86OperandRole.INPUT
@@ -60,4 +63,6 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
         if role is not X86OperandRole.INPUT and (op.lvalue is None or not op.lvalue.c_type_id or not op.lvalue.is_modifiable): return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
         host=(op.lvalue.c_type_id if role is not X86OperandRole.INPUT else op.expression.c_type_id)
         operands.append(X86GprOperandContract(op.source_operand_index,role,op.width_bits,op.signedness.value,host,"zero_extend" if op.width_bits==32 else "preserve",op.fixed_register_name,op.tied_to_source_operand_index,op.early_clobber,op.kind is SourceOperandKind.IMMEDIATE))
-    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber,feature),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber))
+        allowed = frozenset({TargetOperandClass.IMMEDIATE}) if op.kind is SourceOperandKind.IMMEDIATE else frozenset({TargetOperandClass.GENERAL_REGISTER})
+        target_operands.append(TargetOperandConstraint(op.source_operand_index, {X86OperandRole.INPUT:TargetOperandRole.INPUT,X86OperandRole.OUTPUT:TargetOperandRole.OUTPUT,X86OperandRole.READ_WRITE:TargetOperandRole.READ_WRITE}[role], allowed, op.tied_to_source_operand_index, op.early_clobber, op.width_bits, op.signedness, op.kind is SourceOperandKind.FIXED_REGISTER, op.fixed_register_name))
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber,feature,source_model.value_operation.kind),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber))
