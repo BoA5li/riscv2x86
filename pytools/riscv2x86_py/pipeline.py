@@ -1042,7 +1042,7 @@ def run(
         )
 
         environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
-            available_features={"x86:gpr_inline_asm", "x86:atomic", "compiler:atomic-builtin", "compiler:barrier-builtin"},
+            available_features={"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin"},
             builtin_capabilities={"c_builtin:atomic", "c_builtin:compiler_barrier"},
             supports_gnu_asm_goto=True,
         )
