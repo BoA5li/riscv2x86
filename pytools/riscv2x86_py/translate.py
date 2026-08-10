@@ -2987,8 +2987,11 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
             "x86.gnu-att.gpr.rw-immediate-binary.v1",
             "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+            "c.builtin.atomic-load-n.u32-u64.v1",
+            "c.builtin.atomic-store-n.u32-u64.v1",
+            "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
         }),
-        version="phase6-default-catalog-gpr-operands-v1",
+        version="phase6-default-catalog-public-builtins-v1",
     )
     capabilities = compiler_capabilities or CompilerCapabilityModel(
         supports_gnu_inline_asm=target_environment.supports_gnu_inline_asm,
