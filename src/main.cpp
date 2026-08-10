@@ -114,8 +114,10 @@ int main(int argc, const char **argv) {
                   << " (continuing with partial results)\n";
     }
 
-    // analysis-only: only dump report, no builtin rules, no rewrite
-    if (!AnalysisOnly && !NoRules) {
+    // Analysis-only suppresses source writes, not safe Phase 1/2 public
+    // replacement classification.  The Python backend must receive these
+    // ReplaceableByRule findings so they bypass the asm semantic pipeline.
+    if (!NoRules) {
         riscv2x86::RuleEngine eng;
         eng.loadBuiltinRules();
         eng.apply(classifier.getReport());
