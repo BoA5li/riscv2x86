@@ -187,7 +187,8 @@ def validate_translated_report(
     验证 Python backend 输出。
 
     返回值：
-        可写回 replacement 数量。
+        可写回 replacement 数量。零表示本次输入没有需要改写的
+        架构相关内容，或 Phase 6E 已明确选择 KEEP；这仍是成功结果。
 
     不依赖 asmText、rawAsmText 或任何具体汇编文本。
     """
@@ -202,6 +203,15 @@ def validate_translated_report(
 
         if category == "ReplaceableByRule":
             replacement = finding.get("suggestedReplacement")
+            # Phase 6E's KEEP is an explicit, structured decision.  It is
+            # deliberately not a textual rewrite: C++ --apply copies the
+            # source tree and leaves the original fragment in place.  Do not
+            # confuse that approved no-op with an incomplete translation.
+            if (
+                finding.get("translationKind") == "keep"
+                and (replacement is None or replacement == "")
+            ):
+                continue
             begin = finding.get("rewriteBeginOffset")
             end = finding.get("rewriteEndOffset")
 
@@ -259,11 +269,6 @@ def validate_translated_report(
             "translation is incomplete; untranslated finding(s) remain:\n"
             f"{detail}\n"
             "Use --allow-untranslated only when partial translation is intended."
-        )
-
-    if replaceable_count == 0:
-        raise TranslationError(
-            "translated report contains no applicable ReplaceableByRule finding"
         )
 
     return replaceable_count
