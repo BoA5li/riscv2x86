@@ -17,7 +17,7 @@ from .phase6f_renderer import (
     RendererContractKind,
 )
 from .phase6c_constraints import TargetOperandRole, TargetOperandClass
-from .source_model import SourceValueOperationKind
+from .source_model import SourceAtomicRmwOperation, SourceMemoryOrdering, SourceValueOperationKind
 from .plan_types import TargetLoweringKind
 
 
@@ -225,8 +225,80 @@ def _compiler_barrier_public_builtin_recipe(approved: ApprovedTargetLoweringPlan
     )
 
 
+_LOCK_RMW_RECIPES = {
+    "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1": (
+        SourceAtomicRmwOperation.FETCH_ADD,
+        "lock xadd",
+        "lock_prefix",
+    ),
+    "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1": (
+        SourceAtomicRmwOperation.EXCHANGE,
+        "xchg",
+        "implicit_xchg_lock",
+    ),
+}
+
+
+def _x86_lock_atomic_recipe(approved: ApprovedTargetLoweringPlan):
+    """Construct an already-proved, two-output lock RMW recipe.
+
+    The value operand is explicitly both the source value and old-value
+    result.  The address binding is explicitly dereferenced by the recipe;
+    neither relationship is inferred from the x86 template.
+    """
+    semantic_id = approved.plan.metadata.get("renderer_semantic_contract_id")
+    expected = _LOCK_RMW_RECIPES.get(semantic_id)
+    contract = approved.constraints.x86_atomic_contract
+    memory = approved.constraints.memory_constraint
+    if expected is None or contract is None:
+        return None
+    operation, opcode, lock_mechanism = expected
+    if (contract.semantic_contract_id != semantic_id or
+            contract.rmw_operation is not operation or
+            contract.kind.value != "read_modify_write" or
+            contract.lock_mechanism is None or
+            contract.lock_mechanism.value != lock_mechanism or
+            not contract.requires_lock_semantics or
+            not contract.requires_compiler_barrier or
+            not contract.requires_hardware_ordering or
+            contract.success_ordering is not SourceMemoryOrdering.SEQ_CST or
+            contract.failure_ordering is not None or
+            contract.width_bits not in {32, 64} or
+            contract.alignment_bytes < contract.width_bits // 8 or
+            contract.value_operand_index != contract.result_operand_index or
+            not memory.requires_memory_clobber or
+            not memory.requires_compiler_barrier or
+            not memory.requires_hardware_barrier or
+            not memory.requires_atomic_ordering or
+            memory.atomic_success_ordering is not SourceMemoryOrdering.SEQ_CST or
+            memory.atomic_failure_ordering is not None or
+            memory.required_atomic_width_bits != contract.width_bits or
+            memory.required_alignment_bytes != contract.alignment_bytes):
+        return None
+    operands = {item.source_operand_index: item for item in approved.constraints.operand_constraints}
+    value = operands.get(contract.value_operand_index)
+    address = operands.get(contract.object_operand_index)
+    if (len(operands) != 2 or value is None or address is None or
+            value.role is not TargetOperandRole.READ_WRITE or
+            value.allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
+            value.required_width_bits != contract.width_bits or
+            address.role is not TargetOperandRole.READ_WRITE or
+            address.allowed_classes != frozenset({TargetOperandClass.MEMORY})):
+        return None
+    suffix = "l" if contract.width_bits == 32 else "q"
+    return (
+        RendererContractKind.GNU_INLINE_ASM,
+        GnuInlineAsmRecipe(
+            template=f"{opcode}{suffix} %0, %1",
+            output_operand_indexes=(value.source_operand_index, address.source_operand_index),
+            input_operand_indexes=(),
+            memory_dereference_operand_indexes=(address.source_operand_index,),
+        ),
+    )
+
+
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
-    registry_id="phase6f.target-contracts", version="gpr-operand-contracts-v1",
+    registry_id="phase6f.target-contracts", version="x86-lock-atomic-contracts-v1",
     entries=(
         RegisteredRendererContract(
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
@@ -272,6 +344,22 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             _compiler_barrier_public_builtin_recipe,
             "c_builtin_constraint",
             frozenset({"compiler:barrier-builtin"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1",
+            TargetLoweringKind.X86_ATOMIC,
+            "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst",
+            _x86_lock_atomic_recipe,
+            "x86_atomic_contract",
+            frozenset({"x86:atomic"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
+            TargetLoweringKind.X86_ATOMIC,
+            "x86.gnu-att.atomic.xchg.u32-u64.seq-cst",
+            _x86_lock_atomic_recipe,
+            "x86_atomic_contract",
+            frozenset({"x86:atomic"}),
         ),
     ),
 )
