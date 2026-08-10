@@ -14,8 +14,10 @@ from .phase6f_renderer import (
     CBuiltinArgument,
     CBuiltinRecipe,
     GnuInlineAsmRecipe,
+    GnuAsmGotoRecipe,
     HelperCallRecipe,
     RendererContractKind,
+    StructuredControlFlowRecipe,
 )
 from .phase6c_constraints import TargetOperandRole, TargetOperandClass
 from .source_model import SourceAtomicRmwOperation, SourceMemoryOrdering, SourceValueOperationKind
@@ -53,6 +55,22 @@ class RegisteredHelperAbiContract:
     pic_plt_compatible: bool
 
 
+@dataclass(frozen=True)
+class RegisteredStructuredControlFlowContract:
+    """An explicit, versioned control-flow renderer registration.
+
+    ``recipe`` must be supplied by a prior, proof-compatible target semantic
+    contract.  This registry intentionally does not manufacture conditions,
+    labels, fallthroughs, or branch templates from CFG text or source asm.
+    """
+    semantic_contract_id: str
+    renderer_contract_id: str
+    uses_asm_goto: bool
+    branch_condition_binding_id: str | None
+    recipe: GnuAsmGotoRecipe | StructuredControlFlowRecipe
+    required_features: frozenset[str] = frozenset()
+
+
 class RendererContractRegistry:
     """Immutable registry whose lookup is bound to an approved plan id."""
     def __init__(self, *, registry_id: str, version: str,
@@ -68,6 +86,9 @@ class RendererContractRegistry:
         if semantic_id is None and approved.plan.kind is TargetLoweringKind.HELPER_CALL:
             helper = approved.constraints.helper_abi_contract
             semantic_id = None if helper is None else "helper." + helper.runtime_contract_id
+        if semantic_id is None and approved.plan.kind is TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
+            flow = approved.constraints.structured_control_flow_contract
+            semantic_id = None if flow is None else flow.semantic_contract_id
         if not isinstance(semantic_id, str):
             return None
         entry = self._entries.get(semantic_id)
@@ -146,6 +167,84 @@ def register_helper_abi_contracts(
     return RendererContractRegistry(
         registry_id=base_registry.registry_id,
         version=base_registry.version + "+helpers",
+        entries=entries,
+    )
+
+
+def _structured_control_flow_entry(
+    registration: RegisteredStructuredControlFlowContract,
+) -> RegisteredRendererContract:
+    def make_payload(approved: ApprovedTargetLoweringPlan):
+        contract = approved.constraints.structured_control_flow_contract
+        if (contract is None or
+                contract.semantic_contract_id != registration.semantic_contract_id or
+                contract.uses_asm_goto != registration.uses_asm_goto or
+                contract.has_exception_or_trap_edge or
+                contract.branch_condition_binding_id != registration.branch_condition_binding_id):
+            return None
+        expected_labels = {
+            (item.label, item.target_continuation_id)
+            for item in contract.asm_goto_labels
+        }
+        recipe_labels = {
+            (item.label, item.target_continuation_id)
+            for item in registration.recipe.label_bindings
+        }
+        # Both asm-goto and structured CFG recipes must faithfully encode the
+        # complete label/continuation relation.  Empty sets are valid only for
+        # non-asm-goto control flow.
+        if expected_labels != recipe_labels:
+            return None
+        if registration.uses_asm_goto:
+            if (not isinstance(registration.recipe, GnuAsmGotoRecipe) or
+                    not expected_labels or
+                    not approved.constraints.control_flow_constraint.preserve_asm_goto):
+                return None
+            return (RendererContractKind.GNU_ASM_GOTO, registration.recipe)
+        if (not isinstance(registration.recipe, StructuredControlFlowRecipe) or
+                contract.uses_asm_goto):
+            return None
+        return (RendererContractKind.STRUCTURED_CONTROL_FLOW, registration.recipe)
+
+    return RegisteredRendererContract(
+        registration.semantic_contract_id,
+        TargetLoweringKind.STRUCTURED_CONTROL_FLOW,
+        registration.renderer_contract_id,
+        make_payload,
+        "structured_control_flow_contract",
+        registration.required_features,
+    )
+
+
+def register_structured_control_flow_contracts(
+    base_registry: RendererContractRegistry,
+    registrations: tuple[RegisteredStructuredControlFlowContract, ...],
+) -> RendererContractRegistry:
+    """Extend a registry with audited asm-goto/structured-CFG recipes.
+
+    No control-flow registration is installed by default: ordinary CFG facts
+    do not contain an output branch-condition AST or a target branch recipe.
+    Callers must supply both as an explicit semantic contract, otherwise the
+    renderer remains fail-closed.
+    """
+    if not isinstance(base_registry, RendererContractRegistry):
+        raise TypeError("base_registry must be RendererContractRegistry")
+    for item in registrations:
+        if not item.semantic_contract_id or not item.renderer_contract_id:
+            raise ValueError("control-flow registration needs stable identifiers")
+        if not isinstance(item.branch_condition_binding_id, str) or not item.branch_condition_binding_id:
+            raise ValueError("control-flow registration needs an explicit condition binding")
+        if item.uses_asm_goto != isinstance(item.recipe, GnuAsmGotoRecipe):
+            raise ValueError("asm-goto registration recipe kind mismatch")
+        if (not item.uses_asm_goto and
+                not isinstance(item.recipe, StructuredControlFlowRecipe)):
+            raise ValueError("structured-CFG registration recipe kind mismatch")
+    entries = tuple(base_registry._entries.values()) + tuple(
+        _structured_control_flow_entry(item) for item in registrations
+    )
+    return RendererContractRegistry(
+        registry_id=base_registry.registry_id,
+        version=base_registry.version + "+structured-cfg",
         entries=entries,
     )
 
