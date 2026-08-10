@@ -34,6 +34,7 @@ set(R2X_SOURCES
   src/Classifier.cpp
   src/Rewriter.cpp
   src/RuleEngine.cpp
+  src/PublicReplacement.cpp
   src/Report.cpp
   src/ReportLoad.cpp
   src/rules/BuiltinRules.cpp
