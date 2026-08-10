@@ -604,33 +604,37 @@ def _generate_barrier_candidates(
     ]
 
     if facts.target_is_x86:
-        candidates.append(
-            _plan(
-                plan_id="x86.barrier",
-                kind=TargetLoweringKind.X86_BARRIER,
-                family=TargetLoweringFamily.X86_BARRIER,
-                priority_tier=PlanPriorityTier.X86_ATOMIC_OR_BARRIER,
-                deterministic_rank=30,
-                required_features=frozenset({"target:x86"}),
-                requirements=frozenset(
-                    {
-                        *_x86_requirements(
-                            preserve_memory=True,
-                            preserve_cc=True,
-                        ),
-                        PlanRequirement.PRESERVE_MEMORY_ORDERING,
-                    }
-                ),
-                metadata={
-                    "strategy": "x86_barrier",
-                },
-                rationale=(
-                    "Target-specific barrier lowering remains subject to "
-                    "Phase 6C constraints and Phase 6D ordering proof.",
-                ),
-                reason_codes=("x86-barrier-candidate",),
-            )
+        routes = (
+            ("mfence", "x86.gnu-att.mfence.full-system-seq-cst.v1", "x86:hardware_fence", 30),
+            ("serialize", "x86.gnu-att.serialize.instruction-serialization.v1", "x86:serialize", 31),
         )
+        for route, semantic_id, feature, rank in routes:
+            candidates.append(
+                _plan(
+                    plan_id=f"x86.barrier.{route}",
+                    kind=TargetLoweringKind.X86_BARRIER,
+                    family=TargetLoweringFamily.X86_BARRIER,
+                    priority_tier=PlanPriorityTier.X86_ATOMIC_OR_BARRIER,
+                    deterministic_rank=rank,
+                    required_features=frozenset({feature}),
+                    requirements=frozenset(
+                        {
+                            *_x86_requirements(preserve_memory=True),
+                            PlanRequirement.PRESERVE_MEMORY_ORDERING,
+                        }
+                    ),
+                    metadata={
+                        "strategy": "x86_barrier",
+                        "renderer_semantic_contract_id": semantic_id,
+                    },
+                    rationale=(
+                        "x86 barrier candidate with a registered full-fence "
+                        "or instruction-serialization contract; no generic "
+                        "fence or instruction-stream fallback is permitted.",
+                    ),
+                    reason_codes=("x86-barrier-candidate", f"x86-barrier-{route}"),
+                )
+            )
 
     return candidates
 
