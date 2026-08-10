@@ -14,6 +14,7 @@ from .phase6f_renderer import (
     CBuiltinArgument,
     CBuiltinRecipe,
     GnuInlineAsmRecipe,
+    HelperCallRecipe,
     RendererContractKind,
 )
 from .phase6c_constraints import TargetOperandRole, TargetOperandClass
@@ -34,6 +35,24 @@ class RegisteredRendererContract:
     required_features: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class RegisteredHelperAbiContract:
+    """Versioned helper registration required before any helper is rendered."""
+    semantic_contract_id: str
+    helper_symbol: str
+    semantic_version: str
+    calling_convention: str
+    target_abi: str
+    parameter_type_ids: tuple[str, ...]
+    return_type_id: str | None
+    runtime_contract_id: str
+    helper_registry_version: str
+    memory_effect: str
+    may_return: bool
+    may_unwind: bool
+    pic_plt_compatible: bool
+
+
 class RendererContractRegistry:
     """Immutable registry whose lookup is bound to an approved plan id."""
     def __init__(self, *, registry_id: str, version: str,
@@ -46,6 +65,9 @@ class RendererContractRegistry:
 
     def resolve(self, approved: ApprovedTargetLoweringPlan) -> RendererContract | None:
         semantic_id = approved.plan.metadata.get("renderer_semantic_contract_id")
+        if semantic_id is None and approved.plan.kind is TargetLoweringKind.HELPER_CALL:
+            helper = approved.constraints.helper_abi_contract
+            semantic_id = None if helper is None else "helper." + helper.runtime_contract_id
         if not isinstance(semantic_id, str):
             return None
         entry = self._entries.get(semantic_id)
@@ -67,6 +89,65 @@ class RendererContractRegistry:
 EMPTY_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="1"
 )
+
+
+def _helper_registration_entry(registration: RegisteredHelperAbiContract) -> RegisteredRendererContract:
+    def make_payload(approved: ApprovedTargetLoweringPlan):
+        contract = approved.constraints.helper_abi_contract
+        evidence = approved.proof.evidence
+        if contract is None or evidence is None:
+            return None
+        if (contract.runtime_contract_id != registration.runtime_contract_id or
+                contract.helper_symbol != registration.helper_symbol or
+                contract.semantic_version != registration.semantic_version or
+                contract.calling_convention != registration.calling_convention or
+                contract.target_abi != registration.target_abi or
+                contract.parameter_type_ids != registration.parameter_type_ids or
+                contract.return_type_id != registration.return_type_id or
+                contract.memory_effect.value != registration.memory_effect or
+                contract.may_return != registration.may_return or
+                contract.may_unwind != registration.may_unwind or
+                contract.pic_plt_compatible != registration.pic_plt_compatible or
+                evidence.helper_registry_version != registration.helper_registry_version):
+            return None
+        return (
+            RendererContractKind.HELPER_CALL,
+            HelperCallRecipe(
+                helper_symbol=registration.helper_symbol,
+                argument_operand_indexes=contract.parameter_operand_indexes,
+                result_operand_index=contract.return_operand_index,
+            ),
+        )
+    return RegisteredRendererContract(
+        registration.semantic_contract_id,
+        TargetLoweringKind.HELPER_CALL,
+        "helper." + registration.runtime_contract_id,
+        make_payload,
+        "helper_abi_contract",
+    )
+
+
+def register_helper_abi_contracts(
+    base_registry: RendererContractRegistry,
+    registrations: tuple[RegisteredHelperAbiContract, ...],
+) -> RendererContractRegistry:
+    """Return an immutable registry extended with explicit helper contracts."""
+    if not isinstance(base_registry, RendererContractRegistry):
+        raise TypeError("base_registry must be RendererContractRegistry")
+    for item in registrations:
+        expected_id = "helper." + item.runtime_contract_id
+        if item.semantic_contract_id != expected_id:
+            raise ValueError(
+                "helper semantic_contract_id must bind runtime_contract_id"
+            )
+    entries = tuple(base_registry._entries.values()) + tuple(
+        _helper_registration_entry(item) for item in registrations
+    )
+    return RendererContractRegistry(
+        registry_id=base_registry.registry_id,
+        version=base_registry.version + "+helpers",
+        entries=entries,
+    )
 
 def _gpr_rw_binary_recipe(
     approved: ApprovedTargetLoweringPlan,
@@ -333,7 +414,7 @@ def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
 
 
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
-    registry_id="phase6f.target-contracts", version="barrier-serialization-contracts-v1",
+    registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
         RegisteredRendererContract(
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
