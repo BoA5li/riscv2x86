@@ -2992,8 +2992,10 @@ def _translate_phase6_proof_pipeline(
             "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
             "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1",
             "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
+            "x86.gnu-att.mfence.full-system-seq-cst.v1",
+            "x86.gnu-att.serialize.instruction-serialization.v1",
         }),
-        version="phase6-default-catalog-x86-lock-atomics-v1",
+        version="phase6-default-catalog-barrier-serialization-v1",
     )
     capabilities = compiler_capabilities or CompilerCapabilityModel(
         supports_gnu_inline_asm=target_environment.supports_gnu_inline_asm,
