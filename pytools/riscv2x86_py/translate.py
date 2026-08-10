@@ -76,7 +76,7 @@ from .phase6f_renderer import (
     render_final_selection_result,
 )
 from .phase6f_contract_registry import (
-    EMPTY_RENDERER_CONTRACT_REGISTRY, RendererContractRegistry,
+    GPR_INTEGER_RENDERER_CONTRACT_REGISTRY, RendererContractRegistry,
 )
 from .plan_types import TargetLoweringKind, TargetLoweringPlan
 # =============================================================================
@@ -2806,7 +2806,7 @@ def translate(
     helper_contract_registry: Optional[HelperSemanticContractRegistry] = None,
     selection_policy: Phase6ESelectionPolicy = Phase6ESelectionPolicy(),
     renderer_context: Optional[RendererContext] = None,
-    renderer_contract_registry: RendererContractRegistry = EMPTY_RENDERER_CONTRACT_REGISTRY,
+    renderer_contract_registry: RendererContractRegistry = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY,
 ) -> TranslationOutput:
     """
     Phase 6 / 7 translation entry.
@@ -3084,7 +3084,7 @@ def _approval_digest(value: str) -> str:
     return f"fnv1a64:{state:016x}"
 
 
-def _make_phase6f_context_from_approved_contract(context: TranslationContext, approved, registry: RendererContractRegistry = EMPTY_RENDERER_CONTRACT_REGISTRY) -> Optional[RendererContext]:
+def _make_phase6f_context_from_approved_contract(context: TranslationContext, approved, registry: RendererContractRegistry = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY) -> Optional[RendererContext]:
     """Register only a recipe mechanically implied by an approved 6C contract.
 
     Unsupported contract families intentionally return None; this helper never
