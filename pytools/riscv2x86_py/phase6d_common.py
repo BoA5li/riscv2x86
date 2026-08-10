@@ -120,6 +120,18 @@ def validate_common(request: SemanticProofRequest):
     if c.plan_id != p.plan_id or c.environment != e: return reject(request,SemanticProofReasonCode.PLAN_CONSTRAINT_MISMATCH)
     if not p.supports_features(e.available_features): return reject(request,SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if p.kind not in request.target_semantic_catalog.supported_plan_kinds: return reject(request,SemanticProofReasonCode.TARGET_SEMANTICS_MISSING)
+    # A GNU-asm candidate is proof-eligible only when its *specific*,
+    # versioned renderer semantic contract is present in the target catalog.
+    # This checks structured plan metadata only; it does not inspect asm text.
+    if p.kind is TargetLoweringKind.X86_GNU_INLINE_ASM:
+        semantic_contract_id = p.metadata.get("renderer_semantic_contract_id")
+        if (not isinstance(semantic_contract_id, str) or
+                semantic_contract_id not in request.target_semantic_catalog.semantic_contract_ids):
+            return reject(request, SemanticProofReasonCode.TARGET_SEMANTICS_MISSING, {
+                "renderer_semantic_contract_id": (
+                    semantic_contract_id if isinstance(semantic_contract_id, str) else None
+                ),
+            })
     if not all((s.operation.complete,s.operands.complete,s.implicit_state.complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,s.control_flow.has_indirect_control_flow is not None,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     if (s.atomic.present and not s.atomic.complete) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     if s.microarch.explicitly_microarch_sensitive and any(value is None for value in (s.microarch.has_timing_source,s.microarch.has_cache_operation,s.microarch.has_speculation_control)): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
