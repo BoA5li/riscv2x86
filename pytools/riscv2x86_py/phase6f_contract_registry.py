@@ -61,8 +61,18 @@ EMPTY_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="1"
 )
 
-def _gpr_rw_binary_recipe(approved: ApprovedTargetLoweringPlan):
-    """Closed 32/64-bit add/sub/bitwise family; no template inference."""
+def _gpr_rw_binary_recipe(
+    approved: ApprovedTargetLoweringPlan,
+    *,
+    input_class: TargetOperandClass,
+    output_early_clobber: bool,
+):
+    """Build one registered 32/64-bit binary GPR recipe.
+
+    ``input_class`` and ``output_early_clobber`` are entry-specific semantic
+    contract conditions.  They are intentionally arguments of the registered
+    factory rather than defaults inferred from the renderer or asm template.
+    """
     c = approved.constraints
     contract = c.x86_gnu_inline_asm_contract
     if contract is None or contract.value_operation_kind not in {
@@ -75,11 +85,20 @@ def _gpr_rw_binary_recipe(approved: ApprovedTargetLoweringPlan):
     inputs = [x for x in c.operand_constraints if x.role is TargetOperandRole.INPUT]
     if len(outputs) != 1 or len(inputs) != 1 or outputs[0].required_width_bits not in {32, 64}:
         return None
+    output, input_ = outputs[0], inputs[0]
     if inputs[0].required_width_bits != outputs[0].required_width_bits:
         return None
-    if TargetOperandClass.GENERAL_REGISTER not in outputs[0].allowed_classes:
+    if TargetOperandClass.GENERAL_REGISTER not in output.allowed_classes:
         return None
-    suffix = "l" if outputs[0].required_width_bits == 32 else "q"
+    if input_class not in input_.allowed_classes:
+        return None
+    if output.early_clobber is not output_early_clobber:
+        return None
+    if input_.early_clobber or output.tied_to_source_operand_index is not None or input_.tied_to_source_operand_index is not None:
+        return None
+    if output.requires_fixed_register or input_.requires_fixed_register:
+        return None
+    suffix = "l" if output.required_width_bits == 32 else "q"
     opcode = {
         SourceValueOperationKind.UNSIGNED_ADD:"add", SourceValueOperationKind.UNSIGNED_SUB:"sub",
         SourceValueOperationKind.BIT_AND:"and", SourceValueOperationKind.BIT_OR:"or",
@@ -87,16 +106,58 @@ def _gpr_rw_binary_recipe(approved: ApprovedTargetLoweringPlan):
     }[contract.value_operation_kind]
     return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
         template=f"{opcode}{suffix} %1, %0",
-        output_operand_indexes=(outputs[0].source_operand_index,),
-        input_operand_indexes=(inputs[0].source_operand_index,),
+        output_operand_indexes=(output.source_operand_index,),
+        input_operand_indexes=(input_.source_operand_index,),
     ))
 
 
+def _gpr_rw_gpr_binary_recipe(approved: ApprovedTargetLoweringPlan):
+    return _gpr_rw_binary_recipe(
+        approved,
+        input_class=TargetOperandClass.GENERAL_REGISTER,
+        output_early_clobber=False,
+    )
+
+
+def _gpr_rw_immediate_binary_recipe(approved: ApprovedTargetLoweringPlan):
+    return _gpr_rw_binary_recipe(
+        approved,
+        input_class=TargetOperandClass.IMMEDIATE,
+        output_early_clobber=False,
+    )
+
+
+def _gpr_rw_early_clobber_binary_recipe(approved: ApprovedTargetLoweringPlan):
+    return _gpr_rw_binary_recipe(
+        approved,
+        input_class=TargetOperandClass.GENERAL_REGISTER,
+        output_early_clobber=True,
+    )
+
+
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
-    registry_id="phase6f.target-contracts", version="gpr-integer-v1",
-    entries=(RegisteredRendererContract(
-        "x86.gnu-att.gpr.rw-binary.v1", TargetLoweringKind.X86_GNU_INLINE_ASM,
-        "x86.gnu-att.gpr.rw-binary", _gpr_rw_binary_recipe,
-        "x86_gnu_inline_asm_contract",
-    ),),
+    registry_id="phase6f.target-contracts", version="gpr-operand-contracts-v1",
+    entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.rw-gpr-binary.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.rw-gpr-binary",
+            _gpr_rw_gpr_binary_recipe,
+            "x86_gnu_inline_asm_contract",
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.rw-immediate-binary.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.rw-immediate-binary",
+            _gpr_rw_immediate_binary_recipe,
+            "x86_gnu_inline_asm_contract",
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.rw-early-clobber-binary",
+            _gpr_rw_early_clobber_binary_recipe,
+            "x86_gnu_inline_asm_contract",
+        ),
+    ),
 )
