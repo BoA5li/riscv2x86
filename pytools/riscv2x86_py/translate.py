@@ -2983,8 +2983,12 @@ def _translate_phase6_proof_pipeline(
 
     catalog = target_semantic_catalog or TargetSemanticCatalog(
         supported_plan_kinds=frozenset(TargetLoweringKind),
-        semantic_contract_ids=frozenset(),
-        version="phase6-default-catalog-v1",
+        semantic_contract_ids=frozenset({
+            "x86.gnu-att.gpr.rw-gpr-binary.v1",
+            "x86.gnu-att.gpr.rw-immediate-binary.v1",
+            "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+        }),
+        version="phase6-default-catalog-gpr-operands-v1",
     )
     capabilities = compiler_capabilities or CompilerCapabilityModel(
         supports_gnu_inline_asm=target_environment.supports_gnu_inline_asm,
