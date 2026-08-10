@@ -86,10 +86,31 @@ class CExpressionRecipe:
 
 
 @dataclass(frozen=True)
+class CBuiltinArgument:
+    """One explicitly typed renderer argument; never inferred at render time."""
+    operand_index: int | None = None
+    literal: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.operand_index is None) == (self.literal is None):
+            raise ValueError("C builtin argument requires exactly one source")
+        if self.operand_index is not None and (
+                isinstance(self.operand_index, bool) or
+                not isinstance(self.operand_index, int) or self.operand_index < 0):
+            raise TypeError("operand_index must be a non-negative int")
+        if self.literal is not None and (not isinstance(self.literal, str) or not self.literal.strip()):
+            raise TypeError("literal must be a non-empty str")
+
+
+@dataclass(frozen=True)
 class CBuiltinRecipe:
     builtin_identifier: str
-    argument_operand_indexes: tuple[int, ...]
+    argument_operand_indexes: tuple[int, ...] = ()
     result_operand_index: int | None = None
+    # New recipes must use argument_sequence.  The legacy field remains only
+    # for existing callers while they migrate to a fully explicit contract.
+    argument_sequence: tuple[CBuiltinArgument, ...] = ()
+    required_declaration: str | None = None
 
 
 @dataclass(frozen=True)
@@ -327,7 +348,14 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         text = f"{result} = {expression};" if result is not None else f"{expression};"
         return RenderedReplacement(RenderedReplacementKind.C_EXPRESSION, p, text, (), a.source_model_id, a.plan.plan_id, ctx.renderer_id, ctx.renderer_version)
     if kind is RendererContractKind.C_BUILTIN and isinstance(p, CBuiltinRecipe):
-        args = [_binding(ctx, i) for i in p.argument_operand_indexes]
+        if p.argument_sequence:
+            args = [
+                _binding(ctx, item.operand_index)
+                if item.operand_index is not None else item.literal
+                for item in p.argument_sequence
+            ]
+        else:
+            args = [_binding(ctx, i) for i in p.argument_operand_indexes]
         result = _binding(ctx, p.result_operand_index) if p.result_operand_index is not None else None
         if any(x is None for x in args) or (p.result_operand_index is not None and result is None): return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
         call = p.builtin_identifier + "(" + ", ".join(args) + ")"
