@@ -136,7 +136,7 @@ def validate_common(request: SemanticProofRequest):
     # A GNU-asm candidate is proof-eligible only when its *specific*,
     # versioned renderer semantic contract is present in the target catalog.
     # This checks structured plan metadata only; it does not inspect asm text.
-    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC}:
+    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER}:
         semantic_contract_id = p.metadata.get("renderer_semantic_contract_id")
         if (not isinstance(semantic_contract_id, str) or
                 semantic_contract_id not in request.target_semantic_catalog.semantic_contract_ids):
