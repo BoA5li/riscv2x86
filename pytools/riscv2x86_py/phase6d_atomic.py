@@ -39,9 +39,32 @@ def prove_atomic(r):
         PreservationConclusion.SHELL_PRESERVED,
     ))
 def prove_barrier(r):
-    c,s=r.constraints,r.source_model
-    if c.x86_barrier_contract is None:return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
-    if s.barrier.compiler_barrier and not c.memory_constraint.requires_compiler_barrier:return reject(r,SemanticProofReasonCode.BARRIER_UNPRESERVED)
-    if s.barrier.hardware_memory_barrier and not c.memory_constraint.requires_hardware_barrier:return reject(r,SemanticProofReasonCode.BARRIER_UNPRESERVED)
-    if c.x86_barrier_contract.ordering != s.barrier.ordering or c.x86_barrier_contract.scope != s.barrier.scope:return reject(r,SemanticProofReasonCode.BARRIER_UNPRESERVED)
+    c, s = r.constraints, r.source_model
+    contract = c.x86_barrier_contract
+    semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if contract is None or not isinstance(semantic_id, str):
+        return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+    if (contract.semantic_contract_id != semantic_id or
+            semantic_id not in r.target_semantic_catalog.semantic_contract_ids or
+            contract.ordering != s.barrier.ordering or
+            contract.scope != s.barrier.scope or
+            not c.preserve_volatile or
+            not c.memory_constraint.requires_compiler_barrier or
+            not c.memory_constraint.requires_memory_clobber):
+        return reject(r, SemanticProofReasonCode.BARRIER_UNPRESERVED)
+    if contract.route == "full_hardware_fence":
+        if (not s.barrier.hardware_memory_barrier or
+                not c.memory_constraint.requires_hardware_barrier or
+                contract.ordering.value != "seq_cst" or
+                contract.scope.value != "system"):
+            return reject(r, SemanticProofReasonCode.BARRIER_UNPRESERVED)
+    elif contract.route == "instruction_serialization":
+        if (not s.barrier.instruction_serializing or
+                not c.memory_constraint.requires_instruction_serialization or
+                c.memory_constraint.requires_hardware_barrier):
+            return reject(r, SemanticProofReasonCode.BARRIER_UNPRESERVED)
+    else:
+        return reject(r, SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
+    if not r.compiler_capabilities.supports_gnu_inline_asm:
+        return reject(r, SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     return finalize(r,(PreservationConclusion.ARCHITECTURE_EQUIVALENT,PreservationConclusion.SHELL_PRESERVED))
