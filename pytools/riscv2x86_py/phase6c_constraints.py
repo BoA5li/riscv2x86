@@ -13,6 +13,7 @@ from .source_model import (
     SourceBarrierScope,
     SourceMemoryOrdering,
     SourceSemanticModel,
+    SourceSignedness,
 )
 
 
@@ -398,6 +399,8 @@ class TargetConstraintReasonCode(str, Enum):
     X86_INLINE_ASM_SHELL_UNSUPPORTED = "phase6c.x86_inline_asm_shell_unsupported"
     X86_INLINE_ASM_OPERAND_UNSUPPORTED = "phase6c.x86_inline_asm_operand_unsupported"
     X86_INLINE_ASM_BINDING_INCOMPLETE = "phase6c.x86_inline_asm_binding_incomplete"
+    X86_INLINE_ASM_SEMANTIC_CONTRACT_UNSUPPORTED = "phase6c.x86_inline_asm_semantic_contract_unsupported"
+    X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH = "phase6c.x86_inline_asm_operand_contract_mismatch"
     X86_MEMORY_ASM_PLAN_KIND_MISMATCH = "phase6c.x86_memory_asm_plan_kind_mismatch"
     X86_MEMORY_ASM_FEATURE_UNAVAILABLE = "phase6c.x86_memory_asm_feature_unavailable"
     X86_MEMORY_ASM_SOURCE_INCOMPLETE = "phase6c.x86_memory_asm_source_incomplete"
