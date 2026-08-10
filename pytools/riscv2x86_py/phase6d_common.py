@@ -95,7 +95,20 @@ def constraint_identity(c):
     operands=",".join(f"{x.source_operand_index}:{x.role.value}:{','.join(sorted(y.value for y in x.allowed_classes))}:{x.required_width_bits}:{x.required_signedness}:{x.tied_to_source_operand_index}:{x.early_clobber}:{x.fixed_register_name}" for x in c.operand_constraints)
     memory=c.memory_constraint
     control=c.control_flow_constraint
-    return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), ",".join(sorted(type(x).__name__ for x in (c.c_expression_constraint,c.c_builtin_constraint,c.x86_gnu_inline_asm_contract,c.x86_memory_inline_asm_contract,c.x86_atomic_contract,c.x86_barrier_contract,c.structured_control_flow_contract,c.helper_abi_contract) if x is not None))))
+    contracts = tuple(
+        item for item in (
+            c.c_expression_constraint, c.c_builtin_constraint,
+            c.x86_gnu_inline_asm_contract, c.x86_memory_inline_asm_contract,
+            c.x86_atomic_contract, c.x86_barrier_contract,
+            c.structured_control_flow_contract, c.helper_abi_contract,
+        ) if item is not None
+    )
+    # Contract payload is part of the proof binding.  Type names alone would
+    # permit a changed xadd/xchg or ordering contract to reuse stale evidence.
+    contract_identity = ",".join(
+        f"{type(item).__name__}:{repr(item)}" for item in contracts
+    )
+    return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), contract_identity))
 
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
@@ -123,7 +136,7 @@ def validate_common(request: SemanticProofRequest):
     # A GNU-asm candidate is proof-eligible only when its *specific*,
     # versioned renderer semantic contract is present in the target catalog.
     # This checks structured plan metadata only; it does not inspect asm text.
-    if p.kind is TargetLoweringKind.X86_GNU_INLINE_ASM:
+    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC}:
         semantic_contract_id = p.metadata.get("renderer_semantic_contract_id")
         if (not isinstance(semantic_contract_id, str) or
                 semantic_contract_id not in request.target_semantic_catalog.semantic_contract_ids):
@@ -165,7 +178,17 @@ def _validate_operand_bindings(request):
         source=available.get(target.source_operand_index)
         if source is None or (target.required_width_bits is not None and target.required_width_bits != source.width_bits): return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
         if target.tied_to_source_operand_index != source.tied_to_source_operand_index or target.early_clobber != source.early_clobber: return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
-        if target.role.value != source.access.value: return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
+        # A proven X86_ATOMIC memory operand is the only permitted target
+        # read-write/location adaptation for a source ADDRESS binding.  The
+        # atomic proof additionally checks it is the contract's object index.
+        atomic_memory_address = (
+            request.candidate_plan.kind is TargetLoweringKind.X86_ATOMIC and
+            target.role.value == "read_write" and
+            any(item.value == "memory" for item in target.allowed_classes) and
+            source.access.value == "address"
+        )
+        if target.role.value != source.access.value and not atomic_memory_address:
+            return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
     return None
 
 def finalize(request, conclusions):
