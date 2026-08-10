@@ -1,4 +1,5 @@
 #include "riscv2x86/RuleEngine.h"
+#include "riscv2x86/PublicReplacement.h"
 #include <algorithm>
 #include <cctype>
 #include <regex>
@@ -77,15 +78,16 @@ static std::string genAsmRdcycle(const AsmFragment &f) {
 // 2) 宏展开出来的 builtin 调用
 // 前提是分类阶段已经把 rewrite range 对准了“最终应替换的源码区间”
 static bool matchBuiltinRdcycleCall(const Finding &f) {
-    if (!f.builtin.has_value()) return false;
+    const auto *contract = findPublicReplacementContract(f);
+    if (contract == nullptr || contract->disposition != PublicReplacementDisposition::Replace) return false;
     if (!hasRewriteRange(f)) return false;
 
-    const std::string &name = f.builtin->calleeName;
-    return name == "__builtin_riscv_rdcycle" || name == "__riscv_rdcycle";
+    return contract->sourceBuiltin == f.builtin->calleeName;
 }
 
-static std::string genBuiltinRdcycleCall(const Finding &) {
-    return "__builtin_readcyclecounter()";
+static std::string genBuiltinRdcycleCall(const Finding &f) {
+    const auto *contract = findPublicReplacementContract(f);
+    return contract == nullptr ? "" : contract->replacement;
 }
 
 static bool matchNop(const AsmFragment &f) {
@@ -115,14 +117,9 @@ void registerBuiltinRules(RuleEngine &eng) {
         {}
     });
 
-    eng.addRule({
-        "builtin.rdcycle.call",
-        "RISC-V builtin rdcycle() -> __builtin_readcyclecounter()",
-        {},
-        {},
-        matchBuiltinRdcycleCall,
-        genBuiltinRdcycleCall
-    });
+    // Do not register rdcycle as a rewrite: its registry contract explicitly
+    // requires a semantic/microarchitecture route rather than a guessed x86
+    // counter builtin.
 
     eng.addRule({
         "builtin.nop",
