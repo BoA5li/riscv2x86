@@ -36,6 +36,13 @@ class StructuredControlFlowContract:
     has_multiple_exits: bool
     preserves_return: bool
     preserves_noreturn: bool
+    # These fields are source-model/plan facts, not renderer deductions.  A
+    # contract that needs an actual branch expression must provide a stable
+    # binding id before a recipe registry may render it.
+    semantic_contract_id: str = ""
+    branch_condition_binding_id: str | None = None
+    state_merge_requirements: tuple[str, ...] = ()
+    has_exception_or_trap_edge: bool = False
 
 
 def _failure(plan, name, details=None):
@@ -51,6 +58,10 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_PLAN_KIND_MISMATCH")
     cf = source_model.control_flow
     if not source_model.operation.complete or not cf.cfg_ok:
+        return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
+    # A renderer may not turn a possibly trapping operation into an ordinary
+    # branch.  Exception/trap edges need their own registered route.
+    if source_model.operation.may_trap is not False:
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
     if cf.has_unknown_target:
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_UNKNOWN_TARGET")
@@ -77,8 +88,25 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
     if cf.has_asm_goto and {item.label for item in labels} != set(source_model.shell.goto_labels):
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
     fallthrough = tuple(item.target_continuation_id for item in continuations if item.edge_kind == "fallthrough")
+    # Phase 6C does not invent condition ASTs.  Phase 6B must carry an
+    # authoritative condition binding into the plan metadata; if it is absent
+    # the derived constraints remain usable for proof/selection, but no
+    # registered renderer recipe can consume it.
+    branch_condition_binding_id = candidate_plan.metadata.get("cfg_branch_condition_binding_id")
+    if branch_condition_binding_id is not None and not isinstance(branch_condition_binding_id, str):
+        return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
+    merge_requirements = candidate_plan.metadata.get("cfg_state_merge_requirements", ())
+    if (not isinstance(merge_requirements, tuple) or
+            not all(isinstance(item, str) and item for item in merge_requirements)):
+        return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
+    semantic_contract_id = (
+        "x86.gnu-att.asm-goto.structured-cfg.v1"
+        if cf.has_asm_goto else "x86.structured-cfg.explicit.v1"
+    )
     contract = StructuredControlFlowContract(continuations, fallthrough, tuple(labels),
-        cf.has_asm_goto, cf.has_multiple_exits, False, False)
+        cf.has_asm_goto, cf.has_multiple_exits, False, False,
+        semantic_contract_id, branch_condition_binding_id, merge_requirements,
+        False)
     flow = TargetControlFlowConstraint(preserve_control_flow=True,
         preserve_asm_goto=cf.has_asm_goto)
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,
