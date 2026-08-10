@@ -343,7 +343,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
     expected = {
         RendererContractKind.C_EXPRESSION: {TargetLoweringKind.C_EXPRESSION, TargetLoweringKind.C_STRUCTURED},
         RendererContractKind.C_BUILTIN: {TargetLoweringKind.C_BUILTIN}, RendererContractKind.GNU_INLINE_ASM: {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER},
-        RendererContractKind.GNU_ASM_GOTO: {TargetLoweringKind.X86_GNU_INLINE_ASM}, RendererContractKind.HELPER_CALL: {TargetLoweringKind.HELPER_CALL},
+        RendererContractKind.GNU_ASM_GOTO: {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.STRUCTURED_CONTROL_FLOW}, RendererContractKind.HELPER_CALL: {TargetLoweringKind.HELPER_CALL},
         RendererContractKind.STRUCTURED_CONTROL_FLOW: {TargetLoweringKind.STRUCTURED_CONTROL_FLOW},
     }
     if a.plan.kind not in expected.get(kind, set()): return _failure(request, RenderReasonCode.PLAN_KIND_CONTRACT_MISMATCH, internal=True)
@@ -377,6 +377,11 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
     if kind is RendererContractKind.STRUCTURED_CONTROL_FLOW and isinstance(p, StructuredControlFlowRecipe):
         if not a.constraints.control_flow_constraint.preserve_control_flow:return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
         if not p.statements:return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        contract = a.constraints.structured_control_flow_contract
+        expected_labels = {(item.label, item.target_continuation_id) for item in getattr(contract, "asm_goto_labels", ())}
+        recipe_labels = {(item.label, item.target_continuation_id) for item in p.label_bindings}
+        if expected_labels != recipe_labels:
+            return _failure(request, RenderReasonCode.ASM_GOTO_LABEL_CONTRACT_MISMATCH, internal=True)
         return RenderedReplacement(RenderedReplacementKind.STRUCTURED_CONTROL_FLOW,p,"\n".join(item.text for item in p.statements),(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
     return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
 
