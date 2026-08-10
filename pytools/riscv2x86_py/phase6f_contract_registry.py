@@ -10,7 +10,12 @@ from typing import Callable, Mapping
 
 from .phase6e_selection import ApprovedTargetLoweringPlan
 from .phase6f_renderer import RendererContract
-from .phase6f_renderer import GnuInlineAsmRecipe, RendererContractKind
+from .phase6f_renderer import (
+    CBuiltinArgument,
+    CBuiltinRecipe,
+    GnuInlineAsmRecipe,
+    RendererContractKind,
+)
 from .phase6c_constraints import TargetOperandRole, TargetOperandClass
 from .source_model import SourceValueOperationKind
 from .plan_types import TargetLoweringKind
@@ -26,6 +31,7 @@ class RegisteredRendererContract:
     renderer_contract_id: str
     make_payload: RecipeFactory
     required_constraint_field: str
+    required_features: frozenset[str] = frozenset()
 
 
 class RendererContractRegistry:
@@ -53,7 +59,8 @@ class RendererContractRegistry:
         return RendererContract(
             contract_id=entry.renderer_contract_id + ":" + approved.plan.plan_id,
             plan_id=approved.plan.plan_id,
-            kind=payload[0], payload=payload[1], required_features=frozenset(),
+            kind=payload[0], payload=payload[1],
+            required_features=entry.required_features,
         )
 
 
@@ -135,6 +142,89 @@ def _gpr_rw_early_clobber_binary_recipe(approved: ApprovedTargetLoweringPlan):
     )
 
 
+_ORDER_CONSTANTS = {
+    "relaxed": "__ATOMIC_RELAXED",
+    "consume": "__ATOMIC_CONSUME",
+    "acquire": "__ATOMIC_ACQUIRE",
+    "release": "__ATOMIC_RELEASE",
+    "acq_rel": "__ATOMIC_ACQ_REL",
+    "seq_cst": "__ATOMIC_SEQ_CST",
+}
+
+
+def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
+    """Render only a fully derived __atomic_load_n/store_n contract."""
+    contract = approved.constraints.c_builtin_constraint
+    if contract is None or contract.semantic_contract_id not in {
+        "c.builtin.atomic-load-n.u32-u64.v1",
+        "c.builtin.atomic-store-n.u32-u64.v1",
+    }:
+        return None
+    memory = approved.constraints.memory_constraint
+    if (contract.builtin_identifier not in {"__atomic_load_n", "__atomic_store_n"} or
+            contract.width_bits not in {32, 64} or
+            contract.alignment_bytes is None or
+            contract.alignment_bytes < contract.width_bits // 8 or
+            contract.success_ordering not in _ORDER_CONSTANTS or
+            contract.object_operand_index is None or
+            not contract.object_pointee_type_id or
+            not memory.requires_atomic_ordering or
+            not memory.requires_compiler_barrier or
+            memory.atomic_success_ordering is None or
+            memory.atomic_success_ordering.value != contract.success_ordering or
+            memory.required_atomic_width_bits != contract.width_bits or
+            memory.required_alignment_bytes != contract.alignment_bytes):
+        return None
+    order = CBuiltinArgument(literal=_ORDER_CONSTANTS[contract.success_ordering])
+    if contract.semantic_contract_id == "c.builtin.atomic-load-n.u32-u64.v1":
+        if (contract.result_operand_index is None or
+                contract.value_operand_index is not None or
+                not contract.result_c_type_id):
+            return None
+        arguments = (CBuiltinArgument(contract.object_operand_index), order)
+        result = contract.result_operand_index
+    else:
+        if (contract.value_operand_index is None or
+                contract.result_operand_index is not None or
+                not contract.value_c_type_id):
+            return None
+        arguments = (
+            CBuiltinArgument(contract.object_operand_index),
+            CBuiltinArgument(contract.value_operand_index),
+            order,
+        )
+        result = None
+    return (
+        RendererContractKind.C_BUILTIN,
+        CBuiltinRecipe(
+            builtin_identifier=contract.builtin_identifier,
+            result_operand_index=result,
+            argument_sequence=arguments,
+            required_declaration=contract.required_declaration,
+        ),
+    )
+
+
+def _compiler_barrier_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
+    contract = approved.constraints.c_builtin_constraint
+    memory = approved.constraints.memory_constraint
+    if (contract is None or
+            contract.semantic_contract_id != "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1" or
+            contract.builtin_identifier != "__atomic_signal_fence" or
+            not contract.compiler_barrier or contract.hardware_barrier or
+            not memory.requires_compiler_barrier or
+            memory.requires_hardware_barrier or
+            memory.requires_atomic_ordering):
+        return None
+    return (
+        RendererContractKind.C_BUILTIN,
+        CBuiltinRecipe(
+            builtin_identifier="__atomic_signal_fence",
+            argument_sequence=(CBuiltinArgument(literal="__ATOMIC_SEQ_CST"),),
+        ),
+    )
+
+
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="gpr-operand-contracts-v1",
     entries=(
@@ -158,6 +248,30 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             "x86.gnu-att.gpr.rw-early-clobber-binary",
             _gpr_rw_early_clobber_binary_recipe,
             "x86_gnu_inline_asm_contract",
+        ),
+        RegisteredRendererContract(
+            "c.builtin.atomic-load-n.u32-u64.v1",
+            TargetLoweringKind.C_BUILTIN,
+            "c.builtin.atomic-load-n.u32-u64",
+            _atomic_public_builtin_recipe,
+            "c_builtin_constraint",
+            frozenset({"compiler:atomic-builtin"}),
+        ),
+        RegisteredRendererContract(
+            "c.builtin.atomic-store-n.u32-u64.v1",
+            TargetLoweringKind.C_BUILTIN,
+            "c.builtin.atomic-store-n.u32-u64",
+            _atomic_public_builtin_recipe,
+            "c_builtin_constraint",
+            frozenset({"compiler:atomic-builtin"}),
+        ),
+        RegisteredRendererContract(
+            "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
+            TargetLoweringKind.C_BUILTIN,
+            "c.builtin.atomic-signal-fence.compiler-barrier",
+            _compiler_barrier_public_builtin_recipe,
+            "c_builtin_constraint",
+            frozenset({"compiler:barrier-builtin"}),
         ),
     ),
 )
