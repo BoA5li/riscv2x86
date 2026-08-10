@@ -718,6 +718,7 @@ def _generate_register_only_candidates(
                 requirements=_x86_requirements(preserve_cc=True),
                 metadata={
                     "strategy": "x86_register_only_inline_asm",
+                    "renderer_semantic_contract_id": "x86.gnu-att.gpr.rw-binary.v1",
                 },
                 rationale=(
                     "Register-only x86 inline asm remains a candidate until "
