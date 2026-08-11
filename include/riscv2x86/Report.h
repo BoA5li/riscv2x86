@@ -24,6 +24,19 @@ struct BuiltinFinding {
     std::vector<std::string> argumentTypeIds;
     std::string resultTypeId;
     bool resultIsLValue = false;
+    // Canonical spelling is diagnostic/audit data; matching uses this
+    // semantic shape instead of a compiler-specific type string alone.
+    struct TypeContract {
+        std::string canonicalType;
+        unsigned widthBits = 0;
+        bool isSigned = false;
+        bool isPointer = false;
+        unsigned alignmentBytes = 0;
+        std::string pointeeCanonicalType;
+        std::string qualifiers;
+    };
+    std::vector<TypeContract> argumentTypes;
+    TypeContract resultType;
 };
 
 // Approval for a Phase-1/2 public interface replacement.  This is separate
@@ -38,6 +51,10 @@ struct PublicReplacementApprovalArtifact {
     std::string sourceBuiltin;
     std::string targetEnvironmentId;
     std::string compilerCapability;
+    std::string compilerFamily;
+    std::string compilerVersion;
+    std::vector<std::string> requiredHeaders;
+    std::vector<std::string> requiredTargetFeatures;
     std::string rendererRecipeId;
     std::string preservationLevel;
     std::string fallbackPolicy;

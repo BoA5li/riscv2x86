@@ -17,6 +17,25 @@ static std::string digest(const std::string &value) {
     return out.str();
 }
 
+static BuiltinFinding::TypeContract unsignedInteger(unsigned width) {
+    BuiltinFinding::TypeContract t;
+    t.widthBits = width;
+    t.isSigned = false;
+    t.alignmentBytes = width / 8;
+    return t;
+}
+
+static bool typeMatches(const BuiltinFinding::TypeContract &required,
+                        const BuiltinFinding::TypeContract &actual) {
+    return required.widthBits == actual.widthBits &&
+           required.isSigned == actual.isSigned &&
+           required.isPointer == actual.isPointer &&
+           required.alignmentBytes == actual.alignmentBytes &&
+           required.pointeeCanonicalType == actual.pointeeCanonicalType &&
+           required.qualifiers == actual.qualifiers &&
+           (required.canonicalType.empty() || required.canonicalType == actual.canonicalType);
+}
+
 } // namespace
 
 const PublicReplacementContract *findPublicReplacementContract(const Finding &finding) {
@@ -28,7 +47,7 @@ const PublicReplacementContract *findPublicReplacementContract(const Finding &fi
     static const PublicReplacementContract contracts[] = {
         {
             "public.riscv.rdcycle.needs-route", "v1",
-            "__builtin_riscv_rdcycle", {}, "unsigned long",
+            "__builtin_riscv_rdcycle", {}, unsignedInteger(sizeof(unsigned long) * 8),
             true, false, "", "", "", "",
             {}, {}, "not_preserved",
             PublicReplacementDisposition::NeedsSemanticRoute,
@@ -36,11 +55,27 @@ const PublicReplacementContract *findPublicReplacementContract(const Finding &fi
         },
         {
             "public.riscv.rdcycle.needs-route", "v1",
-            "__riscv_rdcycle", {}, "unsigned long",
+            "__riscv_rdcycle", {}, unsignedInteger(sizeof(unsigned long) * 8),
             true, false, "", "", "", "",
             {}, {}, "not_preserved",
             PublicReplacementDisposition::NeedsSemanticRoute,
             "needs_route", "", ""
+        },
+        {
+            "public.riscv.rev8.u32", "v1",
+            "__builtin_riscv_rev8_32", {unsignedInteger(32)}, unsignedInteger(32),
+            true, false, "phase2-public:x86_64:sysv_amd64:gnu_att", "gnu", "10+",
+            "c_builtin:bswap", {}, {}, "architecture_equivalent",
+            PublicReplacementDisposition::Replace, "needs_route",
+            "c-builtin-bswap32-v1", "__builtin_bswap32(%0)"
+        },
+        {
+            "public.riscv.rev8.u64", "v1",
+            "__builtin_riscv_rev8_64", {unsignedInteger(64)}, unsignedInteger(64),
+            true, false, "phase2-public:x86_64:sysv_amd64:gnu_att", "gnu", "10+",
+            "c_builtin:bswap", {}, {}, "architecture_equivalent",
+            PublicReplacementDisposition::Replace, "needs_route",
+            "c-builtin-bswap64-v1", "__builtin_bswap64(%0)"
         },
     };
     if (!finding.builtin.has_value()) return nullptr;
@@ -58,9 +93,11 @@ bool publicReplacementContractMatches(const PublicReplacementContract &contract,
         return false;
     if (finding.fromMacroExpansion && !contract.allowMacroExpansion)
         return false;
-    if (builtin->argumentTypeIds != contract.argumentTypeIds)
+    if (builtin->argumentTypes.size() != contract.argumentTypes.size())
         return false;
-    if (builtin->resultTypeId != contract.resultTypeId)
+    for (size_t i = 0; i < contract.argumentTypes.size(); ++i)
+        if (!typeMatches(contract.argumentTypes[i], builtin->argumentTypes[i])) return false;
+    if (!typeMatches(contract.resultType, builtin->resultType))
         return false;
     if (contract.resultMustBeRValue && builtin->resultIsLValue)
         return false;
@@ -84,6 +121,10 @@ PublicReplacementApprovalArtifact makePublicReplacementApprovalArtifact(
     artifact.sourceBuiltin = contract.sourceBuiltin;
     artifact.targetEnvironmentId = contract.targetEnvironmentId;
     artifact.compilerCapability = contract.requiredCompilerCapability;
+    artifact.compilerFamily = contract.requiredCompilerFamily;
+    artifact.compilerVersion = contract.requiredCompilerVersion;
+    artifact.requiredHeaders = contract.requiredHeaders;
+    artifact.requiredTargetFeatures = contract.requiredTargetFeatures;
     artifact.rendererRecipeId = contract.rendererRecipeId;
     artifact.preservationLevel = contract.preservationLevel;
     artifact.fallbackPolicy = contract.fallbackPolicy;

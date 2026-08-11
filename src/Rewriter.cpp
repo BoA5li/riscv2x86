@@ -34,7 +34,8 @@ static bool validApprovalArtifact(const Finding &f, const std::string &sourceSli
             p.semanticContractId.empty() || p.semanticContractVersion.empty() ||
             p.sourceBuiltin.empty() || p.targetEnvironmentId.empty() ||
             p.rendererRecipeId.empty() || p.preservationLevel.empty() ||
-            p.fallbackPolicy.empty()) return false;
+            p.fallbackPolicy.empty() || p.compilerFamily.empty() ||
+            p.compilerVersion.empty()) return false;
         if (!f.builtin.has_value() ||
             f.builtin->calleeName != p.sourceBuiltin ||
             f.ruleName != "phase2.public." + p.semanticContractId) return false;
@@ -202,6 +203,20 @@ static void ensureStdintInclude(std::string &content) {
     } else {
         content.insert(pos, inc);
     }
+}
+
+static bool isSafePublicHeader(const std::string &header) {
+    if (header.empty() || header.find_first_of("\r\n\"<>") != std::string::npos) return false;
+    return std::all_of(header.begin(), header.end(), [](unsigned char c) {
+        return std::isalnum(c) || c == '_' || c == '.' || c == '/';
+    });
+}
+
+static void ensurePublicHeader(std::string &content, const std::string &header) {
+    if (!isSafePublicHeader(header)) return;
+    const std::string include = "#include <" + header + ">";
+    if (content.find(include) != std::string::npos) return;
+    content.insert(findStdintInsertPos(content), include + "\n");
 }
 
 enum class ApplyMode {
@@ -441,6 +456,7 @@ int SourceRewriter::rewrite(const ClassificationReport &report) {
         std::ostringstream ss;
         ss << in.rdbuf();
         std::string content = ss.str();
+        std::vector<std::string> requiredHeaders;
         in.close();
 
         for (const auto &e : edits) {
@@ -461,10 +477,17 @@ int SourceRewriter::rewrite(const ClassificationReport &report) {
             content.replace(e.beginOffset,
                             e.endOffset - e.beginOffset,
                             ann + e.replacement);
+            if (e.finding->ruleName.rfind("phase2.public.", 0) == 0) {
+                const auto &headers = e.finding->publicApprovalArtifact.requiredHeaders;
+                requiredHeaders.insert(requiredHeaders.end(), headers.begin(), headers.end());
+            }
             ++count;
         }
 
         ensureStdintInclude(content);
+        std::sort(requiredHeaders.begin(), requiredHeaders.end());
+        requiredHeaders.erase(std::unique(requiredHeaders.begin(), requiredHeaders.end()), requiredHeaders.end());
+        for (const auto &header : requiredHeaders) ensurePublicHeader(content, header);
 
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         if (!out) {

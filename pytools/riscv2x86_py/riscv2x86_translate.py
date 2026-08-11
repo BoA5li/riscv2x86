@@ -240,6 +240,10 @@ def validate_translated_report(
                     or public_artifact.get("artifactVersion") != "phase2-public-approval-v1"
                     or public_artifact.get("approvalStatus") != "approved"
                     or not isinstance(public_artifact.get("semanticContractId"), str)
+                    or not isinstance(public_artifact.get("compilerFamily"), str)
+                    or not isinstance(public_artifact.get("compilerVersion"), str)
+                    or not isinstance(public_artifact.get("requiredHeaders"), list)
+                    or not isinstance(public_artifact.get("requiredTargetFeatures"), list)
                     or rule_name != "phase2.public." + public_artifact["semanticContractId"]
                 ):
                     invalid_replaceable.append(finding)

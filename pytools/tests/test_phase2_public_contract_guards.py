@@ -19,6 +19,10 @@ def _finding(*, status: str, contract_id: str = "public.safe.example") -> dict:
             "artifactVersion": "phase2-public-approval-v1",
             "approvalStatus": status,
             "semanticContractId": contract_id,
+            "compilerFamily": "gnu",
+            "compilerVersion": "10+",
+            "requiredHeaders": [],
+            "requiredTargetFeatures": [],
         },
     }
 
@@ -46,6 +50,13 @@ def test_launcher_accepts_approved_bound_public_artifact() -> None:
         {"findings": [_finding(status="approved")]},
         allow_untranslated=False,
     ) == 1
+
+
+def test_launcher_rejects_approved_artifact_without_environment_contract() -> None:
+    finding = _finding(status="approved")
+    del finding["publicApprovalArtifact"]["requiredTargetFeatures"]
+    with pytest.raises(TranslationError):
+        validate_translated_report({"findings": [finding]}, allow_untranslated=False)
 
 
 def test_schema_keeps_public_contract_and_builtin_facts() -> None:

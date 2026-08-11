@@ -117,6 +117,10 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
             get("sourceBuiltin", f.publicApprovalArtifact.sourceBuiltin);
             get("targetEnvironmentId", f.publicApprovalArtifact.targetEnvironmentId);
             get("compilerCapability", f.publicApprovalArtifact.compilerCapability);
+            get("compilerFamily", f.publicApprovalArtifact.compilerFamily);
+            get("compilerVersion", f.publicApprovalArtifact.compilerVersion);
+            loadStringArray(a, "requiredHeaders", f.publicApprovalArtifact.requiredHeaders);
+            loadStringArray(a, "requiredTargetFeatures", f.publicApprovalArtifact.requiredTargetFeatures);
             get("rendererRecipeId", f.publicApprovalArtifact.rendererRecipeId);
             get("preservationLevel", f.publicApprovalArtifact.preservationLevel);
             get("fallbackPolicy", f.publicApprovalArtifact.fallbackPolicy);
@@ -135,8 +139,30 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
             if (auto s = bo->getString("calleeName")) b.calleeName = s->str();
             loadStringArray(bo, "args", b.args);
             loadStringArray(bo, "argumentTypeIds", b.argumentTypeIds);
+            if (auto *types = bo->getArray("argumentTypes")) {
+                for (const auto &entry : *types) if (auto *to = entry.getAsObject()) {
+                    BuiltinFinding::TypeContract t;
+                    if (auto s = to->getString("canonicalType")) t.canonicalType = s->str();
+                    if (auto i = to->getInteger("widthBits")) t.widthBits = static_cast<unsigned>(*i);
+                    if (auto v = to->getBoolean("isSigned")) t.isSigned = *v;
+                    if (auto v = to->getBoolean("isPointer")) t.isPointer = *v;
+                    if (auto i = to->getInteger("alignmentBytes")) t.alignmentBytes = static_cast<unsigned>(*i);
+                    if (auto s = to->getString("pointeeCanonicalType")) t.pointeeCanonicalType = s->str();
+                    if (auto s = to->getString("qualifiers")) t.qualifiers = s->str();
+                    b.argumentTypes.push_back(std::move(t));
+                }
+            }
             if (auto s = bo->getString("resultTypeId")) b.resultTypeId = s->str();
             if (auto v = bo->getBoolean("resultIsLValue")) b.resultIsLValue = *v;
+            if (auto *to = bo->getObject("resultType")) {
+                if (auto s = to->getString("canonicalType")) b.resultType.canonicalType = s->str();
+                if (auto i = to->getInteger("widthBits")) b.resultType.widthBits = static_cast<unsigned>(*i);
+                if (auto v = to->getBoolean("isSigned")) b.resultType.isSigned = *v;
+                if (auto v = to->getBoolean("isPointer")) b.resultType.isPointer = *v;
+                if (auto i = to->getInteger("alignmentBytes")) b.resultType.alignmentBytes = static_cast<unsigned>(*i);
+                if (auto s = to->getString("pointeeCanonicalType")) b.resultType.pointeeCanonicalType = s->str();
+                if (auto s = to->getString("qualifiers")) b.resultType.qualifiers = s->str();
+            }
             if (!b.calleeName.empty()) f.builtin = std::move(b);
         }
 

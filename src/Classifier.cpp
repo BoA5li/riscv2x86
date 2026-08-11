@@ -17,6 +17,21 @@ using namespace riscv2x86;
 
 namespace {
 
+BuiltinFinding::TypeContract makeTypeContract(QualType type, ASTContext &ctx) {
+    BuiltinFinding::TypeContract out;
+    const QualType canonical = type.getCanonicalType();
+    out.canonicalType = canonical.getAsString();
+    out.isPointer = canonical->isPointerType();
+    out.isSigned = canonical->isSignedIntegerType();
+    out.alignmentBytes = static_cast<unsigned>(ctx.getTypeAlignInChars(type).getQuantity());
+    out.qualifiers = canonical.getQualifiers().getAsString();
+    if (!canonical->isVoidType() && !canonical->isFunctionType())
+        out.widthBits = static_cast<unsigned>(ctx.getTypeSize(canonical));
+    if (out.isPointer)
+        out.pointeeCanonicalType = canonical->getPointeeType().getCanonicalType().getAsString();
+    return out;
+}
+
 std::string makeFragmentId(const std::string &file, unsigned line, unsigned col) {
     std::ostringstream os;
     os << file << ":" << line << ":" << col;
@@ -555,11 +570,13 @@ public:
             f.builtin->argumentTypeIds.push_back(
                 Arg->getType().getCanonicalType().getAsString()
             );
+            f.builtin->argumentTypes.push_back(makeTypeContract(Arg->getType(), Ctx));
         }
         if (!f.builtin.has_value()) f.builtin.emplace();
         f.builtin->calleeName = name;
         f.builtin->args = f.arguments;
         f.builtin->resultTypeId = CE->getType().getCanonicalType().getAsString();
+        f.builtin->resultType = makeTypeContract(CE->getType(), Ctx);
         f.builtin->resultIsLValue = CE->isGLValue();
 
         f.fromMacroExpansion = CE->getBeginLoc().isMacroID() || CE->getEndLoc().isMacroID();

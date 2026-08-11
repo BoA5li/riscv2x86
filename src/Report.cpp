@@ -56,6 +56,16 @@ static void dumpStringArrayJSON(std::ostream &os,
     os << "]";
 }
 
+static void dumpTypeContractJSON(std::ostream &os, const BuiltinFinding::TypeContract &t) {
+    os << "{\"canonicalType\":\"" << escape(t.canonicalType)
+       << "\",\"widthBits\":" << t.widthBits
+       << ",\"isSigned\":" << (t.isSigned ? "true" : "false")
+       << ",\"isPointer\":" << (t.isPointer ? "true" : "false")
+       << ",\"alignmentBytes\":" << t.alignmentBytes
+       << ",\"pointeeCanonicalType\":\"" << escape(t.pointeeCanonicalType)
+       << "\",\"qualifiers\":\"" << escape(t.qualifiers) << "\"}";
+}
+
 void ClassificationReport::dumpText(std::ostream &os) const {
     os << "=== riscv2x86 classification report ===\n";
     os << "total findings: " << findings.size() << "\n";
@@ -141,12 +151,24 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
                << "\",\"sourceBuiltin\":\"" << escape(a.sourceBuiltin)
                << "\",\"targetEnvironmentId\":\"" << escape(a.targetEnvironmentId)
                << "\",\"compilerCapability\":\"" << escape(a.compilerCapability)
+               << "\",\"compilerFamily\":\"" << escape(a.compilerFamily)
+               << "\",\"compilerVersion\":\"" << escape(a.compilerVersion)
                << "\",\"rendererRecipeId\":\"" << escape(a.rendererRecipeId)
                << "\",\"preservationLevel\":\"" << escape(a.preservationLevel)
                << "\",\"fallbackPolicy\":\"" << escape(a.fallbackPolicy)
                << "\",\"replacementDigest\":\"" << escape(a.replacementDigest)
                << "\",\"sourceSliceDigest\":\"" << escape(a.sourceSliceDigest)
-               << "\"},\n";
+               << "\",\"requiredHeaders\":[";
+            for (size_t j = 0; j < a.requiredHeaders.size(); ++j) {
+                os << "\"" << escape(a.requiredHeaders[j]) << "\"";
+                if (j + 1 < a.requiredHeaders.size()) os << ",";
+            }
+            os << "],\"requiredTargetFeatures\":[";
+            for (size_t j = 0; j < a.requiredTargetFeatures.size(); ++j) {
+                os << "\"" << escape(a.requiredTargetFeatures[j]) << "\"";
+                if (j + 1 < a.requiredTargetFeatures.size()) os << ",";
+            }
+            os << "]},\n";
         }
         if (f.approvalArtifact.present) {
             const auto &a = f.approvalArtifact;
@@ -169,7 +191,14 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
             }
             os << "],\"resultTypeId\":\"" << escape(b.resultTypeId)
                << "\",\"resultIsLValue\":" << (b.resultIsLValue ? "true" : "false")
-               << "}";
+               << ",\"argumentTypes\":[";
+            for (size_t j = 0; j < b.argumentTypes.size(); ++j) {
+                dumpTypeContractJSON(os, b.argumentTypes[j]);
+                if (j + 1 < b.argumentTypes.size()) os << ",";
+            }
+            os << "],\"resultType\":";
+            dumpTypeContractJSON(os, b.resultType);
+            os << "}";
         }
 
         if (f.fragment.has_value()) {

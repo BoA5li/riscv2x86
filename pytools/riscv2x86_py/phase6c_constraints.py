@@ -703,6 +703,8 @@ class TargetEnvironment:
     available_features: FrozenSet[str] = frozenset()
     builtin_capabilities: FrozenSet[str] = frozenset()
     helper_contract_capabilities: FrozenSet[str] = frozenset()
+    compiler_family: str = "gnu"
+    compiler_version: str = "10+"
 
     def __post_init__(self) -> None:
         if not isinstance(self.architecture, TargetArchitecture):
@@ -728,6 +730,10 @@ class TargetEnvironment:
             )
         if not isinstance(self.supports_gnu_asm_goto, bool):
             raise TypeError("TargetEnvironment.supports_gnu_asm_goto must be bool")
+        if not isinstance(self.compiler_family, str) or not self.compiler_family:
+            raise TypeError("TargetEnvironment.compiler_family must be a non-empty string")
+        if not isinstance(self.compiler_version, str) or not self.compiler_version:
+            raise TypeError("TargetEnvironment.compiler_version must be a non-empty string")
 
         object.__setattr__(
             self,
@@ -749,6 +755,8 @@ class TargetEnvironment:
         supports_gnu_asm_goto: bool = False,
         builtin_capabilities: Iterable[str] = (),
         helper_contract_capabilities: Iterable[str] = (),
+        compiler_family: str = "gnu",
+        compiler_version: str = "10+",
     ) -> "TargetEnvironment":
         """
         Create the only currently supported target profile.
@@ -766,6 +774,8 @@ class TargetEnvironment:
             available_features=frozenset(available_features),
             builtin_capabilities=frozenset(builtin_capabilities),
             helper_contract_capabilities=frozenset(helper_contract_capabilities),
+            compiler_family=compiler_family,
+            compiler_version=compiler_version,
         )
 
 

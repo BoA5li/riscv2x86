@@ -14,8 +14,8 @@ struct PublicReplacementContract {
     std::string semanticContractId;
     std::string semanticContractVersion;
     std::string sourceBuiltin;
-    std::vector<std::string> argumentTypeIds;
-    std::string resultTypeId;
+    std::vector<BuiltinFinding::TypeContract> argumentTypes;
+    BuiltinFinding::TypeContract resultType;
     bool resultMustBeRValue = true;
     bool allowMacroExpansion = false;
     std::string targetEnvironmentId;

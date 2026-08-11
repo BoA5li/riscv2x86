@@ -82,6 +82,14 @@ void RuleEngine::apply(ClassificationReport &report) {
         materializeRewriteRangeFromFragment(f);
 
         f.suggestedReplacement = contract->replacement;
+        for (size_t i = 0; i < f.arguments.size(); ++i) {
+            const std::string slot = "%" + std::to_string(i);
+            size_t pos = 0;
+            while ((pos = f.suggestedReplacement.find(slot, pos)) != std::string::npos) {
+                f.suggestedReplacement.replace(pos, slot.size(), f.arguments[i]);
+                pos += f.arguments[i].size();
+            }
+        }
         f.ruleName = "phase2.public." + contract->semanticContractId;
         f.publicApprovalArtifact = makePublicReplacementApprovalArtifact(
             *contract, f, f.suggestedReplacement

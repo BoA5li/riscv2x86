@@ -63,6 +63,18 @@ def _approve_public_replacement_if_compatible(
         return False, "phase2 public replacement compiler capability is malformed"
     if capability and capability not in environment.builtin_capabilities:
         return False, "phase2 public replacement compiler capability is unavailable"
+    if artifact.get("compilerFamily") != environment.compiler_family:
+        return False, "phase2 public replacement compiler family is unavailable"
+    if artifact.get("compilerVersion") != environment.compiler_version:
+        return False, "phase2 public replacement compiler version is unavailable"
+    headers = artifact.get("requiredHeaders")
+    features = artifact.get("requiredTargetFeatures")
+    if not isinstance(headers, list) or not all(isinstance(x, str) and x for x in headers):
+        return False, "phase2 public replacement required headers are malformed"
+    if not isinstance(features, list) or not all(isinstance(x, str) and x for x in features):
+        return False, "phase2 public replacement required target features are malformed"
+    if any(feature not in environment.available_features for feature in features):
+        return False, "phase2 public replacement target feature is unavailable"
     if artifact.get("replacementDigest") != _approval_digest(finding.suggestedReplacement):
         return False, "phase2 public replacement digest does not match replacement"
     if artifact.get("sourceSliceDigest") != _approval_digest(finding.rawSourceText):
