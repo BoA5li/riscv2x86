@@ -55,19 +55,42 @@ def _default_register_query_script() -> Path:
     script_path = "/root/src/poc_trans/path_b/riscv2x86/test/minimal/backend_test/riscv_register_query.py"
     return Path(script_path)
 
+def riscv_language_id_for_xlen(xlen: int) -> str:
+    if xlen == 32:
+        return "RISCV:LE:32:default"
 
+    if xlen == 64:
+        return "RISCV:LE:64:default"
+
+    raise GhidraPythonRunError(
+        f"Unsupported RISC-V XLEN: {xlen}; expected 32 or 64"
+    )
 
 def load_riscv64_register_resolver_via_pythonrun(
     *,
     python_run: Optional[Path] = None,
     query_script: Optional[Path] = None,
+    ghidra_install_dir: Optional[str] = None,
 ) -> PythonRunRegisterNameResolver:
     """
     使用 Ghidra support/pythonRun 获取 RISCV:LE:64:default
     的真实寄存器定义，并在 CPython 中构造 resolver。
     """
-    python_run = python_run or _default_python_run_path()
-    query_script = query_script or _default_register_query_script()
+
+    if python_run is None:
+        if ghidra_install_dir is not None:
+            python_run = (
+                Path(ghidra_install_dir)
+                / "support"
+                / "pythonRun"
+            )
+        else:
+            python_run = _default_python_run_path()
+
+    query_script = (
+        query_script
+        or _default_register_query_script()
+    )
 
     if not python_run.is_file():
         raise GhidraPythonRunError(
@@ -105,27 +128,35 @@ def load_riscv64_register_resolver_via_pythonrun(
         )
 
     raw_stdout = completed.stdout
-    # 1、合并所有有效非空行
-    content = "".join([line.strip() for line in raw_stdout.splitlines() if line.strip()])
 
-    # 2、强制裁切：只保留【第一个 { ～ 最后一个 }】之间的内容，抛弃前后所有脏数据
+    content = "".join(
+        [
+            line.strip()
+            for line in raw_stdout.splitlines()
+            if line.strip()
+        ]
+    )
+
     start = content.find("{")
     end = content.rfind("}")
 
     if start == -1 or end == -1 or start >= end:
         raise GhidraPythonRunError(
-            f"Valid JSON block not found\nRaw cleaned content: {repr(content)}"
+            "Valid JSON block not found\n"
+            f"Raw cleaned content: {repr(content)}"
         )
 
-    pure_json_str = content[start:end+1]
+    pure_json_str = content[start:end + 1]
 
     try:
         data = json.loads(pure_json_str)
     except json.JSONDecodeError as exc:
         raise GhidraPythonRunError(
-            f"JSON parse failed\nCut JSON: {repr(pure_json_str)}\nRaw stdout: {repr(raw_stdout)}\nSTDERR:\n{completed.stderr}"
+            "JSON parse failed\n"
+            f"Cut JSON: {repr(pure_json_str)}\n"
+            f"Raw stdout: {repr(raw_stdout)}\n"
+            f"STDERR:\n{completed.stderr}"
         ) from exc
-
 
     if not data.get("ok"):
         raise GhidraPythonRunError(
@@ -138,7 +169,7 @@ def load_riscv64_register_resolver_via_pythonrun(
             f"{data.get('language_id')!r}"
         )
 
-    names: Dict[Tuple[str, int, int], str] = {}
+    names = {}
 
     for register in data.get("registers", []):
         name = str(register["name"])
@@ -150,8 +181,6 @@ def load_riscv64_register_resolver_via_pythonrun(
 
         key = ("register", offset, size)
 
-        # 若出现同一 offset/size 的别名，优先保留第一个。
-        # 后续建议根据实际 Ghidra 输出建立明确的 canonicalization。
         names.setdefault(key, name)
 
     if not names:
@@ -161,16 +190,7 @@ def load_riscv64_register_resolver_via_pythonrun(
 
     return PythonRunRegisterNameResolver(names=names)
 
-def riscv_language_id_for_xlen(xlen: int) -> str:
-    if xlen == 32:
-        return "RISCV:LE:32:default"
 
-    if xlen == 64:
-        return "RISCV:LE:64:default"
-
-    raise GhidraPythonRunError(
-        f"Unsupported RISC-V XLEN: {xlen}; expected 32 or 64"
-    )
 
 def load_riscv_register_resolver_via_pythonrun(
     *,
@@ -178,14 +198,11 @@ def load_riscv_register_resolver_via_pythonrun(
     ghidra_install_dir: Optional[str] = None,
     language_id: Optional[str] = None,
 ) -> PythonRunRegisterNameResolver:
-    """
-    使用 Ghidra support/pythonRun 初始化真实 RISC-V Language，
-    并返回可解析 register varnode 的权威 resolver。
 
-    注意：
-      当前底层实现如果只支持 RV64，应明确拒绝 RV32。
-    """
-    selected_language_id = language_id or riscv_language_id_for_xlen(xlen)
+    selected_language_id = (
+        language_id
+        or riscv_language_id_for_xlen(xlen)
+    )
 
     if xlen != 64:
         raise GhidraPythonRunError(
@@ -194,18 +211,15 @@ def load_riscv_register_resolver_via_pythonrun(
             f"language_id={selected_language_id!r}"
         )
 
-    # 如果现有 loader 尚不支持 ghidra_install_dir / language_id，
-    # 不能静默忽略参数。建议下一步将这两个参数继续透传到底层 bridge。
-    if ghidra_install_dir is not None:
-        raise GhidraPythonRunError(
-            "The current pythonRun resolver loader does not yet support "
-            "--ghidra-install-dir explicitly"
-        )
-
-    if language_id is not None and language_id != "RISCV:LE:64:default":
+    if (
+        language_id is not None
+        and language_id != "RISCV:LE:64:default"
+    ):
         raise GhidraPythonRunError(
             "The current pythonRun resolver loader does not yet support "
             f"custom language_id={language_id!r}"
         )
 
-    return load_riscv64_register_resolver_via_pythonrun()
+    return load_riscv64_register_resolver_via_pythonrun(
+        ghidra_install_dir=ghidra_install_dir
+    )
