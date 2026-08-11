@@ -69,6 +69,8 @@ struct TranslationApprovalArtifact {
     std::string targetCatalogVersion, selectionPolicyId, selectionPolicyVersion;
     std::string selectionTier, rendererId, rendererVersion, replacementKind;
     std::string replacementDigest, sourceSliceDigest;
+    std::string helperRuntimeContractId, helperSemanticVersion;
+    std::string helperRequiredHeader, helperRuntimeLibrary, helperRuntimeManifestVersion;
 };
 
 struct Finding {

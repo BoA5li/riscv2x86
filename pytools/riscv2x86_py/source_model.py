@@ -312,6 +312,13 @@ class SourceSemanticModel:
             ),
             has_stack_sensitive_semantics=stack_sensitive,
             has_frame_sensitive_semantics=frame_sensitive,
+            has_required_helper_semantics=(
+                self.operation.requires_helper_abi_contract and self.helper_abi.complete
+            ),
+            helper_runtime_contract_id=(
+                None if not self.helper_abi.complete or not self.helper_abi.helper_symbol or not self.helper_abi.semantic_version
+                else f"{self.helper_abi.helper_symbol}@{self.helper_abi.semantic_version}"
+            ),
             has_control_flow_semantics=self.operation.has_control_flow,
             has_asm_goto_semantics=self.control_flow.has_asm_goto,
             has_call_semantics=self.control_flow.has_call,
@@ -2675,7 +2682,7 @@ class SourceBarrierModel:
 @dataclass(frozen=True)
 class SourceHelperAbiModel:
     """Versioned source-proven helper contract consumed by Phase 6C-8."""
-    present: bool; helper_symbol: Optional[str]; semantic_version: Optional[str]
+    present: bool; helper_symbol: Optional[str]; semantic_family: Optional[str]; semantic_version: Optional[str]
     calling_convention: Optional[str]; parameter_operand_indexes: Tuple[int, ...]
     return_operand_index: Optional[int]; memory_effect: SourceHelperMemoryEffect
     may_return: Optional[bool]; may_unwind: Optional[bool]
@@ -2691,10 +2698,10 @@ def _build_helper_abi_model(*, summary: IRSummary, operation: SourceOperationMod
     raw = getattr(summary, "helper_abi_semantics", None)
     required = operation.requires_helper_abi_contract or registers.reads_or_writes_stack_pointer or registers.reads_or_writes_frame_pointer
     if raw is None:
-        return SourceHelperAbiModel(required, None, None, None, (), None, SourceHelperMemoryEffect.UNKNOWN, None, None, None, None, None, (), (), None, None, not required)
+        return SourceHelperAbiModel(required, None, None, None, None, (), None, SourceHelperMemoryEffect.UNKNOWN, None, None, None, None, None, (), (), None, None, not required)
     memory_effect = getattr(raw, "memory_effect", SourceHelperMemoryEffect.UNKNOWN)
     if not isinstance(memory_effect, SourceHelperMemoryEffect): memory_effect = SourceHelperMemoryEffect.UNKNOWN
-    return SourceHelperAbiModel(True, getattr(raw, "helper_symbol", None), getattr(raw, "semantic_version", None), getattr(raw, "calling_convention", None), tuple(getattr(raw, "parameter_operand_indexes", ())), getattr(raw, "return_operand_index", None), memory_effect, getattr(raw, "may_return", None), getattr(raw, "may_unwind", None), getattr(raw, "required_stack_alignment_bytes", None), getattr(raw, "preserves_stack_pointer", None), getattr(raw, "preserves_frame_pointer", None), tuple(getattr(raw, "caller_saved_registers", ())), tuple(getattr(raw, "callee_saved_registers", ())), getattr(raw, "pic_plt_compatible", None), getattr(raw, "runtime_available", None), bool(getattr(raw, "complete", False)))
+    return SourceHelperAbiModel(True, getattr(raw, "helper_symbol", None), getattr(raw, "semantic_family", None), getattr(raw, "semantic_version", None), getattr(raw, "calling_convention", None), tuple(getattr(raw, "parameter_operand_indexes", ())), getattr(raw, "return_operand_index", None), memory_effect, getattr(raw, "may_return", None), getattr(raw, "may_unwind", None), getattr(raw, "required_stack_alignment_bytes", None), getattr(raw, "preserves_stack_pointer", None), getattr(raw, "preserves_frame_pointer", None), tuple(getattr(raw, "caller_saved_registers", ())), tuple(getattr(raw, "callee_saved_registers", ())), getattr(raw, "pic_plt_compatible", None), getattr(raw, "runtime_available", None), bool(getattr(raw, "complete", False)))
 
 
 @dataclass(frozen=True)

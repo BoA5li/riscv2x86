@@ -72,6 +72,8 @@ class Phase6BCandidateFacts:
 
     has_stack_sensitive_semantics: bool
     has_frame_sensitive_semantics: bool
+    has_required_helper_semantics: bool
+    helper_runtime_contract_id: str | None
 
     # ------------------------------------------------------------------
     # CFG、call、return、branch、asm-goto。
@@ -125,6 +127,10 @@ class Phase6BCandidateFacts:
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
+            if field_name == "helper_runtime_contract_id":
+                if value is not None and (not isinstance(value, str) or not value):
+                    raise TypeError("helper_runtime_contract_id must be a non-empty string or None")
+                continue
             if not isinstance(value, bool):
                 raise TypeError(
                     "Phase6BCandidateFacts."
@@ -412,6 +418,33 @@ def _generate_abi_aware_candidates(
             reason_codes=("stack-or-frame-sensitive",),
         )
     ]
+
+
+def _generate_registered_helper_candidates(facts: Phase6BCandidateFacts) -> list[TargetLoweringPlan]:
+    """Generate only an exact source-declared runtime helper candidate."""
+    contract_id = facts.helper_runtime_contract_id
+    if not facts.has_required_helper_semantics or contract_id is None:
+        return []
+    return [_plan(
+        plan_id="helper." + contract_id,
+        kind=TargetLoweringKind.HELPER_CALL,
+        family=TargetLoweringFamily.HELPER,
+        priority_tier=PlanPriorityTier.HELPER,
+        deterministic_rank=5,
+        required_features=frozenset({"runtime:" + contract_id}),
+        requirements=frozenset({
+            PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+            PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+            PlanRequirement.PROVE_HELPER_ABI_CONTRACT,
+            PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
+        }),
+        metadata={
+            "strategy": "registered_runtime_helper",
+            "renderer_semantic_contract_id": "helper." + contract_id,
+        },
+        rationale=("SourceSemanticModel explicitly requires this registered helper semantic family.",),
+        reason_codes=("registered-helper-candidate",),
+    )]
 
 
 def _generate_cfg_candidates(
@@ -911,6 +944,11 @@ def generate_candidate_plans(
                 )
             ]
         )
+
+    # An explicit source helper contract has priority over family heuristics.
+    # No helper candidate is emitted for an unknown symbol or absent contract.
+    if facts.has_required_helper_semantics:
+        return _stable_sort_and_freeze(_generate_registered_helper_candidates(facts))
 
     # 3. microarch-sensitive / unknown-microarch。
     if facts.requires_microarch_specialization:

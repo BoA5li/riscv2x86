@@ -14,6 +14,7 @@ from .runtime_facts import build_translation_runtime_facts
 from .verify import verify
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
+from .helper_runtime_manifest import RV64_MULHU_U64
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -830,9 +831,13 @@ def run(
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
     public_environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
-        available_features={"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin"},
+        available_features={"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id},
         builtin_capabilities={"c_builtin:atomic", "c_builtin:compiler_barrier"},
         supports_gnu_asm_goto=True,
+        helper_contract_capabilities={
+            RV64_MULHU_U64.runtime_contract_id,
+            RV64_MULHU_U64.required_environment_capability,
+        },
     )
     stats = {
         "total": 0,

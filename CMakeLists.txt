@@ -45,6 +45,13 @@ message(STATUS "R2X sources: ${R2X_SOURCES}")
 
 add_executable(riscv2x86 ${R2X_SOURCES})
 
+# Versioned Phase-6 helper runtime.  Translation output may reference a
+# helper only when its manifest/capability/proof contract is approved.
+add_library(riscv2x86_runtime STATIC runtime/riscv2x86_runtime_helpers.c)
+target_include_directories(riscv2x86_runtime PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+)
+
 if(TARGET clang-cpp AND TARGET LLVM)
   message(STATUS "Link mode: monolithic imported targets (clang-cpp + LLVM)")
   target_link_libraries(riscv2x86

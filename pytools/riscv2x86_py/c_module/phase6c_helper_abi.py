@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class HelperAbiContract:
     helper_symbol: str
+    semantic_family: str
     semantic_version: str
     calling_convention: str
     parameter_operand_indexes: tuple[int, ...]
@@ -40,7 +41,7 @@ def derive_helper_abi_constraints(source_model: SourceSemanticModel, candidate_p
     if not source_model.operands.complete or not source_model.operation.complete:
         return _fail(candidate_plan, "HELPER_ABI_SOURCE_INCOMPLETE")
     helper = source_model.helper_abi
-    required = (helper.complete and helper.present and helper.helper_symbol and helper.semantic_version
+    required = (helper.complete and helper.present and helper.helper_symbol and helper.semantic_family and helper.semantic_version
         and helper.calling_convention and helper.may_return is not None and helper.may_unwind is not None
         and helper.required_stack_alignment_bytes and helper.preserves_stack_pointer is not None
         and helper.preserves_frame_pointer is not None and helper.pic_plt_compatible is not None
@@ -74,7 +75,7 @@ def derive_helper_abi_constraints(source_model: SourceSemanticModel, candidate_p
         # The current source helper model has no structured atomic/barrier
         # effect contract.  Never assume a helper preserves either.
         return _fail(candidate_plan, "HELPER_ABI_CONTRACT_INCOMPLETE", {"expected": "explicit_helper_atomic_barrier_effects"})
-    contract = HelperAbiContract(helper.helper_symbol, helper.semantic_version, helper.calling_convention,
+    contract = HelperAbiContract(helper.helper_symbol, helper.semantic_family, helper.semantic_version, helper.calling_convention,
         helper.parameter_operand_indexes, helper.return_operand_index, helper.memory_effect, helper.may_return,
         helper.may_unwind, helper.required_stack_alignment_bytes, helper.preserves_stack_pointer,
         helper.preserves_frame_pointer, helper.caller_saved_registers, helper.callee_saved_registers,

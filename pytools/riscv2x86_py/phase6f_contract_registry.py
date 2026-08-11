@@ -23,6 +23,7 @@ from .phase6f_renderer import (
 from .phase6c_constraints import TargetOperandRole, TargetOperandClass
 from .source_model import SourceAtomicRmwOperation, SourceMemoryOrdering, SourceValueOperationKind
 from .plan_types import TargetLoweringKind
+from .helper_runtime_manifest import RV64_MULHU_U64, RUNTIME_HELPER_MANIFEST_VERSION
 
 
 RecipeFactory = Callable[[ApprovedTargetLoweringPlan], object | None]
@@ -54,6 +55,13 @@ class RegisteredHelperAbiContract:
     may_return: bool
     may_unwind: bool
     pic_plt_compatible: bool
+    required_stack_alignment_bytes: int = 0
+    preserves_stack_pointer: bool = False
+    preserves_frame_pointer: bool = False
+    caller_saved_registers: tuple[str, ...] = ()
+    callee_saved_registers: tuple[str, ...] = ()
+    required_header: str = ""
+    runtime_library: str = ""
 
 
 @dataclass(frozen=True)
@@ -130,6 +138,11 @@ def _helper_registration_entry(registration: RegisteredHelperAbiContract) -> Reg
                 contract.may_return != registration.may_return or
                 contract.may_unwind != registration.may_unwind or
                 contract.pic_plt_compatible != registration.pic_plt_compatible or
+                contract.required_stack_alignment_bytes != registration.required_stack_alignment_bytes or
+                contract.preserves_stack_pointer != registration.preserves_stack_pointer or
+                contract.preserves_frame_pointer != registration.preserves_frame_pointer or
+                contract.caller_saved_registers != registration.caller_saved_registers or
+                contract.callee_saved_registers != registration.callee_saved_registers or
                 evidence.helper_registry_version != registration.helper_registry_version):
             return None
         return (
@@ -138,6 +151,10 @@ def _helper_registration_entry(registration: RegisteredHelperAbiContract) -> Reg
                 helper_symbol=registration.helper_symbol,
                 argument_operand_indexes=contract.parameter_operand_indexes,
                 result_operand_index=contract.return_operand_index,
+                runtime_contract_id=registration.runtime_contract_id,
+                semantic_version=registration.semantic_version,
+                required_header=registration.required_header,
+                runtime_library=registration.runtime_library,
             ),
         )
     return RegisteredRendererContract(
@@ -659,4 +676,33 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             frozenset({"x86:gpr_inline_asm"}),
         ),
     ),
+)
+
+# Default availability is intentionally finite and shipped with this source
+# tree.  Additional helpers must be supplied through the same registration
+# API, never via a symbol-name fallback.
+GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = register_helper_abi_contracts(
+    GPR_INTEGER_RENDERER_CONTRACT_REGISTRY,
+    (RegisteredHelperAbiContract(
+        semantic_contract_id="helper." + RV64_MULHU_U64.runtime_contract_id,
+        helper_symbol=RV64_MULHU_U64.helper_symbol,
+        semantic_version=RV64_MULHU_U64.semantic_version,
+        calling_convention=RV64_MULHU_U64.calling_convention,
+        target_abi=RV64_MULHU_U64.target_abi,
+        parameter_type_ids=RV64_MULHU_U64.parameter_type_ids,
+        return_type_id=RV64_MULHU_U64.return_type_id,
+        runtime_contract_id=RV64_MULHU_U64.runtime_contract_id,
+        helper_registry_version=RUNTIME_HELPER_MANIFEST_VERSION,
+        memory_effect=RV64_MULHU_U64.memory_effect,
+        may_return=RV64_MULHU_U64.may_return,
+        may_unwind=RV64_MULHU_U64.may_unwind,
+        pic_plt_compatible=RV64_MULHU_U64.pic_plt_compatible,
+        required_stack_alignment_bytes=RV64_MULHU_U64.required_stack_alignment_bytes,
+        preserves_stack_pointer=RV64_MULHU_U64.preserves_stack_pointer,
+        preserves_frame_pointer=RV64_MULHU_U64.preserves_frame_pointer,
+        caller_saved_registers=RV64_MULHU_U64.caller_saved_registers,
+        callee_saved_registers=RV64_MULHU_U64.callee_saved_registers,
+        required_header=RV64_MULHU_U64.required_header,
+        runtime_library=RV64_MULHU_U64.runtime_library,
+    ),),
 )

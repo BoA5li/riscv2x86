@@ -49,6 +49,10 @@ static bool validApprovalArtifact(const Finding &f, const std::string &sourceSli
     if (!a.present || a.artifactVersion != "phase6-approval-v1" || a.proofStatus != "approved") return false;
     if (a.sourceFragmentId.empty() || a.planId.empty() || a.constraintsId.empty() || a.targetEnvironmentId.empty() || a.rendererId.empty() || a.rendererVersion.empty() || a.replacementKind.empty()) return false;
     if (!f.fragment.has_value() || a.sourceFragmentId != f.fragment->id) return false;
+    if (a.replacementKind == "helper_call" &&
+        (a.helperRuntimeContractId.empty() || a.helperSemanticVersion.empty() ||
+         a.helperRequiredHeader.empty() || a.helperRuntimeLibrary.empty() ||
+         a.helperRuntimeManifestVersion.empty())) return false;
     return a.replacementDigest == approvalDigest(f.suggestedReplacement) && a.sourceSliceDigest == approvalDigest(sourceSlice);
 }
 
@@ -480,6 +484,9 @@ int SourceRewriter::rewrite(const ClassificationReport &report) {
             if (e.finding->ruleName.rfind("phase2.public.", 0) == 0) {
                 const auto &headers = e.finding->publicApprovalArtifact.requiredHeaders;
                 requiredHeaders.insert(requiredHeaders.end(), headers.begin(), headers.end());
+            }
+            if (e.finding->approvalArtifact.replacementKind == "helper_call") {
+                requiredHeaders.push_back(e.finding->approvalArtifact.helperRequiredHeader);
             }
             ++count;
         }

@@ -234,6 +234,12 @@ def validate_translated_report(
                 if not isinstance(phase6_artifact, dict) or phase6_artifact.get("proofStatus") != "approved":
                     invalid_replaceable.append(finding)
                     continue
+                if phase6_artifact.get("replacementKind") == "helper_call" and not all(
+                    isinstance(phase6_artifact.get(key), str) and phase6_artifact[key]
+                    for key in ("helperRuntimeContractId", "helperSemanticVersion", "helperRequiredHeader", "helperRuntimeLibrary", "helperRuntimeManifestVersion")
+                ):
+                    invalid_replaceable.append(finding)
+                    continue
             elif rule_name.startswith("phase2.public."):
                 if (
                     not isinstance(public_artifact, dict)
@@ -649,6 +655,7 @@ def main() -> int:
             f"-I{output_root}",
             f"-I{src_root}",
             f"-I{source_file.parent}",
+            f"-I{Path(__file__).resolve().parents[2] / 'runtime' / 'include'}",
         ]
 
         syntax_check_cmd = [

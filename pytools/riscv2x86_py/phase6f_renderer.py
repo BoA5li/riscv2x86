@@ -140,6 +140,10 @@ class HelperCallRecipe:
     helper_symbol: str
     argument_operand_indexes: tuple[int, ...]
     result_operand_index: int | None = None
+    runtime_contract_id: str = ""
+    semantic_version: str = ""
+    required_header: str = ""
+    runtime_library: str = ""
 
 
 @dataclass(frozen=True)

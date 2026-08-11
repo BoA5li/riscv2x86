@@ -78,6 +78,7 @@ from .phase6f_renderer import (
 from .phase6f_contract_registry import (
     GPR_INTEGER_RENDERER_CONTRACT_REGISTRY, RendererContractRegistry,
 )
+from .helper_runtime_manifest import DEFAULT_RUNTIME_HELPER_CONTRACTS, RUNTIME_HELPER_MANIFEST_VERSION
 from .plan_types import TargetLoweringKind, TargetLoweringPlan
 # =============================================================================
 # Translation context
@@ -2996,14 +2997,21 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.serialize.instruction-serialization.v1",
             "x86.gnu-att.asm-goto.bzero.u32-u64.v1",
             "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1",
+            *("helper." + item for item in DEFAULT_RUNTIME_HELPER_CONTRACTS),
         }),
-        version="phase6-default-catalog-asm-goto-zero-test-v1",
+        version="phase6-default-catalog-runtime-helper-v1",
     )
     capabilities = compiler_capabilities or CompilerCapabilityModel(
         supports_gnu_inline_asm=target_environment.supports_gnu_inline_asm,
         supports_asm_goto=target_environment.supports_gnu_asm_goto,
         builtin_capabilities=target_environment.builtin_capabilities,
     )
+    if helper_contract_registry is None:
+        helper_contract_registry = HelperSemanticContractRegistry(
+            allowed_contract_ids=frozenset(DEFAULT_RUNTIME_HELPER_CONTRACTS),
+            version=RUNTIME_HELPER_MANIFEST_VERSION,
+            contracts=DEFAULT_RUNTIME_HELPER_CONTRACTS,
+        )
     if not isinstance(catalog, TargetSemanticCatalog) or not isinstance(capabilities, CompilerCapabilityModel):
         return _unsupported(context, reason="Phase-6D target catalog or compiler capability artifact is invalid", reason_code="TR_INVALID_PHASE6D_ENVIRONMENT_ARTIFACT")
 
@@ -3088,6 +3096,15 @@ def _translate_phase6_proof_pipeline(
         "replacementDigest": _approval_digest(rendered.emitted_text),
         "sourceSliceDigest": _approval_digest(context.fragment.rawAsmText),
     }
+    if rendered.kind is RenderedReplacementKind.HELPER_CALL:
+        recipe = rendered.target_ast
+        artifact.update({
+            "helperRuntimeContractId": recipe.runtime_contract_id,
+            "helperSemanticVersion": recipe.semantic_version,
+            "helperRequiredHeader": recipe.required_header,
+            "helperRuntimeLibrary": recipe.runtime_library,
+            "helperRuntimeManifestVersion": RUNTIME_HELPER_MANIFEST_VERSION,
+        })
     return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata, "approvalArtifact": artifact})
 
 
