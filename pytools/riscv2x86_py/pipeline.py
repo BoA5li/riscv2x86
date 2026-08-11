@@ -363,6 +363,44 @@ def _phase4_preflight_blockers(f: Finding) -> List[str]:
         reasons.append(
             "asm goto labels lack complete authoritative gotoEdges metadata"
         )
+    if goto_labels:
+        fallthrough = str(_read_field(
+            frag,
+            "asmGotoFallthroughContinuationId",
+            "asm_goto_fallthrough_continuation_id",
+            default="",
+        ) or "").strip()
+        successors = {
+            str(value).strip()
+            for value in (_read_field(
+                frag,
+                "asmGotoSuccessorContinuationIds",
+                "asm_goto_successor_continuation_ids",
+                default=[],
+            ) or [])
+            if str(value).strip()
+        }
+        targets = {
+            str(_read_field(
+                edge,
+                "targetContinuationId",
+                "target_continuation_id",
+                default="",
+            ) or "").strip()
+            for edge in goto_edges
+        }
+        complete = bool(_read_field(
+            frag,
+            "asmGotoControlFlowComplete",
+            "asm_goto_control_flow_complete",
+            default=False,
+        ))
+        if (not complete or not fallthrough or "" in targets or
+                successors != ({fallthrough} | targets) or
+                len(successors) != len(goto_labels) + 1):
+            reasons.append(
+                "asm goto lacks complete authoritative host-continuation facts"
+            )
 
     return reasons
 

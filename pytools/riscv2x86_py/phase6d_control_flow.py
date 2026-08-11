@@ -8,12 +8,12 @@ def prove(r):
             s.control_flow.has_unknown_target or
             s.control_flow.has_indirect_control_flow is not False):
         return reject(r,SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
-    successors = {item.source_successor_address for item in contract.continuations}
-    if (not successors or
-            any(item.source_successor_address not in successors for item in contract.asm_goto_labels) or
-            any(item not in {x.target_continuation_id for x in contract.continuations}
-                for item in contract.fallthrough_continuations)):
-        return reject(r,SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
+    if not s.control_flow.has_asm_goto:
+        successors = {item.source_successor_address for item in contract.continuations}
+        if (not successors or
+                any(item not in {x.target_continuation_id for x in contract.continuations}
+                    for item in contract.fallthrough_continuations)):
+            return reject(r,SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
     if s.control_flow.has_asm_goto and (not cc.supports_asm_goto or not c.control_flow_constraint.preserve_asm_goto):return reject(r,SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
     if s.control_flow.has_asm_goto and {item.label for item in contract.asm_goto_labels} != set(s.shell.goto_labels):
         return reject(r,SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
@@ -34,6 +34,16 @@ def prove(r):
                 contract.branch_condition_binding_id != expected_binding or
                 len(contract.asm_goto_labels) != 1 or
                 len(contract.fallthrough_continuations) != 1 or
+                contract.asm_goto_fallthrough_continuation_id != contract.fallthrough_continuations[0] or
+                set(contract.asm_goto_successor_continuation_ids) !=
+                    ({contract.fallthrough_continuations[0]} |
+                     {item.target_continuation_id for item in contract.asm_goto_labels}) or
+                set(s.control_flow.asm_goto_successor_continuation_ids) !=
+                    set(contract.asm_goto_successor_continuation_ids) or
+                s.control_flow.asm_goto_fallthrough_continuation_id !=
+                    contract.asm_goto_fallthrough_continuation_id or
+                any(item.source_continuation_id != item.target_continuation_id
+                    for item in contract.asm_goto_labels) or
                 not c.preserve_cc_clobber or
                 c.preserve_volatile != s.shell.is_volatile):
             return reject(r, SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)

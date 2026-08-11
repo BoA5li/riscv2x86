@@ -33,6 +33,10 @@ struct AsmGotoEdge {
     std::string asmTarget;
     std::string cLabel;
     unsigned exitCode = 0;
+    // Stable host-C continuation identity.  This is created by the frontend
+    // from its resolved asm-goto label list; it is not a lifted machine-code
+    // address and must never be reconstructed from synthetic assembler labels.
+    std::string targetContinuationId;
 };
 
 struct AsmFragment {
@@ -43,6 +47,11 @@ struct AsmFragment {
     std::vector<std::string> clobbers;      // 包含 "memory", "cc" 等
     std::vector<std::string> gotoLabels;
     std::vector<AsmGotoEdge> gotoEdges;
+    // Authoritative host-C control-flow surface for GNU asm goto.  The
+    // successor set contains exactly fallthrough + every goto edge target.
+    std::string asmGotoFallthroughContinuationId;
+    std::vector<std::string> asmGotoSuccessorContinuationIds;
+    bool asmGotoControlFlowComplete = false;
     bool isVolatile = false;
 
     // GNU inline asm operand index -> host C/C++ expression width in bits.

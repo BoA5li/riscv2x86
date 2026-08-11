@@ -57,6 +57,7 @@ class AsmGotoEdge:
     asmTarget: str = ""
     cLabel: str = ""
     exitCode: int = 0
+    targetContinuationId: str = ""
 
 
 @dataclass
@@ -169,6 +170,9 @@ class AsmFragment:
     microarchReasons: List[str] = field(default_factory=list)
 
     gotoEdges: List[AsmGotoEdge] = field(default_factory=list)
+    asmGotoFallthroughContinuationId: str = ""
+    asmGotoSuccessorContinuationIds: List[str] = field(default_factory=list)
+    asmGotoControlFlowComplete: bool = False
     controlFlow: Optional[AsmControlFlowSurface] = None
     microArch: Optional[AsmMicroArchIntent] = None
 

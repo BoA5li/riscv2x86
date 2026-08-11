@@ -56,9 +56,9 @@ class SourceControlFlowSuccessor:
 
 @dataclass(frozen=True)
 class SourceAsmGotoLabelBinding:
-    """Authoritative asm-goto label to source-successor association."""
+    """Authoritative asm-goto C-label to host-continuation association."""
     label: str
-    successor_address: int
+    continuation_id: str
 
 
 @dataclass(frozen=True)
@@ -102,6 +102,8 @@ class SourceControlFlowModel:
     successors_complete: bool = False
     asm_goto_label_bindings: Tuple[SourceAsmGotoLabelBinding, ...] = ()
     asm_goto_label_bindings_complete: bool = False
+    asm_goto_fallthrough_continuation_id: str | None = None
+    asm_goto_successor_continuation_ids: Tuple[str, ...] = ()
     asm_goto_condition_kind: str | None = None
     asm_goto_condition_operand_index: int | None = None
 
@@ -816,15 +818,32 @@ def _build_control_flow_model(
         for successor in node.successors
     ) if cfg_ok else ()
 
-    non_fallthrough = tuple(edge for edge in successors if edge.edge_kind != "fallthrough")
     goto_bindings = ()
     goto_complete = not shell.has_asm_goto
-    if shell.has_asm_goto and len(shell.goto_edges) == len(shell.goto_labels) == len(non_fallthrough):
-        goto_bindings = tuple(
-            SourceAsmGotoLabelBinding(label, edge.successor_address)
-            for (_, label, _), edge in zip(sorted(shell.goto_edges, key=lambda item: item[2]), non_fallthrough)
-        )
-        goto_complete = {item.label for item in goto_bindings} == set(shell.goto_labels)
+    goto_fallthrough = None
+    goto_successors = ()
+    # Host-C asm-goto continuations are supplied by the frontend.  Do not
+    # derive them from synthetic Phase-4 labels or lifted CFG edge order: the
+    # latter is only a local machine-code view and may merge taken/fallthrough.
+    if shell.has_asm_goto:
+        goto_fallthrough = shell.asm_goto_fallthrough_continuation_id or None
+        goto_successors = shell.asm_goto_successor_continuation_ids
+        expected_successors = {
+            shell.asm_goto_fallthrough_continuation_id,
+            *(edge[3] for edge in shell.goto_edges),
+        }
+        declared_labels = {edge[1] for edge in shell.goto_edges}
+        if (shell.asm_goto_control_flow_complete and
+                len(shell.goto_edges) == len(shell.goto_labels) and
+                declared_labels == set(shell.goto_labels) and
+                goto_fallthrough is not None and
+                len(goto_successors) == len(expected_successors) and
+                set(goto_successors) == expected_successors):
+            goto_bindings = tuple(
+                SourceAsmGotoLabelBinding(label=edge[1], continuation_id=edge[3])
+                for edge in sorted(shell.goto_edges, key=lambda item: item[2])
+            )
+            goto_complete = True
     return SourceControlFlowModel(
         cfg_ok=cfg_ok,
         cfg_entry=cfg_entry,
@@ -847,6 +866,8 @@ def _build_control_flow_model(
         successors_complete=cfg_ok and not has_unknown_target,
         asm_goto_label_bindings=goto_bindings,
         asm_goto_label_bindings_complete=goto_complete,
+        asm_goto_fallthrough_continuation_id=goto_fallthrough,
+        asm_goto_successor_continuation_ids=goto_successors,
         asm_goto_condition_kind=getattr(runtime_facts, "asm_goto_condition_kind", None),
         asm_goto_condition_operand_index=getattr(runtime_facts, "asm_goto_condition_operand_index", None),
     )

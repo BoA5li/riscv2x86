@@ -22,7 +22,7 @@ class TargetSuccessorContinuation:
 @dataclass(frozen=True)
 class AsmGotoLabelContract:
     label: str
-    source_successor_address: int
+    source_continuation_id: str
     target_continuation_id: str
 
 
@@ -43,6 +43,8 @@ class StructuredControlFlowContract:
     branch_condition_binding_id: str | None = None
     state_merge_requirements: tuple[str, ...] = ()
     has_exception_or_trap_edge: bool = False
+    asm_goto_fallthrough_continuation_id: str | None = None
+    asm_goto_successor_continuation_ids: tuple[str, ...] = ()
 
 
 def _failure(plan, name, details=None):
@@ -113,16 +115,26 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
     continuations = tuple(TargetSuccessorContinuation(edge.source_block_address,
         edge.successor_address, edge.edge_kind,
         f"continuation:{edge.source_block_address:x}:{edge.successor_address:x}") for edge in cf.successors)
-    by_successor = {item.source_successor_address: item.target_continuation_id for item in continuations}
     labels = []
     for binding in cf.asm_goto_label_bindings:
-        target = by_successor.get(binding.successor_address)
-        if target is None:
+        if not binding.continuation_id:
             return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
-        labels.append(AsmGotoLabelContract(binding.label, binding.successor_address, target))
+        labels.append(AsmGotoLabelContract(
+            binding.label, binding.continuation_id, binding.continuation_id
+        ))
     if cf.has_asm_goto and {item.label for item in labels} != set(source_model.shell.goto_labels):
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
-    fallthrough = tuple(item.target_continuation_id for item in continuations if item.edge_kind == "fallthrough")
+    if cf.has_asm_goto:
+        fallthrough = (() if cf.asm_goto_fallthrough_continuation_id is None
+                       else (cf.asm_goto_fallthrough_continuation_id,))
+        expected_successors = set(cf.asm_goto_successor_continuation_ids)
+        actual_successors = {item.target_continuation_id for item in labels} | set(fallthrough)
+        if (len(fallthrough) != 1 or not expected_successors or
+                actual_successors != expected_successors or
+                len(expected_successors) != len(labels) + 1):
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
+    else:
+        fallthrough = tuple(item.target_continuation_id for item in continuations if item.edge_kind == "fallthrough")
     # Phase 6C does not invent condition ASTs.  Phase 6B must carry an
     # authoritative condition binding into the plan metadata; if it is absent
     # the derived constraints remain usable for proof/selection, but no
@@ -141,7 +153,8 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
     contract = StructuredControlFlowContract(continuations, fallthrough, tuple(labels),
         cf.has_asm_goto, cf.has_multiple_exits, False, False,
         semantic_contract_id, branch_condition_binding_id, merge_requirements,
-        False)
+        False, cf.asm_goto_fallthrough_continuation_id,
+        cf.asm_goto_successor_continuation_ids)
     flow = TargetControlFlowConstraint(preserve_control_flow=True,
         preserve_asm_goto=cf.has_asm_goto)
     operands = () if branch_operand is None else (

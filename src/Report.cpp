@@ -208,10 +208,22 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
                 const auto &edge = g.gotoEdges[j];
                 os << "{\"asmTarget\":\"" << escape(edge.asmTarget)
                    << "\",\"cLabel\":\"" << escape(edge.cLabel)
-                   << "\",\"exitCode\":" << edge.exitCode << "}";
+                   << "\",\"exitCode\":" << edge.exitCode
+                   << ",\"targetContinuationId\":\""
+                   << escape(edge.targetContinuationId) << "\"}";
                 if (j + 1 < g.gotoEdges.size()) os << ",";
             }
-            os << "]\n";
+            os << "],\n";
+            os << "        \"asmGotoFallthroughContinuationId\":\""
+               << escape(g.asmGotoFallthroughContinuationId) << "\",\n";
+            os << "        \"asmGotoSuccessorContinuationIds\": [";
+            for (size_t j = 0; j < g.asmGotoSuccessorContinuationIds.size(); ++j) {
+                os << "\"" << escape(g.asmGotoSuccessorContinuationIds[j]) << "\"";
+                if (j + 1 < g.asmGotoSuccessorContinuationIds.size()) os << ",";
+            }
+            os << "],\n";
+            os << "        \"asmGotoControlFlowComplete\":"
+               << (g.asmGotoControlFlowComplete ? "true" : "false") << "\n";
 
             os << "      }";
         }

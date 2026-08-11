@@ -386,17 +386,29 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
     // asm goto labels
     if (S->isAsmGoto()) {
         frag.kind = AsmKind::InlineGoto;
+        frag.asmGotoFallthroughContinuationId =
+            "asm-goto:" + frag.id + ":fallthrough";
+        frag.asmGotoSuccessorContinuationIds.push_back(
+            frag.asmGotoFallthroughContinuationId
+        );
 
         for (unsigned i = 0; i < S->getNumLabels(); ++i) {
             const std::string label = S->getLabelName(i).str();
+            const std::string continuationId =
+                "asm-goto:" + frag.id + ":label:" + label;
             frag.gotoLabels.push_back(label);
             // Clang has already resolved this identifier as an asm-goto
             // label.  Preserve the binding as source-shell metadata instead
             // of asking Phase 4/6 to infer it from "%l" text.
             frag.gotoEdges.push_back(AsmGotoEdge{
-                "%l" + std::to_string(i), label, i
+                "%l" + std::to_string(i), label, i, continuationId
             });
+            frag.asmGotoSuccessorContinuationIds.push_back(continuationId);
         }
+        // Clang has resolved every GCCAsmStmt label before this callback.  The
+        // IDs above therefore describe the host-C continuation interface
+        // independently of Phase-4 synthetic labels and lifted CFG layout.
+        frag.asmGotoControlFlowComplete = !frag.gotoEdges.empty();
     } else if (S->getNumOutputs() == 0 &&
                S->getNumInputs() == 0 &&
                S->getNumClobbers() == 0) {

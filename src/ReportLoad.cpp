@@ -147,10 +147,16 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
                     if (auto s = edge->getString("asmTarget")) parsed.asmTarget = s->str();
                     if (auto s = edge->getString("cLabel")) parsed.cLabel = s->str();
                     if (auto i = edge->getInteger("exitCode")) parsed.exitCode = static_cast<unsigned>(*i);
-                    if (!parsed.asmTarget.empty() && !parsed.cLabel.empty())
+                    if (auto s = edge->getString("targetContinuationId")) parsed.targetContinuationId = s->str();
+                    if (!parsed.asmTarget.empty() && !parsed.cLabel.empty() && !parsed.targetContinuationId.empty())
                         g.gotoEdges.push_back(std::move(parsed));
                 }
             }
+            if (auto s = fo->getString("asmGotoFallthroughContinuationId"))
+                g.asmGotoFallthroughContinuationId = s->str();
+            loadStringArray(fo, "asmGotoSuccessorContinuationIds", g.asmGotoSuccessorContinuationIds);
+            if (auto b = fo->getBoolean("asmGotoControlFlowComplete"))
+                g.asmGotoControlFlowComplete = *b;
 
             f.fragment = std::move(g);
         }

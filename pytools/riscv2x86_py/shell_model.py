@@ -263,8 +263,13 @@ class SourceShellModel:
 
     has_asm_goto: bool
     goto_labels: Tuple[str, ...]
-    # (asm target spelling, C label, exit code), copied from the frontend.
-    goto_edges: Tuple[Tuple[str, str, int], ...]
+    # (asm target spelling, C label, exit code, host continuation id), copied
+    # from the frontend.  The continuation id is authoritative source-shell
+    # control-flow data, never a synthetic/lifted machine-code address.
+    goto_edges: Tuple[Tuple[str, str, int, str], ...]
+    asm_goto_fallthrough_continuation_id: str
+    asm_goto_successor_continuation_ids: Tuple[str, ...]
+    asm_goto_control_flow_complete: bool
 
     has_local_labels: bool
     has_external_control_flow: bool
@@ -497,12 +502,26 @@ class SourceShellModel:
         goto_edges = tuple(
             (str(getattr(edge, "asmTarget", "")).strip(),
              str(getattr(edge, "cLabel", "")).strip(),
-             int(getattr(edge, "exitCode", -1)))
+             int(getattr(edge, "exitCode", -1)),
+             str(getattr(edge, "targetContinuationId", "")).strip())
             for edge in (getattr(fragment, "gotoEdges", ()) or ())
             if str(getattr(edge, "asmTarget", "")).strip()
             and str(getattr(edge, "cLabel", "")).strip()
             and isinstance(getattr(edge, "exitCode", None), int)
+            and str(getattr(edge, "targetContinuationId", "")).strip()
         )
+        goto_fallthrough = str(getattr(
+            fragment, "asmGotoFallthroughContinuationId", ""
+        )).strip()
+        goto_successors = _unique_preserving_order(
+            item for item in (
+                _stripped_text(value)
+                for value in getattr(
+                    fragment, "asmGotoSuccessorContinuationIds", ()
+                )
+            ) if item
+        )
+        goto_complete = bool(getattr(fragment, "asmGotoControlFlowComplete", False))
 
         all_operands = outputs + inputs
 
@@ -532,6 +551,9 @@ class SourceShellModel:
             ),
             goto_labels=goto_labels,
             goto_edges=goto_edges,
+            asm_goto_fallthrough_continuation_id=goto_fallthrough,
+            asm_goto_successor_continuation_ids=goto_successors,
+            asm_goto_control_flow_complete=goto_complete,
 
             has_local_labels=bool(
                 getattr(fragment, "hasLocalLabels", False)
