@@ -2994,8 +2994,10 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
             "x86.gnu-att.mfence.full-system-seq-cst.v1",
             "x86.gnu-att.serialize.instruction-serialization.v1",
+            "x86.gnu-att.asm-goto.bzero.u32-u64.v1",
+            "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1",
         }),
-        version="phase6-default-catalog-barrier-serialization-v1",
+        version="phase6-default-catalog-asm-goto-zero-test-v1",
     )
     capabilities = compiler_capabilities or CompilerCapabilityModel(
         supports_gnu_inline_asm=target_environment.supports_gnu_inline_asm,
@@ -3064,7 +3066,9 @@ def _translate_phase6_proof_pipeline(
     if rendered.kind in {RenderedReplacementKind.INTERNAL_ERROR, RenderedReplacementKind.UNSUPPORTED_DIAGNOSTIC} or rendered.emitted_text is None:
         code = rendered.diagnostics[0].value if rendered.diagnostics else "TR_PHASE6F_RENDER_FAILURE"
         return _unsupported(context, reason="Phase-6F could not faithfully encode the selected approved contract", reason_code=code)
-    kind = "x86_inline_asm" if rendered.kind in {RenderedReplacementKind.GNU_INLINE_ASM, RenderedReplacementKind.GNU_ASM_GOTO} else "c"
+    kind = ("x86_asm_goto" if rendered.kind is RenderedReplacementKind.GNU_ASM_GOTO
+            else "x86_inline_asm" if rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+            else "c")
     proof = selection.selected_plan.proof
     evidence = proof.evidence
     artifact = {

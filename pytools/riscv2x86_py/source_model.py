@@ -102,6 +102,8 @@ class SourceControlFlowModel:
     successors_complete: bool = False
     asm_goto_label_bindings: Tuple[SourceAsmGotoLabelBinding, ...] = ()
     asm_goto_label_bindings_complete: bool = False
+    asm_goto_condition_kind: str | None = None
+    asm_goto_condition_operand_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -313,6 +315,8 @@ class SourceSemanticModel:
             has_call_semantics=self.control_flow.has_call,
             has_return_semantics=self.control_flow.has_return is True,
             has_branch_semantics=self.control_flow.has_internal_branch,
+            asm_goto_condition_kind=self.control_flow.asm_goto_condition_kind,
+            asm_goto_condition_operand_index=self.control_flow.asm_goto_condition_operand_index,
             has_atomic_semantics=self.atomic.present,
             has_barrier_semantics=self.barrier.present,
             has_non_atomic_memory_semantics=(
@@ -570,6 +574,7 @@ def build_source_semantic_model(
         blocks=blocks,
         cfg=cfg,
         summary=summary,
+        runtime_facts=runtime_facts,
     )
 
     memory = _build_memory_model(summary)
@@ -684,6 +689,7 @@ def _build_control_flow_model(
     cfg: CFGResult,
     summary: IRSummary,
     shell: SourceShellModel,
+    runtime_facts: Any,
 ) -> SourceControlFlowModel:
     """
     Build the structured source control-flow snapshot.
@@ -810,6 +816,15 @@ def _build_control_flow_model(
         for successor in node.successors
     ) if cfg_ok else ()
 
+    non_fallthrough = tuple(edge for edge in successors if edge.edge_kind != "fallthrough")
+    goto_bindings = ()
+    goto_complete = not shell.has_asm_goto
+    if shell.has_asm_goto and len(shell.goto_edges) == len(shell.goto_labels) == len(non_fallthrough):
+        goto_bindings = tuple(
+            SourceAsmGotoLabelBinding(label, edge.successor_address)
+            for (_, label, _), edge in zip(sorted(shell.goto_edges, key=lambda item: item[2]), non_fallthrough)
+        )
+        goto_complete = {item.label for item in goto_bindings} == set(shell.goto_labels)
     return SourceControlFlowModel(
         cfg_ok=cfg_ok,
         cfg_entry=cfg_entry,
@@ -830,11 +845,10 @@ def _build_control_flow_model(
         ),
         successors=successors,
         successors_complete=cfg_ok and not has_unknown_target,
-        # CFG nodes identify successor addresses but do not authoritatively
-        # bind GNU asm-goto labels to those addresses.  Keep this incomplete
-        # until an upstream normalized shell/CFG adapter supplies the mapping.
-        asm_goto_label_bindings=(),
-        asm_goto_label_bindings_complete=not shell.has_asm_goto,
+        asm_goto_label_bindings=goto_bindings,
+        asm_goto_label_bindings_complete=goto_complete,
+        asm_goto_condition_kind=getattr(runtime_facts, "asm_goto_condition_kind", None),
+        asm_goto_condition_operand_index=getattr(runtime_facts, "asm_goto_condition_operand_index", None),
     )
 
 def _build_memory_model(
@@ -3226,7 +3240,16 @@ def _build_operation_model(
         has_control_flow=has_control_flow,
         has_call=control_flow.has_call,
         has_return=control_flow.has_return,
-        may_trap=None,
+        # A fully modelled asm-goto branch with no memory operation has no
+        # architectural faulting access in the current narrow route.  All
+        # other operation kinds retain unknown and therefore fail closed.
+        may_trap=(False if (control_flow.has_asm_goto and
+                            control_flow.asm_goto_condition_kind in {"zero", "nonzero"} and
+                            control_flow.asm_goto_condition_operand_index is not None and
+                            not memory.reads_memory and
+                            not memory.writes_memory and
+                            not control_flow.has_call)
+                  else None),
 
         requires_helper_abi_contract=(
             control_flow.has_call

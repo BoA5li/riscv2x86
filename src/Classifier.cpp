@@ -388,7 +388,14 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
         frag.kind = AsmKind::InlineGoto;
 
         for (unsigned i = 0; i < S->getNumLabels(); ++i) {
-            frag.gotoLabels.push_back(S->getLabelName(i).str());
+            const std::string label = S->getLabelName(i).str();
+            frag.gotoLabels.push_back(label);
+            // Clang has already resolved this identifier as an asm-goto
+            // label.  Preserve the binding as source-shell metadata instead
+            // of asking Phase 4/6 to infer it from "%l" text.
+            frag.gotoEdges.push_back(AsmGotoEdge{
+                "%l" + std::to_string(i), label, i
+            });
         }
     } else if (S->getNumOutputs() == 0 &&
                S->getNumInputs() == 0 &&

@@ -39,6 +39,10 @@ class TranslationRuntimeFacts:
         default_factory=dict
     )
     provenance: str = ""
+    # Phase-4 normalized asm-goto facts.  They are populated only by the
+    # restricted beqz/bnez recognizer in assemble.py, never by Phase 6.
+    asm_goto_condition_operand_index: int | None = None
+    asm_goto_condition_kind: str | None = None
 
 
 class TranslationFactsError(ValueError):
@@ -487,6 +491,8 @@ def translation_runtime_facts_to_dict(
     return {
         "rvToOperandIndex": dict(facts.rv_to_operand_index),
         "operandWidthBits": dict(facts.operand_width_bits),
+        "asmGotoConditionKind": facts.asm_goto_condition_kind,
+        "asmGotoConditionOperandIndex": facts.asm_goto_condition_operand_index,
     }
     
 def translation_runtime_facts_from_dict(
@@ -519,6 +525,14 @@ def translation_runtime_facts_from_dict(
         "operandWidthBits",
         value.get("operand_width_bits", {}),
     )
+    asm_goto_condition_kind = value.get(
+        "asmGotoConditionKind",
+        value.get("asm_goto_condition_kind"),
+    )
+    asm_goto_condition_operand_index = value.get(
+        "asmGotoConditionOperandIndex",
+        value.get("asm_goto_condition_operand_index"),
+    )
 
     if raw_rv_to_operand is None:
         raw_rv_to_operand = {}
@@ -540,6 +554,17 @@ def translation_runtime_facts_from_dict(
             "invalid translationRuntimeFacts: " + "; ".join(errors)
         )
 
+    if asm_goto_condition_kind not in {None, "zero", "nonzero"}:
+        raise ValueError("translationRuntimeFacts has unsupported asm-goto condition kind")
+    if asm_goto_condition_operand_index is not None:
+        if (isinstance(asm_goto_condition_operand_index, bool) or
+                not isinstance(asm_goto_condition_operand_index, int) or
+                asm_goto_condition_operand_index < 0):
+            raise ValueError("translationRuntimeFacts has invalid asm-goto condition operand index")
+    if ((asm_goto_condition_kind is None) !=
+            (asm_goto_condition_operand_index is None)):
+        raise ValueError("translationRuntimeFacts requires both asm-goto condition fields")
+
     # serialized facts 若包含 register binding，则每一个绑定 operand
     # 都必须具有 host-derived width。
     for operand_index in sorted(set(rv_to_operand_index.values())):
@@ -552,6 +577,8 @@ def translation_runtime_facts_from_dict(
     return TranslationRuntimeFacts(
         rv_to_operand_index=rv_to_operand_index,
         operand_width_bits=operand_width_bits,
+        asm_goto_condition_kind=asm_goto_condition_kind,
+        asm_goto_condition_operand_index=asm_goto_condition_operand_index,
     )
 
 # ---------------------------------------------------------------------------

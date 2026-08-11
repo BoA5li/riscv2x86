@@ -430,6 +430,8 @@ class TargetConstraintReasonCode(str, Enum):
     STRUCTURED_CONTROL_FLOW_SUCCESSORS_INCOMPLETE = "phase6c.structured_control_flow_successors_incomplete"
     STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE = "phase6c.structured_control_flow_label_bindings_incomplete"
     STRUCTURED_CONTROL_FLOW_ASM_GOTO_UNAVAILABLE = "phase6c.structured_control_flow_asm_goto_unavailable"
+    STRUCTURED_CONTROL_FLOW_BRANCH_CONDITION_UNSUPPORTED = "phase6c.structured_control_flow_branch_condition_unsupported"
+    STRUCTURED_CONTROL_FLOW_BRANCH_OPERAND_UNSAFE = "phase6c.structured_control_flow_branch_operand_unsafe"
     HELPER_ABI_PLAN_KIND_MISMATCH = "phase6c.helper_abi_plan_kind_mismatch"
     HELPER_ABI_SOURCE_INCOMPLETE = "phase6c.helper_abi_source_incomplete"
     HELPER_ABI_CONTRACT_INCOMPLETE = "phase6c.helper_abi_contract_incomplete"

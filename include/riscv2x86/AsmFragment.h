@@ -26,6 +26,15 @@ enum class AsmKind {
     DotSFile          // .S 文件（独立处理）
 };
 
+// Authoritative source-shell mapping for one GNU asm-goto target.  This is
+// emitted by the Clang frontend; later Python phases never recover it by
+// parsing the asm template or renderer output.
+struct AsmGotoEdge {
+    std::string asmTarget;
+    std::string cLabel;
+    unsigned exitCode = 0;
+};
+
 struct AsmFragment {
     AsmKind kind;
     std::string rawAsmText;                 // 模板原文
@@ -33,6 +42,7 @@ struct AsmFragment {
     std::vector<AsmOperand> inputs;
     std::vector<std::string> clobbers;      // 包含 "memory", "cc" 等
     std::vector<std::string> gotoLabels;
+    std::vector<AsmGotoEdge> gotoEdges;
     bool isVolatile = false;
 
     // GNU inline asm operand index -> host C/C++ expression width in bits.

@@ -181,7 +181,7 @@ def _phase7_apply_kind(kind: str) -> str:
         return "unsupported"
 
     if normalized == "x86_asm_goto":
-        return "unsupported"
+        return "x86_goto"
 
     if normalized in _KEEP_KINDS:
         return "keep"
@@ -357,10 +357,11 @@ def _phase4_preflight_blockers(f: Finding) -> List[str]:
     goto_labels = list(
         _read_field(frag, "gotoLabels", "goto_labels", default=[]) or []
     )
-    if goto_labels:
+    goto_edges = list(_read_field(frag, "gotoEdges", "goto_edges", default=[]) or [])
+    if goto_labels and (len(goto_edges) != len(goto_labels) or
+                        {str(_read_field(edge, "cLabel", "c_label", default="")) for edge in goto_edges} != set(goto_labels)):
         reasons.append(
-            "asm goto labels present; pipeline has no control-flow-preserving "
-            "translation for goto-form inline asm"
+            "asm goto labels lack complete authoritative gotoEdges metadata"
         )
 
     return reasons
@@ -442,10 +443,11 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
         _read_field(frag, "gotoLabels", "goto_labels", default=[]) or []
     )
     if goto_labels:
-        reasons.append(
-            "asm goto labels present; phase7 has no control-preserving "
-            "rewrite for goto-form inline asm"
-        )
+        artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        if (kind != "x86_asm_goto" or
+                artifact.get("proofStatus") != "approved" or
+                artifact.get("replacementKind") != "gnu_asm_goto"):
+            reasons.append("asm goto requires an approved GNU asm-goto renderer artifact")
         return reasons
 
     constraints = _collect_fragment_constraints(frag)
@@ -1192,7 +1194,7 @@ def run(
         #
         # apply_kind 只可能是：
         #   * "c"
-        #   * "x86"
+        #   * "x86" / "x86_goto"
         #
         # 对这两类必须有非空 replacement。
         #
@@ -1219,7 +1221,9 @@ def run(
         f.suggestedReplacement = replacement
         f.category = "ReplaceableByRule"
 
-        if apply_kind == "x86":
+        if apply_kind == "x86_goto":
+            f.ruleName = "phase6.lower_to_x86_asm_goto"
+        elif apply_kind == "x86":
             f.ruleName = "phase6.lower_to_x86_inline_asm"
         else:
             f.ruleName = "phase6.lower_to_c"

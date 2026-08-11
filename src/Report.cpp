@@ -202,6 +202,15 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
                 os << "\"" << escape(g.gotoLabels[j]) << "\"";
                 if (j + 1 < g.gotoLabels.size()) os << ",";
             }
+            os << "],\n";
+            os << "        \"gotoEdges\": [";
+            for (size_t j = 0; j < g.gotoEdges.size(); ++j) {
+                const auto &edge = g.gotoEdges[j];
+                os << "{\"asmTarget\":\"" << escape(edge.asmTarget)
+                   << "\",\"cLabel\":\"" << escape(edge.cLabel)
+                   << "\",\"exitCode\":" << edge.exitCode << "}";
+                if (j + 1 < g.gotoEdges.size()) os << ",";
+            }
             os << "]\n";
 
             os << "      }";

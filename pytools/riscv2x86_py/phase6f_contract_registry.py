@@ -15,6 +15,7 @@ from .phase6f_renderer import (
     CBuiltinRecipe,
     GnuInlineAsmRecipe,
     GnuAsmGotoRecipe,
+    GnuAsmGotoLabelBinding,
     HelperCallRecipe,
     RendererContractKind,
     StructuredControlFlowRecipe,
@@ -512,6 +513,55 @@ def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+_ASM_GOTO_ZERO_TEST_RECIPES = {
+    "x86.gnu-att.asm-goto.bzero.u32-u64.v1": "je",
+    "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1": "jne",
+}
+
+
+def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
+    """Build only the proof-compatible ``test + je/jne`` asm-goto family.
+
+    The branch meaning, operand position, label set, width, cc clobber and
+    volatile status are all checked against the approved Phase-6C contract.
+    This factory contains no source-asm/mnemonic interpretation.
+    """
+    semantic_id = approved.plan.metadata.get("renderer_semantic_contract_id")
+    jump = _ASM_GOTO_ZERO_TEST_RECIPES.get(semantic_id)
+    flow = approved.constraints.structured_control_flow_contract
+    operands = tuple(approved.constraints.operand_constraints)
+    if (jump is None or flow is None or
+            flow.semantic_contract_id != semantic_id or
+            not flow.uses_asm_goto or
+            not approved.constraints.control_flow_constraint.preserve_asm_goto or
+            not approved.constraints.preserve_cc_clobber or
+            len(flow.asm_goto_labels) != 1 or
+            len(flow.fallthrough_continuations) != 1 or
+            len(operands) != 1):
+        return None
+    operand = operands[0]
+    if (operand.role is not TargetOperandRole.INPUT or
+            operand.allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
+            operand.required_width_bits not in {32, 64} or
+            operand.tied_to_source_operand_index is not None or
+            operand.early_clobber or operand.requires_fixed_register):
+        return None
+    suffix = "l" if operand.required_width_bits == 32 else "q"
+    label = flow.asm_goto_labels[0]
+    return (
+        RendererContractKind.GNU_ASM_GOTO,
+        GnuAsmGotoRecipe(
+            template=f"test{suffix} %0, %0\\n\\t{jump} %l[{label.label}]",
+            output_operand_indexes=(),
+            input_operand_indexes=(operand.source_operand_index,),
+            label_bindings=(GnuAsmGotoLabelBinding(
+                label=label.label,
+                target_continuation_id=label.target_continuation_id,
+            ),),
+        ),
+    )
+
+
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
@@ -591,6 +641,22 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             _x86_barrier_recipe,
             "x86_barrier_contract",
             frozenset({"x86:serialize"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.asm-goto.bzero.u32-u64.v1",
+            TargetLoweringKind.STRUCTURED_CONTROL_FLOW,
+            "x86.gnu-att.asm-goto.bzero.u32-u64",
+            _x86_asm_goto_zero_test_recipe,
+            "structured_control_flow_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1",
+            TargetLoweringKind.STRUCTURED_CONTROL_FLOW,
+            "x86.gnu-att.asm-goto.bnonzero.u32-u64",
+            _x86_asm_goto_zero_test_recipe,
+            "structured_control_flow_contract",
+            frozenset({"x86:gpr_inline_asm"}),
         ),
     ),
 )

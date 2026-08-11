@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 import shutil
 import subprocess
 import tempfile
@@ -57,6 +58,9 @@ class MaterializedInlineAsm:
     """
     normalized_asm: str
     operand_bindings: List[AsmOperandBinding]
+    # synthetic assembler label -> authoritative C asm-goto label.  This is
+    # provenance only; the synthetic label is never rendered back to C.
+    asm_goto_targets: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -403,6 +407,23 @@ def materialize_template(frag: AsmFragment) -> MaterializedInlineAsm:
     operands = list(frag.outputs) + list(frag.inputs)
     operand_aliases = _build_operand_aliases(operands)
 
+    # GNU asm-goto placeholders are not ordinary named operands.  Materialize
+    # them into private local labels so llvm-mc/lifting can observe the branch
+    # edge, while keeping the source C-label mapping as structured provenance.
+    goto_targets: Dict[str, str] = {}
+    for edge in list(getattr(frag, "gotoEdges", ()) or ()):
+        asm_target = str(getattr(edge, "asmTarget", "")).strip()
+        c_label = str(getattr(edge, "cLabel", "")).strip()
+        exit_code = getattr(edge, "exitCode", None)
+        if not asm_target or not c_label or not isinstance(exit_code, int):
+            raise ValueError("incomplete asm-goto source edge")
+        synthetic = f".Lriscv2x86_asm_goto_{exit_code}"
+        goto_targets[synthetic] = c_label
+        text = text.replace(asm_target, synthetic)
+        text = text.replace(f"%l[{c_label}]", synthetic)
+    if "%l" in text:
+        raise ValueError("unbound asm-goto label placeholder")
+
     # ------------------------------------------------------------------
     # 1) 处理 named operand：%[name] -> %N
     # ------------------------------------------------------------------
@@ -566,6 +587,8 @@ def materialize_template(frag: AsmFragment) -> MaterializedInlineAsm:
             out_lines.append(new_line)
 
     normalized_asm = "\n".join(out_lines)
+    if goto_targets:
+        normalized_asm += "\n" + "\n".join(f"{label}:" for label in goto_targets)
 
     # ------------------------------------------------------------------
     # 5) 恢复字面百分号。
@@ -602,7 +625,23 @@ def materialize_template(frag: AsmFragment) -> MaterializedInlineAsm:
     return MaterializedInlineAsm(
         normalized_asm=normalized_asm,
         operand_bindings=operand_bindings,
+        asm_goto_targets=goto_targets,
     )
+
+
+def _asm_goto_condition_fact(frag: AsmFragment) -> tuple[str | None, int | None]:
+    """Recognize only one explicit Phase-4 semantic family: beqz/bnez %0."""
+    if not getattr(frag, "gotoEdges", ()): return (None, None)
+    if getattr(frag, "outputs", ()) or len(getattr(frag, "inputs", ())) != 1:
+        return (None, None)
+    if getattr(frag, "clobbers", ()):
+        return (None, None)
+    body = (getattr(frag, "rawAsmText", "") or "").strip()
+    if re.fullmatch(r"beqz\s+%(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*,?\s*%l(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])", body):
+        return ("zero", 0)
+    if re.fullmatch(r"bnez\s+%(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*,?\s*%l(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])", body):
+        return ("nonzero", 0)
+    return (None, None)
     
 def _build_pic_stub(frag: AsmFragment) -> str:
     """
@@ -1828,6 +1867,13 @@ def assemble(
             operand_bindings=materialized.operand_bindings,
             operand_width_bits=dict(operand_width_bits or {}),
         )
+        condition_kind, condition_operand = _asm_goto_condition_fact(frag)
+        if condition_kind is not None:
+            runtime_facts = replace(
+                runtime_facts,
+                asm_goto_condition_kind=condition_kind,
+                asm_goto_condition_operand_index=condition_operand,
+            )
 
         # 使用与 bindings 完全同一次 materialization 的 asm 文本。
         rendered = _render_asm_unit(frag, materialized)

@@ -53,7 +53,12 @@ def _failure(plan, name, details=None):
 
 def derive_structured_control_flow_constraints(source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: "TargetEnvironment") -> "TargetConstraintDerivationResult":
     """Use only SourceSemanticModel's normalized control-flow contract."""
-    from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintModel, TargetMemoryConstraint, TargetControlFlowConstraint
+    from ..phase6c_constraints import (
+        TargetConstraintDerivationResult, TargetConstraintModel,
+        TargetMemoryConstraint, TargetControlFlowConstraint,
+        TargetOperandConstraint, TargetOperandRole, TargetOperandClass,
+    )
+    from ..source_model import SourceOperandAccess, SourceOperandKind
     if candidate_plan.kind is not TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_PLAN_KIND_MISMATCH")
     cf = source_model.control_flow
@@ -75,6 +80,36 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_ASM_GOTO_UNAVAILABLE")
     if cf.has_asm_goto and not cf.asm_goto_label_bindings_complete:
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
+    # This is intentionally a narrow contract family.  A condition is never
+    # reconstructed from template text here: Phase 4 recorded a normalized
+    # fact and Phase 6A exposed it through SourceSemanticModel.
+    branch_operand = None
+    if cf.has_asm_goto:
+        if (cf.asm_goto_condition_kind not in {"zero", "nonzero"} or
+                cf.asm_goto_condition_operand_index is None):
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_CONDITION_UNSUPPORTED")
+        expected_binding = (
+            f"asm-goto:{cf.asm_goto_condition_kind}:operand:"
+            f"{cf.asm_goto_condition_operand_index}"
+        )
+        if candidate_plan.metadata.get("cfg_branch_condition_binding_id") != expected_binding:
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_CONDITION_UNSUPPORTED")
+        matching = [item for item in source_model.operands.operands
+                    if item.source_operand_index == cf.asm_goto_condition_operand_index]
+        if len(matching) != 1:
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_OPERAND_UNSAFE")
+        branch_operand = matching[0]
+        if (branch_operand.kind is not SourceOperandKind.REGISTER or
+                branch_operand.access is not SourceOperandAccess.INPUT or
+                not branch_operand.reads or branch_operand.writes or
+                branch_operand.width_bits not in {32, 64} or
+                branch_operand.early_clobber or
+                branch_operand.tied_to_source_operand_index is not None or
+                branch_operand.fixed_register_name is not None or
+                source_model.memory.reads_memory or source_model.memory.writes_memory or
+                source_model.atomic.present or source_model.barrier.present or
+                source_model.shell.has_memory_clobber):
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_OPERAND_UNSAFE")
     continuations = tuple(TargetSuccessorContinuation(edge.source_block_address,
         edge.successor_address, edge.edge_kind,
         f"continuation:{edge.source_block_address:x}:{edge.successor_address:x}") for edge in cf.successors)
@@ -100,7 +135,7 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
             not all(isinstance(item, str) and item for item in merge_requirements)):
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
     semantic_contract_id = (
-        "x86.gnu-att.asm-goto.structured-cfg.v1"
+        f"x86.gnu-att.asm-goto.b{cf.asm_goto_condition_kind}.u32-u64.v1"
         if cf.has_asm_goto else "x86.structured-cfg.explicit.v1"
     )
     contract = StructuredControlFlowContract(continuations, fallthrough, tuple(labels),
@@ -109,6 +144,20 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
         False)
     flow = TargetControlFlowConstraint(preserve_control_flow=True,
         preserve_asm_goto=cf.has_asm_goto)
+    operands = () if branch_operand is None else (
+        TargetOperandConstraint(
+            source_operand_index=branch_operand.source_operand_index,
+            role=TargetOperandRole.INPUT,
+            allowed_classes=frozenset({TargetOperandClass.GENERAL_REGISTER}),
+            required_width_bits=branch_operand.width_bits,
+            required_signedness=branch_operand.signedness,
+        ),
+    )
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,
         environment=target_environment, structured_control_flow_contract=contract,
-        memory_constraint=TargetMemoryConstraint(), control_flow_constraint=flow))
+        operand_constraints=operands, memory_constraint=TargetMemoryConstraint(),
+        control_flow_constraint=flow,
+        preserve_volatile=source_model.shell.is_volatile,
+        # x86 TEST changes EFLAGS; this explicit target-shell fact is required
+        # by both proof and renderer and is never inferred by Phase 6F.
+        preserve_cc_clobber=cf.has_asm_goto))

@@ -263,6 +263,8 @@ class SourceShellModel:
 
     has_asm_goto: bool
     goto_labels: Tuple[str, ...]
+    # (asm target spelling, C label, exit code), copied from the frontend.
+    goto_edges: Tuple[Tuple[str, str, int], ...]
 
     has_local_labels: bool
     has_external_control_flow: bool
@@ -492,6 +494,15 @@ class SourceShellModel:
             )
             if label
         )
+        goto_edges = tuple(
+            (str(getattr(edge, "asmTarget", "")).strip(),
+             str(getattr(edge, "cLabel", "")).strip(),
+             int(getattr(edge, "exitCode", -1)))
+            for edge in (getattr(fragment, "gotoEdges", ()) or ())
+            if str(getattr(edge, "asmTarget", "")).strip()
+            and str(getattr(edge, "cLabel", "")).strip()
+            and isinstance(getattr(edge, "exitCode", None), int)
+        )
 
         all_operands = outputs + inputs
 
@@ -520,6 +531,7 @@ class SourceShellModel:
                 getattr(fragment, "hasAsmGoto", False) or goto_labels
             ),
             goto_labels=goto_labels,
+            goto_edges=goto_edges,
 
             has_local_labels=bool(
                 getattr(fragment, "hasLocalLabels", False)

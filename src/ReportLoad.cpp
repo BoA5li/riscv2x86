@@ -139,6 +139,18 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
             loadOperands(fo, "inputs", g.inputs);
             loadStringArray(fo, "clobbers", g.clobbers);
             loadStringArray(fo, "gotoLabels", g.gotoLabels);
+            if (auto *edges = fo->getArray("gotoEdges")) {
+                for (auto &value : *edges) {
+                    auto *edge = value.getAsObject();
+                    if (!edge) continue;
+                    AsmGotoEdge parsed;
+                    if (auto s = edge->getString("asmTarget")) parsed.asmTarget = s->str();
+                    if (auto s = edge->getString("cLabel")) parsed.cLabel = s->str();
+                    if (auto i = edge->getInteger("exitCode")) parsed.exitCode = static_cast<unsigned>(*i);
+                    if (!parsed.asmTarget.empty() && !parsed.cLabel.empty())
+                        g.gotoEdges.push_back(std::move(parsed));
+                }
+            }
 
             f.fragment = std::move(g);
         }

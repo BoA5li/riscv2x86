@@ -82,6 +82,8 @@ class Phase6BCandidateFacts:
     has_call_semantics: bool
     has_return_semantics: bool
     has_branch_semantics: bool
+    asm_goto_condition_kind: str | None
+    asm_goto_condition_operand_index: int | None
 
     # ------------------------------------------------------------------
     # Atomic、barrier、memory。
@@ -424,6 +426,11 @@ def _generate_cfg_candidates(
     if facts.has_asm_goto_semantics:
         requirements.add(PlanRequirement.PRESERVE_ASM_GOTO)
 
+    asm_goto_semantic_contract_id = {
+        "zero": "x86.gnu-att.asm-goto.bzero.u32-u64.v1",
+        "nonzero": "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1",
+    }.get(facts.asm_goto_condition_kind)
+
     return [
         _plan(
             plan_id="structured.control-flow",
@@ -438,6 +445,11 @@ def _generate_cfg_candidates(
                 "has_call": facts.has_call_semantics,
                 "has_return": facts.has_return_semantics,
                 "has_branch": facts.has_branch_semantics,
+                "cfg_branch_condition_binding_id": (
+                    None if facts.asm_goto_condition_operand_index is None
+                    else f"asm-goto:{facts.asm_goto_condition_kind}:operand:{facts.asm_goto_condition_operand_index}"
+                ),
+                "renderer_semantic_contract_id": asm_goto_semantic_contract_id,
             },
             rationale=(
                 "Control-flow-bearing semantics require a structured CFG "
