@@ -52,6 +52,10 @@ struct AsmFragment {
     std::string asmGotoFallthroughContinuationId;
     std::vector<std::string> asmGotoSuccessorContinuationIds;
     bool asmGotoControlFlowComplete = false;
+    // Frontend-normalized narrow branch condition facts.  They identify the
+    // source shell binding, not a synthetic assembler/lift label.
+    std::string asmGotoConditionKind;
+    int asmGotoConditionOperandIndex = -1;
     bool isVolatile = false;
 
     // GNU inline asm operand index -> host C/C++ expression width in bits.

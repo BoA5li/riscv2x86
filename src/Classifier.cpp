@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <regex>
 
 using namespace clang;
 using namespace clang::ast_matchers;
@@ -424,6 +425,15 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
         // IDs above therefore describe the host-C continuation interface
         // independently of Phase-4 synthetic labels and lifted CFG layout.
         frag.asmGotoControlFlowComplete = !frag.gotoEdges.empty();
+        const std::regex beqz(R"(^\s*beqz\s+%(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*,?\s*%l(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*$)");
+        const std::regex bnez(R"(^\s*bnez\s+%(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*,?\s*%l(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*$)");
+        if (std::regex_match(frag.rawAsmText, beqz)) {
+            frag.asmGotoConditionKind = "zero";
+            frag.asmGotoConditionOperandIndex = 0;
+        } else if (std::regex_match(frag.rawAsmText, bnez)) {
+            frag.asmGotoConditionKind = "nonzero";
+            frag.asmGotoConditionOperandIndex = 0;
+        }
     } else if (S->getNumOutputs() == 0 &&
                S->getNumInputs() == 0 &&
                S->getNumClobbers() == 0) {

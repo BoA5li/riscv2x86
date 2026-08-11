@@ -82,6 +82,11 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_ASM_GOTO_UNAVAILABLE")
     if cf.has_asm_goto and not cf.asm_goto_label_bindings_complete:
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
+    # The currently registered family has exactly one taken C label and one
+    # fallthrough continuation.  Multiple exits/non-local dependencies need
+    # their own source-CFG + proof + renderer contract.
+    if cf.has_asm_goto and (cf.has_multiple_exits or cf.has_non_local_control_dependency):
+        return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_CONDITION_UNSUPPORTED")
     # This is intentionally a narrow contract family.  A condition is never
     # reconstructed from template text here: Phase 4 recorded a normalized
     # fact and Phase 6A exposed it through SourceSemanticModel.
@@ -146,6 +151,8 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
     if (not isinstance(merge_requirements, tuple) or
             not all(isinstance(item, str) and item for item in merge_requirements)):
         return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
+    if cf.has_asm_goto and merge_requirements:
+        return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_CONDITION_UNSUPPORTED")
     semantic_contract_id = (
         f"x86.gnu-att.asm-goto.b{cf.asm_goto_condition_kind}.u32-u64.v1"
         if cf.has_asm_goto else "x86.structured-cfg.explicit.v1"

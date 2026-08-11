@@ -173,6 +173,8 @@ class AsmFragment:
     asmGotoFallthroughContinuationId: str = ""
     asmGotoSuccessorContinuationIds: List[str] = field(default_factory=list)
     asmGotoControlFlowComplete: bool = False
+    asmGotoConditionKind: str = ""
+    asmGotoConditionOperandIndex: int = -1
     controlFlow: Optional[AsmControlFlowSurface] = None
     microArch: Optional[AsmMicroArchIntent] = None
 

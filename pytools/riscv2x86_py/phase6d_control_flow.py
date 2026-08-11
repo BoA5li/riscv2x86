@@ -29,6 +29,9 @@ def prove(r):
         index = s.control_flow.asm_goto_condition_operand_index
         expected_binding = None if index is None else f"asm-goto:{kind}:operand:{index}"
         if (kind not in semantic_ids or index is None or
+                s.control_flow.has_multiple_exits or
+                s.control_flow.has_non_local_control_dependency or
+                contract.state_merge_requirements or
                 contract.semantic_contract_id != semantic_ids[kind] or
                 r.candidate_plan.metadata.get("renderer_semantic_contract_id") != semantic_ids[kind] or
                 contract.branch_condition_binding_id != expected_binding or

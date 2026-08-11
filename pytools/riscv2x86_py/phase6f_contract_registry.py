@@ -554,6 +554,11 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
             not approved.constraints.preserve_cc_clobber or
             len(flow.asm_goto_labels) != 1 or
             len(flow.fallthrough_continuations) != 1 or
+            flow.has_multiple_exits or flow.has_exception_or_trap_edge or
+            flow.state_merge_requirements or
+            flow.asm_goto_fallthrough_continuation_id != flow.fallthrough_continuations[0] or
+            set(flow.asm_goto_successor_continuation_ids) !=
+                ({flow.fallthrough_continuations[0]} | {item.target_continuation_id for item in flow.asm_goto_labels}) or
             len(operands) != 1):
         return None
     operand = operands[0]

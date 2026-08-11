@@ -630,18 +630,12 @@ def materialize_template(frag: AsmFragment) -> MaterializedInlineAsm:
 
 
 def _asm_goto_condition_fact(frag: AsmFragment) -> tuple[str | None, int | None]:
-    """Recognize only one explicit Phase-4 semantic family: beqz/bnez %0."""
-    if not getattr(frag, "gotoEdges", ()): return (None, None)
-    if getattr(frag, "outputs", ()) or len(getattr(frag, "inputs", ())) != 1:
+    """Transport a frontend host-C condition fact; never parse asm here."""
+    kind = getattr(frag, "asmGotoConditionKind", "") or None
+    index = getattr(frag, "asmGotoConditionOperandIndex", -1)
+    if kind not in {"zero", "nonzero"} or not isinstance(index, int) or index < 0:
         return (None, None)
-    if getattr(frag, "clobbers", ()):
-        return (None, None)
-    body = (getattr(frag, "rawAsmText", "") or "").strip()
-    if re.fullmatch(r"beqz\s+%(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*,?\s*%l(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])", body):
-        return ("zero", 0)
-    if re.fullmatch(r"bnez\s+%(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])\s*,?\s*%l(?:0|\[[A-Za-z_][A-Za-z0-9_]*\])", body):
-        return ("nonzero", 0)
-    return (None, None)
+    return (kind, index)
     
 def _build_pic_stub(frag: AsmFragment) -> str:
     """

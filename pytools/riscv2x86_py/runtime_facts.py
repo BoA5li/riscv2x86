@@ -39,8 +39,8 @@ class TranslationRuntimeFacts:
         default_factory=dict
     )
     provenance: str = ""
-    # Phase-4 normalized asm-goto facts.  They are populated only by the
-    # restricted beqz/bnez recognizer in assemble.py, never by Phase 6.
+    # Frontend-normalized host-C asm-goto facts.  Phase 4 transports these
+    # facts for lifting only; it must not rediscover them from asm text.
     asm_goto_condition_operand_index: int | None = None
     asm_goto_condition_kind: str | None = None
 

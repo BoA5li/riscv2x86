@@ -206,6 +206,8 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
             }
             if (auto s = fo->getString("asmGotoFallthroughContinuationId"))
                 g.asmGotoFallthroughContinuationId = s->str();
+            if (auto s = fo->getString("asmGotoConditionKind")) g.asmGotoConditionKind = s->str();
+            if (auto i = fo->getInteger("asmGotoConditionOperandIndex")) g.asmGotoConditionOperandIndex = static_cast<int>(*i);
             loadStringArray(fo, "asmGotoSuccessorContinuationIds", g.asmGotoSuccessorContinuationIds);
             if (auto b = fo->getBoolean("asmGotoControlFlowComplete"))
                 g.asmGotoControlFlowComplete = *b;

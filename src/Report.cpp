@@ -279,6 +279,8 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
             os << "],\n";
             os << "        \"asmGotoFallthroughContinuationId\":\""
                << escape(g.asmGotoFallthroughContinuationId) << "\",\n";
+            os << "        \"asmGotoConditionKind\":\"" << escape(g.asmGotoConditionKind) << "\",\n";
+            os << "        \"asmGotoConditionOperandIndex\":" << g.asmGotoConditionOperandIndex << ",\n";
             os << "        \"asmGotoSuccessorContinuationIds\": [";
             for (size_t j = 0; j < g.asmGotoSuccessorContinuationIds.size(); ++j) {
                 os << "\"" << escape(g.asmGotoSuccessorContinuationIds[j]) << "\"";
