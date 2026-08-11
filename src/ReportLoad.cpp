@@ -16,6 +16,7 @@ static AsmKind kindFromStr(llvm::StringRef s) {
 static Category catFromStr(llvm::StringRef s) {
     if (s == "PortableC")         return Category::PortableC;
     if (s == "ReplaceableByRule") return Category::ReplaceableByRule;
+    if (s == "NeedsRoute")        return Category::NeedsRoute;
     if (s == "Unsupported")       return Category::Unsupported;
     return Category::NeedsAsmTranslation;
 }

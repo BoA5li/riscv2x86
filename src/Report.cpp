@@ -10,6 +10,7 @@ static const char* catName(Category c) {
         case Category::PortableC: return "PortableC";
         case Category::ReplaceableByRule: return "ReplaceableByRule";
         case Category::NeedsAsmTranslation: return "NeedsAsmTranslation";
+        case Category::NeedsRoute: return "NeedsRoute";
         case Category::Unsupported: return "Unsupported";
     }
     return "?";

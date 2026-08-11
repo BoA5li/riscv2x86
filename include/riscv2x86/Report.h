@@ -12,6 +12,7 @@ enum class Category {
     PortableC,            // 纯 C，不动
     ReplaceableByRule,    // 可用公开等价替换
     NeedsAsmTranslation,  // 需要走汇编翻译链路
+    NeedsRoute,           // 已知需要专用 runtime / semantic route
     Unsupported           // 暂不支持（CSR / privileged / RVV 等）
 };
 

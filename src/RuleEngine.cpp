@@ -63,6 +63,13 @@ void RuleEngine::apply(ClassificationReport &report) {
         // asm text as ReplaceableByRule: doing so bypasses the Phase 4--6
         // machine-semantics/proof path for atomics, barriers and shell state.
         const auto *contract = findPublicReplacementContract(f);
+        if (contract != nullptr &&
+            contract->disposition == PublicReplacementDisposition::NeedsSemanticRoute &&
+            publicReplacementContractMatches(*contract, f)) {
+            f.category = Category::NeedsRoute;
+            f.ruleName = "phase2.public." + contract->semanticContractId;
+            continue;
+        }
         if (contract == nullptr ||
             contract->disposition != PublicReplacementDisposition::Replace ||
             !publicReplacementContractMatches(*contract, f) ||
