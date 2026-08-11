@@ -882,15 +882,13 @@ def _build_control_flow_model(
 def _build_memory_model(
     summary: IRSummary,
 ) -> SourceMemoryModel:
+    # ``IRSummary.atomic_mnemonics`` is legacy diagnostic/display data.  It
+    # deliberately has no representation in the authoritative Phase-6A
+    # memory model: candidates and proofs must consume structured atomic
+    # facts, never instruction spelling.
     atomic_orderings = frozenset(
         _normalized_text_set(
             getattr(summary, "atomic_orderings", set())
-        )
-    )
-
-    atomic_mnemonics = frozenset(
-        _normalized_text_set(
-            getattr(summary, "atomic_mnemonics", set())
         )
     )
 
@@ -913,7 +911,6 @@ def _build_memory_model(
 
         has_atomic=_summary_bool(summary, "has_atomic"),
         atomic_orderings=atomic_orderings,
-        atomic_mnemonics=atomic_mnemonics,
     )
 
 def _build_microarch_model(
