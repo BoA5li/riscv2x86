@@ -227,6 +227,28 @@ def validate_translated_report(
                 invalid_replaceable.append(finding)
                 continue
 
+            rule_name = str(finding.get("ruleName") or finding.get("rule") or "")
+            phase6_artifact = finding.get("approvalArtifact")
+            public_artifact = finding.get("publicApprovalArtifact")
+            if rule_name.startswith("phase6."):
+                if not isinstance(phase6_artifact, dict) or phase6_artifact.get("proofStatus") != "approved":
+                    invalid_replaceable.append(finding)
+                    continue
+            elif rule_name.startswith("phase2.public."):
+                if (
+                    not isinstance(public_artifact, dict)
+                    or public_artifact.get("artifactVersion") != "phase2-public-approval-v1"
+                    or public_artifact.get("approvalStatus") != "approved"
+                    or not isinstance(public_artifact.get("semanticContractId"), str)
+                    or rule_name != "phase2.public." + public_artifact["semanticContractId"]
+                ):
+                    invalid_replaceable.append(finding)
+                    continue
+            else:
+                # No legacy direct-rewrite escape hatch remains.
+                invalid_replaceable.append(finding)
+                continue
+
             replaceable_count += 1
             continue
 

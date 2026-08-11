@@ -240,6 +240,15 @@ class Finding:
     # 前端或后端给出的建议替换内容。
     suggestedReplacement: str = ""
     ruleName: str = ""
+    # Phase 1/2 source-builtin facts and approval provenance.  These fields
+    # must survive the Python report round trip: public contracts are not asm
+    # fragments and therefore cannot be reconstructed by Phase 4.
+    symbolName: str = ""
+    arguments: List[str] = field(default_factory=list)
+    builtin: Dict[str, Any] = field(default_factory=dict)
+    fromMacroExpansion: bool = False
+    macroName: str = ""
+    publicApprovalArtifact: Dict[str, Any] = field(default_factory=dict)
 
     # Phase 4：assemble 结果。
     machineCodeHex: str = ""

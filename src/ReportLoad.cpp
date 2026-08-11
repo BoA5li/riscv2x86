@@ -106,6 +106,22 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
 
         if (auto b = o->getBoolean("fromMacroExpansion")) f.fromMacroExpansion = *b;
         if (auto s = o->getString("macroName")) f.macroName = s->str();
+        if (auto *a = o->getObject("publicApprovalArtifact")) {
+            auto get = [&](const char *key, std::string &out) { if (auto s = a->getString(key)) out = s->str(); };
+            f.publicApprovalArtifact.present = true;
+            get("artifactVersion", f.publicApprovalArtifact.artifactVersion);
+            get("approvalStatus", f.publicApprovalArtifact.approvalStatus);
+            get("semanticContractId", f.publicApprovalArtifact.semanticContractId);
+            get("semanticContractVersion", f.publicApprovalArtifact.semanticContractVersion);
+            get("sourceBuiltin", f.publicApprovalArtifact.sourceBuiltin);
+            get("targetEnvironmentId", f.publicApprovalArtifact.targetEnvironmentId);
+            get("compilerCapability", f.publicApprovalArtifact.compilerCapability);
+            get("rendererRecipeId", f.publicApprovalArtifact.rendererRecipeId);
+            get("preservationLevel", f.publicApprovalArtifact.preservationLevel);
+            get("fallbackPolicy", f.publicApprovalArtifact.fallbackPolicy);
+            get("replacementDigest", f.publicApprovalArtifact.replacementDigest);
+            get("sourceSliceDigest", f.publicApprovalArtifact.sourceSliceDigest);
+        }
         if (auto *a = o->getObject("approvalArtifact")) {
             auto get = [&](const char *key, std::string &out) { if (auto s = a->getString(key)) out = s->str(); };
             f.approvalArtifact.present = true;
@@ -113,6 +129,15 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
         }
 
         loadStringArray(o, "arguments", f.arguments);
+        if (auto *bo = o->getObject("builtin")) {
+            BuiltinFinding b;
+            if (auto s = bo->getString("calleeName")) b.calleeName = s->str();
+            loadStringArray(bo, "args", b.args);
+            loadStringArray(bo, "argumentTypeIds", b.argumentTypeIds);
+            if (auto s = bo->getString("resultTypeId")) b.resultTypeId = s->str();
+            if (auto v = bo->getBoolean("resultIsLValue")) b.resultIsLValue = *v;
+            if (!b.calleeName.empty()) f.builtin = std::move(b);
+        }
 
         if (auto *fo = o->getObject("fragment")) {
             AsmFragment g;

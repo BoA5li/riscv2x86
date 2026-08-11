@@ -551,8 +551,16 @@ public:
                 CharSourceRange::getTokenRange(Arg->getSourceRange()),
                 SM, Ctx.getLangOpts()).str();
             f.arguments.push_back(std::move(argText));
+            f.builtin.emplace();
+            f.builtin->argumentTypeIds.push_back(
+                Arg->getType().getCanonicalType().getAsString()
+            );
         }
-        f.builtin = BuiltinFinding{name, f.arguments};
+        if (!f.builtin.has_value()) f.builtin.emplace();
+        f.builtin->calleeName = name;
+        f.builtin->args = f.arguments;
+        f.builtin->resultTypeId = CE->getType().getCanonicalType().getAsString();
+        f.builtin->resultIsLValue = CE->isGLValue();
 
         f.fromMacroExpansion = CE->getBeginLoc().isMacroID() || CE->getEndLoc().isMacroID();
         if (f.fromMacroExpansion) {

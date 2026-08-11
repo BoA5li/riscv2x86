@@ -18,6 +18,30 @@ enum class Category {
 struct BuiltinFinding {
     std::string calleeName;
     std::vector<std::string> args;
+    // Canonical AST type identities.  These are deliberately collected by
+    // the frontend instead of being reconstructed from argument text later.
+    std::vector<std::string> argumentTypeIds;
+    std::string resultTypeId;
+    bool resultIsLValue = false;
+};
+
+// Approval for a Phase-1/2 public interface replacement.  This is separate
+// from a Phase-6 semantic-proof artifact: it records the versioned language
+// contract which was checked before an AST builtin call was made replaceable.
+struct PublicReplacementApprovalArtifact {
+    bool present = false;
+    std::string artifactVersion;
+    std::string approvalStatus;
+    std::string semanticContractId;
+    std::string semanticContractVersion;
+    std::string sourceBuiltin;
+    std::string targetEnvironmentId;
+    std::string compilerCapability;
+    std::string rendererRecipeId;
+    std::string preservationLevel;
+    std::string fallbackPolicy;
+    std::string replacementDigest;
+    std::string sourceSliceDigest;
 };
 
 struct TranslationApprovalArtifact {
@@ -62,6 +86,7 @@ struct Finding {
     // 是否来自宏展开
     bool fromMacroExpansion = false;
     std::string macroName;
+    PublicReplacementApprovalArtifact publicApprovalArtifact;
     TranslationApprovalArtifact approvalArtifact;
 };
 

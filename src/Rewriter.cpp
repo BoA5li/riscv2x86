@@ -26,9 +26,25 @@ static std::string approvalDigest(const std::string &value) {
 
 static bool validApprovalArtifact(const Finding &f, const std::string &sourceSlice) {
     const auto &a = f.approvalArtifact;
-    // Phase 2 public rules predate Phase 6 and retain their own RuleEngine
-    // contract.  Every Phase 6-produced replacement is proof-gated here.
-    if (f.ruleName.rfind("phase6.", 0) != 0) return true;
+    if (f.ruleName.rfind("phase2.public.", 0) == 0) {
+        const auto &p = f.publicApprovalArtifact;
+        if (!p.present ||
+            p.artifactVersion != "phase2-public-approval-v1" ||
+            p.approvalStatus != "approved" ||
+            p.semanticContractId.empty() || p.semanticContractVersion.empty() ||
+            p.sourceBuiltin.empty() || p.targetEnvironmentId.empty() ||
+            p.rendererRecipeId.empty() || p.preservationLevel.empty() ||
+            p.fallbackPolicy.empty()) return false;
+        if (!f.builtin.has_value() ||
+            f.builtin->calleeName != p.sourceBuiltin ||
+            f.ruleName != "phase2.public." + p.semanticContractId) return false;
+        return p.replacementDigest == approvalDigest(f.suggestedReplacement) &&
+               p.sourceSliceDigest == approvalDigest(sourceSlice);
+    }
+    // Direct replacements have exactly two allowed origins.  A legacy rule
+    // name is not an approval artifact and may not bypass proof/contract
+    // validation during --apply.
+    if (f.ruleName.rfind("phase6.", 0) != 0) return false;
     if (!a.present || a.artifactVersion != "phase6-approval-v1" || a.proofStatus != "approved") return false;
     if (a.sourceFragmentId.empty() || a.planId.empty() || a.constraintsId.empty() || a.targetEnvironmentId.empty() || a.rendererId.empty() || a.rendererVersion.empty() || a.replacementKind.empty()) return false;
     if (!f.fragment.has_value() || a.sourceFragmentId != f.fragment->id) return false;

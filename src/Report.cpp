@@ -131,12 +131,45 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
 
         os << "      \"fromMacroExpansion\": " << (f.fromMacroExpansion ? "true" : "false") << ",\n";
         os << "      \"macroName\": \"" << escape(f.macroName) << "\",\n";
+        if (f.publicApprovalArtifact.present) {
+            const auto &a = f.publicApprovalArtifact;
+            os << "      \"publicApprovalArtifact\": {\"artifactVersion\":\"" << escape(a.artifactVersion)
+               << "\",\"approvalStatus\":\"" << escape(a.approvalStatus)
+               << "\",\"semanticContractId\":\"" << escape(a.semanticContractId)
+               << "\",\"semanticContractVersion\":\"" << escape(a.semanticContractVersion)
+               << "\",\"sourceBuiltin\":\"" << escape(a.sourceBuiltin)
+               << "\",\"targetEnvironmentId\":\"" << escape(a.targetEnvironmentId)
+               << "\",\"compilerCapability\":\"" << escape(a.compilerCapability)
+               << "\",\"rendererRecipeId\":\"" << escape(a.rendererRecipeId)
+               << "\",\"preservationLevel\":\"" << escape(a.preservationLevel)
+               << "\",\"fallbackPolicy\":\"" << escape(a.fallbackPolicy)
+               << "\",\"replacementDigest\":\"" << escape(a.replacementDigest)
+               << "\",\"sourceSliceDigest\":\"" << escape(a.sourceSliceDigest)
+               << "\"},\n";
+        }
         if (f.approvalArtifact.present) {
             const auto &a = f.approvalArtifact;
             os << "      \"approvalArtifact\": {\"artifactVersion\":\"" << escape(a.artifactVersion) << "\",\"proofStatus\":\"" << escape(a.proofStatus) << "\",\"sourceFragmentId\":\"" << escape(a.sourceFragmentId) << "\",\"sourceModelId\":\"" << escape(a.sourceModelId) << "\",\"preservationDecisionId\":\"" << escape(a.preservationDecisionId) << "\",\"planId\":\"" << escape(a.planId) << "\",\"constraintsId\":\"" << escape(a.constraintsId) << "\",\"targetEnvironmentId\":\"" << escape(a.targetEnvironmentId) << "\",\"targetCatalogVersion\":\"" << escape(a.targetCatalogVersion) << "\",\"selectionPolicyId\":\"" << escape(a.selectionPolicyId) << "\",\"selectionPolicyVersion\":\"" << escape(a.selectionPolicyVersion) << "\",\"selectionTier\":\"" << escape(a.selectionTier) << "\",\"rendererId\":\"" << escape(a.rendererId) << "\",\"rendererVersion\":\"" << escape(a.rendererVersion) << "\",\"replacementKind\":\"" << escape(a.replacementKind) << "\",\"replacementDigest\":\"" << escape(a.replacementDigest) << "\",\"sourceSliceDigest\":\"" << escape(a.sourceSliceDigest) << "\"},\n";
         }
 
         dumpStringArrayJSON(os, "arguments", f.arguments, 6);
+        if (f.builtin.has_value()) {
+            const auto &b = *f.builtin;
+            os << ",\n      \"builtin\": {\"calleeName\":\"" << escape(b.calleeName)
+               << "\",\"args\":[";
+            for (size_t j = 0; j < b.args.size(); ++j) {
+                os << "\"" << escape(b.args[j]) << "\"";
+                if (j + 1 < b.args.size()) os << ",";
+            }
+            os << "],\"argumentTypeIds\":[";
+            for (size_t j = 0; j < b.argumentTypeIds.size(); ++j) {
+                os << "\"" << escape(b.argumentTypeIds[j]) << "\"";
+                if (j + 1 < b.argumentTypeIds.size()) os << ",";
+            }
+            os << "],\"resultTypeId\":\"" << escape(b.resultTypeId)
+               << "\",\"resultIsLValue\":" << (b.resultIsLValue ? "true" : "false")
+               << "}";
+        }
 
         if (f.fragment.has_value()) {
             const auto &g = *f.fragment;

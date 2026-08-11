@@ -22,6 +22,55 @@ def _approval_digest(value: str) -> str:
     return f"fnv1a64:{state:016x}"
 
 
+def _phase2_target_environment_id(environment: TargetEnvironment) -> str:
+    """Stable public-contract environment identity; never inferred from text."""
+    return "phase2-public:" + ":".join((
+        environment.architecture.value,
+        environment.abi.value,
+        environment.asm_dialect.value,
+    ))
+
+
+def _approve_public_replacement_if_compatible(
+    finding: Finding,
+    environment: TargetEnvironment,
+) -> tuple[bool, str]:
+    """Promote only a complete pending Phase-2 artifact.
+
+    This is target-environment/capability validation, not a replacement or
+    semantic inference engine.  A malformed, stale, or unsupported public
+    contract is fail-closed and must not remain ReplaceableByRule.
+    """
+    artifact = finding.publicApprovalArtifact
+    builtin = finding.builtin
+    if not isinstance(artifact, dict) or not isinstance(builtin, dict):
+        return False, "phase2 public replacement lacks structured artifact or builtin facts"
+    if artifact.get("artifactVersion") != "phase2-public-approval-v1":
+        return False, "phase2 public replacement artifact version is unsupported"
+    if artifact.get("approvalStatus") != "pending_target_validation":
+        return False, "phase2 public replacement artifact has invalid approval state"
+    contract_id = artifact.get("semanticContractId")
+    source_builtin = artifact.get("sourceBuiltin")
+    if (not isinstance(contract_id, str) or not contract_id or
+            not isinstance(source_builtin, str) or
+            source_builtin != builtin.get("calleeName") or
+            finding.ruleName != "phase2.public." + contract_id):
+        return False, "phase2 public replacement contract/builtin binding is inconsistent"
+    if artifact.get("targetEnvironmentId") != _phase2_target_environment_id(environment):
+        return False, "phase2 public replacement target environment is unavailable"
+    capability = artifact.get("compilerCapability")
+    if not isinstance(capability, str):
+        return False, "phase2 public replacement compiler capability is malformed"
+    if capability and capability not in environment.builtin_capabilities:
+        return False, "phase2 public replacement compiler capability is unavailable"
+    if artifact.get("replacementDigest") != _approval_digest(finding.suggestedReplacement):
+        return False, "phase2 public replacement digest does not match replacement"
+    if artifact.get("sourceSliceDigest") != _approval_digest(finding.rawSourceText):
+        return False, "phase2 public replacement digest does not match source range"
+    artifact["approvalStatus"] = "approved"
+    return True, ""
+
+
 
 _DEFERRED_DETAIL = (
     "finding is not asm-pipeline-ready: missing fragment or empty rawAsmText; "
@@ -768,6 +817,11 @@ def run(
     target_environment: TargetEnvironment | None = None,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
+    public_environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
+        available_features={"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin"},
+        builtin_capabilities={"c_builtin:atomic", "c_builtin:compiler_barrier"},
+        supports_gnu_asm_goto=True,
+    )
     stats = {
         "total": 0,
         "already_rule": 0,
@@ -785,6 +839,18 @@ def run(
 
     for f in findings:
         if f.category == "ReplaceableByRule":
+            if f.ruleName.startswith("phase2.public."):
+                approved, reason = _approve_public_replacement_if_compatible(
+                    f, public_environment
+                )
+                if not approved:
+                    f.category = "NeedsRoute"
+                    f.suggestedReplacement = ""
+                    f.verificationStatus = "needs_route"
+                    f.verificationDetail = reason
+                    f.notes.append("phase2-public: " + reason)
+                    stats["needs_route"] += 1
+                    continue
             stats["already_rule"] += 1
             continue
 
@@ -1081,11 +1147,7 @@ def run(
             },
         )
 
-        environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
-            available_features={"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin"},
-            builtin_capabilities={"c_builtin:atomic", "c_builtin:compiler_barrier"},
-            supports_gnu_asm_goto=True,
-        )
+        environment = public_environment
         tr = translate(
             frag=f.fragment,
             lift=lr,
