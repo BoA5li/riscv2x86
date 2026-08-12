@@ -11,6 +11,27 @@ def prove(r):
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1":
+        value = s.value_operation
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        if (value is None or value.immediate_value is not None or
+                value.kind.value not in {"shift_left_register", "shift_right_logical_register", "shift_right_arithmetic_register"} or
+                len(value.input_operand_indexes) != 2 or contract is None or
+                contract.value_operation_kind is not value.kind or not c.preserve_cc_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        output = operands.get(value.result_operand_index)
+        source = operands.get(value.input_operand_indexes[0])
+        count = operands.get(value.input_operand_indexes[1])
+        if (output is None or source is None or count is None or
+                output.role.value != "output" or not output.early_clobber or
+                source.role.value != "input" or count.role.value != "input" or
+                count.gnu_constraint_body != "c" or
+                output.required_width_bits not in {32, 64} or
+                source.required_width_bits != output.required_width_bits or
+                count.required_width_bits != output.required_width_bits):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1":
         program = s.value_program
         operands = {item.source_operand_index: item for item in c.operand_constraints}
@@ -21,6 +42,11 @@ def prove(r):
                 not c.preserve_cc_clobber or
                 set(program.output_operand_indexes) != {item.source_operand_index for item in c.operand_constraints if item.role.value == "output"} or
                 set(program.input_operand_indexes) != {item.source_operand_index for item in c.operand_constraints if item.role.value == "input"}):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        if (program.variable_shift_count_operand_index is not None and
+                operands.get(program.variable_shift_count_operand_index) is None or
+                (program.variable_shift_count_operand_index is not None and
+                 operands[program.variable_shift_count_operand_index].gnu_constraint_body != "c")):
             return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
         for instruction in program.instructions:
             output = operands.get(instruction.output_operand_index)

@@ -96,7 +96,7 @@ def reject(request, code, details=None): return SemanticProofResult.failed(getat
 
 def constraint_identity(c):
     """Deterministic Phase-6C constraint identity; no renderer data involved."""
-    operands=",".join(f"{x.source_operand_index}:{x.role.value}:{','.join(sorted(y.value for y in x.allowed_classes))}:{x.required_width_bits}:{x.required_signedness}:{x.tied_to_source_operand_index}:{x.early_clobber}:{x.fixed_register_name}" for x in c.operand_constraints)
+    operands=",".join(f"{x.source_operand_index}:{x.role.value}:{','.join(sorted(y.value for y in x.allowed_classes))}:{x.required_width_bits}:{x.required_signedness}:{x.tied_to_source_operand_index}:{x.early_clobber}:{x.fixed_register_name}:{x.gnu_constraint_body}" for x in c.operand_constraints)
     memory=c.memory_constraint
     control=c.control_flow_constraint
     contracts = tuple(
@@ -192,6 +192,7 @@ def _validate_operand_bindings(request):
             in {
                 "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+                "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
             }
             and target.role.value == "output"
             and source.access.value == "output"

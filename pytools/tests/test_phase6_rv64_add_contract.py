@@ -319,3 +319,58 @@ def test_rv64_register_immediate_contract_accepts_transparent_copy_chain() -> No
         == _IMMEDIATE_CONTRACT_ID
         for plan in generate_candidate_plans(model)
     )
+
+
+def test_rv64_variable_register_shifts_have_proven_cl_contracts() -> None:
+    """Cover the complete SLL/SRL/SRA register-count semantic family."""
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    contract_id = "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1"
+    for opcode, expected in (("INT_LEFT", "shlq"), ("INT_RIGHT", "shrq"), ("INT_SRIGHT", "sarq")):
+        fragment = AsmFragment(
+            outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+            inputs=[AsmOperand(constraint="r", exprText="value"), AsmOperand(constraint="r", exprText="count")],
+            isVolatile=True,
+        )
+        operation = Op(0x1000, opcode, Var(VarKind.REG, "register", 10, 8, "a0"), [
+            Var(VarKind.REG, "register", 11, 8, "a1"), Var(VarKind.REG, "register", 12, 8, "a2"),
+        ])
+        summary = IRSummary(is_single_block=True, has_branch=False, has_call_or_return=False,
+            has_memory_barrier=False, has_atomic=False, reads_regs={"a1", "a2"}, writes_regs={"a0"},
+            reads_mem=False, writes_mem=False, has_return=False, has_tail_call=False,
+            has_indirect_control_flow=False, has_timing_source=False, has_cache_operation=False,
+            has_speculation_control=False)
+        model = build_source_semantic_model(fragment=fragment,
+            blocks=(Block(addr=0x1000, ops=[operation], summary=summary),), cfg=CFGResult(ok=True),
+            summary=summary, xlen=64, runtime_facts=TranslationRuntimeFacts(
+                rv_to_operand_index={"a0": 0, "a1": 1, "a2": 2},
+                operand_width_bits={0: 64, 1: 64, 2: 64}, provenance="variable-shift-test"))
+        assert model.value_operation is not None
+        plan = next(item for item in generate_candidate_plans(model)
+            if item.metadata.get("renderer_semantic_contract_id") == contract_id)
+        derived = derive_target_constraints(source_model=model, candidate_plan=plan, target_environment=environment)
+        assert derived.success and derived.constraints is not None
+        assert derived.constraints.operand_constraints[2].gnu_constraint_body == "c"
+        proof = run_semantic_proof_gate(source_model=model, preservation_decision=model.preservation,
+            candidate_plan=plan, constraints=derived.constraints, target_environment=environment,
+            target_semantic_catalog=TargetSemanticCatalog(frozenset({plan.kind}), frozenset({contract_id}), "shift-test-v1"),
+            compiler_capabilities=CompilerCapabilityModel(True, False))
+        assert proof.approved and proof.evidence is not None
+        approved = ApprovedTargetLoweringPlan(plan, derived.constraints, proof, proof.evidence.source_model_id,
+            proof.evidence.preservation_decision_id, proof.evidence.target_environment_id,
+            "phase6e.semantic-fidelity", "1", SelectionTier.X86_INLINE_ASM)
+        renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+        assert renderer_contract is not None
+        rendered = render_approved_target_lowering(Phase6FRenderRequest(approved, environment,
+            RendererContext({plan.plan_id: renderer_contract}, {0: "out", 1: "value", 2: "count"})))
+        assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+        assert f"{expected} %b2, %0" in rendered.emitted_text
+        assert '"c"(count)' in rendered.emitted_text
+        compiler = shutil.which("cc")
+        if compiler is not None:
+            source = "#include <stdint.h>\nuint64_t f(uint64_t value,uint64_t count){uint64_t out;" + rendered.emitted_text + "return out;}\n"
+            with tempfile.TemporaryDirectory(prefix="riscv2x86-variable-shift-") as directory:
+                path = Path(directory) / "shift.c"
+                path.write_text(source, encoding="utf-8")
+                completed = subprocess.run([compiler, "-c", "-std=gnu11", str(path), "-o", str(path.with_suffix(".o"))],
+                    capture_output=True, text=True, check=False)
+            assert completed.returncode == 0, completed.stderr

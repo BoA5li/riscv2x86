@@ -48,6 +48,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
     "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
     "x86.gnu-att.gpr.straight-line-u32-u64.v1",
+    "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
 })
 
 
@@ -84,6 +85,21 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": semantic_id,
                 "expected": "uniform_32_or_64_bit_gpr_operands",
+            })
+        return None
+
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1":
+        outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
+        inputs = [op for op in target_operands if op.role.name == "INPUT"]
+        if (len(outputs) != 1 or len(inputs) != 2 or not outputs[0].early_clobber or
+                outputs[0].required_width_bits not in {32, 64} or
+                any(item.required_width_bits != outputs[0].required_width_bits or
+                    item.early_clobber or item.requires_fixed_register or
+                    TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                    for item in inputs)):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "early_clobber_output_value_and_cl_shift_inputs",
             })
         return None
 
@@ -212,6 +228,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
         return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
     program_route = semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1"
+    variable_shift_route = semantic_id == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1"
     if program_route:
         program = source_model.value_program
         if (program is None or not program.complete or
@@ -220,6 +237,17 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": str(semantic_id),
                 "expected": "matching_authoritative_straight_line_program",
+            })
+    if variable_shift_route:
+        value = source_model.value_operation
+        if (value is None or value.immediate_value is not None or
+                value.kind not in {SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+                                   SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+                                   SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER} or
+                len(value.input_operand_indexes) != 2):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": str(semantic_id),
+                "expected": "proven_register_count_shift",
             })
     sequence_route = semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1"
     immediate_route = semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
@@ -267,18 +295,25 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
             candidate_plan.metadata.get("renderer_semantic_contract_id") in {
                 "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+                "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
             }
             and role is X86OperandRole.OUTPUT
         )
         operands.append(X86GprOperandContract(op.source_operand_index,role,op.width_bits,op.signedness.value,host,"zero_extend" if op.width_bits==32 else "preserve",op.fixed_register_name,op.tied_to_source_operand_index,target_early_clobber,op.kind is SourceOperandKind.IMMEDIATE))
         allowed = frozenset({TargetOperandClass.IMMEDIATE}) if op.kind is SourceOperandKind.IMMEDIATE else frozenset({TargetOperandClass.GENERAL_REGISTER})
-        target_operands.append(TargetOperandConstraint(op.source_operand_index, {X86OperandRole.INPUT:TargetOperandRole.INPUT,X86OperandRole.OUTPUT:TargetOperandRole.OUTPUT,X86OperandRole.READ_WRITE:TargetOperandRole.READ_WRITE}[role], allowed, op.tied_to_source_operand_index, target_early_clobber, op.width_bits, op.signedness, op.kind is SourceOperandKind.FIXED_REGISTER, op.fixed_register_name))
+        count_index = (
+            source_model.value_program.variable_shift_count_operand_index
+            if program_route and source_model.value_program is not None
+            else (source_model.value_operation.input_operand_indexes[1]
+                  if variable_shift_route else None)
+        )
+        target_operands.append(TargetOperandConstraint(op.source_operand_index, {X86OperandRole.INPUT:TargetOperandRole.INPUT,X86OperandRole.OUTPUT:TargetOperandRole.OUTPUT,X86OperandRole.READ_WRITE:TargetOperandRole.READ_WRITE}[role], allowed, op.tied_to_source_operand_index, target_early_clobber, op.width_bits, op.signedness, op.kind is SourceOperandKind.FIXED_REGISTER, op.fixed_register_name, "c" if op.source_operand_index == count_index else None))
     contract_failure = _validate_renderer_operand_contract(
         candidate_plan, operands, target_operands,
     )
     if contract_failure is not None:
         return contract_failure
-    target_writes_cc = program_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
+    target_writes_cc = program_route or variable_shift_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
     operation_kind = (SourceValueOperationKind.COPY if program_route else source_model.value_operation.kind)
     immediate_value = None if program_route else source_model.value_operation.immediate_value
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,operation_kind,immediate_value,source_model.value_program if program_route else None),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))

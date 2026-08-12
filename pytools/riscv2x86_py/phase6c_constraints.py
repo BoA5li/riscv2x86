@@ -815,6 +815,10 @@ class TargetOperandConstraint:
 
     requires_fixed_register: bool = False
     fixed_register_name: str | None = None
+    # An explicit compiler-dialect operand class, used only when a registered
+    # semantic contract requires one (for example x86 variable shift count
+    # ``c`` / CL).  Renderers consume it verbatim and never infer it.
+    gnu_constraint_body: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -830,6 +834,11 @@ class TargetOperandConstraint:
             raise TypeError(
                 "role must be TargetOperandRole"
             )
+        if self.gnu_constraint_body is not None and (
+                not isinstance(self.gnu_constraint_body, str) or
+                not self.gnu_constraint_body.strip() or
+                self.gnu_constraint_body != self.gnu_constraint_body.strip()):
+            raise TypeError("gnu_constraint_body must be a non-empty stripped str or None")
 
         normalized_classes = frozenset(self.allowed_classes)
 

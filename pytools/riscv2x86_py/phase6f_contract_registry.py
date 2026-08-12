@@ -539,6 +539,16 @@ def _gpr_straight_line_program_recipe(approved: ApprovedTargetLoweringPlan):
         SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE: "shr",
         SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE: "sar",
     }
+    variable_shifts = {
+        SourceStraightLineValueOpcode.SHIFT_LEFT_REGISTER: "shl",
+        SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_REGISTER: "shr",
+        SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_REGISTER: "sar",
+    }
+    if (program.variable_shift_count_operand_index is not None and
+            operands.get(program.variable_shift_count_operand_index) is None or
+            (program.variable_shift_count_operand_index is not None and
+             operands[program.variable_shift_count_operand_index].gnu_constraint_body != "c")):
+        return None
     lines: list[str] = []
     for instruction in program.instructions:
         destination = slots.get(instruction.output_operand_index)
@@ -560,11 +570,56 @@ def _gpr_straight_line_program_recipe(approved: ApprovedTargetLoweringPlan):
                 return None
             lines.extend((f"mov{suffix} %{sources[0]}, {dst}",
                           f"{shifts[instruction.opcode]}{suffix} ${instruction.immediate_value}, {dst}"))
+        elif instruction.opcode in variable_shifts:
+            if (len(sources) != 2 or program.variable_shift_count_operand_index != instruction.input_operand_indexes[1]):
+                return None
+            lines.extend((f"mov{suffix} %{sources[0]}, {dst}",
+                          f"{variable_shifts[instruction.opcode]}{suffix} %b{sources[1]}, {dst}"))
         else:
             return None
     return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
         template="\n\t".join(lines), output_operand_indexes=output_order,
         input_operand_indexes=input_order,
+    ))
+
+
+def _gpr_variable_shift_recipe(approved: ApprovedTargetLoweringPlan):
+    """Render a proof-bound RISC-V/X86 variable-count shift.
+
+    RISC-V XLEN shifts and x86 ``CL`` shifts both mask the count to the low
+    log2(XLEN) bits for the admitted 32/64-bit widths.  The ``c`` constraint
+    is supplied by Phase 6C, not inferred here.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    if (contract is None or contract.value_operation_kind not in {
+            SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+            SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+            SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER}):
+        return None
+    outputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.OUTPUT]
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if len(outputs) != 1 or len(inputs) != 2:
+        return None
+    output, source, count = outputs[0], inputs[0], inputs[1]
+    if (output.required_width_bits not in {32, 64} or not output.early_clobber or
+            source.required_width_bits != output.required_width_bits or
+            count.required_width_bits != output.required_width_bits or
+            count.gnu_constraint_body != "c" or
+            any(item.requires_fixed_register or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in (output, source, count))):
+        return None
+    suffix = "l" if output.required_width_bits == 32 else "q"
+    opcode = {
+        SourceValueOperationKind.SHIFT_LEFT_REGISTER: "shl",
+        SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER: "shr",
+        SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER: "sar",
+    }[contract.value_operation_kind]
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=f"mov{suffix} %1, %0\n\t{opcode}{suffix} %b2, %0",
+        output_operand_indexes=(output.source_operand_index,),
+        input_operand_indexes=(source.source_operand_index, count.source_operand_index),
     ))
 
 
@@ -864,6 +919,14 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64",
+            _gpr_variable_shift_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.straight-line-u32-u64.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

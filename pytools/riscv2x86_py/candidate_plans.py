@@ -870,6 +870,28 @@ def _generate_register_only_candidates(
         )
 
     if facts.target_is_x86:
+        value = source_model.value_operation
+        if (value is not None and value.complete and value.immediate_value is None and
+                value.kind.value in {"shift_left_register", "shift_right_logical_register", "shift_right_arithmetic_register"}):
+            candidates.append(_plan(
+                plan_id="x86.register-only-inline-asm.out-gpr-variable-shift",
+                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+                family=TargetLoweringFamily.X86_INLINE_ASM,
+                priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+                deterministic_rank=37,
+                required_features=frozenset({"x86:gpr_inline_asm"}),
+                requirements=_x86_requirements(preserve_cc=True),
+                metadata={
+                    "strategy": "x86_register_variable_shift_inline_asm",
+                    "renderer_semantic_contract_id":
+                        "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
+                },
+                rationale=("Registered variable-count shift: the count is "
+                           "explicitly constrained to x86 CL and all width "
+                           "and shell facts must be proven.",),
+                reason_codes=("x86-variable-shift-candidate",),
+            ))
+            return candidates
         program = source_model.value_program
         if program is not None and program.complete:
             candidates.append(_plan(

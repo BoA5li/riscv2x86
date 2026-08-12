@@ -267,6 +267,8 @@ def _operand_map(c: TargetConstraintModel) -> dict[int, TargetOperandConstraint]
 
 
 def _body(op: TargetOperandConstraint) -> str | None:
+    if op.gnu_constraint_body is not None:
+        return op.gnu_constraint_body
     if op.requires_fixed_register:
         return "{" + op.fixed_register_name + "}" if op.fixed_register_name else None
     classes = op.allowed_classes

@@ -2202,6 +2202,9 @@ class SourceValueOperationKind(str, Enum):
     # than a generic instruction-list escape hatch.  It is used only when
     # Phase 6A can account for both externally visible outputs.
     ADD_THEN_SHIFT_LEFT_IMMEDIATE = "add_then_shift_left_immediate"
+    SHIFT_LEFT_REGISTER = "shift_left_register"
+    SHIFT_RIGHT_LOGICAL_REGISTER = "shift_right_logical_register"
+    SHIFT_RIGHT_ARITHMETIC_REGISTER = "shift_right_arithmetic_register"
 
 
 class SourceStraightLineValueOpcode(str, Enum):
@@ -2215,6 +2218,9 @@ class SourceStraightLineValueOpcode(str, Enum):
     SHIFT_LEFT_IMMEDIATE = "shift_left_immediate"
     SHIFT_RIGHT_LOGICAL_IMMEDIATE = "shift_right_logical_immediate"
     SHIFT_RIGHT_ARITHMETIC_IMMEDIATE = "shift_right_arithmetic_immediate"
+    SHIFT_LEFT_REGISTER = "shift_left_register"
+    SHIFT_RIGHT_LOGICAL_REGISTER = "shift_right_logical_register"
+    SHIFT_RIGHT_ARITHMETIC_REGISTER = "shift_right_arithmetic_register"
 
 
 class SourceAtomicKind(str, Enum):
@@ -2567,6 +2573,10 @@ class SourceStraightLineValueProgram:
     instructions: Tuple[SourceStraightLineValueInstruction, ...]
     output_operand_indexes: Tuple[int, ...]
     input_operand_indexes: Tuple[int, ...]
+    # x86 variable shifts use CL.  A program with more than one distinct
+    # dynamic count would require a separate register-scheduling contract and
+    # is intentionally rejected by the Phase-6A adapter for now.
+    variable_shift_count_operand_index: int | None = None
     complete: bool = True
 
     def __post_init__(self) -> None:
@@ -3657,6 +3667,12 @@ def _build_straight_line_value_program(
         SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
         SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
     }
+    variable_shift_ops = {
+        "INT_LEFT": SourceStraightLineValueOpcode.SHIFT_LEFT_REGISTER,
+        "INT_RIGHT": SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_REGISTER,
+        "INT_SRIGHT": SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_REGISTER,
+    }
+    variable_shift_count: int | None = None
     for raw in raw_ops:
         opcode = opcode_map[getattr(raw, "opcode", "").upper()]
         output = getattr(raw, "output", None)
@@ -3674,16 +3690,25 @@ def _build_straight_line_value_program(
             if len(inputs) != 2:
                 return None
             source = resolve(inputs[0]); constant = resolve(inputs[1])
-            if source is None or constant is None or getattr(constant, "kind", None) is not VarKind.CONST:
+            if source is None or constant is None:
                 return None
-            indexes = (operand_index(source),)
-            raw_value, size = getattr(constant, "offset", None), getattr(constant, "size", None)
-            if (isinstance(raw_value, bool) or not isinstance(raw_value, int) or
-                    isinstance(size, bool) or not isinstance(size, int) or size <= 0):
-                return None
-            immediate = raw_value & ((1 << (size * 8)) - 1)
-            if immediate >= width:
-                return None
+            if getattr(constant, "kind", None) is VarKind.CONST:
+                indexes = (operand_index(source),)
+                raw_value, size = getattr(constant, "offset", None), getattr(constant, "size", None)
+                if (isinstance(raw_value, bool) or not isinstance(raw_value, int) or
+                        isinstance(size, bool) or not isinstance(size, int) or size <= 0):
+                    return None
+                immediate = raw_value & ((1 << (size * 8)) - 1)
+                if immediate >= width:
+                    return None
+            else:
+                count_index = operand_index(constant)
+                indexes = (operand_index(source), count_index)
+                if count_index is None or (variable_shift_count is not None and variable_shift_count != count_index):
+                    return None
+                variable_shift_count = count_index
+                opcode = variable_shift_ops[getattr(raw, "opcode", "").upper()]
+                immediate = None
         else:
             if len(inputs) != 2:
                 return None
@@ -3721,6 +3746,7 @@ def _build_straight_line_value_program(
     return SourceStraightLineValueProgram(
         width_bits=width, instructions=tuple(program),
         output_operand_indexes=output_indexes, input_operand_indexes=input_indexes,
+        variable_shift_count_operand_index=variable_shift_count,
     )
 
 
@@ -3858,6 +3884,9 @@ def _build_value_operation_model(
         "INT_AND": SourceValueOperationKind.BIT_AND,
         "INT_OR": SourceValueOperationKind.BIT_OR,
         "INT_XOR": SourceValueOperationKind.BIT_XOR,
+        "INT_LEFT": SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+        "INT_RIGHT": SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+        "INT_SRIGHT": SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
     }
     value_ops = [
         item for item in canonical_ops
@@ -3945,6 +3974,11 @@ def _build_value_operation_model(
             constants.append((input_position, resolved_input))
         else:
             return None
+    variable_shift_kinds = {
+        SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+        SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+        SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
+    }
     if len(constants) > 1 or len(input_indexes) not in {1, 2}:
         return None
     if constants and len(input_indexes) != 1:
@@ -3980,10 +4014,21 @@ def _build_value_operation_model(
             if raw_value & (1 << (constant_width_bits - 1))
             else raw_value
         )
+        # x86 shifts and RISC-V immediate shifts both define only counts in
+        # the operand width domain; keep the count canonical rather than using
+        # the generic ALU imm32 policy below.
+        if kind in variable_shift_kinds:
+            if constant_position != 1 or immediate_value < 0 or immediate_value >= result.width_bits:
+                return None
+            kind = {
+                SourceValueOperationKind.SHIFT_LEFT_REGISTER: SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+                SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER: SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+                SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER: SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
+            }[kind]
         # x86-64 ALU immediate encodings sign-extend an imm32.  Restricting
         # this contract to that exact shared value domain prevents a renderer
         # from silently changing a 64-bit source constant's upper bits.
-        if not -(1 << 31) <= immediate_value <= (1 << 31) - 1:
+        if kind not in variable_shift_kinds and not -(1 << 31) <= immediate_value <= (1 << 31) - 1:
             return None
     return SourceValueOperationModel(
         kind=kind,
