@@ -212,3 +212,36 @@ def test_canonical_summary_marks_standalone_full_fence_as_no_control_flow() -> N
     assert summary.has_return is False
     assert summary.has_tail_call is False
     assert summary.has_indirect_control_flow is False
+
+
+def test_canonical_summary_accepts_the_lifter_barrier_intrinsic_carrier() -> None:
+    """A decoded fence's CALLOTHER carrier is not a second source operation."""
+    from riscv2x86_py.pcode_ir import from_lifted
+
+    class RawBarrierOp:
+        opcode = "CALLOTHER"
+        inputs = []
+        output = None
+
+    class LiftedFence:
+        addr = 0x1000
+        size = 4
+        raw_ops = [RawBarrierOp()]
+        terminator_kind = None
+        has_branch_op = False
+        has_call_or_return_op = False
+        has_unknown_barrier = False
+        has_atomic = False
+        atomic_mnemonic = None
+        atomic_orderings = set()
+        atomic_reads_mem = False
+        atomic_writes_mem = False
+        semantic_tags = frozenset()
+        asm_mnem = "fence"
+        asm_body = "rw,rw"
+
+    _, summary = from_lifted([LiftedFence()])
+    assert summary.barrier_info is not None
+    assert summary.has_return is False
+    assert summary.has_tail_call is False
+    assert summary.has_indirect_control_flow is False

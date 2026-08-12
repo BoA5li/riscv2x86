@@ -1636,11 +1636,19 @@ def _is_proven_straight_line_barrier_fragment(
     ):
         return False
 
-    # A standalone barrier route must not hide data-flow, memory access or
-    # another unmodelled instruction behind the fence metadata.
+    # A lifter may represent a decoded fence as a CALLOTHER intrinsic rather
+    # than as an empty p-code list.  The instruction's typed BarrierInfo is
+    # authoritative for that intrinsic's architectural effect.  Accept only
+    # that carrier (and canonical markers), while still rejecting data-flow,
+    # memory and control-flow operations that would make this a mixed fragment.
     for op in ins.ops:
         opcode = (op.opcode or "").upper()
-        if opcode not in _NON_SEMANTIC_CANONICAL_OPCODES:
+        if opcode in _NON_SEMANTIC_CANONICAL_OPCODES:
+            continue
+        if opcode not in _BARRIER_OPS | {"CALLOTHER"}:
+            return False
+        variables = tuple(op.inputs) + (() if op.output is None else (op.output,))
+        if any(var.kind in {VarKind.REG, VarKind.MEM} for var in variables):
             return False
 
     return True
