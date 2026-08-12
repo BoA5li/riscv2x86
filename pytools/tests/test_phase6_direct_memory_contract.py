@@ -88,3 +88,54 @@ def test_direct_u64_load_preserves_memory_shell_and_compiles() -> None:
             source.write_text("#include <stdint.h>\nvoid f(const uint64_t *addr) { uint64_t out; " + rendered.emitted_text + " }\n")
             completed = subprocess.run([compiler, "-c", "-std=gnu11", str(source)], capture_output=True, text=True, check=False)
             assert completed.returncode == 0, completed.stderr
+
+
+def test_direct_u64_load_accepts_transparent_copy_and_add_zero_address_chain() -> None:
+    """Ghidra may materialize ``0(base)`` through UNIQUE COPY/INT_ADD nodes."""
+    class LoadInsn:
+        addr = 0
+        size = 4
+        asm_mnem = "ld"
+        asm_body = "a0, 0(a1)"
+        terminator_kind = None
+
+    base = SimpleNamespace(space="register", offset=11, size=8, name="a1")
+    copied = SimpleNamespace(space="unique", offset=0x100, size=8, name="")
+    address = SimpleNamespace(space="unique", offset=0x108, size=8, name="")
+    zero = SimpleNamespace(space="const", offset=0, size=8, name="")
+
+    class CopyOp:
+        opcode = "COPY"
+        output = copied
+        inputs = [base]
+
+    class AddZeroOp:
+        opcode = "INT_ADD"
+        output = address
+        inputs = [copied, zero]
+
+    class LoadOp:
+        opcode = "LOAD"
+        output = SimpleNamespace(space="register", offset=10, size=8, name="a0")
+        inputs = [SimpleNamespace(space="const", offset=0, size=8, name=""), address]
+
+    LoadInsn.raw_ops = [CopyOp(), AddZeroOp(), LoadOp()]
+    blocks, summary = from_lifted([LoadInsn()])
+    fragment = AsmFragment(
+        rawAsmText="ld %[dst], 0(%[base])", isVolatile=True, clobbers=["memory"],
+        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        inputs=[AsmOperand(constraint="r", exprText="addr", isOutput=False)],
+    )
+    model = build_source_semantic_model(
+        fragment=fragment, blocks=blocks, cfg=CFGResult(ok=True), summary=summary,
+        xlen=64,
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1},
+            operand_width_bits={0: 64, 1: 64},
+        ),
+    )
+    assert model.operation.kind is SourceOperationKind.LOAD
+    assert model.operation.may_trap is False
+    assert model.operands.operands[1].address is not None
+    plan = generate_candidate_plans(model)[0]
+    assert plan.metadata["renderer_semantic_contract_id"] == "x86.gnu-att.memory.load.gpr-address.u64.v1"
