@@ -127,9 +127,14 @@ class Phase6BCandidateFacts:
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
-            if field_name == "helper_runtime_contract_id":
-                if value is not None and (not isinstance(value, str) or not value):
-                    raise TypeError("helper_runtime_contract_id must be a non-empty string or None")
+            if field_name in {
+                "helper_runtime_contract_id",
+                "asm_goto_condition_kind",
+                "asm_goto_condition_operand_index",
+            }:
+                # These are optional structured source facts.  They are not
+                # boolean eligibility flags: ordinary non-asm-goto fragments
+                # correctly carry ``None`` for both fields.
                 continue
             if not isinstance(value, bool):
                 raise TypeError(
@@ -137,6 +142,46 @@ class Phase6BCandidateFacts:
                     f"{field_name} must be bool, got "
                     f"{type(value).__name__}"
                 )
+
+        if (
+            self.helper_runtime_contract_id is not None
+            and (
+                not isinstance(self.helper_runtime_contract_id, str)
+                or not self.helper_runtime_contract_id
+            )
+        ):
+            raise TypeError(
+                "helper_runtime_contract_id must be a non-empty string or None"
+            )
+
+        if (
+            self.asm_goto_condition_kind is not None
+            and (
+                not isinstance(self.asm_goto_condition_kind, str)
+                or not self.asm_goto_condition_kind
+            )
+        ):
+            raise TypeError(
+                "asm_goto_condition_kind must be a non-empty string or None"
+            )
+        if (
+            self.asm_goto_condition_operand_index is not None
+            and (
+                isinstance(self.asm_goto_condition_operand_index, bool)
+                or not isinstance(self.asm_goto_condition_operand_index, int)
+                or self.asm_goto_condition_operand_index < 0
+            )
+        ):
+            raise TypeError(
+                "asm_goto_condition_operand_index must be a non-negative int or None"
+            )
+        if (
+            (self.asm_goto_condition_kind is None)
+            != (self.asm_goto_condition_operand_index is None)
+        ):
+            raise ValueError(
+                "asm-goto condition kind and operand index must be present together"
+            )
 
         if (
             not self.shell_semantics_are_known

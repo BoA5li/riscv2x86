@@ -1,5 +1,7 @@
 """Regression guards for the stable Phase-6A memory contract."""
 
+from dataclasses import replace
+
 from riscv2x86_py.pcode_ir import IRSummary
 from riscv2x86_py.cfg import CFGResult
 from riscv2x86_py.schema import AsmFragment
@@ -62,3 +64,13 @@ def test_source_model_collects_evidence_from_completeness_contract() -> None:
     )
 
     assert model.completeness.runtime_facts_available is False
+    facts = model.phase6b_candidate_facts
+    assert facts.asm_goto_condition_kind is None
+    assert facts.asm_goto_condition_operand_index is None
+
+    try:
+        replace(facts, asm_goto_condition_kind="zero")
+    except ValueError:
+        pass
+    else:  # pragma: no cover - explicit fail-closed contract guard
+        raise AssertionError("partial asm-goto condition facts must be rejected")
