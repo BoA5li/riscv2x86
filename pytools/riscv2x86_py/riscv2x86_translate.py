@@ -357,10 +357,22 @@ def validate_translated_report(
         )
 
     if not allow_untranslated and untranslated:
-        detail = "\n".join(
-            f"  - {finding_label(finding)}"
-            for finding in untranslated
-        )
+        def untranslated_detail(finding: dict[str, Any]) -> str:
+            detail = str(finding.get("verificationDetail") or "").strip()
+            notes = finding.get("notes")
+            note_text = (
+                "; ".join(str(note) for note in notes if str(note).strip())
+                if isinstance(notes, list) else ""
+            )
+            diagnostics = "; ".join(
+                value for value in (detail, note_text) if value
+            )
+            return (
+                f"  - {finding_label(finding)}"
+                + (f"\n    diagnostics: {diagnostics}" if diagnostics else "")
+            )
+
+        detail = "\n".join(untranslated_detail(finding) for finding in untranslated)
         raise TranslationError(
             "translation is incomplete; untranslated finding(s) remain:\n"
             f"{detail}\n"
