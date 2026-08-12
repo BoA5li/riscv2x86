@@ -408,3 +408,34 @@ def test_rv64_variable_shift_accepts_only_architectural_count_mask_normalization
     assert any(plan.metadata.get("renderer_semantic_contract_id")
                == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1"
                for plan in generate_candidate_plans(model))
+
+
+def test_rv64_variable_shift_accepts_copy_subpiece_zext_count_normalization() -> None:
+    """Admit the complete structured temporary family emitted by lifters."""
+    fragment = AsmFragment(
+        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        inputs=[AsmOperand(constraint="r", exprText="value"), AsmOperand(constraint="r", exprText="count")],
+        isVolatile=True,
+    )
+    low = Var(VarKind.UNIQUE, "unique", 0x101, 1)
+    extended = Var(VarKind.UNIQUE, "unique", 0x102, 8)
+    masked = Var(VarKind.UNIQUE, "unique", 0x103, 8)
+    operations = [
+        Op(0x1000, "SUBPIECE", low, [Var(VarKind.REG, "register", 12, 8, "a2"), Var(VarKind.CONST, "const", 0, 8)]),
+        Op(0x1000, "INT_ZEXT", extended, [low]),
+        Op(0x1000, "INT_AND", masked, [extended, Var(VarKind.CONST, "const", 63, 8)]),
+        Op(0x1000, "INT_LEFT", Var(VarKind.REG, "register", 10, 8, "a0"), [Var(VarKind.REG, "register", 11, 8, "a1"), masked]),
+    ]
+    summary = IRSummary(is_single_block=True, has_branch=False, has_call_or_return=False,
+        has_memory_barrier=False, has_atomic=False, reads_regs={"a1", "a2"}, writes_regs={"a0"},
+        reads_mem=False, writes_mem=False, has_return=False, has_tail_call=False,
+        has_indirect_control_flow=False, has_timing_source=False, has_cache_operation=False,
+        has_speculation_control=False)
+    model = build_source_semantic_model(fragment=fragment,
+        blocks=(Block(addr=0x1000, ops=operations, summary=summary),), cfg=CFGResult(ok=True),
+        summary=summary, xlen=64, runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1, "a2": 2},
+            operand_width_bits={0: 64, 1: 64, 2: 64}, provenance="extended-masked-shift-test"))
+    assert model.value_operation is not None
+    assert model.value_operation.input_operand_indexes == (1, 2)
+    assert model.value_operation.shift_count_mask == 63

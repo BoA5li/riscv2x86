@@ -3850,6 +3850,197 @@ def _build_add_then_shift_left_operation_model(
     )
 
 
+def _build_register_shift_value_operation_model(
+    *,
+    blocks: Sequence[Block],
+    runtime_status: RuntimeFactStatus,
+    operands: SourceOperandModel,
+    operation: SourceOperationModel,
+) -> SourceValueOperationModel | None:
+    """Model a register-count shift through its canonical count-expression DAG.
+
+    RISC-V defines register shifts through the low ``log2(XLEN)`` count bits.
+    SLEIGH is free to make that rule explicit with ``INT_AND``, ``SUBPIECE``,
+    ``INT_ZEXT`` and ``COPY`` UNIQUE temporaries.  This Phase-6A adapter
+    accepts only that closed, structured normalization family; auxiliary
+    arithmetic is never ignored or inferred from source-asm text.
+    """
+    if (
+        operation.kind is not SourceOperationKind.REGISTER_ONLY
+        or operation.may_trap is not False
+        or not operands.complete
+        or len(blocks) != 1
+        or not runtime_status.structurally_valid
+    ):
+        return None
+
+    items = [item for item in blocks[0].ops
+             if getattr(item, "opcode", "").upper() != "IMARK"]
+    shift_kind_by_opcode = {
+        "INT_LEFT": SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+        "INT_RIGHT": SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+        "INT_SRIGHT": SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
+    }
+    shifts = [item for item in items
+              if getattr(item, "opcode", "").upper() in shift_kind_by_opcode]
+    if len(shifts) != 1:
+        return None
+    shift = shifts[0]
+    if getattr(shift, "output", None) is None or len(getattr(shift, "inputs", ())) != 2:
+        return None
+
+    producers: dict[object, object] = {}
+    for item in items:
+        output = getattr(item, "output", None)
+        if output is not None:
+            if output in producers:
+                return None
+            producers[output] = item
+
+    register_to_operand: dict[str, int] = {}
+    for register, index in runtime_status.rv_to_operand_index.items():
+        canonical = canonicalize_riscv_register_name(register)
+        if not canonical or canonical in register_to_operand:
+            return None
+        register_to_operand[canonical] = index
+
+    def operand_index(value: object) -> int | None:
+        if getattr(value, "kind", None) is not VarKind.REG:
+            return None
+        return register_to_operand.get(
+            canonicalize_riscv_register_name(getattr(value, "name", ""))
+        )
+
+    bindings = {item.source_operand_index: item for item in operands.operands}
+    width = getattr(shift.output, "size", 0) * 8
+    if width not in {32, 64}:
+        return None
+    count_mask = width - 1
+    consumed: set[int] = set()
+
+    def constant(value: object) -> int | None:
+        if getattr(value, "kind", None) is not VarKind.CONST:
+            return None
+        raw, size = getattr(value, "offset", None), getattr(value, "size", None)
+        if (isinstance(raw, bool) or not isinstance(raw, int) or
+                isinstance(size, bool) or not isinstance(size, int) or size <= 0):
+            return None
+        return raw & ((1 << (size * 8)) - 1)
+
+    def resolve_register(value: object, *, allow_count_normalization: bool) -> tuple[int, bool] | None:
+        """Return a source operand index and whether XLEN count masking was seen."""
+        seen: set[object] = set()
+        current = value
+        saw_mask = False
+        while True:
+            if current in seen:
+                return None
+            seen.add(current)
+            index = operand_index(current)
+            if index is not None:
+                return index, saw_mask
+            producer = producers.get(current)
+            if producer is None:
+                return None
+            opcode = getattr(producer, "opcode", "").upper()
+            values = getattr(producer, "inputs", ())
+            if opcode == "COPY" and len(values) == 1:
+                consumed.add(id(producer))
+                current = values[0]
+                continue
+            if not allow_count_normalization:
+                return None
+            if opcode == "INT_ZEXT" and len(values) == 1:
+                consumed.add(id(producer))
+                current = values[0]
+                continue
+            if opcode == "SUBPIECE" and len(values) == 2:
+                offset = constant(values[1])
+                # Low-byte extraction preserves every architecturally used
+                # count bit for both RV32 and RV64.
+                if (offset == 0 and getattr(producer.output, "size", 0) * 8 >=
+                        (5 if width == 32 else 6)):
+                    consumed.add(id(producer))
+                    current = values[0]
+                    continue
+                return None
+            if opcode == "INT_AND" and len(values) == 2:
+                left, right = values
+                if constant(left) == count_mask:
+                    current = right
+                elif constant(right) == count_mask:
+                    current = left
+                else:
+                    return None
+                consumed.add(id(producer))
+                saw_mask = True
+                continue
+            return None
+
+    source = resolve_register(shift.inputs[0], allow_count_normalization=False)
+    count = resolve_register(shift.inputs[1], allow_count_normalization=True)
+    if source is None or count is None:
+        return None
+    source_index, _ = source
+    count_index, saw_count_mask = count
+
+    # The visible result may be copied from the machine-operation temporary.
+    output_indexes: set[int] = set()
+    output_alias_nodes: set[int] = set()
+    for candidate in [shift.output, *producers]:
+        index = operand_index(candidate)
+        if index is None:
+            continue
+        # Only aliases originating at the shift result are output aliases.
+        current = candidate
+        aliases_shift = current == shift.output
+        aliases: list[object] = []
+        seen: set[object] = set()
+        while not aliases_shift and current not in seen:
+            seen.add(current)
+            producer = producers.get(current)
+            if producer is None or getattr(producer, "opcode", "").upper() != "COPY":
+                break
+            values = getattr(producer, "inputs", ())
+            if len(values) != 1:
+                break
+            aliases.append(producer)
+            current = values[0]
+            aliases_shift = current == shift.output
+        if aliases_shift:
+            output_indexes.add(index)
+            output_alias_nodes.update(id(item) for item in aliases)
+    if len(output_indexes) != 1:
+        return None
+    result_index = next(iter(output_indexes))
+
+    result = bindings.get(result_index)
+    source_binding = bindings.get(source_index)
+    count_binding = bindings.get(count_index)
+    if (
+        result is None or result.access is not SourceOperandAccess.OUTPUT
+        or source_binding is None or source_binding.access is not SourceOperandAccess.INPUT
+        or count_binding is None or count_binding.access is not SourceOperandAccess.INPUT
+        or any(item.width_bits != width for item in (result, source_binding, count_binding))
+    ):
+        return None
+
+    # Every auxiliary semantic node must have been consumed by the source or
+    # count proof above.  This prevents a matched shift from hiding unrelated
+    # dataflow in the same fragment.
+    permitted = {id(shift), *consumed, *output_alias_nodes}
+    if any(id(item) not in permitted for item in items):
+        return None
+
+    return SourceValueOperationModel(
+        kind=shift_kind_by_opcode[getattr(shift, "opcode", "").upper()],
+        input_operand_indexes=(source_index, count_index),
+        result_operand_index=result_index,
+        complete=True,
+        shift_count_mask=count_mask if saw_count_mask else None,
+    )
+
+
 def _build_value_operation_model(
     *,
     blocks: Sequence[Block],
@@ -3870,6 +4061,12 @@ def _build_value_operation_model(
     )
     if sequence is not None:
         return sequence
+    shift = _build_register_shift_value_operation_model(
+        blocks=blocks, runtime_status=runtime_status, operands=operands,
+        operation=operation,
+    )
+    if shift is not None:
+        return shift
     if (
         operation.kind is not SourceOperationKind.REGISTER_ONLY
         or operation.may_trap is not False
