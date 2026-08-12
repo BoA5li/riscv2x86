@@ -39,6 +39,7 @@ def _fail(plan, code, details=None):
 
 
 _SUPPORTED_RENDERER_CONTRACTS = frozenset({
+    "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
     "x86.gnu-att.gpr.rw-gpr-binary.v1",
     "x86.gnu-att.gpr.rw-immediate-binary.v1",
     "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
@@ -52,11 +53,43 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
     unknown variants and operand shapes without a registered proof-compatible
     recipe are rejected before they can reach Phase 6D/6E.
     """
+    from ..phase6c_constraints import TargetOperandClass
+
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
     if semantic_id not in _SUPPORTED_RENDERER_CONTRACTS:
         return _fail(candidate_plan, "X86_INLINE_ASM_SEMANTIC_CONTRACT_UNSUPPORTED", {
             "renderer_semantic_contract_id": str(semantic_id),
         })
+
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-gpr-binary.v1":
+        outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
+        inputs = [op for op in target_operands if op.role.name == "INPUT"]
+        if len(outputs) != 1 or len(inputs) != 2:
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "one_early_clobber_output_and_two_inputs",
+            })
+        output = outputs[0]
+        if (
+            output.required_width_bits not in {32, 64}
+            or not output.early_clobber
+            or output.tied_to_source_operand_index is not None
+            or output.requires_fixed_register
+            or TargetOperandClass.GENERAL_REGISTER not in output.allowed_classes
+            or any(
+                item.required_width_bits != output.required_width_bits
+                or item.early_clobber
+                or item.tied_to_source_operand_index is not None
+                or item.requires_fixed_register
+                or TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in inputs
+            )
+        ):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "matching_32_or_64_bit_gpr_operands",
+            })
+        return None
 
     outputs = [op for op in target_operands if op.role.name == "READ_WRITE"]
     inputs = [op for op in target_operands if op.role.name == "INPUT"]
@@ -126,15 +159,20 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
         elif op.access is SourceOperandAccess.OUTPUT: role=X86OperandRole.OUTPUT
         elif op.access is SourceOperandAccess.READ_WRITE: role=X86OperandRole.READ_WRITE
         else: return _fail(candidate_plan,"X86_INLINE_ASM_OPERAND_UNSUPPORTED",{"source_operand_index":op.source_operand_index})
-        if role is not X86OperandRole.OUTPUT and (op.expression is None or not op.expression.c_type_id): return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
-        if role is not X86OperandRole.INPUT and (op.lvalue is None or not op.lvalue.c_type_id or not op.lvalue.is_modifiable): return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
+        if role is not X86OperandRole.OUTPUT and op.expression is None: return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
+        if role is not X86OperandRole.INPUT and (op.lvalue is None or not op.lvalue.is_modifiable): return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
         host=(op.lvalue.c_type_id if role is not X86OperandRole.INPUT else op.expression.c_type_id)
-        operands.append(X86GprOperandContract(op.source_operand_index,role,op.width_bits,op.signedness.value,host,"zero_extend" if op.width_bits==32 else "preserve",op.fixed_register_name,op.tied_to_source_operand_index,op.early_clobber,op.kind is SourceOperandKind.IMMEDIATE))
+        target_early_clobber = op.early_clobber or (
+            candidate_plan.metadata.get("renderer_semantic_contract_id") == "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
+            and role is X86OperandRole.OUTPUT
+        )
+        operands.append(X86GprOperandContract(op.source_operand_index,role,op.width_bits,op.signedness.value,host,"zero_extend" if op.width_bits==32 else "preserve",op.fixed_register_name,op.tied_to_source_operand_index,target_early_clobber,op.kind is SourceOperandKind.IMMEDIATE))
         allowed = frozenset({TargetOperandClass.IMMEDIATE}) if op.kind is SourceOperandKind.IMMEDIATE else frozenset({TargetOperandClass.GENERAL_REGISTER})
-        target_operands.append(TargetOperandConstraint(op.source_operand_index, {X86OperandRole.INPUT:TargetOperandRole.INPUT,X86OperandRole.OUTPUT:TargetOperandRole.OUTPUT,X86OperandRole.READ_WRITE:TargetOperandRole.READ_WRITE}[role], allowed, op.tied_to_source_operand_index, op.early_clobber, op.width_bits, op.signedness, op.kind is SourceOperandKind.FIXED_REGISTER, op.fixed_register_name))
+        target_operands.append(TargetOperandConstraint(op.source_operand_index, {X86OperandRole.INPUT:TargetOperandRole.INPUT,X86OperandRole.OUTPUT:TargetOperandRole.OUTPUT,X86OperandRole.READ_WRITE:TargetOperandRole.READ_WRITE}[role], allowed, op.tied_to_source_operand_index, target_early_clobber, op.width_bits, op.signedness, op.kind is SourceOperandKind.FIXED_REGISTER, op.fixed_register_name))
     contract_failure = _validate_renderer_operand_contract(
         candidate_plan, operands, target_operands,
     )
     if contract_failure is not None:
         return contract_failure
-    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber,feature,source_model.value_operation.kind),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber))
+    target_writes_cc = source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR}
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,source_model.value_operation.kind),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))

@@ -9,4 +9,9 @@ def prove(r):
     if s.atomic.present or s.barrier.present or s.operation.has_control_flow:return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     if (s.shell.has_cc_clobber and not c.preserve_cc_clobber) or (s.shell.is_volatile and not c.preserve_volatile):return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
+    contract = c.x86_gnu_inline_asm_contract
+    if (contract is not None and
+            contract.value_operation_kind.value in {"unsigned_add", "unsigned_sub", "bit_and", "bit_or", "bit_xor"} and
+            not c.preserve_cc_clobber):
+        return reject(r, SemanticProofReasonCode.SHELL_UNPRESERVED)
     return finalize(r,(PreservationConclusion.ARCHITECTURE_EQUIVALENT,PreservationConclusion.SHELL_PRESERVED))

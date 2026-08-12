@@ -3,17 +3,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import FrozenSet, Iterable, Optional, Sequence, Set, Tuple, Union
+from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
 try:
     from .cfg import CFGResult
-    from .pcode_ir import Block, IRSummary
-    from .runtime_facts import TranslationRuntimeFacts
+    from .pcode_ir import Block, IRSummary, VarKind
+    from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
-    from pcode_ir import Block, IRSummary
-    from runtime_facts import TranslationRuntimeFacts
+    from pcode_ir import Block, IRSummary, VarKind
+    from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
 
 from .runtime_fact_model import RuntimeFactStatus
@@ -613,6 +613,13 @@ def build_source_semantic_model(
         preservation_input_summary=summary,
     )
 
+    value_operation = _build_value_operation_model(
+        blocks=blocks,
+        runtime_status=runtime_status,
+        operands=operands,
+        operation=operation,
+    )
+
     atomic = _build_atomic_operation_model(
         summary=summary,
         memory=memory,
@@ -685,10 +692,7 @@ def build_source_semantic_model(
         preservation=preservation,
 
         xlen=xlen,
-        # Phase 6A does not yet derive an exact value-operation contract for
-        # every lifted fragment.  Phase 6C-2 must reject these conservatively
-        # until that structured fact is supplied.
-        value_operation=None,
+        value_operation=value_operation,
     )
 
 def _build_control_flow_model(
@@ -2820,7 +2824,11 @@ def _build_operand_model(
     # to be wired to TranslationRuntimeFacts.
     authoritative_bindings = _runtime_operand_bindings(runtime_facts)
     authoritative_widths = _runtime_operand_widths(runtime_facts)
-    authoritative_semantics = _runtime_operand_semantics(runtime_facts)
+    authoritative_semantics = _runtime_operand_semantics(
+        runtime_facts,
+        shell=shell,
+        authoritative_bindings=authoritative_bindings,
+    )
 
     if not shell.has_operands:
         return SourceOperandModel(
@@ -2899,17 +2907,17 @@ def _build_operand_model(
     )
 
 def _runtime_status_is_structurally_valid(
-    runtime_facts: TranslationRuntimeFacts | None,
+    runtime_status: RuntimeFactStatus,
 ) -> bool:
     """
     Check runtime-fact snapshot structure only.
 
     This does not check fragment-specific completeness.
     """
-    if runtime_facts is None:
-        return False
-
-    return not _runtime_fact_structural_errors(runtime_facts)
+    return (
+        isinstance(runtime_status, RuntimeFactStatus)
+        and runtime_status.structurally_valid
+    )
 
 @dataclass(frozen=True)
 class RuntimeOperandSemanticFact:
@@ -3104,29 +3112,82 @@ def _runtime_operand_widths(
 
 def _runtime_operand_semantics(
     runtime_facts: TranslationRuntimeFacts,
+    *,
+    shell: SourceShellModel,
+    authoritative_bindings: dict[int, object],
 ) -> dict[int, RuntimeOperandSemanticFact]:
     """
     Return runtime operand semantic records.
 
-    TranslationRuntimeFacts currently has no operand semantic field.
+    The Phase-4 mapping supplies the authoritative *register -> GNU operand
+    index* association.  GNU's operand numbering then identifies the source
+    shell operand at that index; this adapter does not derive register
+    bindings from shell order or p-code encounter order.
 
-    Therefore this function intentionally returns an empty mapping.
-
-    Do not infer semantic facts from:
-        * source GCC constraint text;
-        * numeric tied-operand constraints;
-        * early-clobber markers;
-        * output/input list order;
-        * expression text;
-        * target ABI;
-        * RISC-V register identity.
-
-    Source-shell semantics such as is_output, is_tied and is_early_clobber
-    must continue to come from SourceAsmOperandModel / SourceShellModel and
-    must be checked against TargetLoweringCapabilities during Phase 6C-1.
+    Tied operands are deliberately left unavailable here because the current
+    frontend does not provide a structured tie target index.  This keeps such
+    fragments fail-closed while allowing ordinary ``=r`` outputs and ``r``
+    inputs to enter the registered register-only route.
     """
-    del runtime_facts
-    return {}
+    if not isinstance(runtime_facts, TranslationRuntimeFacts):
+        return {}
+    all_operands = shell.all_operands
+    result: dict[int, RuntimeOperandSemanticFact] = {}
+    for index in authoritative_bindings:
+        if index < 0 or index >= len(all_operands):
+            continue
+        operand = all_operands[index]
+        if operand.is_tied:
+            continue
+        constraint = operand.constraint.strip()
+        # This classification only recognizes the small GPR/immediate family
+        # that Phase 6C can validate; unknown constraints remain unavailable.
+        is_immediate = "i" in constraint or "n" in constraint
+        is_fixed = "{" in constraint and "}" in constraint
+        kind = (
+            SourceOperandKind.FIXED_REGISTER if is_fixed else
+            SourceOperandKind.IMMEDIATE if is_immediate else
+            SourceOperandKind.REGISTER
+        )
+        if operand.is_output:
+            access = (
+                SourceOperandAccess.READ_WRITE
+                if "+" in constraint else SourceOperandAccess.OUTPUT
+            )
+        else:
+            access = SourceOperandAccess.INPUT
+        reads = access in {SourceOperandAccess.INPUT, SourceOperandAccess.READ_WRITE}
+        writes = access in {SourceOperandAccess.OUTPUT, SourceOperandAccess.READ_WRITE}
+        expression = (
+            SourceExpressionBinding(
+                expression_id=f"asm-operand:{index}",
+                c_type_id=None,
+                is_side_effect_free=True,
+                is_repeatable=True,
+            ) if reads else None
+        )
+        lvalue = (
+            SourceLvalueBinding(
+                lvalue_id=f"asm-operand:{index}",
+                c_type_id=None,
+                is_modifiable=True,
+            ) if writes else None
+        )
+        result[index] = RuntimeOperandSemanticFact(
+            kind=kind,
+            access=access,
+            signedness=SourceSignedness.SIGNLESS,
+            reads=reads,
+            writes=writes,
+            read_before_write=access is SourceOperandAccess.READ_WRITE,
+            tied_to_source_operand_index=None,
+            early_clobber=operand.is_early_clobber,
+            fixed_register_name=None,
+            expression=expression,
+            lvalue=lvalue,
+            address=None,
+        )
+    return result
 
 def _runtime_fact_structural_errors(
     runtime_facts: TranslationRuntimeFacts,
@@ -3255,6 +3316,17 @@ def _build_operation_model(
         )
     )
 
+    proven_straight_line_value_semantics = (
+        kind is SourceOperationKind.REGISTER_ONLY
+        and preservation_input_summary.is_single_block
+        and preservation_input_summary.has_return is False
+        and preservation_input_summary.has_tail_call is False
+        and preservation_input_summary.has_indirect_control_flow is False
+        and preservation_input_summary.has_timing_source is False
+        and preservation_input_summary.has_cache_operation is False
+        and preservation_input_summary.has_speculation_control is False
+    )
+
     return SourceOperationModel(
         kind=kind,
 
@@ -3267,12 +3339,13 @@ def _build_operation_model(
         # A fully modelled asm-goto branch with no memory operation has no
         # architectural faulting access in the current narrow route.  All
         # other operation kinds retain unknown and therefore fail closed.
-        may_trap=(False if (control_flow.has_asm_goto and
-                            control_flow.asm_goto_condition_kind in {"zero", "nonzero"} and
-                            control_flow.asm_goto_condition_operand_index is not None and
-                            not memory.reads_memory and
-                            not memory.writes_memory and
-                            not control_flow.has_call)
+        may_trap=(False if ((control_flow.has_asm_goto and
+                             control_flow.asm_goto_condition_kind in {"zero", "nonzero"} and
+                             control_flow.asm_goto_condition_operand_index is not None and
+                             not memory.reads_memory and
+                             not memory.writes_memory and
+                             not control_flow.has_call)
+                            or proven_straight_line_value_semantics)
                   else None),
 
         requires_helper_abi_contract=(
@@ -3280,6 +3353,83 @@ def _build_operation_model(
             or control_flow.has_tail_call is True
         ),
         complete=complete,
+    )
+
+
+def _build_value_operation_model(
+    *,
+    blocks: Sequence[Block],
+    runtime_status: RuntimeFactStatus,
+    operands: SourceOperandModel,
+    operation: SourceOperationModel,
+) -> SourceValueOperationModel | None:
+    """Derive a narrow value contract from canonical p-code only.
+
+    This is a Phase-6A adapter: it consumes canonical ``Block.ops`` and the
+    authoritative Phase-4 register-to-operand mapping.  It never reads raw
+    asm text, an instruction mnemonic, or renderer output.  The first family
+    is intentionally limited to one direct 32/64-bit register binary op.
+    """
+    if (
+        operation.kind is not SourceOperationKind.REGISTER_ONLY
+        or operation.may_trap is not False
+        or not operands.complete
+        or len(blocks) != 1
+        or not runtime_status.structurally_valid
+    ):
+        return None
+
+    semantic_ops = [
+        op for op in blocks[0].ops
+        if getattr(op, "opcode", "") != "IMARK"
+    ]
+    if len(semantic_ops) != 1:
+        return None
+    op = semantic_ops[0]
+    kind = {
+        "INT_ADD": SourceValueOperationKind.UNSIGNED_ADD,
+        "INT_SUB": SourceValueOperationKind.UNSIGNED_SUB,
+        "INT_AND": SourceValueOperationKind.BIT_AND,
+        "INT_OR": SourceValueOperationKind.BIT_OR,
+        "INT_XOR": SourceValueOperationKind.BIT_XOR,
+    }.get(getattr(op, "opcode", ""))
+    if kind is None or getattr(op, "output", None) is None or len(op.inputs) != 2:
+        return None
+
+    register_to_operand: dict[str, int] = {}
+    for register, index in runtime_status.rv_to_operand_index.items():
+        canonical = canonicalize_riscv_register_name(register)
+        if not canonical or canonical in register_to_operand:
+            return None
+        register_to_operand[canonical] = index
+
+    def operand_index(var: object) -> int | None:
+        if getattr(var, "kind", None) is not VarKind.REG:
+            return None
+        canonical = canonicalize_riscv_register_name(getattr(var, "name", ""))
+        return register_to_operand.get(canonical)
+
+    result_index = operand_index(op.output)
+    input_indexes = tuple(operand_index(item) for item in op.inputs)
+    if result_index is None or any(item is None for item in input_indexes):
+        return None
+    input_indexes = tuple(int(item) for item in input_indexes)
+    by_index = {item.source_operand_index: item for item in operands.operands}
+    result = by_index.get(result_index)
+    inputs = tuple(by_index.get(item) for item in input_indexes)
+    if (
+        result is None
+        or result.access is not SourceOperandAccess.OUTPUT
+        or result.width_bits not in {32, 64}
+        or any(item is None or item.access is not SourceOperandAccess.INPUT
+               or item.width_bits != result.width_bits for item in inputs)
+    ):
+        return None
+    return SourceValueOperationModel(
+        kind=kind,
+        input_operand_indexes=input_indexes,
+        result_operand_index=result_index,
+        complete=True,
     )
 
 def _build_atomic_operation_model(
@@ -3558,21 +3708,13 @@ def _build_implicit_state_model(
         or "x8" in registers.writes_registers
     )
 
-    special_reads = tuple(
-        sorted(
-            register
-            for register in registers.reads_registers
-            if register not in {"sp", "x2", "fp", "s0", "x8"}
-        )
-    )
-
-    special_writes = tuple(
-        sorted(
-            register
-            for register in registers.writes_registers
-            if register not in {"sp", "x2", "fp", "s0", "x8"}
-        )
-    )
+    # General RISC-V GPR reads/writes are explicit value operands, not
+    # implicit machine state.  Treating a0/a1/a2 as "special" incorrectly
+    # blocks every ordinary register-only lowering.  Stack/frame and shell
+    # cc effects remain explicit above; genuinely unmodelled special state is
+    # represented by unresolved-register analysis rather than a GPR list.
+    special_reads: tuple[str, ...] = ()
+    special_writes: tuple[str, ...] = ()
 
     return SourceImplicitStateModel(
         reads_condition_codes=False,
@@ -3585,10 +3727,7 @@ def _build_implicit_state_model(
         writes_frame_pointer=writes_frame_pointer,
 
         reads_implicit_machine_state=False,
-        writes_implicit_machine_state=(
-            shell.has_cc_clobber
-            or bool(special_writes)
-        ),
+        writes_implicit_machine_state=shell.has_cc_clobber,
 
         reads_special_register_names=special_reads,
         writes_special_register_names=special_writes,

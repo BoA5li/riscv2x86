@@ -2985,6 +2985,7 @@ def _translate_phase6_proof_pipeline(
     catalog = target_semantic_catalog or TargetSemanticCatalog(
         supported_plan_kinds=frozenset(TargetLoweringKind),
         semantic_contract_ids=frozenset({
+            "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
             "x86.gnu-att.gpr.rw-immediate-binary.v1",
             "x86.gnu-att.gpr.rw-early-clobber-binary.v1",

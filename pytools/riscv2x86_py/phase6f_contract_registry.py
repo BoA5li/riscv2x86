@@ -340,6 +340,61 @@ def _gpr_rw_early_clobber_binary_recipe(approved: ApprovedTargetLoweringPlan):
     )
 
 
+def _gpr_output_gpr_binary_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode ``dst = lhs OP rhs`` without reinterpreting source asm.
+
+    x86 is two-address, so this registered recipe uses an early-clobber
+    output and an explicit ``mov`` before the binary operation.  The
+    early-clobber condition is part of the approved 6C contract: it prevents
+    the output from aliasing either input before both inputs are consumed.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    if contract is None or contract.value_operation_kind not in {
+        SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB,
+        SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR,
+        SourceValueOperationKind.BIT_XOR,
+    }:
+        return None
+    outputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.OUTPUT]
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if len(outputs) != 1 or len(inputs) != 2:
+        return None
+    output = outputs[0]
+    if (
+        output.required_width_bits not in {32, 64}
+        or not output.early_clobber
+        or output.tied_to_source_operand_index is not None
+        or output.requires_fixed_register
+        or TargetOperandClass.GENERAL_REGISTER not in output.allowed_classes
+        or any(
+            item.required_width_bits != output.required_width_bits
+            or item.early_clobber
+            or item.tied_to_source_operand_index is not None
+            or item.requires_fixed_register
+            or TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+            for item in inputs
+        )
+    ):
+        return None
+    suffix = "l" if output.required_width_bits == 32 else "q"
+    opcode = {
+        SourceValueOperationKind.UNSIGNED_ADD: "add",
+        SourceValueOperationKind.UNSIGNED_SUB: "sub",
+        SourceValueOperationKind.BIT_AND: "and",
+        SourceValueOperationKind.BIT_OR: "or",
+        SourceValueOperationKind.BIT_XOR: "xor",
+    }[contract.value_operation_kind]
+    return (
+        RendererContractKind.GNU_INLINE_ASM,
+        GnuInlineAsmRecipe(
+            template=f"mov{suffix} %1, %0\\n\\t{opcode}{suffix} %2, %0",
+            output_operand_indexes=(output.source_operand_index,),
+            input_operand_indexes=(inputs[0].source_operand_index, inputs[1].source_operand_index),
+        ),
+    )
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -587,6 +642,13 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.out-gpr-gpr-binary",
+            _gpr_output_gpr_binary_recipe,
+            "x86_gnu_inline_asm_contract",
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

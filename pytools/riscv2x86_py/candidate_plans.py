@@ -850,6 +850,12 @@ def _generate_register_only_candidates(
         # for them (fail closed).
         operand_variants = (
             (
+                "out-gpr-gpr",
+                "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
+                39,
+                "early-clobber write-only output and two register inputs",
+            ),
+            (
                 "rw-gpr",
                 "x86.gnu-att.gpr.rw-gpr-binary.v1",
                 40,
@@ -971,24 +977,10 @@ def generate_candidate_plans(
     if _has_global_fail_closed_state(facts):
         return ()
 
-    # shell-aware source 在当前 PlanRequirement 模型中没有专用
-    # PRESERVE_ASM_SHELL_SEMANTICS obligation，因此显式 fail closed。
-    #
-    # 若后续扩展 PlanRequirement 并实现 shell-aware Phase 6C/6D proof，
-    # 可在此处增加专用 shell-aware x86 candidate generator。
-    if not facts.is_shell_neutral:
-        return _stable_sort_and_freeze(
-            [
-                _unsupported_candidate(
-                    reason_code="shell-aware-lowering-unavailable",
-                    rationale=(
-                        "Source semantics are shell-aware; no shell-aware "
-                        "proof obligation exists in the current candidate "
-                        "plan contract, so generic lowering is forbidden."
-                    ),
-                )
-            ]
-        )
+    # Shell-aware fragments may still have a registered x86 GNU-asm route.
+    # Phase 6B does not approve that route: 6C derives the exact volatile /
+    # operand / clobber contract and 6D proves it.  Pure C remains restricted
+    # to shell-neutral candidates in _generate_register_only_candidates().
 
     # An explicit source helper contract has priority over family heuristics.
     # No helper candidate is emitted for an unknown symbol or absent contract.

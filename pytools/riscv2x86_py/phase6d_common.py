@@ -187,7 +187,18 @@ def _validate_operand_bindings(request):
     for target in request.constraints.operand_constraints:
         source=available.get(target.source_operand_index)
         if source is None or (target.required_width_bits is not None and target.required_width_bits != source.width_bits): return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
-        if target.tied_to_source_operand_index != source.tied_to_source_operand_index or target.early_clobber != source.early_clobber: return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
+        early_clobber_strengthening = (
+            request.candidate_plan.metadata.get("renderer_semantic_contract_id")
+            == "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
+            and target.role.value == "output"
+            and source.access.value == "output"
+            and target.early_clobber
+            and not source.early_clobber
+        )
+        if (target.tied_to_source_operand_index != source.tied_to_source_operand_index or
+                (target.early_clobber != source.early_clobber and
+                 not early_clobber_strengthening)):
+            return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
         # A proven X86_ATOMIC memory operand is the only permitted target
         # read-write/location adaptation for a source ADDRESS binding.  The
         # atomic proof additionally checks it is the contract's object index.

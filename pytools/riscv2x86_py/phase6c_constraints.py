@@ -750,7 +750,7 @@ class TargetEnvironment:
     def fixed_sysv_amd64_gnu_att(
         cls,
         *,
-        available_features: Iterable[str] = (),
+        available_features: Iterable[str] = ("x86:gpr_inline_asm",),
         supports_gnu_inline_asm: bool = True,
         supports_gnu_asm_goto: bool = False,
         builtin_capabilities: Iterable[str] = (),
