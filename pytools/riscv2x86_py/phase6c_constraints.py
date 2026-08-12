@@ -764,14 +764,23 @@ class TargetEnvironment:
         The project is currently fixed to:
 
             x86_64 + SysV AMD64 ABI + GNU AT&T inline assembly.
+
+        ``target:x86`` is an architecture identity derived from this fixed
+        profile, not a host-CPU feature supplied by the caller.  Candidate
+        plans use it to bind their proof to x86; callers still must declare
+        operational capabilities such as ``x86:gpr_inline_asm`` explicitly.
         """
+        normalized_features = frozenset({
+            *available_features,
+            "target:x86",
+        })
         return cls(
             architecture=TargetArchitecture.X86_64,
             asm_dialect=TargetAsmDialect.GNU_ATT,
             abi=TargetAbi.SYSV_AMD64,
             supports_gnu_inline_asm=supports_gnu_inline_asm,
             supports_gnu_asm_goto=supports_gnu_asm_goto,
-            available_features=frozenset(available_features),
+            available_features=normalized_features,
             builtin_capabilities=frozenset(builtin_capabilities),
             helper_contract_capabilities=frozenset(helper_contract_capabilities),
             compiler_family=compiler_family,
