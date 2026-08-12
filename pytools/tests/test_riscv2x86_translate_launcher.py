@@ -1,10 +1,13 @@
 """Launcher strictness tests for generic-C/no-op translations."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from riscv2x86_py.riscv2x86_translate import (
     TranslationError,
+    backend_module_environment,
     validate_translated_report,
 )
 
@@ -38,3 +41,11 @@ def test_actionable_replacement_still_requires_text_and_range() -> None:
             {"findings": [{"category": "ReplaceableByRule", "suggestedReplacement": ""}]},
             allow_untranslated=False,
         )
+
+
+def test_backend_module_environment_prefers_the_launcher_checkout() -> None:
+    """A stale installed package must not shadow the checked-out backend."""
+    environment = backend_module_environment({"PYTHONPATH": "/tmp/old-backend"})
+    first = environment["PYTHONPATH"].split(os.pathsep, 1)[0]
+    assert first.endswith("/pytools")
+    assert "/tmp/old-backend" in environment["PYTHONPATH"]

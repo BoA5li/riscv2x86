@@ -140,6 +140,7 @@ def run(
     cmd: list[str],
     *,
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
     expected_rc: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     """执行命令，打印 stdout/stderr，并检查退出码。"""
@@ -149,6 +150,7 @@ def run(
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -169,6 +171,32 @@ def run(
         )
 
     return result
+
+
+def backend_module_environment(
+    inherited_environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Bind ``python -m riscv2x86_py.cli`` to this checkout's package.
+
+    The launcher is deliberately executable as a file.  In that mode Python
+    adds ``.../pytools/riscv2x86_py`` (rather than its parent ``pytools``) to
+    ``sys.path``.  Launching the backend with ``-m riscv2x86_py.cli`` would
+    therefore otherwise depend on an ambient installation or a caller-set
+    ``PYTHONPATH``.  That can silently run an older semantic pipeline than
+    the launcher/repository being tested.
+
+    Keep an inherited path after this checkout so external, explicitly chosen
+    dependencies remain available, but make the package under translation
+    unambiguously first.
+    """
+    environment = dict(os.environ if inherited_environment is None else inherited_environment)
+    package_root = str(Path(__file__).resolve().parents[1])
+    existing = [
+        item for item in environment.get("PYTHONPATH", "").split(os.pathsep)
+        if item and Path(item).resolve() != Path(package_root).resolve()
+    ]
+    environment["PYTHONPATH"] = os.pathsep.join((package_root, *existing))
+    return environment
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -634,7 +662,9 @@ def translate_one(
                 args.ghidra_language_id,
         ])
 
-    run(backend_cmd)
+    # Do not permit a globally installed/stale ``riscv2x86_py`` package to
+    # shadow the semantic pipeline in this source checkout.
+    run(backend_cmd, env=backend_module_environment())
 
     if not translated_report.exists():
         raise TranslationError("Python backend did not produce translated report: " f"{translated_report}")
