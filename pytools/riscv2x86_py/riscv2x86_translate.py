@@ -6,7 +6,7 @@
 
 流程：
 
-    输入 C 文件
+    输入 C 文件或目录中的 C 文件集合
       -> C++ frontend --analysis-only
       -> raw_report.json
       -> Python backend
@@ -53,6 +53,13 @@
       --input example.c \
       --output-dir output \
       --allow-untranslated
+
+目录批处理：
+
+    --input /path/to/source-tree
+
+会递归处理其中的 ``.c`` 文件（按路径稳定排序）。单个文件失败不会阻断
+其余文件；所有结果都会记录于 ``batch_summary.json``，并在结束时集中报告。
 """
 
 from __future__ import annotations
@@ -65,11 +72,68 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 class TranslationError(RuntimeError):
     """框架执行失败。"""
+
+
+_SOURCE_SUFFIXES = frozenset({".c"})
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    """Return whether resolved ``path`` is rooted at resolved ``root``."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def discover_input_sources(
+    input_dir: Path,
+    *,
+    excluded_roots: Iterable[Path] = (),
+) -> tuple[Path, ...]:
+    """Find supported program sources in deterministic order.
+
+    Directory mode intentionally accepts only the same source language as
+    single-file mode (``.c``).  Generated output and work trees located below
+    the input directory are excluded so a repeated batch run cannot translate
+    its own generated files.
+    """
+    root = input_dir.resolve()
+    exclusions = tuple(item.resolve() for item in excluded_roots)
+    sources: list[Path] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        if not path.is_file() or path.suffix.lower() not in _SOURCE_SUFFIXES:
+            continue
+        resolved = path.resolve()
+        if any(_path_is_within(resolved, excluded) for excluded in exclusions):
+            continue
+        sources.append(resolved)
+    return tuple(sources)
+
+
+def _copy_source_tree_for_batch(
+    source_root: Path,
+    staging_root: Path,
+    *,
+    excluded_roots: Iterable[Path],
+) -> None:
+    """Copy a stable batch input tree without generated subtrees."""
+    root = source_root.resolve()
+    exclusions = tuple(item.resolve() for item in excluded_roots)
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        base = Path(directory)
+        return {
+            name for name in names
+            if any(_path_is_within(base / name, excluded) for excluded in exclusions)
+        }
+
+    shutil.copytree(root, staging_root, ignore=ignore)
 
 
 def run(
@@ -392,7 +456,7 @@ def parse_args() -> argparse.Namespace:
         "--input",
         required=True,
         type=Path,
-        help="Input C source file to translate.",
+        help="Input C source file or directory tree to translate.",
     )
 
     parser.add_argument(
@@ -401,7 +465,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Source root passed to C++ frontend. "
-            "Default: parent directory of --input."
+            "Default: parent of a file input, or the input directory itself."
         ),
     )
 
@@ -469,242 +533,277 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def main() -> int:
-    args = parse_args()
+def translate_one(
+    args: argparse.Namespace,
+    *,
+    source_file: Path,
+    src_root: Path,
+    output_root: Path,
+    work_dir: Path,
+) -> dict[str, str]:
+    """Translate exactly one already-resolved C source file.
 
-    if not args.frontend:
-        print(
-            "error: --frontend or RISCV2X86_FRONTEND must be specified",
-            file=sys.stderr,
-        )
-        return 2
+    Batch mode calls this function independently for each file.  It has no
+    recovery policy of its own: callers decide whether a per-file failure is
+    terminal (single-file mode) or collected (directory mode).
+    """
+    source_file = source_file.resolve()
+    src_root = src_root.resolve()
+    output_root = output_root.resolve()
+    work_dir = work_dir.resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        ensure_tool_exists(args.frontend, "riscv2x86 frontend")
-        ensure_tool_exists(args.python, "Python")
-        ensure_tool_exists(args.cc, "C compiler")
+    if not source_file.exists() or not source_file.is_file():
+        raise TranslationError(f"input source is not a file: {source_file}")
+    if source_file.suffix.lower() not in _SOURCE_SUFFIXES:
+        raise TranslationError(f"input source is not a .c file: {source_file}")
+    if not src_root.exists() or not src_root.is_dir():
+        raise TranslationError(f"src-root does not exist or is not a directory: {src_root}")
 
-        source_file = args.input.resolve()
-        output_root = args.output_dir.resolve()
+    raw_report = work_dir / "raw_report.json"
+    translated_report = work_dir / "translated_report.json"
+    object_file = work_dir / f"{source_file.stem}.o"
 
-        if not source_file.exists():
-            raise TranslationError(f"input source does not exist: {source_file}")
+    rewritten_file = get_output_source_path(
+        source_file=source_file,
+        src_root=src_root,
+        output_root=output_root,
+    )
 
-        if not source_file.is_file():
-            raise TranslationError(f"input path is not a file: {source_file}")
+    print("[configuration]")
+    print(f"frontend:       {args.frontend}")
+    print(f"python:         {args.python}")
+    print(f"backend module: {args.backend_module}")
+    print(f"compiler:       {args.cc}")
+    print(f"input:          {source_file}")
+    print(f"src-root:       {src_root}")
+    print(f"output-dir:     {output_root}")
+    print(f"rewritten file: {rewritten_file}")
+    print(f"work-dir:       {work_dir}")
+    print(f"xlen:           {args.xlen}")
 
-        if source_file.suffix.lower() != ".c":
-            raise TranslationError(
-                f"input source is not a .c file: {source_file}"
-            )
-
-        # ========== 第一步：优先初始化 work_dir，修复变量前置引用 ==========
-        created_temp_work_dir = False
-        if args.work_dir is None:
-            work_dir = Path(
-                tempfile.mkdtemp(prefix="riscv2x86-translate-")
-            ).resolve()
-            created_temp_work_dir = True
-        else:
-            work_dir = args.work_dir.resolve()
-            work_dir.mkdir(parents=True, exist_ok=True)
-
-        raw_report = work_dir / "raw_report.json"
-        translated_report = work_dir / "translated_report.json"
-        object_file = work_dir / f"{source_file.stem}.o"
-
-        # ========== 第二步：处理 src-root 隔离逻辑（此时 work_dir 已存在） ==========
-        isolate_src_file: Path
-        if args.src_root is not None:
-            src_root = args.src_root.resolve()
-            isolate_src_file = source_file
-        else:
-            # 自动隔离模式：拷贝源码到独立临时目录
-            isolate_src_dir = work_dir / "isolate_single_src"
-            isolate_src_dir.mkdir(parents=True, exist_ok=True)
-            isolate_src_file = isolate_src_dir / source_file.name
-            shutil.copy2(source_file, isolate_src_file)
-            src_root = isolate_src_dir.resolve()
-
-        if not src_root.exists() or not src_root.is_dir():
-            raise TranslationError(
-                f"src-root does not exist or is not a directory: {src_root}"
-            )
-
-        # 使用【隔离后的文件】计算输出路径
-        rewritten_file = get_output_source_path(
-            source_file=isolate_src_file,
-            src_root=src_root,
-            output_root=output_root,
-        )
-
-        print("[configuration]")
-        print(f"frontend:       {args.frontend}")
-        print(f"python:         {args.python}")
-        print(f"backend module: {args.backend_module}")
-        print(f"compiler:       {args.cc}")
-        print(f"input:          {source_file}")
-        print(f"isolate file:   {isolate_src_file}")
-        print(f"src-root:       {src_root}")
-        print(f"output-dir:     {output_root}")
-        print(f"rewritten file: {rewritten_file}")
-        print(f"work-dir:       {work_dir}")
-        print(f"xlen:           {args.xlen}")
-
-        # --------------------------------------------------------------
-        # Phase 1: C++ frontend analysis-only 传入隔离后的文件，不是原始文件
-        # --------------------------------------------------------------
-        frontend_analysis_cmd = [
+    frontend_analysis_cmd = [
             args.frontend,
             "--analysis-only",
             "-o", str(work_dir / "analysis_dummy_output"),
             "--src-root", str(src_root),
             "--report-json", str(raw_report),
-            str(isolate_src_file),   # 修复：使用隔离文件分析
+            str(source_file),
             "--",
             *args.cflag,
-        ]
+    ]
 
-        run(frontend_analysis_cmd)
+    run(frontend_analysis_cmd)
 
-        if not raw_report.exists():
-            raise TranslationError(
-                f"C++ frontend did not produce raw report: {raw_report}"
-            )
+    if not raw_report.exists():
+        raise TranslationError(f"C++ frontend did not produce raw report: {raw_report}")
 
-        raw = load_json(raw_report)
-        summarize_report(raw, title="raw frontend report")
+    raw = load_json(raw_report)
+    summarize_report(raw, title="raw frontend report")
 
-        # --------------------------------------------------------------
-        # Phase 2: Python backend translation
-        # --------------------------------------------------------------
-        backend_cmd = [
+    backend_cmd = [
             args.python,
             "-m",
             args.backend_module,
             "--in", str(raw_report),
             "--out", str(translated_report),
             "--xlen", args.xlen,
-        ]
+    ]
 
-        if args.ghidra_install_dir:
-            backend_cmd.extend([
+    if args.ghidra_install_dir:
+        backend_cmd.extend([
                 "--ghidra-install-dir",
                 args.ghidra_install_dir,
-            ])
+        ])
 
-        if args.ghidra_language_id:
-            backend_cmd.extend([
+    if args.ghidra_language_id:
+        backend_cmd.extend([
                 "--ghidra-language-id",
                 args.ghidra_language_id,
-            ])
+        ])
 
-        run(backend_cmd)
+    run(backend_cmd)
 
-        if not translated_report.exists():
-            raise TranslationError(
-                "Python backend did not produce translated report: "
-                f"{translated_report}"
-            )
+    if not translated_report.exists():
+        raise TranslationError("Python backend did not produce translated report: " f"{translated_report}")
 
-        translated = load_json(translated_report)
-        summarize_report(translated, title="translated backend report")
+    translated = load_json(translated_report)
+    summarize_report(translated, title="translated backend report")
 
-        replaceable_count = validate_translated_report(
+    replaceable_count = validate_translated_report(
             translated,
             allow_untranslated=args.allow_untranslated,
-        )
+    )
 
-        print(
+    print(
             f"\n[translation validation]\n"
             f"applicable replacements: {replaceable_count}"
-        )
+    )
 
-        # --------------------------------------------------------------
-        # Phase 3: C++ SourceRewriter --apply
-        # --------------------------------------------------------------
-        output_root.mkdir(parents=True, exist_ok=True)
+    output_root.mkdir(parents=True, exist_ok=True)
 
-        apply_cmd = [
+    apply_cmd = [
             args.frontend,
             "--src-root", str(src_root),
             "-o", str(output_root),
             "--apply",
             "--report", str(translated_report),
-        ]
+    ]
 
-        run(apply_cmd)
+    run(apply_cmd)
 
-        if not rewritten_file.exists():
-            raise TranslationError(
+    if not rewritten_file.exists():
+        raise TranslationError(
                 "C++ SourceRewriter did not produce expected output file:\n"
                 f"  expected: {rewritten_file}\n"
                 f"  src-root: {src_root}\n"
-                f"  input:    {isolate_src_file}\n"
+                f"  input:    {source_file}\n"
                 f"  output:   {output_root}"
-            )
+        )
 
-        # --------------------------------------------------------------
-        # Phase 4: C syntax validation
-        #
-        # -I src_root 用于让改写后源文件仍可查找原工程头文件。
-        # -I source_file.parent 额外处理输入源同目录头文件。
-        # 用户的 --cflag 仍会原样透传。
-        # --------------------------------------------------------------
-        include_flags = [
+    include_flags = [
             f"-I{output_root}",
             f"-I{src_root}",
             f"-I{source_file.parent}",
             f"-I{Path(__file__).resolve().parents[2] / 'runtime' / 'include'}",
-        ]
+    ]
 
-        syntax_check_cmd = [
+    syntax_check_cmd = [
             args.cc,
             "-fsyntax-only",
             *args.cflag,
             *include_flags,
             str(rewritten_file),
-        ]
+    ]
 
-        run(syntax_check_cmd)
+    run(syntax_check_cmd)
 
-        # --------------------------------------------------------------
-        # Phase 5: object compilation validation
-        #
-        # 使用 -c，不要求用户提供 main()，也不要求解决链接依赖。
-        # 这一步可验证改写文件确实能被 host compiler 编译成目标文件。
-        # --------------------------------------------------------------
-        compile_cmd = [
+    compile_cmd = [
             args.cc,
             "-c",
             *args.cflag,
             *include_flags,
             str(rewritten_file),
             "-o", str(object_file),
-        ]
+    ]
 
-        run(compile_cmd)
+    run(compile_cmd)
 
-        if not object_file.exists():
-            raise TranslationError(
-                f"compiler returned success but object file is missing: {object_file}"
-            )
+    if not object_file.exists():
+        raise TranslationError(f"compiler returned success but object file is missing: {object_file}")
 
-        print("\nSUCCESS: translation pipeline completed")
-        print(f"input source:      {source_file}")
-        print(f"rewritten source:  {rewritten_file}")
-        print(f"raw report:        {raw_report}")
-        print(f"translated report: {translated_report}")
-        print(f"compiled object:   {object_file}")
+    print("\nSUCCESS: translation pipeline completed")
+    print(f"input source:      {source_file}")
+    print(f"rewritten source:  {rewritten_file}")
+    print(f"raw report:        {raw_report}")
+    print(f"translated report: {translated_report}")
+    print(f"compiled object:   {object_file}")
+    return {
+        "input": str(source_file),
+        "rewritten": str(rewritten_file),
+        "raw_report": str(raw_report),
+        "translated_report": str(translated_report),
+        "object": str(object_file),
+    }
 
+
+def _single_source_context(args: argparse.Namespace, source_file: Path, work_dir: Path) -> tuple[Path, Path]:
+    """Preserve the historical isolated single-file behavior."""
+    if args.src_root is not None:
+        return source_file, args.src_root.resolve()
+    isolate_src_dir = work_dir / "isolate_single_src"
+    isolate_src_dir.mkdir(parents=True, exist_ok=True)
+    isolated = isolate_src_dir / source_file.name
+    shutil.copy2(source_file, isolated)
+    return isolated, isolate_src_dir.resolve()
+
+
+def _write_batch_summary(work_dir: Path, results: list[dict[str, str]]) -> Path:
+    path = work_dir / "batch_summary.json"
+    path.write_text(json.dumps({"results": results}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def main() -> int:
+    args = parse_args()
+    if not args.frontend:
+        print("error: --frontend or RISCV2X86_FRONTEND must be specified", file=sys.stderr)
+        return 2
+    created_temp_work_dir = False
+    try:
+        ensure_tool_exists(args.frontend, "riscv2x86 frontend")
+        ensure_tool_exists(args.python, "Python")
+        ensure_tool_exists(args.cc, "C compiler")
+        input_path = args.input.resolve()
+        output_root = args.output_dir.resolve()
+        if not input_path.exists():
+            raise TranslationError(f"input path does not exist: {input_path}")
+        if args.work_dir is None:
+            work_dir = Path(tempfile.mkdtemp(prefix="riscv2x86-translate-")).resolve()
+            created_temp_work_dir = True
+        else:
+            work_dir = args.work_dir.resolve()
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+        if input_path.is_file():
+            if input_path.suffix.lower() not in _SOURCE_SUFFIXES:
+                raise TranslationError(f"input source is not a .c file: {input_path}")
+            isolated_source, src_root = _single_source_context(args, input_path, work_dir)
+            translate_one(args, source_file=isolated_source, src_root=src_root, output_root=output_root, work_dir=work_dir)
+            if created_temp_work_dir and not args.keep_work_dir:
+                shutil.rmtree(work_dir, ignore_errors=True)
+                print("temporary work directory removed")
+            else:
+                print(f"work directory retained: {work_dir}")
+            return 0
+
+        if not input_path.is_dir():
+            raise TranslationError(f"input path is neither a file nor a directory: {input_path}")
+        source_root = args.src_root.resolve() if args.src_root is not None else input_path
+        if not source_root.is_dir() or not _path_is_within(input_path, source_root):
+            raise TranslationError("directory input must be inside --src-root, and src-root must be a directory")
+        if output_root == input_path:
+            raise TranslationError("--output-dir must not be the same directory as a directory input")
+        if _path_is_within(work_dir, source_root):
+            raise TranslationError("--work-dir must not be inside a directory input/src-root")
+        sources = discover_input_sources(input_path, excluded_roots=(output_root, work_dir))
+        if not sources:
+            raise TranslationError(f"no .c source files found below input directory: {input_path}")
+
+        staging_root = work_dir / "batch_source_tree"
+        _copy_source_tree_for_batch(source_root, staging_root, excluded_roots=(output_root, work_dir))
+        results: list[dict[str, str]] = []
+        for ordinal, source in enumerate(sources):
+            relative = source.relative_to(source_root)
+            staged_source = staging_root / relative
+            item_work_dir = work_dir / "files" / f"{ordinal:04d}" / relative.parent / relative.stem
+            print(f"\n{'=' * 72}\n[BATCH {ordinal + 1}/{len(sources)}] {relative}\n{'=' * 72}")
+            try:
+                artifact = translate_one(args, source_file=staged_source, src_root=staging_root, output_root=output_root, work_dir=item_work_dir)
+                # --apply copies the full staged tree on every iteration.
+                # Feed the successful rewritten file back into the staging
+                # tree so subsequent copies retain earlier translations.
+                shutil.copy2(Path(artifact["rewritten"]), staged_source)
+                results.append({"input": str(source), "status": "success", **artifact})
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                print(f"\n[BATCH FAILURE] {relative}: {message}", file=sys.stderr)
+                results.append({"input": str(source), "status": "failed", "error": message})
+        summary = _write_batch_summary(work_dir, results)
+        failed = [item for item in results if item["status"] == "failed"]
+        print(f"\n[BATCH SUMMARY]\ntotal files: {len(results)}\nsucceeded:   {len(results) - len(failed)}\nfailed:      {len(failed)}\nsummary:     {summary}")
+        if failed:
+            print("\n[BATCH FAILURES]", file=sys.stderr)
+            for item in failed:
+                print(f"  - {item['input']}: {item['error']}", file=sys.stderr)
+            print(f"work directory retained: {work_dir}")
+            return 1
         if created_temp_work_dir and not args.keep_work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)
             print("temporary work directory removed")
         else:
             print(f"work directory retained: {work_dir}")
-
         return 0
-
     except TranslationError as exc:
         print(f"\nERROR: {exc}", file=sys.stderr)
         return 1
