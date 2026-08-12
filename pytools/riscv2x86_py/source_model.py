@@ -3222,7 +3222,15 @@ def _runtime_operand_semantics(
 
 
 def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: TranslationRuntimeFacts) -> set[int]:
-    """Recover one direct memory-address binding inside Phase 6A only."""
+    """Recover one transparent memory-address binding inside Phase 6A only.
+
+    Lifting commonly represents ``0(base)`` as a UNIQUE varnode produced by
+    ``COPY base`` or ``INT_ADD base, 0`` before the LOAD/STORE.  Those are
+    representation-only steps, not a different source address contract.  We
+    accept only that deliberately tiny transparent chain.  Any non-zero
+    offset, arithmetic, merge, or ambiguous producer remains unmodelled and
+    is rejected by the memory lowering path.
+    """
     raw_map = getattr(runtime_facts, "rv_to_operand_index", {})
     if not isinstance(raw_map, Mapping):
         return set()
@@ -3236,11 +3244,50 @@ def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: T
                   for op in instruction.ops if op.opcode in {"LOAD", "STORE"}]
     if len(memory_ops) != 1:
         return set()
-    registers = [item for item in memory_ops[0].inputs
-                 if item.kind is VarKind.REG and (item.name or "").strip()]
+
+    memory_op = memory_ops[0]
+    if memory_op.opcode == "LOAD":
+        # SLEIGH LOAD has (space, address) inputs.
+        if len(memory_op.inputs) != 2:
+            return set()
+        address = memory_op.inputs[1]
+    else:
+        # SLEIGH STORE has (space, address, value) inputs.
+        if len(memory_op.inputs) != 3:
+            return set()
+        address = memory_op.inputs[1]
+
+    producers = {
+        op.output: op
+        for block in blocks
+        for instruction in block.instructions
+        for op in instruction.ops
+        if op.output is not None
+    }
+
+    def resolve_transparent_register(item: object, visiting: set[object]) -> set[str]:
+        if getattr(item, "kind", None) is VarKind.REG:
+            name = getattr(item, "name", "")
+            return {canonicalize_riscv_register_name(name)} if isinstance(name, str) and name.strip() else set()
+        if item in visiting:
+            return set()
+        producer = producers.get(item)
+        if producer is None:
+            return set()
+        if producer.opcode == "COPY" and len(producer.inputs) == 1:
+            return resolve_transparent_register(producer.inputs[0], visiting | {item})
+        if producer.opcode == "INT_ADD" and len(producer.inputs) == 2:
+            left, right = producer.inputs
+            if left.kind is VarKind.CONST and left.offset == 0:
+                return resolve_transparent_register(right, visiting | {item})
+            if right.kind is VarKind.CONST and right.offset == 0:
+                return resolve_transparent_register(left, visiting | {item})
+        return set()
+
+    registers = resolve_transparent_register(address, set())
     if len(registers) != 1:
         return set()
-    operand_index = canonical_map.get(canonicalize_riscv_register_name(registers[0].name))
+    operand_index = canonical_map.get(next(iter(registers)))
     return set() if operand_index is None else {operand_index}
 
 def _runtime_fact_structural_errors(
