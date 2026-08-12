@@ -45,6 +45,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.rw-gpr-binary.v1",
     "x86.gnu-att.gpr.rw-immediate-binary.v1",
     "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+    "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
 })
 
 
@@ -62,6 +63,33 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
         return _fail(candidate_plan, "X86_INLINE_ASM_SEMANTIC_CONTRACT_UNSUPPORTED", {
             "renderer_semantic_contract_id": str(semantic_id),
         })
+
+    if semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1":
+        outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
+        inputs = [op for op in target_operands if op.role.name == "INPUT"]
+        if len(outputs) != 2 or len(inputs) != 2:
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "two_outputs_and_two_inputs",
+            })
+        temporary, result = outputs
+        if (
+            temporary.required_width_bits not in {32, 64}
+            or not temporary.early_clobber or result.early_clobber
+            or any(item.required_width_bits != temporary.required_width_bits
+                   or (item is not temporary and item.early_clobber)
+                   or item.tied_to_source_operand_index is not None
+                   or item.requires_fixed_register
+                   or TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                   for item in (*outputs, *inputs))
+            or temporary.tied_to_source_operand_index is not None
+            or result.tied_to_source_operand_index is not None
+        ):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "matching_gpr_outputs_with_early_clobber_temporary",
+            })
+        return None
 
     if semantic_id in {
         "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
@@ -159,7 +187,21 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if source_model.value_operation is None or not source_model.value_operation.complete:
         return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
+    sequence_route = semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1"
     immediate_route = semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
+    if sequence_route:
+        value = source_model.value_operation
+        if (
+            value.kind is not SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE
+            or value.temporary_operand_index is None
+            or value.immediate_value is None
+            or candidate_plan.metadata.get("temporary_operand_index") != value.temporary_operand_index
+            or candidate_plan.metadata.get("source_shift_amount") != value.immediate_value
+        ):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": str(semantic_id),
+                "expected": "proven_add_then_shift_left_sequence",
+            })
     if immediate_route:
         immediate_value = source_model.value_operation.immediate_value
         if (
@@ -170,7 +212,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
                 "renderer_semantic_contract_id": str(semantic_id),
                 "expected": "proven_matching_immediate_value",
             })
-    elif source_model.value_operation.immediate_value is not None:
+    elif source_model.value_operation.immediate_value is not None and not sequence_route:
         return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
             "renderer_semantic_contract_id": str(semantic_id),
             "expected": "dedicated_immediate_contract",
@@ -200,5 +242,5 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     )
     if contract_failure is not None:
         return contract_failure
-    target_writes_cc = source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR}
+    target_writes_cc = source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE}
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,source_model.value_operation.kind,source_model.value_operation.immediate_value),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))

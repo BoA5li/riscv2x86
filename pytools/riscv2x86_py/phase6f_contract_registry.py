@@ -460,6 +460,44 @@ def _gpr_output_immediate_binary_recipe(approved: ApprovedTargetLoweringPlan):
     )
 
 
+def _gpr_add_then_shift_left_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode the finite, proof-bound two-output add/shift sequence.
+
+    The recipe consumes the temporary/result roles and shift count that 6C
+    stored in the approved contract.  It does not inspect source asm or pick
+    operand order from a template.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    if (contract is None or
+            contract.value_operation_kind is not SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE or
+            contract.immediate_value is None or not 0 <= contract.immediate_value < 64):
+        return None
+    outputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.OUTPUT]
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if len(outputs) != 2 or len(inputs) != 2:
+        return None
+    temporary, result = outputs
+    if (temporary.required_width_bits not in {32, 64} or
+            result.required_width_bits != temporary.required_width_bits or
+            not temporary.early_clobber or result.early_clobber or
+            any(item.required_width_bits != temporary.required_width_bits or
+                item.early_clobber or item.requires_fixed_register or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in inputs) or
+            any(item.requires_fixed_register or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in outputs)):
+        return None
+    suffix = "l" if temporary.required_width_bits == 32 else "q"
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=(f"mov{suffix} %2, %0\n\tadd{suffix} %3, %0\n\t"
+                  f"mov{suffix} %0, %1\n\tshl{suffix} ${contract.immediate_value}, %1"),
+        output_operand_indexes=(temporary.source_operand_index, result.source_operand_index),
+        input_operand_indexes=(inputs[0].source_operand_index, inputs[1].source_operand_index),
+    ))
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -756,6 +794,14 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber",
+            _gpr_add_then_shift_left_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

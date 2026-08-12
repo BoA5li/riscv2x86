@@ -2190,6 +2190,10 @@ class SourceValueOperationKind(str, Enum):
     UNSIGNED_MUL = "unsigned_mul"
     ZERO_EXTEND = "zero_extend"
     TRUNCATE = "truncate"
+    # This is deliberately a named, finite straight-line contract rather
+    # than a generic instruction-list escape hatch.  It is used only when
+    # Phase 6A can account for both externally visible outputs.
+    ADD_THEN_SHIFT_LEFT_IMMEDIATE = "add_then_shift_left_immediate"
 
 
 class SourceAtomicKind(str, Enum):
@@ -2479,6 +2483,10 @@ class SourceValueOperationModel:
     # It is not a GNU asm operand and therefore has no source operand index.
     # ``None`` denotes the all-register form.
     immediate_value: int | None = None
+    # For the finite two-result sequence above, this is the first visible
+    # result (the temporary produced by ADD).  Keeping it in the authoritative
+    # Phase-6A model prevents later stages from inferring it from asm text.
+    temporary_operand_index: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceValueOperationKind):
@@ -2494,6 +2502,12 @@ class SourceValueOperationModel:
             or not isinstance(self.immediate_value, int)
         ):
             raise TypeError("immediate_value must be an int or None")
+        if self.temporary_operand_index is not None and (
+            isinstance(self.temporary_operand_index, bool)
+            or not isinstance(self.temporary_operand_index, int)
+            or self.temporary_operand_index < 0
+        ):
+            raise TypeError("temporary_operand_index must be a non-negative int or None")
 
 
 @dataclass(frozen=True)
@@ -3499,6 +3513,95 @@ def _build_operation_model(
     )
 
 
+def _build_add_then_shift_left_operation_model(
+    *,
+    blocks: Sequence[Block], runtime_status: RuntimeFactStatus,
+    operands: SourceOperandModel, operation: SourceOperationModel,
+) -> SourceValueOperationModel | None:
+    """Recognize one fully-modelled ``add; sll immediate`` value sequence.
+
+    This adapter consumes canonical p-code and Phase-4 register bindings only.
+    It intentionally rejects any extra arithmetic, memory, CFG, or ambiguous
+    copy graph, so a later renderer never has to reconstruct the sequence.
+    """
+    if (operation.kind is not SourceOperationKind.REGISTER_ONLY or
+            operation.may_trap is not False or not operands.complete or
+            len(blocks) != 1 or not runtime_status.structurally_valid):
+        return None
+    items = [item for item in blocks[0].ops
+             if getattr(item, "opcode", "").upper() != "IMARK"]
+    adds = [item for item in items if getattr(item, "opcode", "").upper() == "INT_ADD"]
+    shifts = [item for item in items if getattr(item, "opcode", "").upper() == "INT_LEFT"]
+    copies = [item for item in items if getattr(item, "opcode", "").upper() == "COPY"]
+    if len(adds) != 1 or len(shifts) != 1 or len(adds) + len(shifts) + len(copies) != len(items):
+        return None
+    add, shift = adds[0], shifts[0]
+    if (getattr(add, "output", None) is None or getattr(shift, "output", None) is None or
+            len(add.inputs) != 2 or len(shift.inputs) != 2):
+        return None
+    copy_source: dict[object, object] = {}
+    for copy in copies:
+        out, ins = getattr(copy, "output", None), getattr(copy, "inputs", ())
+        if (out is None or len(ins) != 1 or out in copy_source or
+                getattr(out, "kind", None) is VarKind.CONST or
+                getattr(out, "size", None) != getattr(ins[0], "size", None)):
+            return None
+        copy_source[out] = ins[0]
+    def resolve(var: object) -> object | None:
+        seen: set[object] = set(); current = var
+        while current in copy_source:
+            if current in seen:
+                return None
+            seen.add(current); current = copy_source[current]
+        return current
+    reg_to_index: dict[str, int] = {}
+    for register, index in runtime_status.rv_to_operand_index.items():
+        canonical = canonicalize_riscv_register_name(register)
+        if not canonical or canonical in reg_to_index:
+            return None
+        reg_to_index[canonical] = index
+    def index_of(var: object) -> int | None:
+        if getattr(var, "kind", None) is not VarKind.REG:
+            return None
+        return reg_to_index.get(canonicalize_riscv_register_name(getattr(var, "name", "")))
+    def produced_index(value: object) -> int | None:
+        indexes = {index_of(candidate) for candidate in (value, *copy_source)
+                   if resolve(candidate) == value and index_of(candidate) is not None}
+        return next(iter(indexes)) if len(indexes) == 1 else None
+    tmp_index, result_index = produced_index(add.output), produced_index(shift.output)
+    if tmp_index is None or result_index is None or tmp_index == result_index:
+        return None
+    if resolve(shift.inputs[0]) != add.output:
+        return None
+    amount = resolve(shift.inputs[1])
+    if amount is None or getattr(amount, "kind", None) is not VarKind.CONST:
+        return None
+    raw, size = getattr(amount, "offset", None), getattr(amount, "size", None)
+    if (isinstance(raw, bool) or not isinstance(raw, int) or isinstance(size, bool) or
+            not isinstance(size, int) or size <= 0):
+        return None
+    shift_amount = raw & ((1 << (size * 8)) - 1)
+    input_indexes = tuple(index_of(resolve(item)) for item in add.inputs)
+    if any(index is None for index in input_indexes) or len(set(input_indexes)) != 2:
+        return None
+    by_index = {item.source_operand_index: item for item in operands.operands}
+    tmp, result = by_index.get(tmp_index), by_index.get(result_index)
+    inputs = [by_index.get(index) for index in input_indexes]
+    if (tmp is None or result is None or tmp.access is not SourceOperandAccess.OUTPUT or
+            result.access is not SourceOperandAccess.OUTPUT or not tmp.early_clobber or
+            result.early_clobber or tmp.width_bits not in {32, 64} or
+            result.width_bits != tmp.width_bits or shift_amount >= tmp.width_bits or
+            any(item is None or item.access is not SourceOperandAccess.INPUT or
+                item.width_bits != tmp.width_bits for item in inputs)):
+        return None
+    return SourceValueOperationModel(
+        kind=SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE,
+        input_operand_indexes=tuple(input_indexes), result_operand_index=result_index,
+        complete=True, immediate_value=shift_amount,
+        temporary_operand_index=tmp_index,
+    )
+
+
 def _build_value_operation_model(
     *,
     blocks: Sequence[Block],
@@ -3513,6 +3616,12 @@ def _build_value_operation_model(
     asm text, an instruction mnemonic, or renderer output.  The first family
     is intentionally limited to one direct 32/64-bit register binary op.
     """
+    sequence = _build_add_then_shift_left_operation_model(
+        blocks=blocks, runtime_status=runtime_status, operands=operands,
+        operation=operation,
+    )
+    if sequence is not None:
+        return sequence
     if (
         operation.kind is not SourceOperationKind.REGISTER_ONLY
         or operation.may_trap is not False

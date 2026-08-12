@@ -11,6 +11,31 @@ def prove(r):
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1":
+        value = s.value_operation
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        if (value is None or value.kind.value != "add_then_shift_left_immediate" or
+                value.temporary_operand_index is None or value.immediate_value is None or
+                contract is None or contract.value_operation_kind is not value.kind or
+                contract.immediate_value != value.immediate_value or
+                r.candidate_plan.metadata.get("temporary_operand_index") != value.temporary_operand_index or
+                r.candidate_plan.metadata.get("source_shift_amount") != value.immediate_value or
+                len(operands) != 4):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        temporary = operands.get(value.temporary_operand_index)
+        result = operands.get(value.result_operand_index)
+        inputs = [operands.get(index) for index in value.input_operand_indexes]
+        if (temporary is None or result is None or temporary.role.value != "output" or
+                result.role.value != "output" or not temporary.early_clobber or
+                result.early_clobber or temporary.required_width_bits not in {32, 64} or
+                result.required_width_bits != temporary.required_width_bits or
+                any(item is None or item.role.value != "input" or
+                    item.required_width_bits != temporary.required_width_bits or
+                    item.early_clobber for item in inputs) or
+                not c.preserve_cc_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1":
         source_value = s.value_operation
         if (

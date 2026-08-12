@@ -2990,6 +2990,7 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
             "x86.gnu-att.gpr.rw-immediate-binary.v1",
             "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
+            "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
             "c.builtin.atomic-load-n.u32-u64.v1",
             "c.builtin.atomic-store-n.u32-u64.v1",
             "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",

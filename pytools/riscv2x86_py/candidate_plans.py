@@ -870,6 +870,32 @@ def _generate_register_only_candidates(
         )
 
     if facts.target_is_x86:
+        sequence = source_model.value_operation
+        if (sequence is not None and sequence.complete and
+                sequence.kind.value == "add_then_shift_left_immediate"):
+            # A two-result, early-clobber sequence needs its own registered
+            # semantic contract.  It must never be mistaken for one of the
+            # binary one-output variants below.
+            candidates.append(_plan(
+                plan_id="x86.register-sequence.add-then-shl-immediate",
+                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+                family=TargetLoweringFamily.X86_INLINE_ASM,
+                priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+                deterministic_rank=37,
+                required_features=frozenset({"x86:gpr_inline_asm"}),
+                requirements=_x86_requirements(preserve_cc=True),
+                metadata={
+                    "strategy": "x86_register_sequence_inline_asm",
+                    "renderer_semantic_contract_id":
+                        "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
+                    "source_shift_amount": sequence.immediate_value,
+                    "temporary_operand_index": sequence.temporary_operand_index,
+                },
+                rationale=("Registered two-output add-then-shift sequence; "
+                           "6C/6D must prove every binding and early-clobber lifetime.",),
+                reason_codes=("x86-register-sequence-candidate",),
+            ))
+            return candidates
         # These are deliberately separate candidates.  Phase 6C validates the
         # exact operand-contract precondition selected here; Phase 6F must
         # never select a recipe from the incidental shape of an operand.
