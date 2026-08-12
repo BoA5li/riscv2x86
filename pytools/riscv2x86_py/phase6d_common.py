@@ -211,7 +211,14 @@ def _validate_operand_bindings(request):
             any(item.value == "memory" for item in target.allowed_classes) and
             source.access.value == "address"
         )
-        if target.role.value != source.access.value and not atomic_memory_address:
+        direct_memory_address = (
+            request.candidate_plan.kind is TargetLoweringKind.X86_GNU_INLINE_ASM and
+            request.constraints.x86_memory_inline_asm_contract is not None and
+            target.role.value == "input" and
+            any(item.value == "general_register" for item in target.allowed_classes) and
+            source.access.value == "address"
+        )
+        if target.role.value != source.access.value and not atomic_memory_address and not direct_memory_address:
             return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
     return None
 

@@ -327,7 +327,13 @@ class SourceSemanticModel:
             asm_goto_condition_kind=self.control_flow.asm_goto_condition_kind,
             asm_goto_condition_operand_index=self.control_flow.asm_goto_condition_operand_index,
             has_atomic_semantics=self.atomic.present,
-            has_barrier_semantics=self.barrier.present,
+            # A shell-only compiler barrier accompanies ordinary memory
+            # accesses frequently.  It is preserved by the memory contract,
+            # but must not divert LOAD/STORE into the barrier-only family.
+            has_barrier_semantics=(
+                self.barrier.present
+                and not (self.memory.reads_memory or self.memory.writes_memory)
+            ),
             has_non_atomic_memory_semantics=(
                 (self.memory.reads_memory or self.memory.writes_memory)
                 and not self.atomic.present
@@ -602,6 +608,7 @@ def build_source_semantic_model(
 
     operands = _build_operand_model(
         shell=shell,
+        blocks=blocks,
         runtime_facts=runtime_facts,
         runtime_status=runtime_status,
     )
@@ -610,6 +617,7 @@ def build_source_semantic_model(
         shell=shell,
         control_flow=control_flow,
         memory=memory,
+        operands=operands,
         preservation_input_summary=summary,
     )
 
@@ -2791,6 +2799,7 @@ class SourceAnalysisArtifacts:
 def _build_operand_model(
     *,
     shell: SourceShellModel,
+    blocks: Sequence[Block],
     runtime_facts: Union[
         TranslationRuntimeFacts,
         RuntimeFactStatus,
@@ -2837,6 +2846,10 @@ def _build_operand_model(
         runtime_facts,
         shell=shell,
         authoritative_bindings=authoritative_bindings,
+        memory_address_operand_indexes=_memory_address_operand_indexes(
+            blocks=blocks,
+            runtime_facts=runtime_facts,
+        ),
     )
 
     if not shell.has_operands:
@@ -3124,6 +3137,7 @@ def _runtime_operand_semantics(
     *,
     shell: SourceShellModel,
     authoritative_bindings: dict[int, object],
+    memory_address_operand_indexes: set[int],
 ) -> dict[int, RuntimeOperandSemanticFact]:
     """
     Return runtime operand semantic records.
@@ -3165,7 +3179,10 @@ def _runtime_operand_semantics(
             )
         else:
             access = SourceOperandAccess.INPUT
-        reads = access in {SourceOperandAccess.INPUT, SourceOperandAccess.READ_WRITE}
+        if index in memory_address_operand_indexes:
+            kind = SourceOperandKind.ADDRESS
+            access = SourceOperandAccess.ADDRESS
+        reads = access in {SourceOperandAccess.INPUT, SourceOperandAccess.READ_WRITE, SourceOperandAccess.ADDRESS}
         writes = access in {SourceOperandAccess.OUTPUT, SourceOperandAccess.READ_WRITE}
         expression = (
             SourceExpressionBinding(
@@ -3194,9 +3211,37 @@ def _runtime_operand_semantics(
             fixed_register_name=None,
             expression=expression,
             lvalue=lvalue,
-            address=None,
+            address=(SourceAddressBinding(
+                address_id=f"canonical-memory-address:{index}",
+                pointee_type_id=None,
+                alignment_bytes=None,
+                provenance_known=True,
+            ) if index in memory_address_operand_indexes else None),
         )
     return result
+
+
+def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: TranslationRuntimeFacts) -> set[int]:
+    """Recover one direct memory-address binding inside Phase 6A only."""
+    raw_map = getattr(runtime_facts, "rv_to_operand_index", {})
+    if not isinstance(raw_map, Mapping):
+        return set()
+    canonical_map = {
+        canonicalize_riscv_register_name(register): index
+        for register, index in raw_map.items()
+        if canonicalize_riscv_register_name(register)
+        and isinstance(index, int) and not isinstance(index, bool)
+    }
+    memory_ops = [op for block in blocks for instruction in block.instructions
+                  for op in instruction.ops if op.opcode in {"LOAD", "STORE"}]
+    if len(memory_ops) != 1:
+        return set()
+    registers = [item for item in memory_ops[0].inputs
+                 if item.kind is VarKind.REG and (item.name or "").strip()]
+    if len(registers) != 1:
+        return set()
+    operand_index = canonical_map.get(canonicalize_riscv_register_name(registers[0].name))
+    return set() if operand_index is None else {operand_index}
 
 def _runtime_fact_structural_errors(
     runtime_facts: TranslationRuntimeFacts,
@@ -3277,6 +3322,7 @@ def _build_operation_model(
     shell: SourceShellModel,
     control_flow: SourceControlFlowModel,
     memory: SourceMemoryModel,
+    operands: SourceOperandModel,
     preservation_input_summary: IRSummary,
 ) -> SourceOperationModel:
     """
@@ -3300,6 +3346,12 @@ def _build_operation_model(
         kind = SourceOperationKind.OPAQUE
     elif memory.has_memory_barrier or memory.has_instruction_barrier:
         kind = SourceOperationKind.HARDWARE_BARRIER
+    elif memory.reads_memory and memory.writes_memory:
+        kind = SourceOperationKind.MEMORY_READ_MODIFY_WRITE
+    elif memory.reads_memory:
+        kind = SourceOperationKind.LOAD
+    elif memory.writes_memory:
+        kind = SourceOperationKind.STORE
     elif shell.has_memory_clobber:
         kind = SourceOperationKind.COMPILER_BARRIER
     elif control_flow.has_call:
@@ -3308,12 +3360,6 @@ def _build_operation_model(
         kind = SourceOperationKind.RETURN
     elif has_control_flow:
         kind = SourceOperationKind.CONTROL_FLOW
-    elif memory.reads_memory and memory.writes_memory:
-        kind = SourceOperationKind.MEMORY_READ_MODIFY_WRITE
-    elif memory.reads_memory:
-        kind = SourceOperationKind.LOAD
-    elif memory.writes_memory:
-        kind = SourceOperationKind.STORE
     else:
         kind = SourceOperationKind.REGISTER_ONLY
 
@@ -3327,6 +3373,17 @@ def _build_operation_model(
 
     proven_straight_line_value_semantics = (
         kind is SourceOperationKind.REGISTER_ONLY
+        and preservation_input_summary.is_single_block
+        and preservation_input_summary.has_return is False
+        and preservation_input_summary.has_tail_call is False
+        and preservation_input_summary.has_indirect_control_flow is False
+        and preservation_input_summary.has_timing_source is False
+        and preservation_input_summary.has_cache_operation is False
+        and preservation_input_summary.has_speculation_control is False
+    )
+    proven_direct_memory_semantics = (
+        kind in {SourceOperationKind.LOAD, SourceOperationKind.STORE}
+        and any(item.kind is SourceOperandKind.ADDRESS and item.address is not None and item.address.provenance_known for item in operands.operands)
         and preservation_input_summary.is_single_block
         and preservation_input_summary.has_return is False
         and preservation_input_summary.has_tail_call is False
@@ -3354,7 +3411,8 @@ def _build_operation_model(
                              not memory.reads_memory and
                              not memory.writes_memory and
                              not control_flow.has_call)
-                            or proven_straight_line_value_semantics)
+                            or proven_straight_line_value_semantics
+                            or proven_direct_memory_semantics)
                   else None),
 
         requires_helper_abi_contract=(

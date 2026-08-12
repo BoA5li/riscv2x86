@@ -1684,6 +1684,34 @@ def _is_proven_straight_line_barrier_fragment(
 
     return True
 
+
+def _is_proven_straight_line_direct_memory_fragment(
+    insns: list[CanonicalInsn],
+) -> bool:
+    """Prove the narrow scalar LOAD/STORE shape used by Phase 6A.
+
+    This only establishes the absence of unrelated control-flow and
+    microarchitectural semantics for a one-instruction memory access.  It
+    does not prove aliasing or atomicity; those remain explicit Phase 6C/D
+    obligations.
+    """
+    if len(insns) != 1:
+        return False
+    ins = insns[0]
+    if (ins.terminator_kind or ins.has_branch_op or ins.has_call_or_return_op
+            or ins.has_atomic or ins.has_unknown_barrier or
+            ins.barrier_info is not None):
+        return False
+    memory_ops = [op for op in ins.ops if op.opcode in {"LOAD", "STORE"}]
+    if len(memory_ops) != 1:
+        return False
+    for op in ins.ops:
+        if op.opcode in _NON_SEMANTIC_CANONICAL_OPCODES | {"LOAD", "STORE"}:
+            continue
+        if op.opcode not in _PROVEN_PURE_INTEGER_OPCODES:
+            return False
+    return True
+
 def _summarize_instructions(
     insns: list[CanonicalInsn],
     *,
@@ -1794,6 +1822,7 @@ def _summarize_instructions(
         if (
             proven_pure_integer
             or _is_proven_straight_line_barrier_fragment(insns)
+            or _is_proven_straight_line_direct_memory_fragment(insns)
         )
         else None
     )

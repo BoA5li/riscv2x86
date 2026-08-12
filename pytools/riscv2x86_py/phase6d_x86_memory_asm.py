@@ -4,6 +4,21 @@ def prove(r):
     c,s,cc=r.constraints,r.source_model,r.compiler_capabilities
     if not cc.supports_gnu_inline_asm:return reject(r,SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if c.x86_memory_inline_asm_contract is None:return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
-    if s.atomic.present or s.barrier.present or s.operation.has_control_flow:return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
+    if s.atomic.present or s.memory.has_memory_barrier or s.memory.has_instruction_barrier or s.memory.has_unknown_barrier or s.operation.has_control_flow:return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     if (s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber):return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
+    contract = c.x86_memory_inline_asm_contract
+    semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    expected = {
+        "x86.gnu-att.memory.load.gpr-address.u32.v1": ("load", 32),
+        "x86.gnu-att.memory.load.gpr-address.u64.v1": ("load", 64),
+        "x86.gnu-att.memory.store.gpr-address.u32.v1": ("store", 32),
+        "x86.gnu-att.memory.store.gpr-address.u64.v1": ("store", 64),
+    }.get(semantic_id)
+    if (expected is None or contract.semantic_contract_id != semantic_id or
+            contract.operation_kind != expected[0] or contract.value_width_bits != expected[1] or
+            contract.address_operand_index is None or contract.value_operand_index is None or
+            not contract.memory_clobber or not contract.compiler_barrier or
+            not c.memory_constraint.requires_memory_clobber or
+            not c.memory_constraint.requires_compiler_barrier):
+        return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     return finalize(r,(PreservationConclusion.ARCHITECTURE_EQUIVALENT,PreservationConclusion.SHELL_PRESERVED))

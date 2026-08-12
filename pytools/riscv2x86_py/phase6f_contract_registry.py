@@ -650,6 +650,54 @@ def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode only a checked scalar ``mov`` address-register contract."""
+    semantic_id = approved.plan.metadata.get("renderer_semantic_contract_id")
+    expected = {
+        "x86.gnu-att.memory.load.gpr-address.u32.v1": ("load", 32),
+        "x86.gnu-att.memory.load.gpr-address.u64.v1": ("load", 64),
+        "x86.gnu-att.memory.store.gpr-address.u32.v1": ("store", 32),
+        "x86.gnu-att.memory.store.gpr-address.u64.v1": ("store", 64),
+    }.get(semantic_id)
+    contract = approved.constraints.x86_memory_inline_asm_contract
+    memory = approved.constraints.memory_constraint
+    if (expected is None or contract is None or
+            contract.semantic_contract_id != semantic_id or
+            contract.operation_kind != expected[0] or
+            contract.value_width_bits != expected[1] or
+            contract.address_operand_index is None or contract.value_operand_index is None or
+            not contract.memory_clobber or not contract.compiler_barrier or
+            not memory.requires_memory_clobber or not memory.requires_compiler_barrier):
+        return None
+    operands = {item.source_operand_index: item for item in approved.constraints.operand_constraints}
+    address = operands.get(contract.address_operand_index)
+    value = operands.get(contract.value_operand_index)
+    if (len(operands) != 2 or address is None or value is None or
+            address.role is not TargetOperandRole.INPUT or
+            address.allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
+            value.allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
+            value.required_width_bits != expected[1]):
+        return None
+    suffix = "l" if expected[1] == 32 else "q"
+    if expected[0] == "load":
+        if value.role is not TargetOperandRole.OUTPUT:
+            return None
+        recipe = GnuInlineAsmRecipe(
+            template=f"mov{suffix} (%1), %0",
+            output_operand_indexes=(value.source_operand_index,),
+            input_operand_indexes=(address.source_operand_index,),
+        )
+    else:
+        if value.role is not TargetOperandRole.INPUT:
+            return None
+        recipe = GnuInlineAsmRecipe(
+            template=f"mov{suffix} %1, (%0)",
+            output_operand_indexes=(),
+            input_operand_indexes=(address.source_operand_index, value.source_operand_index),
+        )
+    return RendererContractKind.GNU_INLINE_ASM, recipe
+
+
 _ASM_GOTO_ZERO_TEST_RECIPES = {
     "x86.gnu-att.asm-goto.bzero.u32-u64.v1": "je",
     "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1": "jne",
@@ -798,6 +846,22 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             _x86_barrier_recipe,
             "x86_barrier_contract",
             frozenset({"x86:serialize"}),
+        ),
+        *tuple(
+            RegisteredRendererContract(
+                semantic_id,
+                TargetLoweringKind.X86_GNU_INLINE_ASM,
+                semantic_id.removesuffix(".v1"),
+                _x86_direct_memory_recipe,
+                "x86_memory_inline_asm_contract",
+                frozenset({"x86:gpr_inline_asm"}),
+            )
+            for semantic_id in (
+                "x86.gnu-att.memory.load.gpr-address.u32.v1",
+                "x86.gnu-att.memory.load.gpr-address.u64.v1",
+                "x86.gnu-att.memory.store.gpr-address.u32.v1",
+                "x86.gnu-att.memory.store.gpr-address.u64.v1",
+            )
         ),
         RegisteredRendererContract(
             "x86.gnu-att.asm-goto.bzero.u32-u64.v1",

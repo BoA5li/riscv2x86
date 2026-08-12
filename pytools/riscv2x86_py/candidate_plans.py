@@ -729,8 +729,31 @@ def _generate_barrier_candidates(
     return candidates
 
 
+def _memory_renderer_semantic_contract_id(
+    source_model: SourceSemanticModel,
+) -> str | None:
+    """Return a registered direct scalar memory route, never a generic asm fallback."""
+    from .source_model import SourceOperandAccess, SourceOperandKind, SourceOperationKind
+    operands = tuple(source_model.operands.operands)
+    address = [item for item in operands if item.kind is SourceOperandKind.ADDRESS]
+    if len(address) != 1 or address[0].address is None or not address[0].address.provenance_known:
+        return None
+    if any(item.early_clobber or item.tied_to_source_operand_index is not None for item in operands):
+        return None
+    if source_model.operation.kind is SourceOperationKind.LOAD:
+        values = [item for item in operands if item.access is SourceOperandAccess.OUTPUT]
+        if len(operands) == 2 and len(values) == 1 and values[0].width_bits in {32, 64}:
+            return f"x86.gnu-att.memory.load.gpr-address.u{values[0].width_bits}.v1"
+    if source_model.operation.kind is SourceOperationKind.STORE:
+        values = [item for item in operands if item.access is SourceOperandAccess.INPUT]
+        if len(operands) == 2 and len(values) == 1 and values[0].width_bits in {32, 64}:
+            return f"x86.gnu-att.memory.store.gpr-address.u{values[0].width_bits}.v1"
+    return None
+
+
 def _generate_memory_candidates(
     facts: Phase6BCandidateFacts,
+    source_model: SourceSemanticModel,
 ) -> list[TargetLoweringPlan]:
     candidates: list[TargetLoweringPlan] = []
 
@@ -763,6 +786,12 @@ def _generate_memory_candidates(
         )
 
     if facts.target_is_x86:
+        semantic_contract_id = _memory_renderer_semantic_contract_id(source_model)
+        if semantic_contract_id is None:
+            return candidates or [_unsupported_candidate(
+                reason_code="memory-no-registered-direct-contract",
+                rationale="Memory access lacks the complete direct address/value contract required by a registered x86 GNU asm recipe.",
+            )]
         candidates.append(
             _plan(
                 plan_id="x86.memory-inline-asm",
@@ -777,6 +806,7 @@ def _generate_memory_candidates(
                 ),
                 metadata={
                     "strategy": "x86_memory_inline_asm",
+                    "renderer_semantic_contract_id": semantic_contract_id,
                 },
                 rationale=(
                     "Memory semantics require Phase 6C derivation of memory "
@@ -1042,7 +1072,7 @@ def generate_candidate_plans(
     # 7. 普通 non-atomic memory read/write。
     if facts.has_non_atomic_memory_semantics:
         return _stable_sort_and_freeze(
-            _generate_memory_candidates(facts)
+            _generate_memory_candidates(facts, source_model)
         )
 
     # 8/9/10. shell-neutral register-only normal path。
