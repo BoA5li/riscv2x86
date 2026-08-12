@@ -1607,6 +1607,44 @@ def _is_proven_pure_integer_straight_line_fragment(
     # 仅 IMARK 的 fragment 也不能被当成“已证明的普通整数 fragment”。
     return saw_semantic_integer_op
 
+
+def _is_proven_straight_line_barrier_fragment(
+    insns: list[CanonicalInsn],
+) -> bool:
+    """Prove the narrow no-control-flow barrier shape used by Phase 6A.
+
+    A barrier does not itself imply a return, indirect branch, timing source
+    or cache operation.  The canonical summary must be able to state those
+    facts as absent for a standalone, fully decoded fence; otherwise Phase 6D
+    correctly rejects the plan as incomplete.  This predicate intentionally
+    does *not* admit unknown barriers, atomics, instruction fences, or a
+    mixed instruction sequence.
+    """
+    if len(insns) != 1:
+        return False
+
+    ins = insns[0]
+    if (
+        ins.terminator_kind
+        or ins.has_branch_op
+        or ins.has_call_or_return_op
+        or ins.has_atomic
+        or ins.has_unknown_barrier
+        or ins.barrier_info is None
+        or ins.barrier_info.is_unknown
+        or ins.barrier_info.is_instruction_fence
+    ):
+        return False
+
+    # A standalone barrier route must not hide data-flow, memory access or
+    # another unmodelled instruction behind the fence metadata.
+    for op in ins.ops:
+        opcode = (op.opcode or "").upper()
+        if opcode not in _NON_SEMANTIC_CANONICAL_OPCODES:
+            return False
+
+    return True
+
 def _summarize_instructions(
     insns: list[CanonicalInsn],
     *,
@@ -1713,7 +1751,12 @@ def _summarize_instructions(
     )
 
     proven_false: Optional[bool] = (
-        False if proven_pure_integer else None
+        False
+        if (
+            proven_pure_integer
+            or _is_proven_straight_line_barrier_fragment(insns)
+        )
+        else None
     )
 
     return IRSummary(

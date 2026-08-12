@@ -7,12 +7,12 @@ from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple,
 from enum import Enum
 try:
     from .cfg import CFGResult
-    from .pcode_ir import Block, IRSummary, VarKind
+    from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind
     from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
-    from pcode_ir import Block, IRSummary, VarKind
+    from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind
     from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
 
@@ -3710,6 +3710,42 @@ def _build_barrier_model(
         "barrier_semantics",
         None,
     )
+
+    # ``IRSummary.barrier_info`` is Phase-5's typed, single-instruction
+    # source barrier contract.  It is deliberately consumed here, at the
+    # Phase-6A boundary, rather than re-reading a source asm mnemonic later.
+    #
+    # The only automatic hardware-fence route is the narrow, architecture
+    # defined ``fence rw,rw`` case.  Its R/W predecessor and successor sets
+    # are both complete, and the selected x86 ``mfence`` plan is explicitly a
+    # system-scope seq_cst strengthening.  Directional fences, I/O fences,
+    # fence.tso, fence.i, multiple barriers and incomplete metadata retain the
+    # existing fail-closed path.
+    summary_barrier = getattr(summary, "barrier_info", None)
+    full_rw_fence = bool(
+        structured_barrier is None
+        and summary_barrier is not None
+        and getattr(summary_barrier, "kind", None) is BarrierKind.MEMORY_FENCE
+        and getattr(summary_barrier, "semantics_complete", False)
+        and getattr(summary_barrier, "pred_mask", FenceSet.NONE)
+            == (FenceSet.R | FenceSet.W)
+        and getattr(summary_barrier, "succ_mask", FenceSet.NONE)
+            == (FenceSet.R | FenceSet.W)
+    )
+
+    if full_rw_fence:
+        return SourceBarrierModel(
+            present=True,
+            # This preserves an explicit GNU ``memory`` clobber.  It must not
+            # be confused with the hardware-fence fact below.
+            compiler_barrier=shell.has_memory_clobber,
+            hardware_memory_barrier=True,
+            instruction_serializing=False,
+            speculation_control=False,
+            ordering=SourceMemoryOrdering.SEQ_CST,
+            scope=SourceBarrierScope.SYSTEM,
+            complete=True,
+        )
 
     if structured_barrier is None:
         return SourceBarrierModel(
