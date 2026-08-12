@@ -3388,22 +3388,61 @@ def _build_value_operation_model(
     ):
         return None
 
-    semantic_ops = [
-        op for op in blocks[0].ops
-        if getattr(op, "opcode", "") != "IMARK"
+    # A lifter may route an instruction result through UNIQUE temporaries and
+    # final ``COPY`` operations.  COPY is explicitly admitted as pure integer
+    # bookkeeping by the canonical summary producer, so Phase 6A must not
+    # contradict that contract by counting it as a second value operation.
+    # Only exact width-preserving alias chains are accepted here; any other
+    # auxiliary p-code remains unmodelled and therefore fails closed.
+    canonical_ops = [
+        item for item in blocks[0].ops
+        if getattr(item, "opcode", "").upper() != "IMARK"
     ]
-    if len(semantic_ops) != 1:
-        return None
-    op = semantic_ops[0]
-    kind = {
+    value_kind_by_opcode = {
         "INT_ADD": SourceValueOperationKind.UNSIGNED_ADD,
         "INT_SUB": SourceValueOperationKind.UNSIGNED_SUB,
         "INT_AND": SourceValueOperationKind.BIT_AND,
         "INT_OR": SourceValueOperationKind.BIT_OR,
         "INT_XOR": SourceValueOperationKind.BIT_XOR,
-    }.get(getattr(op, "opcode", ""))
+    }
+    value_ops = [
+        item for item in canonical_ops
+        if getattr(item, "opcode", "").upper() in value_kind_by_opcode
+    ]
+    copy_ops = [
+        item for item in canonical_ops
+        if getattr(item, "opcode", "").upper() == "COPY"
+    ]
+    if len(value_ops) != 1 or len(value_ops) + len(copy_ops) != len(canonical_ops):
+        return None
+    op = value_ops[0]
+    kind = value_kind_by_opcode.get(getattr(op, "opcode", "").upper())
     if kind is None or getattr(op, "output", None) is None or len(op.inputs) != 2:
         return None
+
+    copy_source_by_output: dict[object, object] = {}
+    for copy in copy_ops:
+        copy_output = getattr(copy, "output", None)
+        copy_inputs = getattr(copy, "inputs", ())
+        if (
+            copy_output is None
+            or len(copy_inputs) != 1
+            or getattr(copy_output, "kind", None) is VarKind.CONST
+            or getattr(copy_output, "size", None) != getattr(copy_inputs[0], "size", None)
+            or copy_output in copy_source_by_output
+        ):
+            return None
+        copy_source_by_output[copy_output] = copy_inputs[0]
+
+    def resolve_copy_source(var: object) -> object | None:
+        seen: set[object] = set()
+        current = var
+        while current in copy_source_by_output:
+            if current in seen:
+                return None
+            seen.add(current)
+            current = copy_source_by_output[current]
+        return current
 
     register_to_operand: dict[str, int] = {}
     for register, index in runtime_status.rv_to_operand_index.items():
@@ -3418,9 +3457,18 @@ def _build_value_operation_model(
         canonical = canonicalize_riscv_register_name(getattr(var, "name", ""))
         return register_to_operand.get(canonical)
 
-    result_index = operand_index(op.output)
-    if result_index is None:
+    # Identify the host output register after transparent COPY propagation.
+    # A single primary operation must have exactly one registered host output.
+    result_indexes = {
+        index
+        for candidate in (getattr(op, "output", None), *copy_source_by_output)
+        if resolve_copy_source(candidate) == op.output
+        for index in (operand_index(candidate),)
+        if index is not None
+    }
+    if len(result_indexes) != 1:
         return None
+    result_index = next(iter(result_indexes))
     by_index = {item.source_operand_index: item for item in operands.operands}
     result = by_index.get(result_index)
     if (
@@ -3431,13 +3479,16 @@ def _build_value_operation_model(
         return None
 
     input_indexes: list[int] = []
-    constants: list[object] = []
-    for input_var in op.inputs:
-        index = operand_index(input_var)
+    constants: list[tuple[int, object]] = []
+    for input_position, input_var in enumerate(op.inputs):
+        resolved_input = resolve_copy_source(input_var)
+        if resolved_input is None:
+            return None
+        index = operand_index(resolved_input)
         if index is not None:
             input_indexes.append(index)
-        elif getattr(input_var, "kind", None) is VarKind.CONST:
-            constants.append(input_var)
+        elif getattr(resolved_input, "kind", None) is VarKind.CONST:
+            constants.append((input_position, resolved_input))
         else:
             return None
     if len(constants) > 1 or len(input_indexes) not in {1, 2}:
@@ -3451,7 +3502,11 @@ def _build_value_operation_model(
 
     immediate_value: int | None = None
     if constants:
-        constant = constants[0]
+        constant_position, constant = constants[0]
+        # Subtraction is not commutative.  The registered x86 recipe has the
+        # source register as its first operand and the immediate as second.
+        if kind is SourceValueOperationKind.UNSIGNED_SUB and constant_position != 1:
+            return None
         raw_value = getattr(constant, "offset", None)
         byte_size = getattr(constant, "size", None)
         if (
@@ -3459,14 +3514,16 @@ def _build_value_operation_model(
             or not isinstance(raw_value, int)
             or isinstance(byte_size, bool)
             or not isinstance(byte_size, int)
-            or byte_size * 8 != result.width_bits
+            or byte_size <= 0
+            or byte_size * 8 > result.width_bits
         ):
             return None
-        mask = (1 << result.width_bits) - 1
+        constant_width_bits = byte_size * 8
+        mask = (1 << constant_width_bits) - 1
         raw_value &= mask
         immediate_value = (
-            raw_value - (1 << result.width_bits)
-            if raw_value & (1 << (result.width_bits - 1))
+            raw_value - (1 << constant_width_bits)
+            if raw_value & (1 << (constant_width_bits - 1))
             else raw_value
         )
         # x86-64 ALU immediate encodings sign-extend an imm32.  Restricting

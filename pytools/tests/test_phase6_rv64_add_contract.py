@@ -272,3 +272,50 @@ def test_rv64_register_immediate_operations_have_proven_att_contracts() -> None:
                     check=False,
                 )
             assert completed.returncode == 0, completed.stderr
+
+
+def test_rv64_register_immediate_contract_accepts_transparent_copy_chain() -> None:
+    """Model the common lifted form: COPY input -> UNIQUE -> ALU -> COPY output."""
+    fragment = AsmFragment(
+        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        inputs=[AsmOperand(constraint="r", exprText="value")],
+        isVolatile=True,
+    )
+    source_reg = Var(VarKind.REG, "register", 11, 8, "a1")
+    temporary_input = Var(VarKind.UNIQUE, "unique", 0x10, 8)
+    temporary_output = Var(VarKind.UNIQUE, "unique", 0x20, 8)
+    destination_reg = Var(VarKind.REG, "register", 10, 8, "a0")
+    operations = [
+        Op(0x1000, "COPY", temporary_input, [source_reg]),
+        Op(0x1000, "INT_ADD", temporary_output, [
+            temporary_input, Var(VarKind.CONST, "const", 0x100, 4),
+        ]),
+        Op(0x1000, "COPY", destination_reg, [temporary_output]),
+    ]
+    summary = IRSummary(
+        is_single_block=True, has_branch=False, has_call_or_return=False,
+        has_memory_barrier=False, has_atomic=False, reads_regs={"a1"},
+        writes_regs={"a0"}, reads_mem=False, writes_mem=False,
+        has_return=False, has_tail_call=False, has_indirect_control_flow=False,
+        has_timing_source=False, has_cache_operation=False,
+        has_speculation_control=False,
+    )
+    model = build_source_semantic_model(
+        fragment=fragment,
+        blocks=(Block(addr=0x1000, ops=operations, summary=summary),),
+        cfg=CFGResult(ok=True), summary=summary, xlen=64,
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1},
+            operand_width_bits={0: 64, 1: 64},
+            provenance="phase4-copy-chain-test",
+        ),
+    )
+    assert model.value_operation is not None
+    assert model.value_operation.input_operand_indexes == (1,)
+    assert model.value_operation.result_operand_index == 0
+    assert model.value_operation.immediate_value == 0x100
+    assert any(
+        plan.metadata.get("renderer_semantic_contract_id")
+        == _IMMEDIATE_CONTRACT_ID
+        for plan in generate_candidate_plans(model)
+    )
