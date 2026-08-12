@@ -245,3 +245,43 @@ def test_canonical_summary_accepts_the_lifter_barrier_intrinsic_carrier() -> Non
     assert summary.has_return is False
     assert summary.has_tail_call is False
     assert summary.has_indirect_control_flow is False
+
+
+def test_canonical_summary_decodes_numeric_fence_masks_from_lifter() -> None:
+    """Ghidra-style numeric pred/succ masks remain typed barrier facts.
+
+    RISC-V encodes I/O/R/W in bits 3/2/1/0 respectively, so ``0x3`` is
+    exactly ``rw``.  The conversion belongs at the Phase-5 decoder boundary;
+    later phases only consume the resulting ``BarrierInfo``.
+    """
+    from riscv2x86_py.pcode_ir import from_lifted
+
+    class RawBarrierOp:
+        opcode = "CALLOTHER"
+        inputs = []
+        output = None
+
+    class LiftedFence:
+        addr = 0x1000
+        size = 4
+        raw_ops = [RawBarrierOp()]
+        terminator_kind = None
+        has_branch_op = False
+        has_call_or_return_op = False
+        has_unknown_barrier = False
+        has_atomic = False
+        atomic_mnemonic = None
+        atomic_orderings = set()
+        atomic_reads_mem = False
+        atomic_writes_mem = False
+        semantic_tags = frozenset()
+        asm_mnem = "fence"
+        asm_body = "0x3, 0x3"
+
+    _, summary = from_lifted([LiftedFence()])
+    barrier = summary.barrier_info
+    assert barrier is not None
+    assert barrier.kind is BarrierKind.MEMORY_FENCE
+    assert barrier.pred_mask == FenceSet.R | FenceSet.W
+    assert barrier.succ_mask == FenceSet.R | FenceSet.W
+    assert barrier.semantics_complete

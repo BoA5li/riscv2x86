@@ -283,6 +283,8 @@ def _parse_fence_set(text: str) -> Optional[FenceSet]:
         rw
         iorw
         wor   # 输入顺序不 canonical，但仍可解析
+        0x3   # decoder 以 RISC-V pred/succ bitmask 表示 rw
+        15    # decoder 以 RISC-V pred/succ bitmask 表示 iorw
 
     拒绝：
         rr
@@ -293,6 +295,35 @@ def _parse_fence_set(text: str) -> Optional[FenceSet]:
 
     if not text:
         return None
+
+    # Some decoder backends render FENCE pred/succ as the encoded four-bit
+    # RISC-V mask rather than the assembler spelling.  This is still
+    # machine-code-derived Phase-5 input, not a later-stage mnemonic
+    # heuristic.  Decode it explicitly before accepting letter spellings:
+    # bit 3 = I, bit 2 = O, bit 1 = R, bit 0 = W.
+    #
+    # Restrict the accepted domain to the architectural four-bit field so an
+    # arbitrary numeric operand can never be silently reinterpreted as a
+    # fence-set contract.
+    try:
+        numeric_value = int(text, 0)
+    except ValueError:
+        numeric_value = None
+
+    if numeric_value is not None:
+        if numeric_value < 0 or numeric_value > 0xF:
+            return None
+
+        result = FenceSet.NONE
+        if numeric_value & 0b1000:
+            result |= FenceSet.I
+        if numeric_value & 0b0100:
+            result |= FenceSet.O
+        if numeric_value & 0b0010:
+            result |= FenceSet.R
+        if numeric_value & 0b0001:
+            result |= FenceSet.W
+        return result
 
     result = FenceSet.NONE
 
