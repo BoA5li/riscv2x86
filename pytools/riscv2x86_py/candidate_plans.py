@@ -870,6 +870,29 @@ def _generate_register_only_candidates(
         )
 
     if facts.target_is_x86:
+        program = source_model.value_program
+        if program is not None and program.complete:
+            candidates.append(_plan(
+                plan_id="x86.register-straight-line-program",
+                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+                family=TargetLoweringFamily.X86_INLINE_ASM,
+                priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+                deterministic_rank=36,
+                required_features=frozenset({"x86:gpr_inline_asm"}),
+                requirements=_x86_requirements(preserve_cc=True),
+                metadata={
+                    "strategy": "x86_register_straight_line_program",
+                    "renderer_semantic_contract_id":
+                        "x86.gnu-att.gpr.straight-line-u32-u64.v1",
+                    "program_instruction_count": len(program.instructions),
+                    "program_width_bits": program.width_bits,
+                },
+                rationale=("Canonical straight-line GPR program with all "
+                           "temporaries bound to observable outputs; constraints "
+                           "and proof remain mandatory.",),
+                reason_codes=("x86-register-straight-line-program-candidate",),
+            ))
+            return candidates
         sequence = source_model.value_operation
         if (sequence is not None and sequence.complete and
                 sequence.kind.value == "add_then_shift_left_immediate"):

@@ -11,6 +11,26 @@ def prove(r):
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1":
+        program = s.value_program
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        if (program is None or not program.complete or contract is None or
+                contract.straight_line_program != program or
+                r.candidate_plan.metadata.get("program_instruction_count") != len(program.instructions) or
+                r.candidate_plan.metadata.get("program_width_bits") != program.width_bits or
+                not c.preserve_cc_clobber or
+                set(program.output_operand_indexes) != {item.source_operand_index for item in c.operand_constraints if item.role.value == "output"} or
+                set(program.input_operand_indexes) != {item.source_operand_index for item in c.operand_constraints if item.role.value == "input"}):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        for instruction in program.instructions:
+            output = operands.get(instruction.output_operand_index)
+            inputs = [operands.get(item) for item in instruction.input_operand_indexes]
+            if (output is None or output.role.value != "output" or
+                    output.required_width_bits != program.width_bits or
+                    any(item is None or item.required_width_bits != program.width_bits for item in inputs)):
+                return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1":
         value = s.value_operation
         operands = {item.source_operand_index: item for item in c.operand_constraints}

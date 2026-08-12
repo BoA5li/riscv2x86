@@ -21,7 +21,7 @@ from .phase6f_renderer import (
     StructuredControlFlowRecipe,
 )
 from .phase6c_constraints import TargetOperandRole, TargetOperandClass
-from .source_model import SourceAtomicRmwOperation, SourceMemoryOrdering, SourceValueOperationKind
+from .source_model import SourceAtomicRmwOperation, SourceMemoryOrdering, SourceValueOperationKind, SourceStraightLineValueOpcode
 from .plan_types import TargetLoweringKind
 from .helper_runtime_manifest import RV64_MULHU_U64, RUNTIME_HELPER_MANIFEST_VERSION
 
@@ -498,6 +498,76 @@ def _gpr_add_then_shift_left_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+def _gpr_straight_line_program_recipe(approved: ApprovedTargetLoweringPlan):
+    """Render a proof-bound canonical GPR dataflow program.
+
+    This is deliberately table-driven from ``SourceStraightLineValueProgram``;
+    no source mnemonic, rendered text, or unbound scratch register participates
+    in the lowering.  Every intermediate must already be an output operand.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    program = None if contract is None else contract.straight_line_program
+    if program is None or not program.complete or program.width_bits not in {32, 64}:
+        return None
+    operands = {item.source_operand_index: item for item in c.operand_constraints}
+    output_order = tuple(program.output_operand_indexes)
+    input_order = tuple(program.input_operand_indexes)
+    if len(set(output_order)) != len(output_order) or any(index not in operands for index in (*output_order, *input_order)):
+        return None
+    if (any(operands[index].role is not TargetOperandRole.OUTPUT or
+            operands[index].required_width_bits != program.width_bits or
+            TargetOperandClass.GENERAL_REGISTER not in operands[index].allowed_classes
+            for index in output_order) or
+            any(operands[index].role is not TargetOperandRole.INPUT or
+            operands[index].required_width_bits != program.width_bits or
+            TargetOperandClass.GENERAL_REGISTER not in operands[index].allowed_classes
+            for index in input_order)):
+        return None
+    slots = {index: position for position, index in enumerate(output_order)}
+    slots.update({index: len(output_order) + position for position, index in enumerate(input_order)})
+    suffix = "l" if program.width_bits == 32 else "q"
+    binary = {
+        SourceStraightLineValueOpcode.UNSIGNED_ADD: "add",
+        SourceStraightLineValueOpcode.UNSIGNED_SUB: "sub",
+        SourceStraightLineValueOpcode.BIT_AND: "and",
+        SourceStraightLineValueOpcode.BIT_OR: "or",
+        SourceStraightLineValueOpcode.BIT_XOR: "xor",
+    }
+    shifts = {
+        SourceStraightLineValueOpcode.SHIFT_LEFT_IMMEDIATE: "shl",
+        SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE: "shr",
+        SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE: "sar",
+    }
+    lines: list[str] = []
+    for instruction in program.instructions:
+        destination = slots.get(instruction.output_operand_index)
+        sources = [slots.get(index) for index in instruction.input_operand_indexes]
+        if destination is None or any(item is None for item in sources):
+            return None
+        dst = f"%{destination}"
+        if instruction.opcode is SourceStraightLineValueOpcode.COPY:
+            if len(sources) != 1:
+                return None
+            lines.append(f"mov{suffix} %{sources[0]}, {dst}")
+        elif instruction.opcode in binary:
+            if len(sources) != 2:
+                return None
+            lines.extend((f"mov{suffix} %{sources[0]}, {dst}",
+                          f"{binary[instruction.opcode]}{suffix} %{sources[1]}, {dst}"))
+        elif instruction.opcode in shifts:
+            if len(sources) != 1 or instruction.immediate_value is None or not 0 <= instruction.immediate_value < program.width_bits:
+                return None
+            lines.extend((f"mov{suffix} %{sources[0]}, {dst}",
+                          f"{shifts[instruction.opcode]}{suffix} ${instruction.immediate_value}, {dst}"))
+        else:
+            return None
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template="\n\t".join(lines), output_operand_indexes=output_order,
+        input_operand_indexes=input_order,
+    ))
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -794,6 +864,14 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.straight-line-u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.straight-line-u32-u64",
+            _gpr_straight_line_program_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

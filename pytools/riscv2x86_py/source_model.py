@@ -230,6 +230,10 @@ class SourceSemanticModel:
     # Source architecture width. This is not an operand width substitute.
     xlen: Optional[int]
     value_operation: SourceValueOperationModel | None
+    # A finite, canonical straight-line register program.  Unlike
+    # ``value_operation`` it can retain multiple observable values and their
+    # data dependencies without exposing raw p-code to Phase 6B-F.
+    value_program: SourceStraightLineValueProgram | None
 
     @property
     def phase6b_candidate_facts(self):
@@ -701,6 +705,10 @@ def build_source_semantic_model(
 
         xlen=xlen,
         value_operation=value_operation,
+        value_program=_build_straight_line_value_program(
+            blocks=blocks, runtime_status=runtime_status, operands=operands,
+            operation=operation,
+        ),
     )
 
 def _build_control_flow_model(
@@ -2196,6 +2204,19 @@ class SourceValueOperationKind(str, Enum):
     ADD_THEN_SHIFT_LEFT_IMMEDIATE = "add_then_shift_left_immediate"
 
 
+class SourceStraightLineValueOpcode(str, Enum):
+    """Finite source-independent operation set for the generic GPR route."""
+    COPY = "copy"
+    UNSIGNED_ADD = "unsigned_add"
+    UNSIGNED_SUB = "unsigned_sub"
+    BIT_AND = "bit_and"
+    BIT_OR = "bit_or"
+    BIT_XOR = "bit_xor"
+    SHIFT_LEFT_IMMEDIATE = "shift_left_immediate"
+    SHIFT_RIGHT_LOGICAL_IMMEDIATE = "shift_right_logical_immediate"
+    SHIFT_RIGHT_ARITHMETIC_IMMEDIATE = "shift_right_arithmetic_immediate"
+
+
 class SourceAtomicKind(str, Enum):
     LOAD = "load"
     STORE = "store"
@@ -2508,6 +2529,53 @@ class SourceValueOperationModel:
             or self.temporary_operand_index < 0
         ):
             raise TypeError("temporary_operand_index must be a non-negative int or None")
+
+
+@dataclass(frozen=True)
+class SourceStraightLineValueInstruction:
+    """One canonical dataflow instruction, referenced only by operand IDs."""
+    opcode: SourceStraightLineValueOpcode
+    output_operand_index: int
+    input_operand_indexes: Tuple[int, ...]
+    immediate_value: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.opcode, SourceStraightLineValueOpcode):
+            raise TypeError("opcode must be SourceStraightLineValueOpcode")
+        if isinstance(self.output_operand_index, bool) or not isinstance(self.output_operand_index, int) or self.output_operand_index < 0:
+            raise TypeError("output_operand_index must be a non-negative int")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 0
+               for item in self.input_operand_indexes):
+            raise TypeError("input_operand_indexes must contain non-negative ints")
+        immediate_ops = {
+            SourceStraightLineValueOpcode.SHIFT_LEFT_IMMEDIATE,
+            SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
+            SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
+        }
+        if (self.opcode in immediate_ops) != (self.immediate_value is not None):
+            raise ValueError("shift-immediate instructions require exactly one immediate value")
+
+
+@dataclass(frozen=True)
+class SourceStraightLineValueProgram:
+    """Authoritative Phase-6A pure register dataflow program.
+
+    All values are source operand bindings; unbound lifter temporaries are
+    rejected rather than being guessed as renderer scratch registers.
+    """
+    width_bits: int
+    instructions: Tuple[SourceStraightLineValueInstruction, ...]
+    output_operand_indexes: Tuple[int, ...]
+    input_operand_indexes: Tuple[int, ...]
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        if self.width_bits not in {32, 64}:
+            raise ValueError("straight-line GPR program width must be 32 or 64")
+        if len(self.instructions) < 2 or not self.complete:
+            raise ValueError("straight-line GPR program must contain at least two complete instructions")
+        if len(set(self.output_operand_indexes)) != len(self.output_operand_indexes):
+            raise ValueError("straight-line program outputs must be unique")
 
 
 @dataclass(frozen=True)
@@ -3510,6 +3578,149 @@ def _build_operation_model(
             or control_flow.has_tail_call is True
         ),
         complete=complete,
+    )
+
+
+def _build_straight_line_value_program(
+    *,
+    blocks: Sequence[Block], runtime_status: RuntimeFactStatus,
+    operands: SourceOperandModel, operation: SourceOperationModel,
+) -> SourceStraightLineValueProgram | None:
+    """Build a generic, finite GPR dataflow program from canonical p-code.
+
+    This intentionally solves a class of straight-line programs rather than a
+    source mnemonic/template.  It accepts only values that can be represented
+    by existing GNU asm operands: every non-copy computation must write one
+    externally visible output operand, and every input must be either a source
+    input or a value written by an earlier program instruction.
+    """
+    if (operation.kind is not SourceOperationKind.REGISTER_ONLY or
+            operation.may_trap is not False or not operands.complete or
+            len(blocks) != 1 or not runtime_status.structurally_valid):
+        return None
+    items = [item for item in blocks[0].ops if getattr(item, "opcode", "").upper() != "IMARK"]
+    copy_source: dict[object, object] = {}
+    raw_ops: list[object] = []
+    opcode_map = {
+        "INT_ADD": SourceStraightLineValueOpcode.UNSIGNED_ADD,
+        "INT_SUB": SourceStraightLineValueOpcode.UNSIGNED_SUB,
+        "INT_AND": SourceStraightLineValueOpcode.BIT_AND,
+        "INT_OR": SourceStraightLineValueOpcode.BIT_OR,
+        "INT_XOR": SourceStraightLineValueOpcode.BIT_XOR,
+        "INT_LEFT": SourceStraightLineValueOpcode.SHIFT_LEFT_IMMEDIATE,
+        "INT_RIGHT": SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
+        "INT_SRIGHT": SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
+    }
+    for item in items:
+        opcode = getattr(item, "opcode", "").upper()
+        if opcode == "COPY":
+            output, inputs = getattr(item, "output", None), getattr(item, "inputs", ())
+            if (output is None or len(inputs) != 1 or output in copy_source or
+                    getattr(output, "kind", None) is VarKind.CONST or
+                    getattr(output, "size", None) != getattr(inputs[0], "size", None)):
+                return None
+            copy_source[output] = inputs[0]
+        elif opcode in opcode_map:
+            raw_ops.append(item)
+        else:
+            return None
+    if len(raw_ops) < 2:
+        return None
+    def resolve(value: object) -> object | None:
+        seen: set[object] = set(); current = value
+        while current in copy_source:
+            if current in seen:
+                return None
+            seen.add(current); current = copy_source[current]
+        return current
+    reg_to_index: dict[str, int] = {}
+    for register, index in runtime_status.rv_to_operand_index.items():
+        canonical = canonicalize_riscv_register_name(register)
+        if not canonical or canonical in reg_to_index:
+            return None
+        reg_to_index[canonical] = index
+    def operand_index(value: object) -> int | None:
+        if getattr(value, "kind", None) is not VarKind.REG:
+            return None
+        return reg_to_index.get(canonicalize_riscv_register_name(getattr(value, "name", "")))
+    def result_index(value: object) -> int | None:
+        matches = {operand_index(candidate) for candidate in (value, *copy_source)
+                   if resolve(candidate) == value and operand_index(candidate) is not None}
+        return next(iter(matches)) if len(matches) == 1 else None
+    bindings = {item.source_operand_index: item for item in operands.operands}
+    program: list[SourceStraightLineValueInstruction] = []
+    written: set[int] = set()
+    used_inputs: set[int] = set()
+    width: int | None = None
+    shift_ops = {
+        SourceStraightLineValueOpcode.SHIFT_LEFT_IMMEDIATE,
+        SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
+        SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
+    }
+    for raw in raw_ops:
+        opcode = opcode_map[getattr(raw, "opcode", "").upper()]
+        output = getattr(raw, "output", None)
+        inputs = getattr(raw, "inputs", ())
+        output_index = None if output is None else result_index(output)
+        target = None if output_index is None else bindings.get(output_index)
+        if (target is None or target.access is not SourceOperandAccess.OUTPUT or
+                output_index in written or target.width_bits not in {32, 64}):
+            return None
+        if width is None:
+            width = target.width_bits
+        if target.width_bits != width:
+            return None
+        if opcode in shift_ops:
+            if len(inputs) != 2:
+                return None
+            source = resolve(inputs[0]); constant = resolve(inputs[1])
+            if source is None or constant is None or getattr(constant, "kind", None) is not VarKind.CONST:
+                return None
+            indexes = (operand_index(source),)
+            raw_value, size = getattr(constant, "offset", None), getattr(constant, "size", None)
+            if (isinstance(raw_value, bool) or not isinstance(raw_value, int) or
+                    isinstance(size, bool) or not isinstance(size, int) or size <= 0):
+                return None
+            immediate = raw_value & ((1 << (size * 8)) - 1)
+            if immediate >= width:
+                return None
+        else:
+            if len(inputs) != 2:
+                return None
+            resolved = (resolve(inputs[0]), resolve(inputs[1]))
+            if any(item is None for item in resolved):
+                return None
+            indexes = tuple(operand_index(item) for item in resolved)
+            immediate = None
+        if any(index is None for index in indexes):
+            return None
+        for index in indexes:
+            binding = bindings.get(index)
+            if binding is None or binding.width_bits != width:
+                return None
+            if binding.access is SourceOperandAccess.INPUT:
+                used_inputs.add(index)
+            elif binding.access is SourceOperandAccess.OUTPUT:
+                if index not in written:
+                    return None
+            else:
+                return None
+        program.append(SourceStraightLineValueInstruction(opcode, output_index, tuple(indexes), immediate))
+        written.add(output_index)
+    output_indexes = tuple(item.source_operand_index for item in operands.operands
+                           if item.access is SourceOperandAccess.OUTPUT)
+    input_indexes = tuple(item.source_operand_index for item in operands.operands
+                          if item.access is SourceOperandAccess.INPUT)
+    if (width is None or set(output_indexes) != written or set(input_indexes) != used_inputs or
+            any(bindings[index].kind is not SourceOperandKind.REGISTER or
+                bindings[index].signedness.value == "unknown" or
+                bindings[index].tied_to_source_operand_index is not None or
+                bindings[index].fixed_register_name is not None
+                for index in (*output_indexes, *input_indexes))):
+        return None
+    return SourceStraightLineValueProgram(
+        width_bits=width, instructions=tuple(program),
+        output_operand_indexes=output_indexes, input_operand_indexes=input_indexes,
     )
 
 

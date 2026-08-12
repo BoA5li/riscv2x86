@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 from ..plan_types import TargetLoweringKind, TargetLoweringPlan
-from ..source_model import SourceOperandAccess, SourceOperandKind, SourceSemanticModel, SourceValueOperationKind
+from ..source_model import SourceOperandAccess, SourceOperandKind, SourceSemanticModel, SourceValueOperationKind, SourceStraightLineValueProgram
 
 if TYPE_CHECKING:
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetEnvironment
@@ -33,6 +33,7 @@ class X86GnuInlineAsmContract:
     required_target_feature: str
     value_operation_kind: SourceValueOperationKind
     immediate_value: int | None = None
+    straight_line_program: SourceStraightLineValueProgram | None = None
 
 def _fail(plan, code, details=None):
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintReasonCode
@@ -46,6 +47,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.rw-immediate-binary.v1",
     "x86.gnu-att.gpr.rw-early-clobber-binary.v1",
     "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
+    "x86.gnu-att.gpr.straight-line-u32-u64.v1",
 })
 
 
@@ -63,6 +65,27 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
         return _fail(candidate_plan, "X86_INLINE_ASM_SEMANTIC_CONTRACT_UNSUPPORTED", {
             "renderer_semantic_contract_id": str(semantic_id),
         })
+
+    if semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1":
+        program = getattr(candidate_plan, "metadata", {}).get("program_instruction_count")
+        outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
+        inputs = [op for op in target_operands if op.role.name == "INPUT"]
+        if (not isinstance(program, int) or program < 2 or not outputs or not inputs or
+                any(item.required_width_bits not in {32, 64} or
+                    TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes or
+                    item.requires_fixed_register or item.tied_to_source_operand_index is not None
+                    for item in (*outputs, *inputs))):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "complete_straight_line_gpr_program_operands",
+            })
+        widths = {item.required_width_bits for item in (*outputs, *inputs)}
+        if len(widths) != 1:
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "uniform_32_or_64_bit_gpr_operands",
+            })
+        return None
 
     if semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1":
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
@@ -184,9 +207,20 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if source_model.registers.reads_or_writes_stack_pointer or source_model.registers.reads_or_writes_frame_pointer or st.reads_stack_pointer or st.writes_stack_pointer or st.reads_frame_pointer or st.writes_frame_pointer or st.reads_implicit_machine_state or st.writes_implicit_machine_state: return _fail(candidate_plan,"X86_INLINE_ASM_IMPLICIT_STATE_UNSUPPORTED")
     shell=source_model.shell
     if shell.has_memory_clobber or shell.has_asm_goto or shell.has_external_control_flow: return _fail(candidate_plan,"X86_INLINE_ASM_SHELL_UNSUPPORTED")
-    if source_model.value_operation is None or not source_model.value_operation.complete:
+    if ((source_model.value_operation is None or not source_model.value_operation.complete) and
+            (source_model.value_program is None or not source_model.value_program.complete)):
         return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
+    program_route = semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1"
+    if program_route:
+        program = source_model.value_program
+        if (program is None or not program.complete or
+                candidate_plan.metadata.get("program_instruction_count") != len(program.instructions) or
+                candidate_plan.metadata.get("program_width_bits") != program.width_bits):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": str(semantic_id),
+                "expected": "matching_authoritative_straight_line_program",
+            })
     sequence_route = semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1"
     immediate_route = semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
     if sequence_route:
@@ -212,7 +246,9 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
                 "renderer_semantic_contract_id": str(semantic_id),
                 "expected": "proven_matching_immediate_value",
             })
-    elif source_model.value_operation.immediate_value is not None and not sequence_route:
+    elif (source_model.value_operation is not None and
+          source_model.value_operation.immediate_value is not None and
+          not sequence_route and not program_route):
         return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
             "renderer_semantic_contract_id": str(semantic_id),
             "expected": "dedicated_immediate_contract",
@@ -242,5 +278,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     )
     if contract_failure is not None:
         return contract_failure
-    target_writes_cc = source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE}
-    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,source_model.value_operation.kind,source_model.value_operation.immediate_value),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))
+    target_writes_cc = program_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
+    operation_kind = (SourceValueOperationKind.COPY if program_route else source_model.value_operation.kind)
+    immediate_value = None if program_route else source_model.value_operation.immediate_value
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,operation_kind,immediate_value,source_model.value_program if program_route else None),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))
