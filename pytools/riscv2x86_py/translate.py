@@ -3068,7 +3068,32 @@ def _translate_phase6_proof_pipeline(
         return _unsupported(context, reason="Phase-6E artifact consistency validation failed", reason_code="TR_PHASE6E_ARTIFACT_INCONSISTENT")
     if selection.kind is FinalSelectionKind.UNSUPPORTED:
         text = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context or RendererContext({}, {})).emitted_text or ""
-        return _output(kind="unsupported", replacement=text, context=context, route="phase6e_unsupported", notes=["no target lowering passed the Phase-6 semantic proof gate"], reason_codes=[selection.primary_reason_code or "TR_NO_PROVEN_TARGET_LOWERING_PLAN"], build_family="", requires_build_check=False, requires_block_proof=False, metadata={"attempts": attempt_metadata, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 0})
+        # Do not collapse Phase 6C/6D's structured failures into a generic
+        # message.  The report boundary is the only diagnostic available to
+        # the launcher, so keep a deterministic summary here.  This records
+        # facts already produced by those stages; it neither retries proof nor
+        # reinterprets source/target semantics.
+        attempt_notes = tuple(
+            f"{item.plan_id}@{item.stage}:"
+            f"{','.join(item.reason_codes) if item.reason_codes else 'no_reason_code'}"
+            for item in rejected_attempts
+        )
+        return _output(
+            kind="unsupported", replacement=text, context=context,
+            route="phase6e_unsupported",
+            notes=[
+                "no target lowering passed the Phase-6 semantic proof gate",
+                *attempt_notes,
+            ],
+            reason_codes=[selection.primary_reason_code or "TR_NO_PROVEN_TARGET_LOWERING_PLAN"],
+            build_family="", requires_build_check=False,
+            requires_block_proof=False,
+            metadata={
+                "attempts": attempt_metadata,
+                "candidatePlanCount": len(candidate_plans),
+                "approvedPlanCount": 0,
+            },
+        )
     if selection.kind is FinalSelectionKind.KEEP:
         text = render_final_selection_result(selection, target_environment=target_environment, renderer_context=renderer_context or RendererContext({}, {})).emitted_text or ""
         return _output(kind="keep", replacement=text, context=context, route="phase6e_keep", notes=["Phase 6E policy selected keep"], reason_codes=["TR_PHASE6E_KEEP"], build_family="", requires_build_check=False, requires_block_proof=False, metadata={"attempts": attempt_metadata})
