@@ -74,10 +74,10 @@ _D_FEATURES = frozenset(
         SemanticFeature.UNRESOLVED_REGISTER_IDENTITY,
         SemanticFeature.UNKNOWN_PCODE,
 
-        SemanticFeature.INCOMPLETE_TAIL_CALL_SUMMARY,
-        SemanticFeature.INCOMPLETE_TIMING_SOURCE_SUMMARY,
-        SemanticFeature.INCOMPLETE_CACHE_OPERATION_SUMMARY,
-        SemanticFeature.INCOMPLETE_SPECULATION_CONTROL_SUMMARY,
+        # Source-model collection records every incomplete summary with the
+        # single, versioned INCOMPLETE_SEMANTIC_SUMMARY feature.  The
+        # detailed field remains in its stable reason code; it must not be
+        # represented by stale, non-existent enum variants here.
     }
 )
 

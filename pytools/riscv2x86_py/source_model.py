@@ -643,7 +643,6 @@ def build_source_semantic_model(
 
     features, reasons, reason_codes = _collect_source_semantic_evidence(
         shell=shell,
-        runtime_status=runtime_status,
         control_flow=control_flow,
         memory=memory,
         microarch=microarch,
