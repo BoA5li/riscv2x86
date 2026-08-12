@@ -56,7 +56,9 @@ def test_direct_u64_load_preserves_memory_shell_and_compiles() -> None:
     plan = generate_candidate_plans(model)[0]
     assert plan.metadata["renderer_semantic_contract_id"] == "x86.gnu-att.memory.load.gpr-address.u64.v1"
     environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
-        available_features={"target:x86", "x86:gpr_inline_asm"},
+        # The fixed x86 target profile supplies its architecture identity;
+        # callers provide only operational compiler/target capabilities.
+        available_features={"x86:gpr_inline_asm"},
     )
     derived = derive_target_constraints(source_model=model, candidate_plan=plan, target_environment=environment)
     assert derived.success and derived.constraints is not None
