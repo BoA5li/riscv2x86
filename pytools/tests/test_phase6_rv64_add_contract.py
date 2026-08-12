@@ -374,3 +374,37 @@ def test_rv64_variable_register_shifts_have_proven_cl_contracts() -> None:
                 completed = subprocess.run([compiler, "-c", "-std=gnu11", str(path), "-o", str(path.with_suffix(".o"))],
                     capture_output=True, text=True, check=False)
             assert completed.returncode == 0, completed.stderr
+
+
+def test_rv64_variable_shift_accepts_only_architectural_count_mask_normalization() -> None:
+    """SLEIGH's ``count & (XLEN - 1)`` UNIQUE temporary is not a second op."""
+    fragment = AsmFragment(
+        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        inputs=[AsmOperand(constraint="r", exprText="value"), AsmOperand(constraint="r", exprText="count")],
+        isVolatile=True,
+    )
+    temporary = Var(VarKind.UNIQUE, "unique", 0x100, 8)
+    operations = [
+        Op(0x1000, "INT_AND", temporary, [
+            Var(VarKind.REG, "register", 12, 8, "a2"),
+            Var(VarKind.CONST, "const", 63, 8),
+        ]),
+        Op(0x1000, "INT_LEFT", Var(VarKind.REG, "register", 10, 8, "a0"), [
+            Var(VarKind.REG, "register", 11, 8, "a1"), temporary,
+        ]),
+    ]
+    summary = IRSummary(is_single_block=True, has_branch=False, has_call_or_return=False,
+        has_memory_barrier=False, has_atomic=False, reads_regs={"a1", "a2"}, writes_regs={"a0"},
+        reads_mem=False, writes_mem=False, has_return=False, has_tail_call=False,
+        has_indirect_control_flow=False, has_timing_source=False, has_cache_operation=False,
+        has_speculation_control=False)
+    model = build_source_semantic_model(fragment=fragment,
+        blocks=(Block(addr=0x1000, ops=operations, summary=summary),), cfg=CFGResult(ok=True),
+        summary=summary, xlen=64, runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1, "a2": 2},
+            operand_width_bits={0: 64, 1: 64, 2: 64}, provenance="masked-shift-test"))
+    assert model.value_operation is not None
+    assert model.value_operation.shift_count_mask == 63
+    assert any(plan.metadata.get("renderer_semantic_contract_id")
+               == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1"
+               for plan in generate_candidate_plans(model))

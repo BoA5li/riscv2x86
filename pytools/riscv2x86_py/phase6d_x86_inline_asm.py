@@ -30,6 +30,9 @@ def prove(r):
                 source.required_width_bits != output.required_width_bits or
                 count.required_width_bits != output.required_width_bits):
             return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        if (value.shift_count_mask is not None and
+                value.shift_count_mask != output.required_width_bits - 1):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
         return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
                             PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1":

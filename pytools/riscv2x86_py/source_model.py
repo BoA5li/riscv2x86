@@ -2514,6 +2514,11 @@ class SourceValueOperationModel:
     # result (the temporary produced by ADD).  Keeping it in the authoritative
     # Phase-6A model prevents later stages from inferring it from asm text.
     temporary_operand_index: int | None = None
+    # RISC-V SLEIGH commonly materializes the architectural register-shift
+    # count mask (XLEN - 1) as ``INT_AND count, constant`` into a UNIQUE
+    # temporary before INT_LEFT/RIGHT/SRIGHT.  Retain that normalization as a
+    # structured source fact; it is never reconstructed from asm text.
+    shift_count_mask: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceValueOperationKind):
@@ -2535,6 +2540,12 @@ class SourceValueOperationModel:
             or self.temporary_operand_index < 0
         ):
             raise TypeError("temporary_operand_index must be a non-negative int or None")
+        if self.shift_count_mask is not None and (
+            isinstance(self.shift_count_mask, bool)
+            or not isinstance(self.shift_count_mask, int)
+            or self.shift_count_mask < 0
+        ):
+            raise TypeError("shift_count_mask must be a non-negative int or None")
 
 
 @dataclass(frozen=True)
@@ -3888,15 +3899,41 @@ def _build_value_operation_model(
         "INT_RIGHT": SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
         "INT_SRIGHT": SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
     }
+    # A register-count shift is frequently lifted as a two-node semantic DAG:
+    #
+    #   tmp = INT_AND(count, XLEN - 1)
+    #   dst = INT_LEFT/RIGHT/SRIGHT(value, tmp)
+    #
+    # ``tmp`` is a lifter-only normalization temporary, not a second source
+    # operation.  Admit it only as this exact, closed pattern.  In particular,
+    # an arbitrary ``and; shift`` sequence remains unmodelled and therefore
+    # fail-closed.
+    shift_opcodes = frozenset({"INT_LEFT", "INT_RIGHT", "INT_SRIGHT"})
+    shift_ops = [
+        item for item in canonical_ops
+        if getattr(item, "opcode", "").upper() in shift_opcodes
+    ]
+    potential_shift_count_masks = [
+        item for item in canonical_ops
+        if getattr(item, "opcode", "").upper() == "INT_AND"
+    ]
+    shift_count_mask_op = (
+        potential_shift_count_masks[0]
+        if len(shift_ops) == 1 and len(potential_shift_count_masks) == 1
+        else None
+    )
     value_ops = [
         item for item in canonical_ops
-        if getattr(item, "opcode", "").upper() in value_kind_by_opcode
+        if (getattr(item, "opcode", "").upper() in value_kind_by_opcode
+            and item is not shift_count_mask_op)
     ]
     copy_ops = [
         item for item in canonical_ops
         if getattr(item, "opcode", "").upper() == "COPY"
     ]
-    if len(value_ops) != 1 or len(value_ops) + len(copy_ops) != len(canonical_ops):
+    if (len(value_ops) != 1 or
+            len(value_ops) + len(copy_ops) +
+            (1 if shift_count_mask_op is not None else 0) != len(canonical_ops)):
         return None
     op = value_ops[0]
     kind = value_kind_by_opcode.get(getattr(op, "opcode", "").upper())
@@ -3961,12 +3998,55 @@ def _build_value_operation_model(
     ):
         return None
 
+    def _unsigned_constant_value(value: object) -> int | None:
+        raw_value = getattr(value, "offset", None)
+        byte_size = getattr(value, "size", None)
+        if (
+            getattr(value, "kind", None) is not VarKind.CONST
+            or isinstance(raw_value, bool)
+            or not isinstance(raw_value, int)
+            or isinstance(byte_size, bool)
+            or not isinstance(byte_size, int)
+            or byte_size <= 0
+            or byte_size * 8 > result.width_bits
+        ):
+            return None
+        return raw_value & ((1 << (byte_size * 8)) - 1)
+
+    def _resolve_shift_count(value: object) -> tuple[object, int | None] | None:
+        """Resolve the sole admitted lifted count-mask normalization."""
+        resolved = resolve_copy_source(value)
+        if resolved is None:
+            return None
+        if shift_count_mask_op is None or resolved != shift_count_mask_op.output:
+            return resolved, None
+        mask_inputs = getattr(shift_count_mask_op, "inputs", ())
+        if len(mask_inputs) != 2:
+            return None
+        for count, mask in ((mask_inputs[0], mask_inputs[1]),
+                            (mask_inputs[1], mask_inputs[0])):
+            resolved_count = resolve_copy_source(count)
+            mask_value = _unsigned_constant_value(resolve_copy_source(mask))
+            if (resolved_count is not None and mask_value == result.width_bits - 1):
+                return resolved_count, mask_value
+        return None
+
     input_indexes: list[int] = []
     constants: list[tuple[int, object]] = []
+    shift_count_mask: int | None = None
     for input_position, input_var in enumerate(op.inputs):
         resolved_input = resolve_copy_source(input_var)
         if resolved_input is None:
             return None
+        if kind in {
+            SourceValueOperationKind.SHIFT_LEFT_REGISTER,
+            SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
+            SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
+        } and input_position == 1:
+            normalized_count = _resolve_shift_count(resolved_input)
+            if normalized_count is None:
+                return None
+            resolved_input, shift_count_mask = normalized_count
         index = operand_index(resolved_input)
         if index is not None:
             input_indexes.append(index)
@@ -4036,6 +4116,7 @@ def _build_value_operation_model(
         result_operand_index=result_index,
         complete=True,
         immediate_value=immediate_value,
+        shift_count_mask=shift_count_mask,
     )
 
 def _build_atomic_operation_model(
