@@ -3265,6 +3265,35 @@ def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: T
         if op.output is not None
     }
 
+    def is_proven_zero(item: object, visiting: set[object]) -> bool:
+        """Recognize only width-preserving representations of integer zero.
+
+        RISC-V SLEIGH semantics commonly sign-extend the immediate before
+        computing an effective address.  For ``0(base)`` this yields a UNIQUE
+        ``INT_SEXT(const:0)`` rather than a direct constant input to
+        ``INT_ADD``.  Zero remains zero through these listed data-flow nodes;
+        every other expression, including a non-zero offset, stays rejected.
+        """
+        if getattr(item, "kind", None) is VarKind.CONST:
+            return getattr(item, "offset", None) == 0
+        if item in visiting:
+            return False
+        producer = producers.get(item)
+        if producer is None:
+            return False
+        next_visiting = visiting | {item}
+        if producer.opcode in {"COPY", "INT_ZEXT", "INT_SEXT", "SUBPIECE"}:
+            return (
+                len(producer.inputs) == 1
+                and is_proven_zero(producer.inputs[0], next_visiting)
+            )
+        if producer.opcode == "PIECE":
+            return (
+                len(producer.inputs) == 2
+                and all(is_proven_zero(value, next_visiting) for value in producer.inputs)
+            )
+        return False
+
     def resolve_transparent_register(item: object, visiting: set[object]) -> set[str]:
         if getattr(item, "kind", None) is VarKind.REG:
             name = getattr(item, "name", "")
@@ -3278,9 +3307,9 @@ def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: T
             return resolve_transparent_register(producer.inputs[0], visiting | {item})
         if producer.opcode == "INT_ADD" and len(producer.inputs) == 2:
             left, right = producer.inputs
-            if left.kind is VarKind.CONST and left.offset == 0:
+            if is_proven_zero(left, set()):
                 return resolve_transparent_register(right, visiting | {item})
-            if right.kind is VarKind.CONST and right.offset == 0:
+            if is_proven_zero(right, set()):
                 return resolve_transparent_register(left, visiting | {item})
         return set()
 
