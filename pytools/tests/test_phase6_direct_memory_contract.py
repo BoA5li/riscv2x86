@@ -104,7 +104,8 @@ def test_direct_u64_load_accepts_transparent_copy_and_add_zero_address_chain() -
     base = SimpleNamespace(space="register", offset=11, size=8, name="a1")
     copied = SimpleNamespace(space="unique", offset=0x100, size=8, name="")
     address = SimpleNamespace(space="unique", offset=0x108, size=8, name="")
-    zero = SimpleNamespace(space="const", offset=0, size=8, name="")
+    zero = SimpleNamespace(space="const", offset=0, size=4, name="")
+    sign_extended_zero = SimpleNamespace(space="unique", offset=0x104, size=8, name="")
 
     class CopyOp:
         opcode = "COPY"
@@ -114,14 +115,19 @@ def test_direct_u64_load_accepts_transparent_copy_and_add_zero_address_chain() -
     class AddZeroOp:
         opcode = "INT_ADD"
         output = address
-        inputs = [copied, zero]
+        inputs = [copied, sign_extended_zero]
+
+    class SignExtendZeroOp:
+        opcode = "INT_SEXT"
+        output = sign_extended_zero
+        inputs = [zero]
 
     class LoadOp:
         opcode = "LOAD"
         output = SimpleNamespace(space="register", offset=10, size=8, name="a0")
         inputs = [SimpleNamespace(space="const", offset=0, size=8, name=""), address]
 
-    LoadInsn.raw_ops = [CopyOp(), AddZeroOp(), LoadOp()]
+    LoadInsn.raw_ops = [CopyOp(), SignExtendZeroOp(), AddZeroOp(), LoadOp()]
     blocks, summary = from_lifted([LoadInsn()])
     fragment = AsmFragment(
         rawAsmText="ld %[dst], 0(%[base])", isVolatile=True, clobbers=["memory"],
