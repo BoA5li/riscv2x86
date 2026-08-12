@@ -1,5 +1,10 @@
 """Regression test for the proof-gated RV64 register-only add path."""
 
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
 from riscv2x86_py.candidate_plans import generate_candidate_plans
 from riscv2x86_py.cfg import CFGResult
 from riscv2x86_py.pcode_ir import Block, IRSummary, Op, Var, VarKind
@@ -132,7 +137,7 @@ def test_rv64_add_has_proven_att_renderer_contract() -> None:
     )
     renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
     assert renderer_contract is not None
-    assert renderer_contract.payload.template == "movq %1, %0\\n\\taddq %2, %0"
+    assert renderer_contract.payload.template == "movq %1, %0\n\taddq %2, %0"
     assert renderer_contract.payload.output_operand_indexes == (0,)
     assert renderer_contract.payload.input_operand_indexes == (1, 2)
 
@@ -147,6 +152,22 @@ def test_rv64_add_has_proven_att_renderer_contract() -> None:
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
     assert rendered.diagnostics == ()
     assert rendered.emitted_text == (
-        '__asm__ volatile ("movq %1, %0\\\\n\\\\taddq %2, %0" '
+        '__asm__ volatile ("movq %1, %0\\n\\taddq %2, %0" '
         ': "=&r"(out) : "r"(lhs), "r"(rhs) : "cc");'
     )
+
+    compiler = shutil.which("cc")
+    if compiler is None:
+        return
+    source = "#include <stdint.h>\nuint64_t f(uint64_t lhs, uint64_t rhs) { uint64_t out; " + rendered.emitted_text + " return out; }\n"
+    with tempfile.TemporaryDirectory(prefix="riscv2x86-rv64-add-") as temp_dir:
+        path = Path(temp_dir) / "rv64_add_lowered.c"
+        path.write_text(source, encoding="utf-8")
+        completed = subprocess.run(
+            [compiler, "-c", "-std=gnu11", str(path), "-o", str(path.with_suffix(".o"))],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    assert completed.returncode == 0, completed.stderr

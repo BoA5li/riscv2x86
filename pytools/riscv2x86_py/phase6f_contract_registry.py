@@ -388,7 +388,11 @@ def _gpr_output_gpr_binary_recipe(approved: ApprovedTargetLoweringPlan):
     return (
         RendererContractKind.GNU_INLINE_ASM,
         GnuInlineAsmRecipe(
-            template=f"mov{suffix} %1, %0\\n\\t{opcode}{suffix} %2, %0",
+            # The recipe stores logical assembly text.  Phase 6F alone
+            # encodes the newline as a C string escape during serialization.
+            # Storing ``\\n`` here would make the serializer emit ``\\\\n``
+            # and pass a literal backslash to the assembler.
+            template=f"mov{suffix} %1, %0\n\t{opcode}{suffix} %2, %0",
             output_operand_indexes=(output.source_operand_index,),
             input_operand_indexes=(inputs[0].source_operand_index, inputs[1].source_operand_index),
         ),
@@ -628,7 +632,8 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
     return (
         RendererContractKind.GNU_ASM_GOTO,
         GnuAsmGotoRecipe(
-            template=f"test{suffix} %0, %0\\n\\t{jump} %l[{label.label}]",
+            # Keep recipe text logical, rather than pre-escaped for C.
+            template=f"test{suffix} %0, %0\n\t{jump} %l[{label.label}]",
             output_operand_indexes=(),
             input_operand_indexes=(operand.source_operand_index,),
             label_bindings=(GnuAsmGotoLabelBinding(

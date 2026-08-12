@@ -296,7 +296,16 @@ def _input(op: TargetOperandConstraint, expression: str, output_indexes: Mapping
 
 
 def _serialize_asm(node: GnuAsmNode, *, is_goto: bool) -> str:
-    q = node.template.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n\\t")
+    # Recipes hold logical assembly text.  Encode each C string special
+    # character exactly once; in particular, do not inject a tab after a
+    # newline because a logical template may already contain one.
+    q = (
+        node.template
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
     operands = lambda xs: ", ".join(f'"{x.constraint}"({x.expression})' for x in xs)
     clobbers = ", ".join(f'"{x}"' for x in node.clobbers)
     head = "__asm__ goto" if is_goto else ("__asm__ volatile" if node.volatile else "__asm__")
