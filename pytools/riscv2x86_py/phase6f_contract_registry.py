@@ -399,6 +399,67 @@ def _gpr_output_gpr_binary_recipe(approved: ApprovedTargetLoweringPlan):
     )
 
 
+def _gpr_output_immediate_binary_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode ``dst = src OP immediate`` from an approved p-code constant.
+
+    The immediate is stored in the Phase 6C contract after exact comparison
+    with SourceValueOperationModel.  It is not read from source asm text and
+    is not an operand the renderer needs to bind or infer.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    if (
+        contract is None
+        or contract.immediate_value is None
+        or not -(1 << 31) <= contract.immediate_value <= (1 << 31) - 1
+        or contract.value_operation_kind not in {
+            SourceValueOperationKind.UNSIGNED_ADD,
+            SourceValueOperationKind.UNSIGNED_SUB,
+            SourceValueOperationKind.BIT_AND,
+            SourceValueOperationKind.BIT_OR,
+            SourceValueOperationKind.BIT_XOR,
+        }
+    ):
+        return None
+    outputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.OUTPUT]
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if len(outputs) != 1 or len(inputs) != 1:
+        return None
+    output, input_ = outputs[0], inputs[0]
+    if (
+        output.required_width_bits not in {32, 64}
+        or input_.required_width_bits != output.required_width_bits
+        or not output.early_clobber
+        or input_.early_clobber
+        or output.tied_to_source_operand_index is not None
+        or input_.tied_to_source_operand_index is not None
+        or output.requires_fixed_register
+        or input_.requires_fixed_register
+        or TargetOperandClass.GENERAL_REGISTER not in output.allowed_classes
+        or TargetOperandClass.GENERAL_REGISTER not in input_.allowed_classes
+    ):
+        return None
+    suffix = "l" if output.required_width_bits == 32 else "q"
+    opcode = {
+        SourceValueOperationKind.UNSIGNED_ADD: "add",
+        SourceValueOperationKind.UNSIGNED_SUB: "sub",
+        SourceValueOperationKind.BIT_AND: "and",
+        SourceValueOperationKind.BIT_OR: "or",
+        SourceValueOperationKind.BIT_XOR: "xor",
+    }[contract.value_operation_kind]
+    return (
+        RendererContractKind.GNU_INLINE_ASM,
+        GnuInlineAsmRecipe(
+            template=(
+                f"mov{suffix} %1, %0\n\t"
+                f"{opcode}{suffix} ${contract.immediate_value}, %0"
+            ),
+            output_operand_indexes=(output.source_operand_index,),
+            input_operand_indexes=(input_.source_operand_index,),
+        ),
+    )
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -647,6 +708,13 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.out-gpr-immediate-binary",
+            _gpr_output_immediate_binary_recipe,
+            "x86_gnu_inline_asm_contract",
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

@@ -802,6 +802,7 @@ def _generate_memory_candidates(
 
 def _generate_register_only_candidates(
     facts: Phase6BCandidateFacts,
+    source_model: SourceSemanticModel,
 ) -> list[TargetLoweringPlan]:
     candidates: list[TargetLoweringPlan] = []
 
@@ -848,7 +849,17 @@ def _generate_register_only_candidates(
         # fixed-register and 8/16-bit forms require source/target contracts
         # that are not yet modeled completely, so no candidate is generated
         # for them (fail closed).
+        immediate_value = (
+            None if source_model.value_operation is None
+            else source_model.value_operation.immediate_value
+        )
         operand_variants = (
+            (
+                "out-gpr-immediate",
+                "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+                38,
+                "early-clobber write-only output, register input, and proven immediate",
+            ),
             (
                 "out-gpr-gpr",
                 "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
@@ -875,6 +886,14 @@ def _generate_register_only_candidates(
             ),
         )
         for variant, semantic_contract_id, rank, description in operand_variants:
+            # An immediate is a structured canonical p-code fact, not a GNU
+            # source operand.  Only the dedicated output/register/immediate
+            # route may consume it; all other operand contracts retain their
+            # existing exact shapes.
+            if variant == "out-gpr-immediate" and immediate_value is None:
+                continue
+            if variant != "out-gpr-immediate" and immediate_value is not None:
+                continue
             candidates.append(
                 _plan(
                     plan_id=f"x86.register-only-inline-asm.{variant}",
@@ -888,6 +907,7 @@ def _generate_register_only_candidates(
                         "strategy": "x86_register_only_inline_asm",
                         "operand_contract_variant": variant,
                         "renderer_semantic_contract_id": semantic_contract_id,
+                        "source_immediate_value": immediate_value,
                     },
                     rationale=(
                         "Register-only x86 inline asm candidate with an "
@@ -1027,5 +1047,5 @@ def generate_candidate_plans(
 
     # 8/9/10. shell-neutral register-only normal path。
     return _stable_sort_and_freeze(
-        _generate_register_only_candidates(facts)
+        _generate_register_only_candidates(facts, source_model)
     )

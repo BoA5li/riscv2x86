@@ -32,6 +32,7 @@ class X86GnuInlineAsmContract:
     cc_clobber: bool
     required_target_feature: str
     value_operation_kind: SourceValueOperationKind
+    immediate_value: int | None = None
 
 def _fail(plan, code, details=None):
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintReasonCode
@@ -39,6 +40,7 @@ def _fail(plan, code, details=None):
 
 
 _SUPPORTED_RENDERER_CONTRACTS = frozenset({
+    "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
     "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
     "x86.gnu-att.gpr.rw-gpr-binary.v1",
     "x86.gnu-att.gpr.rw-immediate-binary.v1",
@@ -61,13 +63,17 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             "renderer_semantic_contract_id": str(semantic_id),
         })
 
-    if semantic_id == "x86.gnu-att.gpr.out-gpr-gpr-binary.v1":
+    if semantic_id in {
+        "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
+        "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+    }:
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
         inputs = [op for op in target_operands if op.role.name == "INPUT"]
-        if len(outputs) != 1 or len(inputs) != 2:
+        expected_input_count = 1 if semantic_id.endswith("immediate-binary.v1") else 2
+        if len(outputs) != 1 or len(inputs) != expected_input_count:
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": semantic_id,
-                "expected": "one_early_clobber_output_and_two_inputs",
+                "expected": f"one_early_clobber_output_and_{expected_input_count}_register_inputs",
             })
         output = outputs[0]
         if (
@@ -152,6 +158,23 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if shell.has_memory_clobber or shell.has_asm_goto or shell.has_external_control_flow: return _fail(candidate_plan,"X86_INLINE_ASM_SHELL_UNSUPPORTED")
     if source_model.value_operation is None or not source_model.value_operation.complete:
         return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
+    semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
+    immediate_route = semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
+    if immediate_route:
+        immediate_value = source_model.value_operation.immediate_value
+        if (
+            immediate_value is None
+            or candidate_plan.metadata.get("source_immediate_value") != immediate_value
+        ):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": str(semantic_id),
+                "expected": "proven_matching_immediate_value",
+            })
+    elif source_model.value_operation.immediate_value is not None:
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": str(semantic_id),
+            "expected": "dedicated_immediate_contract",
+        })
     operands=[]; target_operands=[]
     for op in source_model.operands.operands:
         if op.kind not in {SourceOperandKind.REGISTER,SourceOperandKind.IMMEDIATE,SourceOperandKind.FIXED_REGISTER} or op.width_bits not in {8,16,32,64} or op.signedness.value == "unknown": return _fail(candidate_plan,"X86_INLINE_ASM_OPERAND_UNSUPPORTED",{"source_operand_index":op.source_operand_index})
@@ -163,7 +186,10 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
         if role is not X86OperandRole.INPUT and (op.lvalue is None or not op.lvalue.is_modifiable): return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
         host=(op.lvalue.c_type_id if role is not X86OperandRole.INPUT else op.expression.c_type_id)
         target_early_clobber = op.early_clobber or (
-            candidate_plan.metadata.get("renderer_semantic_contract_id") == "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
+            candidate_plan.metadata.get("renderer_semantic_contract_id") in {
+                "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
+                "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+            }
             and role is X86OperandRole.OUTPUT
         )
         operands.append(X86GprOperandContract(op.source_operand_index,role,op.width_bits,op.signedness.value,host,"zero_extend" if op.width_bits==32 else "preserve",op.fixed_register_name,op.tied_to_source_operand_index,target_early_clobber,op.kind is SourceOperandKind.IMMEDIATE))
@@ -175,4 +201,4 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if contract_failure is not None:
         return contract_failure
     target_writes_cc = source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR}
-    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,source_model.value_operation.kind),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,source_model.value_operation.kind,source_model.value_operation.immediate_value),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))

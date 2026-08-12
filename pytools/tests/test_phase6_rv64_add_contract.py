@@ -36,6 +36,7 @@ from riscv2x86_py.source_model import build_source_semantic_model
 
 
 _CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
+_IMMEDIATE_CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
 
 
 def _build_rv64_add_model():
@@ -171,3 +172,103 @@ def test_rv64_add_has_proven_att_renderer_contract() -> None:
             check=False,
         )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_rv64_register_immediate_operations_have_proven_att_contracts() -> None:
+    """Cover the whole registered OP-IMM value family, not only addi."""
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    operation_kinds = {
+        "INT_ADD": "addq",
+        "INT_SUB": "subq",
+        "INT_AND": "andq",
+        "INT_OR": "orq",
+        "INT_XOR": "xorq",
+    }
+    for opcode, target_opcode in operation_kinds.items():
+        fragment = AsmFragment(
+            outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+            inputs=[AsmOperand(constraint="r", exprText="value")],
+            isVolatile=True,
+        )
+        operation = Op(
+            addr=0x1000,
+            opcode=opcode,
+            output=Var(VarKind.REG, "register", 10, 8, "a0"),
+            inputs=[
+                Var(VarKind.REG, "register", 11, 8, "a1"),
+                Var(VarKind.CONST, "const", 0x100, 8),
+            ],
+        )
+        summary = IRSummary(
+            is_single_block=True, has_branch=False, has_call_or_return=False,
+            has_memory_barrier=False, has_atomic=False,
+            reads_regs={"a1"}, writes_regs={"a0"}, reads_mem=False,
+            writes_mem=False, has_return=False, has_tail_call=False,
+            has_indirect_control_flow=False, has_timing_source=False,
+            has_cache_operation=False, has_speculation_control=False,
+        )
+        model = build_source_semantic_model(
+            fragment=fragment,
+            blocks=(Block(addr=0x1000, ops=[operation], summary=summary),),
+            cfg=CFGResult(ok=True), summary=summary, xlen=64,
+            runtime_facts=TranslationRuntimeFacts(
+                rv_to_operand_index={"a0": 0, "a1": 1},
+                operand_width_bits={0: 64, 1: 64},
+                provenance="phase4-op-imm-test",
+            ),
+        )
+        assert model.value_operation is not None
+        assert model.value_operation.immediate_value == 0x100
+        plan = next(
+            candidate for candidate in generate_candidate_plans(model)
+            if candidate.metadata.get("renderer_semantic_contract_id")
+            == _IMMEDIATE_CONTRACT_ID
+        )
+        derived = derive_target_constraints(
+            source_model=model, candidate_plan=plan,
+            target_environment=environment,
+        )
+        assert derived.success and derived.constraints is not None
+        proof = run_semantic_proof_gate(
+            source_model=model, preservation_decision=model.preservation,
+            candidate_plan=plan, constraints=derived.constraints,
+            target_environment=environment,
+            target_semantic_catalog=TargetSemanticCatalog(
+                supported_plan_kinds=frozenset({plan.kind}),
+                semantic_contract_ids=frozenset({_IMMEDIATE_CONTRACT_ID}),
+                version="rv64-op-imm-test-v1",
+            ),
+            compiler_capabilities=CompilerCapabilityModel(True, False),
+        )
+        assert proof.approved and proof.evidence is not None
+        approved = ApprovedTargetLoweringPlan(
+            plan, derived.constraints, proof,
+            proof.evidence.source_model_id,
+            proof.evidence.preservation_decision_id,
+            proof.evidence.target_environment_id,
+            "phase6e.semantic-fidelity", "1", SelectionTier.X86_INLINE_ASM,
+        )
+        renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+        assert renderer_contract is not None
+        rendered = render_approved_target_lowering(Phase6FRenderRequest(
+            approved, environment,
+            RendererContext({plan.plan_id: renderer_contract}, {0: "out", 1: "value"}),
+        ))
+        assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+        assert f"{target_opcode} $256, %0" in rendered.emitted_text
+        compiler = shutil.which("cc")
+        if compiler is not None:
+            source = (
+                "#include <stdint.h>\n"
+                "uint64_t f(uint64_t value) { uint64_t out; "
+                + rendered.emitted_text + " return out; }\n"
+            )
+            with tempfile.TemporaryDirectory(prefix="riscv2x86-rv64-op-imm-") as temp_dir:
+                path = Path(temp_dir) / "rv64_op_imm_lowered.c"
+                path.write_text(source, encoding="utf-8")
+                completed = subprocess.run(
+                    [compiler, "-c", "-std=gnu11", str(path), "-o", str(path.with_suffix(".o"))],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=False,
+                )
+            assert completed.returncode == 0, completed.stderr

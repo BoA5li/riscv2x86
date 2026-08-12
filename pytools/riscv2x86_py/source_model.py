@@ -2467,6 +2467,10 @@ class SourceValueOperationModel:
     input_operand_indexes: Tuple[int, ...]
     result_operand_index: int
     complete: bool
+    # A canonical p-code constant, normalized to the source operation width.
+    # It is not a GNU asm operand and therefore has no source operand index.
+    # ``None`` denotes the all-register form.
+    immediate_value: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceValueOperationKind):
@@ -2477,6 +2481,11 @@ class SourceValueOperationModel:
             raise TypeError("result_operand_index must be a non-negative int")
         if not self.input_operand_indexes or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in self.input_operand_indexes):
             raise TypeError("input_operand_indexes must contain non-negative ints")
+        if self.immediate_value is not None and (
+            isinstance(self.immediate_value, bool)
+            or not isinstance(self.immediate_value, int)
+        ):
+            raise TypeError("immediate_value must be an int or None")
 
 
 @dataclass(frozen=True)
@@ -3410,26 +3419,67 @@ def _build_value_operation_model(
         return register_to_operand.get(canonical)
 
     result_index = operand_index(op.output)
-    input_indexes = tuple(operand_index(item) for item in op.inputs)
-    if result_index is None or any(item is None for item in input_indexes):
+    if result_index is None:
         return None
-    input_indexes = tuple(int(item) for item in input_indexes)
     by_index = {item.source_operand_index: item for item in operands.operands}
     result = by_index.get(result_index)
-    inputs = tuple(by_index.get(item) for item in input_indexes)
     if (
         result is None
         or result.access is not SourceOperandAccess.OUTPUT
         or result.width_bits not in {32, 64}
-        or any(item is None or item.access is not SourceOperandAccess.INPUT
-               or item.width_bits != result.width_bits for item in inputs)
     ):
         return None
+
+    input_indexes: list[int] = []
+    constants: list[object] = []
+    for input_var in op.inputs:
+        index = operand_index(input_var)
+        if index is not None:
+            input_indexes.append(index)
+        elif getattr(input_var, "kind", None) is VarKind.CONST:
+            constants.append(input_var)
+        else:
+            return None
+    if len(constants) > 1 or len(input_indexes) not in {1, 2}:
+        return None
+    if constants and len(input_indexes) != 1:
+        return None
+    inputs = tuple(by_index.get(item) for item in input_indexes)
+    if any(item is None or item.access is not SourceOperandAccess.INPUT
+           or item.width_bits != result.width_bits for item in inputs):
+        return None
+
+    immediate_value: int | None = None
+    if constants:
+        constant = constants[0]
+        raw_value = getattr(constant, "offset", None)
+        byte_size = getattr(constant, "size", None)
+        if (
+            isinstance(raw_value, bool)
+            or not isinstance(raw_value, int)
+            or isinstance(byte_size, bool)
+            or not isinstance(byte_size, int)
+            or byte_size * 8 != result.width_bits
+        ):
+            return None
+        mask = (1 << result.width_bits) - 1
+        raw_value &= mask
+        immediate_value = (
+            raw_value - (1 << result.width_bits)
+            if raw_value & (1 << (result.width_bits - 1))
+            else raw_value
+        )
+        # x86-64 ALU immediate encodings sign-extend an imm32.  Restricting
+        # this contract to that exact shared value domain prevents a renderer
+        # from silently changing a 64-bit source constant's upper bits.
+        if not -(1 << 31) <= immediate_value <= (1 << 31) - 1:
+            return None
     return SourceValueOperationModel(
         kind=kind,
-        input_operand_indexes=input_indexes,
+        input_operand_indexes=tuple(input_indexes),
         result_operand_index=result_index,
         complete=True,
+        immediate_value=immediate_value,
     )
 
 def _build_atomic_operation_model(

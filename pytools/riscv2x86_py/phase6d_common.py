@@ -189,7 +189,10 @@ def _validate_operand_bindings(request):
         if source is None or (target.required_width_bits is not None and target.required_width_bits != source.width_bits): return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
         early_clobber_strengthening = (
             request.candidate_plan.metadata.get("renderer_semantic_contract_id")
-            == "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
+            in {
+                "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
+                "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
+            }
             and target.role.value == "output"
             and source.access.value == "output"
             and target.early_clobber

@@ -10,6 +10,18 @@ def prove(r):
     if (s.shell.has_cc_clobber and not c.preserve_cc_clobber) or (s.shell.is_volatile and not c.preserve_volatile):return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
+    semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1":
+        source_value = s.value_operation
+        if (
+            source_value is None
+            or source_value.immediate_value is None
+            or contract is None
+            or contract.immediate_value != source_value.immediate_value
+            or r.candidate_plan.metadata.get("source_immediate_value") != source_value.immediate_value
+            or not -(1 << 31) <= contract.immediate_value <= (1 << 31) - 1
+        ):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     if (contract is not None and
             contract.value_operation_kind.value in {"unsigned_add", "unsigned_sub", "bit_and", "bit_or", "bit_xor"} and
             not c.preserve_cc_clobber):
