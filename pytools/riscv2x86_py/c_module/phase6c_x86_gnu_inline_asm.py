@@ -437,9 +437,9 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
                 "renderer_semantic_contract_id": str(semantic_id),
                 "expected": "proven_immediate_shift_count",
             })
-    elif (source_model.value_operation is not None and
+    if (source_model.value_operation is not None and
           source_model.value_operation.immediate_value is not None and
-          not sequence_route and not immediate_shift_route and not program_route):
+          not sequence_route and not immediate_route and not immediate_shift_route and not program_route):
         return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
             "renderer_semantic_contract_id": str(semantic_id),
             "expected": "dedicated_immediate_contract",
