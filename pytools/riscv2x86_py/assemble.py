@@ -1618,6 +1618,15 @@ _RISCV_DOT_RELATIVE_BRANCH_OPS = {
     "tail",
 }
 
+# These aliases are normalized only at the Phase-4 assembler boundary.  They
+# are not translation rules and no later semantic phase may inspect this
+# spelling.  Keep the table deliberately narrow: an entry is admitted only
+# when the assembler alias has the same operand form and architectural effect
+# as its canonical spelling.
+_RISCV_ASSEMBLER_ALIASES = {
+    "mov": "mv",
+}
+
 _RISCV_ASM_LINE_RE = re.compile(
     r"""
     ^
@@ -1657,6 +1666,37 @@ _RISCV_DOT_RELATIVE_TARGET_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+
+def _normalize_riscv_assembler_aliases(asm_text: str) -> str:
+    """Normalize a finite set of syntax-only RISC-V assembler aliases.
+
+    Some LLVM RISC-V assembler versions accept only the canonical ``mv``
+    spelling, while GCC inline asm commonly uses the ``mov`` alias.  The
+    normalization is intentionally conservative: it changes only a two-
+    operand alias after template materialization, leaves labels/comments
+    untouched, and never infers source semantics from the instruction text.
+    Unsupported aliases remain assembler failures rather than being guessed.
+    """
+    normalized_lines: list[str] = []
+    for original_line in asm_text.splitlines(keepends=True):
+        line_ending = "\n" if original_line.endswith("\n") else ""
+        body = original_line[:-1] if line_ending else original_line
+        code, marker, comment = body.partition("#")
+        match = _RISCV_ASM_LINE_RE.match(code)
+        if match is None:
+            normalized_lines.append(original_line)
+            continue
+        canonical = _RISCV_ASSEMBLER_ALIASES.get(match.group("opcode").lower())
+        operands = [item.strip() for item in match.group("operands").split(",")]
+        if canonical is None or len(operands) != 2 or not all(operands):
+            normalized_lines.append(original_line)
+            continue
+        normalized_lines.append(
+            f"{match.group('prefix')}{canonical}{match.group('space')}"
+            f"{', '.join(operands)}{marker}{comment}{line_ending}"
+        )
+    return "".join(normalized_lines)
 
 
 def _split_riscv_asm_comment(line: str) -> tuple[str, str]:
@@ -1875,6 +1915,7 @@ def assemble(
         # 将 llvm-mc 不能接受的 .+N / .-N branch target 转为等价 immediate。
         #
         # 这只改变最终汇编文本，不改变 operand-register binding。
+        rendered = _normalize_riscv_assembler_aliases(rendered)
         rendered = _normalize_riscv_dot_relative_targets(rendered)
 
     except ValueError as e:
