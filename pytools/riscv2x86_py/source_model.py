@@ -3951,7 +3951,7 @@ def _build_register_shift_value_operation_model(
     count_mask = width - 1
     consumed: set[int] = set()
 
-    def constant(value: object) -> int | None:
+    def literal_constant(value: object) -> int | None:
         if getattr(value, "kind", None) is not VarKind.CONST:
             return None
         raw, size = getattr(value, "offset", None), getattr(value, "size", None)
@@ -3959,6 +3959,23 @@ def _build_register_shift_value_operation_model(
                 isinstance(size, bool) or not isinstance(size, int) or size <= 0):
             return None
         return raw & ((1 << (size * 8)) - 1)
+
+    def is_architectural_shift_count_mask(value: object) -> bool:
+        """Recognize only a literal mask or the SLEIGH ``XLEN - 1`` DAG."""
+        if literal_constant(value) == count_mask:
+            return True
+        producer = producers.get(value)
+        if producer is None or getattr(producer, "opcode", "").upper() != "INT_SUB":
+            return False
+        inputs = getattr(producer, "inputs", ())
+        # This is intentionally not a general constant folder.  The one
+        # admitted non-literal form is the architectural shift-count mask
+        # synthesized by SLEIGH: INT_SUB(XLEN, 1) == XLEN - 1.
+        if (len(inputs) == 2 and literal_constant(inputs[0]) == width and
+                literal_constant(inputs[1]) == 1):
+            consumed.add(id(producer))
+            return True
+        return False
 
     def resolve_register(value: object, *, allow_count_normalization: bool) -> tuple[int, bool] | None:
         """Return a source operand index and whether XLEN count masking was seen."""
@@ -3988,7 +4005,7 @@ def _build_register_shift_value_operation_model(
                 current = values[0]
                 continue
             if opcode == "SUBPIECE" and len(values) == 2:
-                offset = constant(values[1])
+                offset = literal_constant(values[1])
                 # Low-byte extraction preserves every architecturally used
                 # count bit for both RV32 and RV64.
                 if (offset == 0 and getattr(producer.output, "size", 0) * 8 >=
@@ -3999,9 +4016,9 @@ def _build_register_shift_value_operation_model(
                 return None
             if opcode == "INT_AND" and len(values) == 2:
                 left, right = values
-                if constant(left) == count_mask:
+                if is_architectural_shift_count_mask(left):
                     current = right
-                elif constant(right) == count_mask:
+                elif is_architectural_shift_count_mask(right):
                     current = left
                 else:
                     return None
