@@ -694,7 +694,7 @@ def build_source_semantic_model(
     # Keeping the ledger at this boundary prevents debugging from becoming a
     # raw-asm or textual-pcode backdoor in 6B--6F.
     if (value_operation is None and local_branch_select is None and
-            read_only_csr is None):
+            read_only_csr is None and not memory.has_instruction_barrier):
         def _var_ledger(value: object) -> dict[str, object]:
             return {
                 "kind": getattr(getattr(value, "kind", None), "value", None),

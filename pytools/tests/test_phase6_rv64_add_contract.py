@@ -265,6 +265,39 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
     assert artifact["preservationMode"] == "functional_equivalence_only"
 
 
+def test_instruction_stream_barrier_requires_explicit_route() -> None:
+    """Instruction-stream barriers must never be guessed as x86 fences."""
+    fragment = AsmFragment(clobbers=["memory"], isVolatile=True)
+    summary = IRSummary(
+        is_single_block=True, has_branch=False, has_call_or_return=False,
+        has_memory_barrier=False, has_instruction_barrier=True,
+        has_atomic=False, reads_regs=set(), writes_regs=set(),
+        reads_mem=False, writes_mem=False,
+        has_return=False, has_tail_call=False, has_indirect_control_flow=False,
+        has_timing_source=False, has_cache_operation=False,
+        has_speculation_control=False,
+    )
+    blocks = (Block(
+        0x1000,
+        [Op(0x1000, "CALLOTHER", None, [
+            Var(VarKind.CONST, "const", 5, 4),
+        ])],
+        summary=summary,
+        instructions=[CanonicalInsn(addr=0x1000, size=4)],
+    ),)
+    routed = translate(
+        frag=fragment, lift=_IngressLift(), summary=summary,
+        machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
+        cfg=CFGResult(ok=True),
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={}, operand_width_bits={}, provenance="phase4-test",
+        ),
+    )
+    assert routed.kind == "needs_route"
+    assert "TR_INSTRUCTION_STREAM_SYNC_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
+    assert routed.metadata["functionalFallbackPermitted"] is False
+
+
 def test_rv64_add_has_proven_att_renderer_contract() -> None:
     model = _build_rv64_add_model()
     plan = next(

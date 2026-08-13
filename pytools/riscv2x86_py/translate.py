@@ -3068,6 +3068,36 @@ def translate(
             },
         )
 
+    # Instruction-stream synchronization is an independently modelled source
+    # semantic family.  It is not a memory-ordering fence: in particular,
+    # RISC-V ``fence.i`` must not be lowered to ``mfence``, an empty volatile
+    # asm statement, or a generic compiler barrier.  Until a target-specific,
+    # versioned instruction-stream contract (including code-write scope and
+    # CPU/compiler capability) is registered and proved, preserve this as a
+    # structured route request rather than reporting it as an opaque failure.
+    #
+    # The condition consumes only the Phase-6A model, so every instruction
+    # family which the lifter classifies as an instruction barrier takes the
+    # same fail-closed path without looking at source asm text or mnemonics.
+    if source_model.memory.has_instruction_barrier:
+        return _needs_route(
+            context,
+            route="instruction_stream_synchronization_adapter",
+            reason=(
+                "source requires instruction-stream synchronization; no "
+                "registered x86 target contract may be inferred from a "
+                "memory fence or compiler barrier"
+            ),
+            reason_code="TR_INSTRUCTION_STREAM_SYNC_RUNTIME_CONTRACT_REQUIRED",
+            metadata={
+                "requiredRuntimeContractFamily": (
+                    "instruction-stream-synchronization"
+                ),
+                "sourceBarrierKind": "instruction_stream",
+                "functionalFallbackPermitted": False,
+            },
+        )
+
     return _translate_phase6_proof_pipeline(
         context=context,
         target_environment=target_environment,
