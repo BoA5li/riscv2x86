@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 43661)
-Total output lines: 4992
-
 # translator/phase6/source_model.py
 from __future__ import annotations
 
@@ -1905,7 +1902,1694 @@ _SEMANTIC_FEATURE_NAME_ALIASES: dict[str, str] = {
     "CC_CLOBBER": "CONDITION_CODE_CLOBBER",
 
     # These names are now canonical enum members, but retaining entries here
-    # makes the migration intent explicit and is harmless. They al…13661 tokens truncated…valid_width"
+    # makes the migration intent explicit and is harmless. They also make
+    # future vocabulary refactors localized to this table.
+    "EARLY_CLOBBER": "EARLY_CLOBBER",
+    "TIED_OPERANDS": "TIED_OPERANDS",
+    "OPERAND_BINDING_METADATA": "OPERAND_BINDING_METADATA",
+}
+
+
+def _semantic_feature(
+    *candidate_names: str,
+) -> SemanticFeature:
+    """
+    Resolve a SemanticFeature across canonical and historical vocabularies.
+
+    The canonical vocabulary belongs to semantic_types.SemanticFeature.
+    source_model.py may temporarily accept names emitted by older summary
+    builders or adjacent Phase-6A migration revisions.
+
+    Examples:
+
+        _semantic_feature("ATOMIC")
+            -> SemanticFeature.ATOMIC_OPERATION
+
+        _semantic_feature("CC_CLOBBER")
+            -> SemanticFeature.CONDITION_CODE_CLOBBER
+
+        _semantic_feature("INLINE_ASM_OPERANDS")
+            -> SemanticFeature.ASM_OPERANDS
+
+    Candidate order remains meaningful: the first candidate that resolves to
+    a valid canonical SemanticFeature is returned.
+
+    At least one requested feature name must resolve successfully.
+    """
+    attempted_names: list[str] = []
+
+    for requested_name in candidate_names:
+        canonical_name = _SEMANTIC_FEATURE_NAME_ALIASES.get(
+            requested_name,
+            requested_name,
+        )
+
+        attempted_names.append(requested_name)
+        if canonical_name != requested_name:
+            attempted_names.append(canonical_name)
+
+        feature = getattr(SemanticFeature, canonical_name, None)
+        if feature is not None:
+            return feature
+
+    raise AttributeError(
+        "SemanticFeature is missing all compatible names: "
+        + ", ".join(candidate_names)
+        + "; attempted canonical names: "
+        + ", ".join(attempted_names)
+    )
+
+def _block_bool(block: object, *field_names: str) -> bool:
+    """
+    Read a structured Block/CFG boolean field compatibly.
+    """
+    for field_name in field_names:
+        value = getattr(block, field_name, None)
+
+        if isinstance(value, bool):
+            return value
+
+    return False
+
+
+def _block_has_call_or_return(block: object) -> bool:
+    return _block_bool(
+        block,
+        "is_call_or_return",
+        "has_call_or_return",
+        "isCallOrReturn",
+    )
+
+
+def _block_has_return_terminator(block: object) -> bool:
+    terminator = _cfg_terminator_kind(block)
+
+    return terminator in {
+        "return",
+        "ret",
+        "iret",
+        "sysret",
+    }
+
+
+def _block_has_indirect_control_flow(block: object) -> bool:
+    terminator = _cfg_terminator_kind(block)
+
+    return (
+        _block_bool(
+            block,
+            "is_indirect",
+            "has_indirect_control_flow",
+            "isIndirect",
+        )
+        or terminator
+        in {
+            "callind",
+            "branchind",
+            "indirect_call",
+            "indirect_branch",
+            "indirect_jump",
+            "ijmp",
+            "icall",
+        }
+    )
+
+
+def _block_has_unknown_target(block: object) -> bool:
+    return _block_bool(
+        block,
+        "has_unknown_target",
+        "hasUnknownTarget",
+        "unknown_target",
+    )
+
+def _summary_bool(
+    summary: IRSummary,
+    field_name: str,
+) -> bool:
+    """
+    Read a non-three-state boolean summary field conservatively.
+    """
+    value = getattr(summary, field_name, False)
+    return value if isinstance(value, bool) else False
+
+def _optional_summary_flag(
+    summary: IRSummary,
+    name: str,
+) -> bool | None:
+    """
+    Read an Optional[bool] semantic flag from IRSummary.
+
+    Three-state contract:
+
+      * True:
+          The structured IRSummary explicitly proves that the semantic is
+          present.
+
+      * False:
+          The structured IRSummary explicitly proves that the semantic is
+          absent.
+
+      * None:
+          The current IRSummary schema, producer, or field value cannot safely
+          prove absence.  Callers must not treat None as False.
+
+    This helper does not inspect raw p-code, assembly mnemonics, LiftResult,
+    LiftedInsn, or textual operands.
+    """
+    value = getattr(summary, name, None)
+
+    if isinstance(value, bool):
+        return value
+
+    return None
+
+def _merge_optional_summary_with_positive_evidence(
+    summary_flag: bool | None,
+    has_structured_positive_evidence: bool,
+) -> bool | None:
+    """
+    Merge an Optional[bool] summary flag with structured positive evidence.
+
+    Rules:
+
+      * Any structured positive evidence proves True.
+      * A summary False proves False only when there is no contradictory
+        structured positive evidence.
+      * A missing/unusable summary remains None when no positive evidence is
+        available.
+
+    In particular, this function never converts None into False.
+    """
+    if has_structured_positive_evidence:
+        return True
+
+    if summary_flag is False:
+        return False
+
+    return None
+
+def _cfg_ok(cfg: CFGResult) -> bool:
+    for name in ("ok", "is_ok", "valid", "is_valid"):
+        value = getattr(cfg, name, None)
+        if isinstance(value, bool):
+            return value
+
+    # If CFGResult exposes an error string but no boolean, empty error is the
+    # conservative compatibility interpretation of "ok".
+    error = _cfg_error(cfg)
+    return not bool(error)
+
+def _cfg_entry(cfg: CFGResult) -> Optional[int]:
+    for name in ("entry", "entry_block", "entry_block_index"):
+        value = getattr(cfg, name, None)
+
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+
+    return None
+
+def _cfg_node_count(
+    cfg: CFGResult,
+    *,
+    fallback: int,
+) -> int:
+    for name in ("node_count", "num_nodes"):
+        value = getattr(cfg, name, None)
+
+        if isinstance(value, int) and not isinstance(value, bool):
+            return max(value, 0)
+
+    for name in ("nodes", "blocks"):
+        value = getattr(cfg, name, None)
+
+        try:
+            return len(value)
+        except TypeError:
+            pass
+
+    return fallback
+
+def _cfg_error(cfg: CFGResult) -> str:
+    for name in ("error", "error_message", "message"):
+        value = getattr(cfg, name, "")
+
+        if isinstance(value, str):
+            return value.strip()
+
+    return ""
+
+def _normalized_text_set(
+    values: Iterable[object],
+) -> set[str]:
+    result: set[str] = set()
+
+    for value in values or ():
+        if not isinstance(value, str):
+            continue
+
+        normalized = value.strip().lower()
+
+        if normalized:
+            result.add(normalized)
+
+    return result
+
+def _normalized_register_set(
+    values: Iterable[object],
+) -> set[str]:
+    result: set[str] = set()
+
+    for value in values or ():
+        if not isinstance(value, str):
+            continue
+
+        normalized = value.strip().lower()
+
+        if normalized:
+            result.add(normalized)
+
+    return result
+
+def _append_unique(
+    values: list[str],
+    value: str,
+) -> None:
+    if value not in values:
+        values.append(value)
+    
+
+class SourceOperandKind(str, Enum):
+    """
+    Source-level operand category.
+
+    Important:
+        This is not a GNU asm constraint class.
+
+    Forbidden values include:
+        "r", "m", "=r", "+r", "&r", "0", etc.
+    """
+
+    REGISTER = "register"
+    MEMORY = "memory"
+    IMMEDIATE = "immediate"
+    ADDRESS = "address"
+    EXPRESSION = "expression"
+    LABEL = "label"
+    FIXED_REGISTER = "fixed_register"
+    UNKNOWN = "unknown"
+
+
+class SourceOperandAccess(str, Enum):
+    """
+    Source-side operand access semantics.
+
+    INPUT:
+        Value is consumed by the source operation.
+
+    OUTPUT:
+        Value is produced by the source operation.
+
+    READ_WRITE:
+        Previous value is consumed and a new value is produced.
+
+    ADDRESS:
+        Operand denotes an address rather than a loaded/stored value.
+
+    CONTROL_TARGET:
+        Operand denotes a control-flow target.
+    """
+
+    INPUT = "input"
+    OUTPUT = "output"
+    READ_WRITE = "read_write"
+    ADDRESS = "address"
+    CONTROL_TARGET = "control_target"
+    UNKNOWN = "unknown"
+
+
+class SourceSignedness(str, Enum):
+    """
+    Source width/sign interpretation.
+
+    SIGNLESS is useful for raw register bit patterns and operations where
+    signedness is semantically irrelevant.
+    """
+
+    SIGNED = "signed"
+    UNSIGNED = "unsigned"
+    SIGNLESS = "signless"
+    UNKNOWN = "unknown"
+
+
+class SourceOperationKind(str, Enum):
+    """
+    Structured source operation classification.
+
+    This enum must never be inferred in Phase 6C from:
+      * raw asm;
+      * instruction mnemonic;
+      * p-code text;
+      * low-level IR instruction sequence.
+    """
+
+    REGISTER_ONLY = "register_only"
+
+    LOAD = "load"
+    STORE = "store"
+    MEMORY_READ_MODIFY_WRITE = "memory_read_modify_write"
+
+    ATOMIC_LOAD = "atomic_load"
+    ATOMIC_STORE = "atomic_store"
+    ATOMIC_READ_MODIFY_WRITE = "atomic_read_modify_write"
+    ATOMIC_COMPARE_EXCHANGE = "atomic_compare_exchange"
+
+    COMPILER_BARRIER = "compiler_barrier"
+    HARDWARE_BARRIER = "hardware_barrier"
+
+    CONTROL_FLOW = "control_flow"
+    CALL = "call"
+    RETURN = "return"
+
+    STACK_FRAME = "stack_frame"
+    HELPER_REQUIRED = "helper_required"
+
+    OPAQUE = "opaque"
+    UNKNOWN = "unknown"
+
+
+class SourceValueOperationKind(str, Enum):
+    """Operations explicitly admitted to the Phase 6C-2 C subset."""
+    COPY = "copy"
+    BIT_NOT = "bit_not"
+    BIT_AND = "bit_and"
+    BIT_OR = "bit_or"
+    BIT_XOR = "bit_xor"
+    UNSIGNED_ADD = "unsigned_add"
+    UNSIGNED_SUB = "unsigned_sub"
+    UNSIGNED_MUL = "unsigned_mul"
+    ZERO_EXTEND = "zero_extend"
+    TRUNCATE = "truncate"
+    # This is deliberately a named, finite straight-line contract rather
+    # than a generic instruction-list escape hatch.  It is used only when
+    # Phase 6A can account for both externally visible outputs.
+    ADD_THEN_SHIFT_LEFT_IMMEDIATE = "add_then_shift_left_immediate"
+    SHIFT_LEFT_REGISTER = "shift_left_register"
+    SHIFT_RIGHT_LOGICAL_REGISTER = "shift_right_logical_register"
+    SHIFT_RIGHT_ARITHMETIC_REGISTER = "shift_right_arithmetic_register"
+    SIGNED_LESS = "signed_less"
+    UNSIGNED_LESS = "unsigned_less"
+    SIGNED_LESS_EQUAL = "signed_less_equal"
+    UNSIGNED_LESS_EQUAL = "unsigned_less_equal"
+    EQUAL = "equal"
+    NOT_EQUAL = "not_equal"
+
+
+class SourceStraightLineValueOpcode(str, Enum):
+    """Finite source-independent operation set for the generic GPR route."""
+    COPY = "copy"
+    UNSIGNED_ADD = "unsigned_add"
+    UNSIGNED_SUB = "unsigned_sub"
+    BIT_AND = "bit_and"
+    BIT_OR = "bit_or"
+    BIT_XOR = "bit_xor"
+    SHIFT_LEFT_IMMEDIATE = "shift_left_immediate"
+    SHIFT_RIGHT_LOGICAL_IMMEDIATE = "shift_right_logical_immediate"
+    SHIFT_RIGHT_ARITHMETIC_IMMEDIATE = "shift_right_arithmetic_immediate"
+    SHIFT_LEFT_REGISTER = "shift_left_register"
+    SHIFT_RIGHT_LOGICAL_REGISTER = "shift_right_logical_register"
+    SHIFT_RIGHT_ARITHMETIC_REGISTER = "shift_right_arithmetic_register"
+
+
+class SourceAtomicKind(str, Enum):
+    LOAD = "load"
+    STORE = "store"
+    READ_MODIFY_WRITE = "read_modify_write"
+    COMPARE_EXCHANGE = "compare_exchange"
+
+
+class SourceAtomicRmwOperation(str, Enum):
+    """Structured RMW operation identity; never an instruction mnemonic."""
+    FETCH_ADD = "fetch_add"
+    FETCH_OR = "fetch_or"
+    FETCH_AND = "fetch_and"
+    EXCHANGE = "exchange"
+
+
+class SourceMemoryOrdering(str, Enum):
+    RELAXED = "relaxed"
+    CONSUME = "consume"
+    ACQUIRE = "acquire"
+    RELEASE = "release"
+    ACQ_REL = "acq_rel"
+    SEQ_CST = "seq_cst"
+
+
+class SourceBarrierScope(str, Enum):
+    """
+    Barrier scope is intentionally independent from ordering.
+
+    COMPILER:
+        Compiler ordering only.
+
+    THREAD:
+        Cross-thread synchronization scope.
+
+    SYSTEM:
+        Full system-visible ordering scope.
+    """
+
+    COMPILER = "compiler"
+    THREAD = "thread"
+    SYSTEM = "system"
+
+
+class SourceHelperMemoryEffect(str, Enum):
+    NONE = "none"
+    READS = "reads"
+    WRITES = "writes"
+    READS_WRITES = "reads_writes"
+    UNKNOWN = "unknown"
+
+@dataclass(frozen=True)
+class SourceExpressionBinding:
+    """
+    Stable source-expression identity.
+
+    expression_id must identify a source-level expression or expression node.
+    It must not contain rendered C source text.
+    """
+
+    expression_id: str
+    c_type_id: Optional[str]
+    is_side_effect_free: bool
+    is_repeatable: bool
+
+
+@dataclass(frozen=True)
+class SourceLvalueBinding:
+    """
+    Stable source lvalue identity for an output/read-write operand.
+    """
+
+    lvalue_id: str
+    c_type_id: Optional[str]
+    is_modifiable: bool
+
+
+@dataclass(frozen=True)
+class SourceAddressBinding:
+    """
+    Stable source address identity for memory/address operands.
+    """
+
+    address_id: str
+    pointee_type_id: Optional[str]
+    alignment_bytes: Optional[int]
+    provenance_known: bool
+
+
+@dataclass(frozen=True)
+class SourceOperandBinding:
+    """
+    One authoritative source operand semantic fact.
+
+    source_operand_index must come from authoritative runtime facts, typically
+    TranslationRuntimeFacts.rv_to_operand_index or an equivalent validated map.
+
+    It must never be inferred from:
+
+      * SourceShellModel.outputs / inputs order;
+      * fragment operandBindings;
+      * materializedOperandBindings;
+      * outputBindings;
+      * register encounter order;
+      * raw asm textual order;
+      * p-code register order.
+    """
+
+    source_operand_index: int
+
+    kind: SourceOperandKind
+    access: SourceOperandAccess
+
+    width_bits: Optional[int]
+    signedness: SourceSignedness
+
+    reads: bool
+    writes: bool
+    read_before_write: bool
+
+    tied_to_source_operand_index: Optional[int]
+    early_clobber: bool
+
+    fixed_register_name: Optional[str]
+
+    expression: Optional[SourceExpressionBinding]
+    lvalue: Optional[SourceLvalueBinding]
+    address: Optional[SourceAddressBinding]
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.source_operand_index, bool)
+            or not isinstance(self.source_operand_index, int)
+            or self.source_operand_index < 0
+        ):
+            raise TypeError(
+                "source_operand_index must be a non-negative int"
+            )
+
+        if not isinstance(self.kind, SourceOperandKind):
+            raise TypeError("kind must be SourceOperandKind")
+
+        if not isinstance(self.access, SourceOperandAccess):
+            raise TypeError("access must be SourceOperandAccess")
+
+        if self.width_bits is not None:
+            if (
+                isinstance(self.width_bits, bool)
+                or not isinstance(self.width_bits, int)
+                or self.width_bits <= 0
+            ):
+                raise TypeError(
+                    "width_bits must be None or a positive int"
+                )
+
+        if not isinstance(self.signedness, SourceSignedness):
+            raise TypeError(
+                "signedness must be SourceSignedness"
+            )
+
+        for field_name in (
+            "reads",
+            "writes",
+            "read_before_write",
+            "early_clobber",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be bool")
+
+        if self.tied_to_source_operand_index is not None:
+            if (
+                isinstance(self.tied_to_source_operand_index, bool)
+                or not isinstance(
+                    self.tied_to_source_operand_index,
+                    int,
+                )
+                or self.tied_to_source_operand_index < 0
+            ):
+                raise TypeError(
+                    "tied_to_source_operand_index must be None or "
+                    "a non-negative int"
+                )
+
+        if (
+            self.tied_to_source_operand_index
+            == self.source_operand_index
+        ):
+            raise ValueError(
+                "operand must not be tied to itself"
+            )
+
+        if self.fixed_register_name is not None:
+            if not isinstance(self.fixed_register_name, str):
+                raise TypeError(
+                    "fixed_register_name must be None or str"
+                )
+
+
+@dataclass(frozen=True)
+class SourceOperandModel:
+    """
+    Complete source operand semantic contract for downstream Phase 6B-F.
+
+    complete=False means Phase 6C must fail closed for every candidate that
+    requires operand constraints, output binding, register binding, width,
+    tied-operand, or early-clobber semantics.
+    """
+
+    operands: Tuple[SourceOperandBinding, ...]
+    complete: bool
+    missing_fact_codes: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.complete, bool):
+            raise TypeError("complete must be bool")
+
+        indexes = tuple(
+            operand.source_operand_index
+            for operand in self.operands
+        )
+
+        if len(indexes) != len(set(indexes)):
+            raise ValueError(
+                "source operand indexes must be unique"
+            )
+
+        if not self.complete and not self.missing_fact_codes:
+            raise ValueError(
+                "incomplete SourceOperandModel must provide "
+                "missing_fact_codes"
+            )
+
+@dataclass(frozen=True)
+class SourceOperationModel:
+    """
+    Source operation classification independent of raw asm and raw IR.
+    """
+
+    kind: SourceOperationKind
+
+    reads_memory: bool
+    writes_memory: bool
+
+    has_control_flow: bool
+    has_call: bool
+    has_return: Optional[bool]
+    may_trap: Optional[bool]
+
+    requires_helper_abi_contract: bool
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SourceOperationKind):
+            raise TypeError("kind must be SourceOperationKind")
+
+        for field_name in (
+            "reads_memory",
+            "writes_memory",
+            "has_control_flow",
+            "has_call",
+            "requires_helper_abi_contract",
+            "complete",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be bool")
+
+        for field_name in (
+            "has_return",
+            "may_trap",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, bool):
+                raise TypeError(
+                    f"{field_name} must be bool or None"
+                )
+
+
+@dataclass(frozen=True)
+class SourceValueOperationModel:
+    """Exact source-proven pure value operation consumed by Phase 6C-2."""
+    kind: SourceValueOperationKind
+    input_operand_indexes: Tuple[int, ...]
+    result_operand_index: int
+    complete: bool
+    # A canonical p-code constant, normalized to the source operation width.
+    # It is not a GNU asm operand and therefore has no source operand index.
+    # ``None`` denotes the all-register form.
+    immediate_value: int | None = None
+    # For the finite two-result sequence above, this is the first visible
+    # result (the temporary produced by ADD).  Keeping it in the authoritative
+    # Phase-6A model prevents later stages from inferring it from asm text.
+    temporary_operand_index: int | None = None
+    # RISC-V SLEIGH commonly materializes the architectural register-shift
+    # count mask (XLEN - 1) as ``INT_AND count, constant`` into a UNIQUE
+    # temporary before INT_LEFT/RIGHT/SRIGHT.  Retain that normalization as a
+    # structured source fact; it is never reconstructed from asm text.
+    shift_count_mask: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SourceValueOperationKind):
+            raise TypeError("kind must be SourceValueOperationKind")
+        if not isinstance(self.complete, bool):
+            raise TypeError("complete must be bool")
+        if isinstance(self.result_operand_index, bool) or not isinstance(self.result_operand_index, int) or self.result_operand_index < 0:
+            raise TypeError("result_operand_index must be a non-negative int")
+        if not self.input_operand_indexes or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in self.input_operand_indexes):
+            raise TypeError("input_operand_indexes must contain non-negative ints")
+        if self.immediate_value is not None and (
+            isinstance(self.immediate_value, bool)
+            or not isinstance(self.immediate_value, int)
+        ):
+            raise TypeError("immediate_value must be an int or None")
+        if self.temporary_operand_index is not None and (
+            isinstance(self.temporary_operand_index, bool)
+            or not isinstance(self.temporary_operand_index, int)
+            or self.temporary_operand_index < 0
+        ):
+            raise TypeError("temporary_operand_index must be a non-negative int or None")
+        if self.shift_count_mask is not None and (
+            isinstance(self.shift_count_mask, bool)
+            or not isinstance(self.shift_count_mask, int)
+            or self.shift_count_mask < 0
+        ):
+            raise TypeError("shift_count_mask must be a non-negative int or None")
+
+
+@dataclass(frozen=True)
+class SourceStraightLineValueInstruction:
+    """One canonical dataflow instruction, referenced only by operand IDs."""
+    opcode: SourceStraightLineValueOpcode
+    output_operand_index: int
+    input_operand_indexes: Tuple[int, ...]
+    immediate_value: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.opcode, SourceStraightLineValueOpcode):
+            raise TypeError("opcode must be SourceStraightLineValueOpcode")
+        if isinstance(self.output_operand_index, bool) or not isinstance(self.output_operand_index, int) or self.output_operand_index < 0:
+            raise TypeError("output_operand_index must be a non-negative int")
+        if any(isinstance(item, bool) or not isinstance(item, int) or item < 0
+               for item in self.input_operand_indexes):
+            raise TypeError("input_operand_indexes must contain non-negative ints")
+        immediate_ops = {
+            SourceStraightLineValueOpcode.SHIFT_LEFT_IMMEDIATE,
+            SourceStraightLineValueOpcode.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
+            SourceStraightLineValueOpcode.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
+        }
+        if (self.opcode in immediate_ops) != (self.immediate_value is not None):
+            raise ValueError("shift-immediate instructions require exactly one immediate value")
+
+
+@dataclass(frozen=True)
+class SourceStraightLineValueProgram:
+    """Authoritative Phase-6A pure register dataflow program.
+
+    All values are source operand bindings; unbound lifter temporaries are
+    rejected rather than being guessed as renderer scratch registers.
+    """
+    width_bits: int
+    instructions: Tuple[SourceStraightLineValueInstruction, ...]
+    output_operand_indexes: Tuple[int, ...]
+    input_operand_indexes: Tuple[int, ...]
+    # x86 variable shifts use CL.  A program with more than one distinct
+    # dynamic count would require a separate register-scheduling contract and
+    # is intentionally rejected by the Phase-6A adapter for now.
+    variable_shift_count_operand_index: int | None = None
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        if self.width_bits not in {32, 64}:
+            raise ValueError("straight-line GPR program width must be 32 or 64")
+        if len(self.instructions) < 2 or not self.complete:
+            raise ValueError("straight-line GPR program must contain at least two complete instructions")
+        if len(set(self.output_operand_indexes)) != len(self.output_operand_indexes):
+            raise ValueError("straight-line program outputs must be unique")
+
+
+@dataclass(frozen=True)
+class SourceAtomicOperationModel:
+    """
+    Structured atomic semantic facts.
+
+    atomic instruction mnemonics must not appear here.
+    """
+
+    present: bool
+
+    kind: Optional[SourceAtomicKind]
+    rmw_operation: Optional[SourceAtomicRmwOperation]
+
+    width_bits: Optional[int]
+    alignment_bytes: Optional[int]
+
+    address_operand_index: Optional[int]
+    value_operand_index: Optional[int]
+    expected_operand_index: Optional[int]
+    desired_operand_index: Optional[int]
+    result_operand_index: Optional[int]
+
+    success_ordering: Optional[SourceMemoryOrdering]
+    failure_ordering: Optional[SourceMemoryOrdering]
+
+    lock_free_required: Optional[bool]
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.present, bool):
+            raise TypeError("present must be bool")
+
+        if self.kind is not None and not isinstance(
+            self.kind,
+            SourceAtomicKind,
+        ):
+            raise TypeError(
+                "kind must be None or SourceAtomicKind"
+            )
+
+        if self.rmw_operation is not None and not isinstance(
+            self.rmw_operation,
+            SourceAtomicRmwOperation,
+        ):
+            raise TypeError(
+                "rmw_operation must be None or SourceAtomicRmwOperation"
+            )
+        if self.kind is SourceAtomicKind.READ_MODIFY_WRITE and self.complete:
+            if self.rmw_operation is None:
+                raise ValueError("read-modify-write atomic requires rmw_operation")
+        elif self.rmw_operation is not None and self.complete:
+            raise ValueError("rmw_operation is valid only for read-modify-write atomic")
+
+        for field_name in (
+            "width_bits",
+            "alignment_bytes",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value <= 0
+                ):
+                    raise TypeError(
+                        f"{field_name} must be None or positive int"
+                    )
+
+        for field_name in (
+            "address_operand_index",
+            "value_operand_index",
+            "expected_operand_index",
+            "desired_operand_index",
+            "result_operand_index",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                ):
+                    raise TypeError(
+                        f"{field_name} must be None or non-negative int"
+                    )
+
+        for field_name in (
+            "success_ordering",
+            "failure_ordering",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(
+                value,
+                SourceMemoryOrdering,
+            ):
+                raise TypeError(
+                    f"{field_name} must be None or "
+                    "SourceMemoryOrdering"
+                )
+
+        if self.lock_free_required is not None:
+            if not isinstance(self.lock_free_required, bool):
+                raise TypeError(
+                    "lock_free_required must be bool or None"
+                )
+
+        if not isinstance(self.complete, bool):
+            raise TypeError("complete must be bool")
+
+        if not self.present:
+            unexpected = (
+                self.kind,
+                self.rmw_operation,
+                self.width_bits,
+                self.alignment_bytes,
+                self.address_operand_index,
+                self.value_operand_index,
+                self.expected_operand_index,
+                self.desired_operand_index,
+                self.result_operand_index,
+                self.success_ordering,
+                self.failure_ordering,
+                self.lock_free_required,
+            )
+            if any(value is not None for value in unexpected):
+                raise ValueError(
+                    "non-atomic SourceAtomicOperationModel must not "
+                    "contain atomic fields"
+                )
+
+
+@dataclass(frozen=True)
+class SourceBarrierModel:
+    """
+    Structured barrier semantics.
+
+    compiler_barrier and hardware_memory_barrier are intentionally separate.
+
+    A GNU \"memory\" clobber is a compiler barrier, not automatically a
+    hardware memory fence.
+    """
+
+    present: bool
+
+    compiler_barrier: bool
+    hardware_memory_barrier: bool
+    instruction_serializing: bool
+    speculation_control: bool
+
+    ordering: Optional[SourceMemoryOrdering]
+    scope: Optional[SourceBarrierScope]
+
+    complete: bool
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "present",
+            "compiler_barrier",
+            "hardware_memory_barrier",
+            "instruction_serializing",
+            "speculation_control",
+            "complete",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be bool")
+
+        if self.ordering is not None and not isinstance(
+            self.ordering,
+            SourceMemoryOrdering,
+        ):
+            raise TypeError(
+                "ordering must be None or SourceMemoryOrdering"
+            )
+
+        if self.scope is not None and not isinstance(
+            self.scope,
+            SourceBarrierScope,
+        ):
+            raise TypeError(
+                "scope must be None or SourceBarrierScope"
+            )
+
+        if not self.present:
+            if any(
+                (
+                    self.compiler_barrier,
+                    self.hardware_memory_barrier,
+                    self.instruction_serializing,
+                    self.speculation_control,
+                    self.ordering is not None,
+                    self.scope is not None,
+                )
+
+            ):
+                raise ValueError(
+                    "non-barrier SourceBarrierModel must not contain "
+                    "barrier semantics"
+                )
+
+
+@dataclass(frozen=True)
+class SourceHelperAbiModel:
+    """Versioned source-proven helper contract consumed by Phase 6C-8."""
+    present: bool; helper_symbol: Optional[str]; semantic_family: Optional[str]; semantic_version: Optional[str]
+    calling_convention: Optional[str]; parameter_operand_indexes: Tuple[int, ...]
+    return_operand_index: Optional[int]; memory_effect: SourceHelperMemoryEffect
+    may_return: Optional[bool]; may_unwind: Optional[bool]
+    required_stack_alignment_bytes: Optional[int]
+    preserves_stack_pointer: Optional[bool]; preserves_frame_pointer: Optional[bool]
+    caller_saved_registers: Tuple[str, ...]; callee_saved_registers: Tuple[str, ...]
+    pic_plt_compatible: Optional[bool]; runtime_available: Optional[bool]; complete: bool
+
+
+def _build_helper_abi_model(*, summary: IRSummary, operation: SourceOperationModel,
+                            registers: SourceRegisterModel) -> SourceHelperAbiModel:
+    """Adapt explicit Phase-6A helper metadata; never infer from a symbol."""
+    raw = getattr(summary, "helper_abi_semantics", None)
+    required = operation.requires_helper_abi_contract or registers.reads_or_writes_stack_pointer or registers.reads_or_writes_frame_pointer
+    if raw is None:
+        return SourceHelperAbiModel(required, None, None, None, None, (), None, SourceHelperMemoryEffect.UNKNOWN, None, None, None, None, None, (), (), None, None, not required)
+    memory_effect = getattr(raw, "memory_effect", SourceHelperMemoryEffect.UNKNOWN)
+    if not isinstance(memory_effect, SourceHelperMemoryEffect): memory_effect = SourceHelperMemoryEffect.UNKNOWN
+    return SourceHelperAbiModel(True, getattr(raw, "helper_symbol", None), getattr(raw, "semantic_family", None), getattr(raw, "semantic_version", None), getattr(raw, "calling_convention", None), tuple(getattr(raw, "parameter_operand_indexes", ())), getattr(raw, "return_operand_index", None), memory_effect, getattr(raw, "may_return", None), getattr(raw, "may_unwind", None), getattr(raw, "required_stack_alignment_bytes", None), getattr(raw, "preserves_stack_pointer", None), getattr(raw, "preserves_frame_pointer", None), tuple(getattr(raw, "caller_saved_registers", ())), tuple(getattr(raw, "callee_saved_registers", ())), getattr(raw, "pic_plt_compatible", None), getattr(raw, "runtime_available", None), bool(getattr(raw, "complete", False)))
+
+
+@dataclass(frozen=True)
+class SourceImplicitStateModel:
+    """
+    Structured implicit architectural-state facts.
+
+    This is the only Phase-6C source for:
+      * cc state;
+      * stack pointer effects;
+      * frame pointer effects;
+      * implicit/special register effects.
+
+    Phase 6C must not rediscover these semantics from mnemonics or raw asm.
+    """
+
+    reads_condition_codes: bool
+    writes_condition_codes: bool
+
+    reads_stack_pointer: bool
+    writes_stack_pointer: bool
+
+    reads_frame_pointer: bool
+    writes_frame_pointer: bool
+
+    reads_implicit_machine_state: bool
+    writes_implicit_machine_state: bool
+
+    reads_special_register_names: Tuple[str, ...] = ()
+    writes_special_register_names: Tuple[str, ...] = ()
+
+    complete: bool = False
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "reads_condition_codes",
+            "writes_condition_codes",
+            "reads_stack_pointer",
+            "writes_stack_pointer",
+            "reads_frame_pointer",
+            "writes_frame_pointer",
+            "reads_implicit_machine_state",
+            "writes_implicit_machine_state",
+            "complete",
+        ):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be bool")
+
+        for field_name in (
+            "reads_special_register_names",
+            "writes_special_register_names",
+        ):
+            values = getattr(self, field_name)
+            if not all(
+                isinstance(value, str) and value.strip()
+                for value in values
+            ):
+                raise TypeError(
+                    f"{field_name} must contain non-empty strings"
+                )
+            
+@dataclass(frozen=True)
+class SourceAnalysisArtifacts:
+    """
+    Phase 6A internal analysis artifacts.
+
+    This DTO is not a valid input to Phase 6B, Phase 6C, Phase 6D,
+    Phase 6E, or Phase 6F.
+
+    It exists only so Phase 6A can retain raw structured-analysis products
+    while producing the normalized SourceSemanticModel.
+    """
+
+    blocks: Tuple[Block, ...]
+    cfg: CFGResult
+    summary: IRSummary
+
+def _build_operand_model(
+    *,
+    shell: SourceShellModel,
+    blocks: Sequence[Block],
+    runtime_facts: Union[
+        TranslationRuntimeFacts,
+        RuntimeFactStatus,
+        None,
+    ],
+    runtime_status: RuntimeFactStatus,
+) -> SourceOperandModel:
+    """
+    Build authoritative source operand semantic facts.
+
+    Important:
+        This function must use validated runtime facts for source operand
+        indexes and widths.
+
+    It must not derive rv_to_operand_index from shell operand order.
+    """
+    if runtime_facts is None:
+        return SourceOperandModel(
+            operands=(),
+            complete=not shell.has_operands,
+            missing_fact_codes=(
+                ()
+                if not shell.has_operands
+                else ("runtime_facts_unavailable",)
+            ),
+        )
+
+    if not _runtime_status_is_structurally_valid(runtime_status):
+        return SourceOperandModel(
+            operands=(),
+            complete=not shell.has_operands,
+            missing_fact_codes=(
+                ()
+                if not shell.has_operands
+                else ("runtime_facts_structurally_invalid",)
+            ),
+        )
+
+    # These three adapters are the only project-specific points that need
+    # to be wired to TranslationRuntimeFacts.
+    authoritative_bindings = _runtime_operand_bindings(runtime_facts)
+    authoritative_widths = _runtime_operand_widths(runtime_facts)
+    authoritative_semantics = _runtime_operand_semantics(
+        runtime_facts,
+        shell=shell,
+        authoritative_bindings=authoritative_bindings,
+        memory_address_operand_indexes=_memory_address_operand_indexes(
+            blocks=blocks,
+            runtime_facts=runtime_facts,
+        ),
+    )
+
+    if not shell.has_operands:
+        return SourceOperandModel(
+            operands=(),
+            complete=True,
+        )
+
+    missing_codes: list[str] = []
+    result: list[SourceOperandBinding] = []
+
+    if not authoritative_bindings:
+        return SourceOperandModel(
+            operands=(),
+            complete=False,
+            missing_fact_codes=(
+                "missing_authoritative_operand_index_binding",
+            ),
+        )
+
+    for source_operand_index, binding in sorted(
+        authoritative_bindings.items(),
+        key=lambda item: item[0],
+    ):
+        semantic = authoritative_semantics.get(source_operand_index)
+        width_bits = authoritative_widths.get(source_operand_index)
+
+        if semantic is None:
+            missing_codes.append(
+                f"missing_operand_semantics:{source_operand_index}"
+            )
+            continue
+
+        if width_bits is None:
+            missing_codes.append(
+                f"missing_operand_width:{source_operand_index}"
+            )
+            continue
+
+        result.append(
+            SourceOperandBinding(
+                source_operand_index=source_operand_index,
+
+                kind=semantic.kind,
+                access=semantic.access,
+
+                width_bits=width_bits,
+                signedness=semantic.signedness,
+
+                reads=semantic.reads,
+                writes=semantic.writes,
+                read_before_write=semantic.read_before_write,
+
+                tied_to_source_operand_index=(
+                    semantic.tied_to_source_operand_index
+                ),
+                early_clobber=semantic.early_clobber,
+
+                fixed_register_name=semantic.fixed_register_name,
+
+                expression=semantic.expression,
+                lvalue=semantic.lvalue,
+                address=semantic.address,
+            )
+        )
+
+    if missing_codes:
+        return SourceOperandModel(
+            operands=tuple(result),
+            complete=False,
+            missing_fact_codes=tuple(sorted(set(missing_codes))),
+        )
+
+    return SourceOperandModel(
+        operands=tuple(result),
+        complete=True,
+    )
+
+def _runtime_status_is_structurally_valid(
+    runtime_status: RuntimeFactStatus,
+) -> bool:
+    """
+    Check runtime-fact snapshot structure only.
+
+    This does not check fragment-specific completeness.
+    """
+    return (
+        isinstance(runtime_status, RuntimeFactStatus)
+        and runtime_status.structurally_valid
+    )
+
+@dataclass(frozen=True)
+class RuntimeOperandSemanticFact:
+    """
+    Phase 6A normalized operand semantic fact extracted from authoritative
+    runtime/source binding metadata.
+
+    This DTO should be constructed inside Phase 6A only.
+    """
+
+    kind: SourceOperandKind
+    access: SourceOperandAccess
+    signedness: SourceSignedness
+
+    reads: bool
+    writes: bool
+    read_before_write: bool
+
+    tied_to_source_operand_index: Optional[int]
+    early_clobber: bool
+
+    fixed_register_name: Optional[str]
+
+    expression: Optional[SourceExpressionBinding]
+    lvalue: Optional[SourceLvalueBinding]
+    address: Optional[SourceAddressBinding]
+
+_INVALID_RUNTIME_BINDING: Final[object] = object()
+def _is_valid_source_operand_index(value: object) -> bool:
+    """
+    Return whether value is a valid GNU inline-asm source operand index.
+
+    bool must be rejected explicitly because bool is a subclass of int.
+    """
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    )
+
+
+def _is_valid_width_bits(value: object) -> bool:
+    """
+    Return whether value is a structurally valid proven width.
+
+    This validates only the runtime-fact container shape. It does not infer
+    target suitability, C type suitability, or x86 register class.
+    """
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value > 0
+    )
+
+
+def _is_valid_riscv_register_identity(value: object) -> bool:
+    """
+    Validate that the runtime fact contains an explicit register identity.
+
+    This function intentionally does not normalize aliases:
+
+        a0 != x10
+
+    unless assembler normalization explicitly supplied both names in
+    rv_to_operand_index.
+
+    No RISC-V ABI alias reconstruction is allowed here.
+    """
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+    )
+
+def _runtime_operand_bindings(
+    runtime_facts: TranslationRuntimeFacts,
+) -> dict[int, object]:
+    """
+    Return authoritative:
+
+        source_operand_index -> runtime register binding evidence
+
+    Authoritative source:
+        TranslationRuntimeFacts.rv_to_operand_index
+
+    Forbidden fallback:
+        * SourceShellModel.outputs + SourceShellModel.inputs ordering;
+        * AsmFragment.outputs / AsmFragment.inputs ordering;
+        * p-code register encounter order;
+        * RISC-V ABI alias expansion;
+        * serialized fragment JSON bindings;
+        * source constraint text.
+
+    Notes:
+        The runtime schema is register -> operand-index, so this function
+        performs a checked inversion.
+
+        If more than one distinct register maps to the same source operand
+        index, that index is omitted from the result. The caller must treat
+        this as unavailable/ambiguous authoritative binding and fail closed.
+    """
+    if not isinstance(runtime_facts, TranslationRuntimeFacts):
+        return {}
+
+    rv_to_operand_index = runtime_facts.rv_to_operand_index
+
+    if not isinstance(rv_to_operand_index, Mapping):
+        return {}
+
+    result: dict[int, object] = {}
+    ambiguous_indices: set[int] = set()
+
+    for register_name, source_operand_index in rv_to_operand_index.items():
+        if not _is_valid_riscv_register_identity(register_name):
+            continue
+
+        if not _is_valid_source_operand_index(source_operand_index):
+            continue
+
+        existing = result.get(
+            source_operand_index,
+            _INVALID_RUNTIME_BINDING,
+        )
+
+        if existing is _INVALID_RUNTIME_BINDING:
+            # Preserve the exact runtime-provided register spelling.
+            #
+            # Do not rewrite:
+            #   a0 -> x10
+            #   x10 -> a0
+            result[source_operand_index] = register_name
+            continue
+
+        if existing != register_name:
+            # A source operand index cannot safely be represented by one
+            # opaque register identity if runtime facts report multiple
+            # distinct identities for it.
+            #
+            # Do not pick first/last. Do not synthesize an alias relation.
+            ambiguous_indices.add(source_operand_index)
+
+    for source_operand_index in ambiguous_indices:
+        result.pop(source_operand_index, None)
+
+    return result
+
+def _runtime_operand_widths(
+    runtime_facts: TranslationRuntimeFacts,
+) -> dict[int, int]:
+    """
+    Return authoritative:
+
+        source_operand_index -> proven host expression width_bits
+
+    Authoritative source:
+        TranslationRuntimeFacts.operand_width_bits
+
+    Forbidden fallback:
+        * XLEN;
+        * target pointer width;
+        * target ABI;
+        * source shell operand ordering;
+        * fragment operand_width_bits;
+        * source GCC constraint text;
+        * expression text;
+        * C cast spelling;
+        * register name suffix;
+        * RISC-V register class.
+
+    The real runtime schema already keys widths by source operand index.
+    No register-based conversion is permitted here.
+    """
+    if not isinstance(runtime_facts, TranslationRuntimeFacts):
+        return {}
+
+    operand_width_bits = runtime_facts.operand_width_bits
+
+    if not isinstance(operand_width_bits, Mapping):
+        return {}
+
+    result: dict[int, int] = {}
+
+    for source_operand_index, width_bits in operand_width_bits.items():
+        if not _is_valid_source_operand_index(source_operand_index):
+            continue
+
+        if not _is_valid_width_bits(width_bits):
+            continue
+
+        result[source_operand_index] = width_bits
+
+    return result
+
+def _runtime_operand_semantics(
+    runtime_facts: TranslationRuntimeFacts,
+    *,
+    shell: SourceShellModel,
+    authoritative_bindings: dict[int, object],
+    memory_address_operand_indexes: set[int],
+) -> dict[int, RuntimeOperandSemanticFact]:
+    """
+    Return runtime operand semantic records.
+
+    The Phase-4 mapping supplies the authoritative *register -> GNU operand
+    index* association.  GNU's operand numbering then identifies the source
+    shell operand at that index; this adapter does not derive register
+    bindings from shell order or p-code encounter order.
+
+    Tied operands are deliberately left unavailable here because the current
+    frontend does not provide a structured tie target index.  This keeps such
+    fragments fail-closed while allowing ordinary ``=r`` outputs and ``r``
+    inputs to enter the registered register-only route.
+    """
+    if not isinstance(runtime_facts, TranslationRuntimeFacts):
+        return {}
+    all_operands = shell.all_operands
+    result: dict[int, RuntimeOperandSemanticFact] = {}
+    for index in authoritative_bindings:
+        if index < 0 or index >= len(all_operands):
+            continue
+        operand = all_operands[index]
+        if operand.is_tied:
+            continue
+        constraint = operand.constraint.strip()
+        # This classification only recognizes the small GPR/immediate family
+        # that Phase 6C can validate; unknown constraints remain unavailable.
+        is_immediate = "i" in constraint or "n" in constraint
+        is_fixed = "{" in constraint and "}" in constraint
+        kind = (
+            SourceOperandKind.FIXED_REGISTER if is_fixed else
+            SourceOperandKind.IMMEDIATE if is_immediate else
+            SourceOperandKind.REGISTER
+        )
+        if operand.is_output:
+            access = (
+                SourceOperandAccess.READ_WRITE
+                if "+" in constraint else SourceOperandAccess.OUTPUT
+            )
+        else:
+            access = SourceOperandAccess.INPUT
+        if index in memory_address_operand_indexes:
+            kind = SourceOperandKind.ADDRESS
+            access = SourceOperandAccess.ADDRESS
+        reads = access in {SourceOperandAccess.INPUT, SourceOperandAccess.READ_WRITE, SourceOperandAccess.ADDRESS}
+        writes = access in {SourceOperandAccess.OUTPUT, SourceOperandAccess.READ_WRITE}
+        expression = (
+            SourceExpressionBinding(
+                expression_id=f"asm-operand:{index}",
+                c_type_id=None,
+                is_side_effect_free=True,
+                is_repeatable=True,
+            ) if reads else None
+        )
+        lvalue = (
+            SourceLvalueBinding(
+                lvalue_id=f"asm-operand:{index}",
+                c_type_id=None,
+                is_modifiable=True,
+            ) if writes else None
+        )
+        result[index] = RuntimeOperandSemanticFact(
+            kind=kind,
+            access=access,
+            signedness=SourceSignedness.SIGNLESS,
+            reads=reads,
+            writes=writes,
+            read_before_write=access is SourceOperandAccess.READ_WRITE,
+            tied_to_source_operand_index=None,
+            early_clobber=operand.is_early_clobber,
+            fixed_register_name=None,
+            expression=expression,
+            lvalue=lvalue,
+            address=(SourceAddressBinding(
+                address_id=f"canonical-memory-address:{index}",
+                pointee_type_id=None,
+                alignment_bytes=None,
+                provenance_known=True,
+            ) if index in memory_address_operand_indexes else None),
+        )
+    return result
+
+
+def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: TranslationRuntimeFacts) -> set[int]:
+    """Recover one transparent memory-address binding inside Phase 6A only.
+
+    Lifting commonly represents ``0(base)`` as a UNIQUE varnode produced by
+    ``COPY base`` or ``INT_ADD base, 0`` before the LOAD/STORE.  Those are
+    representation-only steps, not a different source address contract.  We
+    accept only that deliberately tiny transparent chain.  Any non-zero
+    offset, arithmetic, merge, or ambiguous producer remains unmodelled and
+    is rejected by the memory lowering path.
+    """
+    raw_map = getattr(runtime_facts, "rv_to_operand_index", {})
+    if not isinstance(raw_map, Mapping):
+        return set()
+    canonical_map = {
+        canonicalize_riscv_register_name(register): index
+        for register, index in raw_map.items()
+        if canonicalize_riscv_register_name(register)
+        and isinstance(index, int) and not isinstance(index, bool)
+    }
+    memory_ops = [op for block in blocks for instruction in block.instructions
+                  for op in instruction.ops if op.opcode in {"LOAD", "STORE"}]
+    if len(memory_ops) != 1:
+        return set()
+
+    memory_op = memory_ops[0]
+    if memory_op.opcode == "LOAD":
+        # SLEIGH LOAD has (space, address) inputs.
+        if len(memory_op.inputs) != 2:
+            return set()
+        address = memory_op.inputs[1]
+    else:
+        # SLEIGH STORE has (space, address, value) inputs.
+        if len(memory_op.inputs) != 3:
+            return set()
+        address = memory_op.inputs[1]
+
+    producers = {
+        op.output: op
+        for block in blocks
+        for instruction in block.instructions
+        for op in instruction.ops
+        if op.output is not None
+    }
+
+    def is_proven_zero(item: object, visiting: set[object]) -> bool:
+        """Recognize only width-preserving representations of integer zero.
+
+        RISC-V SLEIGH semantics commonly sign-extend the immediate before
+        computing an effective address.  For ``0(base)`` this yields a UNIQUE
+        ``INT_SEXT(const:0)`` rather than a direct constant input to
+        ``INT_ADD``.  Zero remains zero through these listed data-flow nodes;
+        every other expression, including a non-zero offset, stays rejected.
+        """
+        if getattr(item, "kind", None) is VarKind.CONST:
+            return getattr(item, "offset", None) == 0
+        if item in visiting:
+            return False
+        producer = producers.get(item)
+        if producer is None:
+            return False
+        next_visiting = visiting | {item}
+        if producer.opcode in {"COPY", "INT_ZEXT", "INT_SEXT", "SUBPIECE"}:
+            return (
+                len(producer.inputs) == 1
+                and is_proven_zero(producer.inputs[0], next_visiting)
+            )
+        if producer.opcode == "PIECE":
+            return (
+                len(producer.inputs) == 2
+                and all(is_proven_zero(value, next_visiting) for value in producer.inputs)
+            )
+        return False
+
+    def resolve_transparent_register(item: object, visiting: set[object]) -> set[str]:
+        if getattr(item, "kind", None) is VarKind.REG:
+            name = getattr(item, "name", "")
+            return {canonicalize_riscv_register_name(name)} if isinstance(name, str) and name.strip() else set()
+        if item in visiting:
+            return set()
+        producer = producers.get(item)
+        if producer is None:
+            return set()
+        if producer.opcode == "COPY" and len(producer.inputs) == 1:
+            return resolve_transparent_register(producer.inputs[0], visiting | {item})
+        if producer.opcode == "INT_ADD" and len(producer.inputs) == 2:
+            left, right = producer.inputs
+            if is_proven_zero(left, set()):
+                return resolve_transparent_register(right, visiting | {item})
+            if is_proven_zero(right, set()):
+                return resolve_transparent_register(left, visiting | {item})
+        return set()
+
+    registers = resolve_transparent_register(address, set())
+    if len(registers) != 1:
+        return set()
+    operand_index = canonical_map.get(next(iter(registers)))
+    return set() if operand_index is None else {operand_index}
+
+def _runtime_fact_structural_errors(
+    runtime_facts: TranslationRuntimeFacts,
+) -> tuple[str, ...]:
+    """
+    Validate the concrete TranslationRuntimeFacts schema.
+
+    This checks only runtime-fact structural correctness.
+
+    It does not decide whether the facts are complete for the current
+    fragment. Completeness depends on actually-used RISC-V registers and
+    plan-required source operand indexes.
+    """
+    if not isinstance(runtime_facts, TranslationRuntimeFacts):
+        return (
+            "runtime_facts_not_translation_runtime_facts",
+        )
+
+    errors: list[str] = []
+
+    rv_to_operand_index = runtime_facts.rv_to_operand_index
+    if not isinstance(rv_to_operand_index, Mapping):
+        errors.append("rv_to_operand_index_not_mapping")
+    else:
+        seen_operand_indexes: dict[int, str] = {}
+
+        for register_name, source_operand_index in (
+            rv_to_operand_index.items()
+        ):
+            if not _is_valid_riscv_register_identity(register_name):
+                errors.append(
+                    "rv_to_operand_index_contains_invalid_register_identity"
+                )
+                continue
+
+            if not _is_valid_source_operand_index(source_operand_index):
+                errors.append(
+                    "rv_to_operand_index_contains_invalid_operand_index"
+                )
+                continue
+
+            previous_register = seen_operand_indexes.get(
+                source_operand_index
+            )
+            if (
+                previous_register is not None
+                and previous_register != register_name
+            ):
+                errors.append(
+                    "rv_to_operand_index_has_ambiguous_reverse_binding"
+                )
+                continue
+
+            seen_operand_indexes[source_operand_index] = register_name
+
+    operand_width_bits = runtime_facts.operand_width_bits
+    if not isinstance(operand_width_bits, Mapping):
+        errors.append("operand_width_bits_not_mapping")
+    else:
+        for source_operand_index, width_bits in (
+            operand_width_bits.items()
+        ):
+            if not _is_valid_source_operand_index(source_operand_index):
+                errors.append(
+                    "operand_width_bits_contains_invalid_operand_index"
+                )
+                continue
+
+            if not _is_valid_width_bits(width_bits):
+                errors.append(
+                    "operand_width_bits_contains_invalid_width"
                 )
 
     return tuple(sorted(set(errors)))
