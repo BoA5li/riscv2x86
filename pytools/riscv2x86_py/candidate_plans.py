@@ -872,6 +872,27 @@ def _generate_register_only_candidates(
     if facts.target_is_x86:
         value = source_model.value_operation
         if (value is not None and value.complete and value.immediate_value is None and
+                value.kind.value in {"signed_less", "unsigned_less", "signed_less_equal",
+                                    "unsigned_less_equal", "equal", "not_equal"}):
+            candidates.append(_plan(
+                plan_id="x86.register-only-inline-asm.out-gpr-boolean-compare",
+                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+                family=TargetLoweringFamily.X86_INLINE_ASM,
+                priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+                deterministic_rank=37,
+                required_features=frozenset({"x86:gpr_inline_asm"}),
+                requirements=_x86_requirements(preserve_cc=True),
+                metadata={
+                    "strategy": "x86_register_boolean_compare_inline_asm",
+                    "renderer_semantic_contract_id":
+                        "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
+                },
+                rationale=("Registered canonical integer comparison with an "
+                           "explicit XLEN boolean result contract.",),
+                reason_codes=("x86-boolean-compare-candidate",),
+            ))
+            return candidates
+        if (value is not None and value.complete and value.immediate_value is None and
                 value.kind.value in {"shift_left_register", "shift_right_logical_register", "shift_right_arithmetic_register"}):
             candidates.append(_plan(
                 plan_id="x86.register-only-inline-asm.out-gpr-variable-shift",

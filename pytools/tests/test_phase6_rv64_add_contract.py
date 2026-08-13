@@ -468,3 +468,66 @@ def test_rv64_variable_shift_accepts_sleigh_xlen_minus_one_mask_dag() -> None:
     assert model.value_operation is not None
     assert model.value_operation.input_operand_indexes == (1, 2)
     assert model.value_operation.shift_count_mask == 63
+
+
+def test_rv64_boolean_comparisons_have_proven_setcc_contracts() -> None:
+    """Cover canonical signed/unsigned compare plus XLEN boolean extension."""
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    contract_id = "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1"
+    for opcode, expected in (("INT_SLESS", "setl"), ("INT_LESS", "setb"),
+                             ("INT_EQUAL", "sete"), ("INT_NOTEQUAL", "setne")):
+        fragment = AsmFragment(
+            outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+            inputs=[AsmOperand(constraint="r", exprText="left"), AsmOperand(constraint="r", exprText="right")],
+            isVolatile=True,
+        )
+        predicate = Var(VarKind.UNIQUE, "unique", 0x301, 1)
+        operations = [
+            Op(0x1000, opcode, predicate, [Var(VarKind.REG, "register", 11, 8, "a1"), Var(VarKind.REG, "register", 12, 8, "a2")]),
+            Op(0x1000, "INT_ZEXT", Var(VarKind.REG, "register", 10, 8, "a0"), [predicate]),
+        ]
+        summary = IRSummary(is_single_block=True, has_branch=False, has_call_or_return=False,
+            has_memory_barrier=False, has_atomic=False, reads_regs={"a1", "a2"}, writes_regs={"a0"},
+            reads_mem=False, writes_mem=False, has_return=False, has_tail_call=False,
+            has_indirect_control_flow=False, has_timing_source=False, has_cache_operation=False,
+            has_speculation_control=False)
+        model = build_source_semantic_model(fragment=fragment,
+            blocks=(Block(addr=0x1000, ops=operations, summary=summary),), cfg=CFGResult(ok=True), summary=summary,
+            xlen=64, runtime_facts=TranslationRuntimeFacts(rv_to_operand_index={"a0": 0, "a1": 1, "a2": 2},
+                operand_width_bits={0: 64, 1: 64, 2: 64}, provenance="boolean-compare-test"))
+        plan = next(item for item in generate_candidate_plans(model)
+                    if item.metadata.get("renderer_semantic_contract_id") == contract_id)
+        derived = derive_target_constraints(source_model=model, candidate_plan=plan, target_environment=environment)
+        assert derived.success and derived.constraints is not None and derived.constraints.preserve_cc_clobber
+        proof = run_semantic_proof_gate(source_model=model, preservation_decision=model.preservation,
+            candidate_plan=plan, constraints=derived.constraints, target_environment=environment,
+            target_semantic_catalog=TargetSemanticCatalog(frozenset({plan.kind}), frozenset({contract_id}), "compare-test-v1"),
+            compiler_capabilities=CompilerCapabilityModel(True, False))
+        assert proof.approved and proof.evidence is not None
+        approved = ApprovedTargetLoweringPlan(plan, derived.constraints, proof, proof.evidence.source_model_id,
+            proof.evidence.preservation_decision_id, proof.evidence.target_environment_id,
+            "phase6e.semantic-fidelity", "1", SelectionTier.X86_INLINE_ASM)
+        recipe = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+        assert recipe is not None and expected in recipe.payload.template and "movzbq %b0, %0" in recipe.payload.template
+        rendered = render_approved_target_lowering(Phase6FRenderRequest(
+            approved, environment,
+            RendererContext({plan.plan_id: recipe}, {0: "out", 1: "left", 2: "right"}),
+        ))
+        assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+        assert '"cc"' in rendered.emitted_text
+        assert f"{expected} %b0" in rendered.emitted_text
+        compiler = shutil.which("cc")
+        if compiler is not None:
+            source = (
+                "#include <stdint.h>\n"
+                "uint64_t f(int64_t left, int64_t right) { uint64_t out; "
+                + rendered.emitted_text + " return out; }\n"
+            )
+            with tempfile.TemporaryDirectory(prefix="riscv2x86-boolean-compare-") as directory:
+                path = Path(directory) / "comparison.c"
+                path.write_text(source, encoding="utf-8")
+                completed = subprocess.run(
+                    [compiler, "-c", "-std=gnu11", str(path), "-o", str(path.with_suffix(".o"))],
+                    capture_output=True, text=True, check=False,
+                )
+            assert completed.returncode == 0, completed.stderr

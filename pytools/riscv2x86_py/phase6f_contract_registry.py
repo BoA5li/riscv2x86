@@ -623,6 +623,41 @@ def _gpr_variable_shift_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+def _gpr_boolean_compare_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode a proof-bound XLEN boolean result from an x86 comparison."""
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    opcodes = {
+        SourceValueOperationKind.SIGNED_LESS: "setl",
+        SourceValueOperationKind.UNSIGNED_LESS: "setb",
+        SourceValueOperationKind.SIGNED_LESS_EQUAL: "setle",
+        SourceValueOperationKind.UNSIGNED_LESS_EQUAL: "setbe",
+        SourceValueOperationKind.EQUAL: "sete",
+        SourceValueOperationKind.NOT_EQUAL: "setne",
+    }
+    if contract is None or contract.value_operation_kind not in opcodes:
+        return None
+    outputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.OUTPUT]
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if len(outputs) != 1 or len(inputs) != 2:
+        return None
+    output, left, right = outputs[0], inputs[0], inputs[1]
+    if (output.required_width_bits not in {32, 64} or output.early_clobber or
+            any(item.required_width_bits != output.required_width_bits or
+                item.early_clobber or item.requires_fixed_register or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in (output, left, right))):
+        return None
+    suffix = "l" if output.required_width_bits == 32 else "q"
+    zero_extend = "movzbl" if output.required_width_bits == 32 else "movzbq"
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=(f"cmp{suffix} %2, %1\n\t{opcodes[contract.value_operation_kind]} %b0"
+                  f"\n\t{zero_extend} %b0, %0"),
+        output_operand_indexes=(output.source_operand_index,),
+        input_operand_indexes=(left.source_operand_index, right.source_operand_index),
+    ))
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -919,6 +954,14 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64",
+            _gpr_boolean_compare_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

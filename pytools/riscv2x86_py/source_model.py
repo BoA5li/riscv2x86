@@ -2238,6 +2238,12 @@ class SourceValueOperationKind(str, Enum):
     SHIFT_LEFT_REGISTER = "shift_left_register"
     SHIFT_RIGHT_LOGICAL_REGISTER = "shift_right_logical_register"
     SHIFT_RIGHT_ARITHMETIC_REGISTER = "shift_right_arithmetic_register"
+    SIGNED_LESS = "signed_less"
+    UNSIGNED_LESS = "unsigned_less"
+    SIGNED_LESS_EQUAL = "signed_less_equal"
+    UNSIGNED_LESS_EQUAL = "unsigned_less_equal"
+    EQUAL = "equal"
+    NOT_EQUAL = "not_equal"
 
 
 class SourceStraightLineValueOpcode(str, Enum):
@@ -4091,6 +4097,78 @@ def _build_register_shift_value_operation_model(
     )
 
 
+def _build_boolean_comparison_value_operation_model(
+    *, blocks: Sequence[Block], runtime_status: RuntimeFactStatus,
+    operands: SourceOperandModel, operation: SourceOperationModel,
+) -> SourceValueOperationModel | None:
+    """Model canonical integer comparison followed by boolean zero extension.
+
+    SLEIGH represents RV ``slt/sltu`` (and the wider comparison family) as a
+    narrow boolean p-code result followed by ``INT_ZEXT`` into XLEN.  This
+    adapter consumes that typed DAG directly; it does not rely on instruction
+    spelling or source template order.
+    """
+    if (operation.kind is not SourceOperationKind.REGISTER_ONLY or
+            operation.may_trap is not False or not operands.complete or
+            len(blocks) != 1 or not runtime_status.structurally_valid):
+        return None
+    items = [item for item in blocks[0].ops
+             if getattr(item, "opcode", "").upper() != "IMARK"]
+    kind_by_opcode = {
+        "INT_SLESS": SourceValueOperationKind.SIGNED_LESS,
+        "INT_LESS": SourceValueOperationKind.UNSIGNED_LESS,
+        "INT_SLESSEQUAL": SourceValueOperationKind.SIGNED_LESS_EQUAL,
+        "INT_LESSEQUAL": SourceValueOperationKind.UNSIGNED_LESS_EQUAL,
+        "INT_EQUAL": SourceValueOperationKind.EQUAL,
+        "INT_NOTEQUAL": SourceValueOperationKind.NOT_EQUAL,
+    }
+    compares = [item for item in items
+                if getattr(item, "opcode", "").upper() in kind_by_opcode]
+    extends = [item for item in items
+               if getattr(item, "opcode", "").upper() == "INT_ZEXT"]
+    if len(compares) != 1 or len(extends) != 1 or len(items) != 2:
+        return None
+    compare, extend = compares[0], extends[0]
+    if (getattr(compare, "output", None) is None or
+            getattr(extend, "output", None) is None or
+            len(getattr(compare, "inputs", ())) != 2 or
+            len(getattr(extend, "inputs", ())) != 1 or
+            extend.inputs[0] != compare.output or
+            getattr(compare.output, "size", 0) * 8 not in {1, 8}):
+        return None
+    width = getattr(extend.output, "size", 0) * 8
+    if width not in {32, 64}:
+        return None
+    register_to_operand = {
+        canonicalize_riscv_register_name(register): index
+        for register, index in runtime_status.rv_to_operand_index.items()
+    }
+    if "" in register_to_operand or len(register_to_operand) != len(runtime_status.rv_to_operand_index):
+        return None
+    def index(value: object) -> int | None:
+        if getattr(value, "kind", None) is not VarKind.REG:
+            return None
+        return register_to_operand.get(canonicalize_riscv_register_name(getattr(value, "name", "")))
+    result_index = index(extend.output)
+    input_indexes = tuple(index(value) for value in compare.inputs)
+    if result_index is None or any(value is None for value in input_indexes):
+        return None
+    bindings = {item.source_operand_index: item for item in operands.operands}
+    result = bindings.get(result_index)
+    inputs = tuple(bindings.get(value) for value in input_indexes)
+    if (result is None or result.access is not SourceOperandAccess.OUTPUT or
+            result.width_bits != width or
+            any(value is None or value.access is not SourceOperandAccess.INPUT or
+                value.width_bits != width for value in inputs)):
+        return None
+    return SourceValueOperationModel(
+        kind=kind_by_opcode[getattr(compare, "opcode", "").upper()],
+        input_operand_indexes=tuple(input_indexes),
+        result_operand_index=result_index,
+        complete=True,
+    )
+
+
 def _build_value_operation_model(
     *,
     blocks: Sequence[Block],
@@ -4111,6 +4189,12 @@ def _build_value_operation_model(
     )
     if sequence is not None:
         return sequence
+    comparison = _build_boolean_comparison_value_operation_model(
+        blocks=blocks, runtime_status=runtime_status, operands=operands,
+        operation=operation,
+    )
+    if comparison is not None:
+        return comparison
     shift = _build_register_shift_value_operation_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
         operation=operation,

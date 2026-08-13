@@ -11,6 +11,36 @@ def prove(r):
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1":
+        value = s.value_operation
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        kinds = {
+            "signed_less", "unsigned_less", "signed_less_equal",
+            "unsigned_less_equal", "equal", "not_equal",
+        }
+        if (value is None or value.kind.value not in kinds or
+                value.immediate_value is not None or len(value.input_operand_indexes) != 2 or
+                contract is None or contract.value_operation_kind is not value.kind or
+                not c.preserve_cc_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        output = operands.get(value.result_operand_index)
+        left = operands.get(value.input_operand_indexes[0])
+        right = operands.get(value.input_operand_indexes[1])
+        if (output is None or left is None or right is None or
+                output.role.value != "output" or output.early_clobber or
+                left.role.value != "input" or right.role.value != "input" or
+                output.required_width_bits not in {32, 64} or
+                left.required_width_bits != output.required_width_bits or
+                right.required_width_bits != output.required_width_bits):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        # GNU ``r`` operands carry the exact XLEN bit patterns; the signed or
+        # unsigned interpretation is supplied by the canonical comparison
+        # operation and the registered x86 ``setcc`` contract, not guessed
+        # from a host C type string.  This matters because Phase 4 currently
+        # provides signless register bindings while p-code remains the
+        # authoritative architecture-semantics source.
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1":
         value = s.value_operation
         operands = {item.source_operand_index: item for item in c.operand_constraints}
