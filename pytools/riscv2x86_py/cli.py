@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from .ghidra_pythonrun_bridge import (
     GhidraPythonRunError,
@@ -63,6 +64,11 @@ def main() -> int:
     )
 
     args = ap.parse_args()
+
+    # Make package shadowing immediately observable in launcher logs.  The
+    # path is diagnostic provenance only and is not used by any translation
+    # decision.
+    print("[riscv2x86-py] backend module:", Path(__file__).resolve())
 
     if not args.inp:
         ap.error("--in is required")

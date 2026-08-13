@@ -632,6 +632,39 @@ def build_source_semantic_model(
         operation=operation,
     )
 
+    # This is a Phase-6A input ledger for diagnosing unsupported canonical
+    # dataflow.  It serializes structured opcode/varnode metadata only; no
+    # later Phase-6 stage consumes it and it never changes a lowering choice.
+    # Keeping the ledger at this boundary prevents debugging from becoming a
+    # raw-asm or textual-pcode backdoor in 6B--6F.
+    if value_operation is None:
+        def _var_ledger(value: object) -> dict[str, object]:
+            return {
+                "kind": getattr(getattr(value, "kind", None), "value", None),
+                "size_bits": getattr(value, "size", 0) * 8,
+                "named_register": getattr(value, "name", "") or None,
+                "constant": (getattr(value, "offset", None)
+                             if getattr(value, "kind", None) is VarKind.CONST
+                             else None),
+            }
+
+        print("[DEBUG] phase6a-unmodelled-canonical-dataflow:", {
+            "operation_kind": operation.kind.value,
+            "operation_complete": operation.complete,
+            "may_trap": operation.may_trap,
+            "operand_model_complete": operands.complete,
+            "blocks": tuple(
+                tuple({
+                    "opcode": getattr(item, "opcode", ""),
+                    "output": _var_ledger(getattr(item, "output", None)),
+                    "inputs": tuple(_var_ledger(value)
+                                    for value in getattr(item, "inputs", ())),
+                } for item in block.ops
+                      if getattr(item, "opcode", "").upper() != "IMARK")
+                for block in blocks
+            ),
+        })
+
     atomic = _build_atomic_operation_model(
         summary=summary,
         memory=memory,
