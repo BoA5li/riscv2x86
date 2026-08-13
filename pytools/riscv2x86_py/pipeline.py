@@ -14,7 +14,7 @@ from .runtime_facts import build_translation_runtime_facts
 from .verify import verify
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
-from .helper_runtime_manifest import RV64_MULHU_U64
+from .helper_runtime_manifest import RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -210,6 +210,7 @@ _PURE_C_KINDS = {
     "builtin",
     "lower_to_c",
     "functional_c",
+    "instruction_stream_elision",
 }
 
 
@@ -594,6 +595,23 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
             )
         return reasons
 
+    # A strict no-op elision is not generic pure C.  It is permitted only
+    # when Phase 6 carried the externally supplied instruction-stream proof
+    # certificate into an approved artifact.
+    if kind == "instruction_stream_elision":
+        artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        if not (
+            artifact.get("artifactVersion") == "phase6-approval-v1"
+            and artifact.get("proofStatus") == "approved"
+            and artifact.get("replacementKind") == "instruction_stream_elision"
+            and isinstance(artifact.get("instructionStreamSyncProofId"), str)
+            and artifact["instructionStreamSyncProofId"]
+        ):
+            reasons.append(
+                "instruction-stream no-op elision lacks its required proof artifact"
+            )
+        return reasons
+
     # ---------- pure C / lower_to_c 路径 ----------
     if not is_x86_inline_asm:
         if is_volatile:
@@ -859,6 +877,7 @@ def run(
     if allow_functional_fallbacks:
         default_features.add("x86:rdtsc")
         default_builtins.add("compiler:x86-rdtsc-builtin")
+        default_features.add("runtime:" + INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id)
     public_environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
         available_features=default_features,
         builtin_capabilities=default_builtins,
@@ -866,6 +885,10 @@ def run(
         helper_contract_capabilities={
             RV64_MULHU_U64.runtime_contract_id,
             RV64_MULHU_U64.required_environment_capability,
+            *({
+                INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id,
+                INSTRUCTION_STREAM_SYNC_LOCAL.required_environment_capability,
+            } if allow_functional_fallbacks else set()),
         },
     )
     stats = {
@@ -1369,7 +1392,11 @@ def run(
         f.category = "ReplaceableByRule"
 
         if translation_kind == "functional_c":
-            f.ruleName = "phase6.functional.counter_csr_rdtsc"
+            target_contract = f.approvalArtifact.get("targetSemanticContractId", "")
+            f.ruleName = "phase6.functional." + (
+                target_contract.replace("@", "_").replace(".", "_")
+                if isinstance(target_contract, str) and target_contract else "registered"
+            )
         elif apply_kind == "x86_goto":
             f.ruleName = "phase6.lower_to_x86_asm_goto"
         elif apply_kind == "x86":

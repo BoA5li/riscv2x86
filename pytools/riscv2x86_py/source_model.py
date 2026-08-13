@@ -150,6 +150,8 @@ class SourceMemoryModel:
 
     has_memory_barrier: bool
     has_instruction_barrier: bool
+    instruction_stream_sync_noop_proven: bool
+    instruction_stream_sync_proof_id: str | None
     has_unknown_barrier: bool
 
     has_atomic: bool
@@ -630,7 +632,7 @@ def build_source_semantic_model(
         runtime_facts=runtime_facts,
     )
 
-    memory = _build_memory_model(summary)
+    memory = _build_memory_model(summary, runtime_facts)
 
     # ------------------------------------------------------------------
     # Phase 6C-1 semantic facts.
@@ -665,7 +667,7 @@ def build_source_semantic_model(
             shell=shell, blocks=blocks, cfg=cfg, summary=analysis_summary,
             runtime_facts=runtime_facts,
         )
-        memory = _build_memory_model(analysis_summary)
+        memory = _build_memory_model(analysis_summary, runtime_facts)
 
     microarch = _build_microarch_model(
         fragment=fragment, shell=shell, summary=analysis_summary,
@@ -992,6 +994,7 @@ def _build_control_flow_model(
 
 def _build_memory_model(
     summary: IRSummary,
+    runtime_facts: object,
 ) -> SourceMemoryModel:
     # ``IRSummary.atomic_mnemonics`` is legacy diagnostic/display data.  It
     # deliberately has no representation in the authoritative Phase-6A
@@ -1002,6 +1005,17 @@ def _build_memory_model(
             getattr(summary, "atomic_orderings", set())
         )
     )
+
+    noop_proven = getattr(runtime_facts, "instruction_stream_sync_noop_proven", False)
+    proof_id = getattr(runtime_facts, "instruction_stream_sync_proof_id", None)
+    if not isinstance(noop_proven, bool):
+        noop_proven = False
+    if not isinstance(proof_id, str) or not proof_id.strip():
+        proof_id = None
+    # A certificate without both fields is not evidence.  Do not use a
+    # missing identifier as an optimistic no-op proof.
+    if noop_proven != (proof_id is not None):
+        noop_proven, proof_id = False, None
 
     return SourceMemoryModel(
         reads_memory=_summary_bool(summary, "reads_mem"),
@@ -1015,6 +1029,8 @@ def _build_memory_model(
             summary,
             "has_instruction_barrier",
         ),
+        instruction_stream_sync_noop_proven=noop_proven,
+        instruction_stream_sync_proof_id=proof_id,
         has_unknown_barrier=_summary_bool(
             summary,
             "has_unknown_barrier",

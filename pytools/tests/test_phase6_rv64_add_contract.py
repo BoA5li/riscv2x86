@@ -31,6 +31,7 @@ from riscv2x86_py.phase6f_renderer import (
     render_approved_target_lowering,
 )
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
+from riscv2x86_py.helper_runtime_manifest import INSTRUCTION_STREAM_SYNC_LOCAL
 from riscv2x86_py.schema import AsmFragment, AsmOperand
 from riscv2x86_py.source_model import build_source_semantic_model
 from riscv2x86_py.translate import translate
@@ -295,7 +296,57 @@ def test_instruction_stream_barrier_requires_explicit_route() -> None:
     )
     assert routed.kind == "needs_route"
     assert "TR_INSTRUCTION_STREAM_SYNC_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
-    assert routed.metadata["functionalFallbackPermitted"] is False
+    assert routed.metadata["functionalFallbackPermitted"] is True
+
+    functional_environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
+        helper_contract_capabilities={
+            INSTRUCTION_STREAM_SYNC_LOCAL.required_environment_capability,
+        },
+    )
+    functional = translate(
+        frag=fragment, lift=_IngressLift(), summary=summary,
+        machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
+        cfg=CFGResult(ok=True),
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={}, operand_width_bits={}, provenance="phase4-test",
+        ),
+        target_environment=functional_environment,
+        allow_functional_fallbacks=True,
+    )
+    assert functional.kind == "functional_c"
+    assert functional.replacement == "riscv2x86_rt_instruction_stream_sync_local();"
+    assert functional.metadata["approvalArtifact"]["replacementKind"] == "helper_call"
+
+
+def test_instruction_stream_noop_elision_requires_explicit_certificate() -> None:
+    fragment = AsmFragment(clobbers=["memory"], isVolatile=True)
+    summary = IRSummary(
+        is_single_block=True, has_branch=False, has_call_or_return=False,
+        has_memory_barrier=False, has_instruction_barrier=True,
+        has_atomic=False, reads_regs=set(), writes_regs=set(),
+        reads_mem=False, writes_mem=False,
+        has_return=False, has_tail_call=False, has_indirect_control_flow=False,
+        has_timing_source=False, has_cache_operation=False,
+        has_speculation_control=False,
+    )
+    blocks = (Block(
+        0x1000, [], summary=summary,
+        instructions=[CanonicalInsn(addr=0x1000, size=4)],
+    ),)
+    elided = translate(
+        frag=fragment, lift=_IngressLift(), summary=summary,
+        machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
+        cfg=CFGResult(ok=True),
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={}, operand_width_bits={}, provenance="frontend-proof",
+            instruction_stream_sync_noop_proven=True,
+            instruction_stream_sync_proof_id="host-cfg:no-code-write-or-execution:v1",
+        ),
+    )
+    assert elided.kind == "instruction_stream_elision"
+    artifact = elided.metadata["approvalArtifact"]
+    assert artifact["proofStatus"] == "approved"
+    assert artifact["replacementKind"] == "instruction_stream_elision"
 
 
 def test_rv64_add_has_proven_att_renderer_contract() -> None:

@@ -72,8 +72,31 @@ RV64_MULHU_U64 = RuntimeHelperContract(
     runtime_library="libriscv2x86_runtime",
 )
 
+INSTRUCTION_STREAM_SYNC_LOCAL = RuntimeHelperContract(
+    runtime_contract_id="riscv2x86_rt_instruction_stream_sync_local@v1",
+    semantic_family="instruction-stream-sync.local",
+    semantic_version="v1",
+    helper_symbol="riscv2x86_rt_instruction_stream_sync_local",
+    calling_convention="sysv_amd64",
+    target_abi="sysv_amd64",
+    parameter_type_ids=(), return_type_id=None,
+    parameter_width_bits=(), return_width_bits=None,
+    memory_effect="reads_writes", atomic_effect="none",
+    barrier_effect="instruction_stream_local",
+    may_return=True, may_unwind=False,
+    required_stack_alignment_bytes=16,
+    preserves_stack_pointer=True, preserves_frame_pointer=True,
+    caller_saved_registers=("rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"),
+    callee_saved_registers=("rbx", "rbp", "r12", "r13", "r14", "r15"),
+    pic_plt_compatible=True, tls_errno_global_effect="none",
+    required_environment_capability="runtime:riscv2x86:instruction-stream-sync-local-v1",
+    required_header="riscv2x86_runtime_helpers.h",
+    runtime_library="libriscv2x86_runtime",
+)
+
 DEFAULT_RUNTIME_HELPER_CONTRACTS: Mapping[str, RuntimeHelperContract] = MappingProxyType({
     RV64_MULHU_U64.runtime_contract_id: RV64_MULHU_U64,
+    INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id: INSTRUCTION_STREAM_SYNC_LOCAL,
 })
 
 

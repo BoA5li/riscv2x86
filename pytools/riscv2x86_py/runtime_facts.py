@@ -42,6 +42,14 @@ class TranslationRuntimeFacts:
     # Frontend-normalized host-C asm-goto facts.  Phase 4 transports these
     # facts for lifting only; it must not rediscover them from asm text.
     asm_goto_condition_operand_index: int | None = None
+
+    # A source/frontend supplied proof certificate for the very narrow case
+    # where an instruction-stream synchronization operation has no observable
+    # effect.  It is intentionally *not* synthesized by assemble.py, p-code,
+    # mnemonic matching, or a target renderer.  Without this certificate a
+    # fence.i-class operation must retain its dedicated synchronization route.
+    instruction_stream_sync_noop_proven: bool = False
+    instruction_stream_sync_proof_id: str | None = None
     asm_goto_condition_kind: str | None = None
 
 
@@ -493,6 +501,8 @@ def translation_runtime_facts_to_dict(
         "operandWidthBits": dict(facts.operand_width_bits),
         "asmGotoConditionKind": facts.asm_goto_condition_kind,
         "asmGotoConditionOperandIndex": facts.asm_goto_condition_operand_index,
+        "instructionStreamSyncNoopProven": facts.instruction_stream_sync_noop_proven,
+        "instructionStreamSyncProofId": facts.instruction_stream_sync_proof_id,
     }
     
 def translation_runtime_facts_from_dict(
@@ -533,6 +543,14 @@ def translation_runtime_facts_from_dict(
         "asmGotoConditionOperandIndex",
         value.get("asm_goto_condition_operand_index"),
     )
+    instruction_stream_sync_noop_proven = value.get(
+        "instructionStreamSyncNoopProven",
+        value.get("instruction_stream_sync_noop_proven", False),
+    )
+    instruction_stream_sync_proof_id = value.get(
+        "instructionStreamSyncProofId",
+        value.get("instruction_stream_sync_proof_id"),
+    )
 
     if raw_rv_to_operand is None:
         raw_rv_to_operand = {}
@@ -564,6 +582,14 @@ def translation_runtime_facts_from_dict(
     if ((asm_goto_condition_kind is None) !=
             (asm_goto_condition_operand_index is None)):
         raise ValueError("translationRuntimeFacts requires both asm-goto condition fields")
+    if not isinstance(instruction_stream_sync_noop_proven, bool):
+        raise ValueError("translationRuntimeFacts has invalid instruction-stream noop proof flag")
+    if instruction_stream_sync_proof_id is not None:
+        if (not isinstance(instruction_stream_sync_proof_id, str) or
+                not instruction_stream_sync_proof_id.strip()):
+            raise ValueError("translationRuntimeFacts has invalid instruction-stream proof id")
+    if instruction_stream_sync_noop_proven != (instruction_stream_sync_proof_id is not None):
+        raise ValueError("translationRuntimeFacts requires both instruction-stream noop proof fields")
 
     # serialized facts 若包含 register binding，则每一个绑定 operand
     # 都必须具有 host-derived width。
@@ -579,6 +605,8 @@ def translation_runtime_facts_from_dict(
         operand_width_bits=operand_width_bits,
         asm_goto_condition_kind=asm_goto_condition_kind,
         asm_goto_condition_operand_index=asm_goto_condition_operand_index,
+        instruction_stream_sync_noop_proven=instruction_stream_sync_noop_proven,
+        instruction_stream_sync_proof_id=instruction_stream_sync_proof_id,
     )
 
 # ---------------------------------------------------------------------------
@@ -970,10 +998,42 @@ def build_translation_runtime_facts(
     #
     # 但其信息来源仍然是 assemble_result.translation_runtime_facts，
     # 而不是 finding、p-code、寄存器编号或 XLEN。
+    # The source/host CFG certificate is intentionally separate from the
+    # assembler-owned register and width facts.  It may be carried by the
+    # frontend finding, but can never replace or amend assembler bindings.
+    certificate_source = _read_field(
+        finding,
+        "translation_runtime_facts",
+        "translationRuntimeFacts",
+        default=None,
+    )
+    noop_proven = _read_field(
+        certificate_source,
+        "instruction_stream_sync_noop_proven",
+        "instructionStreamSyncNoopProven",
+        default=False,
+    )
+    proof_id = _read_field(
+        certificate_source,
+        "instruction_stream_sync_proof_id",
+        "instructionStreamSyncProofId",
+        default=None,
+    )
+    if not isinstance(noop_proven, bool):
+        noop_proven = False
+    if not isinstance(proof_id, str) or not proof_id.strip():
+        proof_id = None
+    if noop_proven != (proof_id is not None):
+        # Malformed optional certificate never invalidates otherwise good
+        # assembler facts; it simply cannot authorize elision.
+        noop_proven, proof_id = False, None
+
     return TranslationRuntimeFactsResult(
         ok=True,
         facts=TranslationRuntimeFacts(
             rv_to_operand_index=rv_to_operand_index,
             operand_width_bits=operand_width_bits,
+            instruction_stream_sync_noop_proven=noop_proven,
+            instruction_stream_sync_proof_id=proof_id,
         ),
     )
