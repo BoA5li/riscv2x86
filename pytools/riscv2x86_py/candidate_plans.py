@@ -514,7 +514,7 @@ def _generate_cfg_candidates(
             metadata={
                 "strategy": "x86_local_branch_select_inline_asm",
                 "renderer_semantic_contract_id":
-                    "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1",
+                    "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
             },
             rationale=("A canonical local two-way compare/select CFG has a "
                        "registered proof-bound x86 inline-asm route.",),

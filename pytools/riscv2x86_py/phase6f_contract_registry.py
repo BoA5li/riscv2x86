@@ -672,6 +672,8 @@ def _local_branch_select_recipe(approved: ApprovedTargetLoweringPlan):
     if (contract is None or select is None or
             contract.value_operation_kind not in {
                 SourceValueOperationKind.EQUAL, SourceValueOperationKind.NOT_EQUAL,
+                SourceValueOperationKind.SIGNED_LESS, SourceValueOperationKind.UNSIGNED_LESS,
+                SourceValueOperationKind.SIGNED_LESS_EQUAL, SourceValueOperationKind.UNSIGNED_LESS_EQUAL,
             } or
             not c.control_flow_constraint.preserve_control_flow or
             not c.control_flow_constraint.preserve_condition_codes or
@@ -692,7 +694,16 @@ def _local_branch_select_recipe(approved: ApprovedTargetLoweringPlan):
                 for item in inputs) or len(by_index) != 5):
         return None
     suffix = "l" if result.required_width_bits == 32 else "q"
-    jump = "je" if select.condition_kind is SourceValueOperationKind.EQUAL else "jne"
+    jump = {
+        SourceValueOperationKind.EQUAL: "je",
+        SourceValueOperationKind.NOT_EQUAL: "jne",
+        SourceValueOperationKind.SIGNED_LESS: "jl",
+        SourceValueOperationKind.UNSIGNED_LESS: "jb",
+        SourceValueOperationKind.SIGNED_LESS_EQUAL: "jle",
+        SourceValueOperationKind.UNSIGNED_LESS_EQUAL: "jbe",
+    }.get(select.condition_kind)
+    if jump is None:
+        return None
     return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
         template=(f"cmp{suffix} %2, %1\n\t{jump} 1f\n\t"
                   f"mov{suffix} %4, %0\n\tjmp 2f\n\t"
@@ -999,9 +1010,9 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
         RegisteredRendererContract(
-            "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1",
+            "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,
-            "x86.gnu-att.local-branch-select.eq-ne.u32-u64",
+            "x86.gnu-att.local-branch-select.compare.u32-u64",
             _local_branch_select_recipe,
             "x86_gnu_inline_asm_contract",
             frozenset({"x86:gpr_inline_asm"}),

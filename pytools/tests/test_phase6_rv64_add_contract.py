@@ -37,7 +37,7 @@ from riscv2x86_py.source_model import build_source_semantic_model
 
 _CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
 _IMMEDIATE_CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
-_LOCAL_BRANCH_SELECT_CONTRACT_ID = "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1"
+_LOCAL_BRANCH_SELECT_CONTRACT_ID = "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
 
 
 def _build_rv64_add_model():
@@ -77,7 +77,7 @@ def _build_rv64_add_model():
     )
 
 
-def _build_rv64_local_branch_select_model():
+def _build_rv64_local_branch_select_model(comparison_opcode="INT_EQUAL"):
     """Build a typed three-block local branch/select, without asm text."""
     fragment = AsmFragment(
         outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
@@ -94,7 +94,7 @@ def _build_rv64_local_branch_select_model():
     target = Var(VarKind.MEM, "ram", 0x1020, 8)
     join = Var(VarKind.MEM, "ram", 0x1030, 8)
     entry = Block(0x1000, [
-        Op(0x1000, "INT_EQUAL", predicate, [a1, a2]),
+        Op(0x1000, comparison_opcode, predicate, [a1, a2]),
         Op(0x1000, "CBRANCH", None, [target, predicate]),
     ], successors=[0x1010, 0x1020], successor_kinds={0x1010: "fallthrough", 0x1020: "branch_taken"},
        terminator_kind="cbranch", has_branch=True)
@@ -156,6 +156,51 @@ def test_rv64_local_branch_select_is_proof_bound_and_renderable() -> None:
         )))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
     assert rendered.emitted_text is not None and "cmpq" in rendered.emitted_text and "je 1f" in rendered.emitted_text
+
+
+def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None:
+    """The local CFG family is keyed by typed compare semantics, not bltu text."""
+    expected_jumps = {
+        "INT_EQUAL": "je 1f", "INT_NOTEQUAL": "jne 1f",
+        "INT_SLESS": "jl 1f", "INT_LESS": "jb 1f",
+        "INT_SLESSEQUAL": "jle 1f", "INT_LESSEQUAL": "jbe 1f",
+    }
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    for opcode, expected_jump in expected_jumps.items():
+        model = _build_rv64_local_branch_select_model(opcode)
+        assert model.local_branch_select is not None
+        plan = next(item for item in generate_candidate_plans(model)
+                    if item.metadata.get("renderer_semantic_contract_id") == _LOCAL_BRANCH_SELECT_CONTRACT_ID)
+        derived = derive_target_constraints(source_model=model, candidate_plan=plan, target_environment=environment)
+        assert derived.success and derived.constraints is not None
+        proof = run_semantic_proof_gate(
+            source_model=model, preservation_decision=model.preservation,
+            candidate_plan=plan, constraints=derived.constraints,
+            target_environment=environment,
+            target_semantic_catalog=TargetSemanticCatalog(
+                supported_plan_kinds=frozenset({plan.kind}),
+                semantic_contract_ids=frozenset({_LOCAL_BRANCH_SELECT_CONTRACT_ID}),
+                version="local-branch-select-test-v1"),
+            compiler_capabilities=CompilerCapabilityModel(supports_gnu_inline_asm=True, supports_asm_goto=False),
+        )
+        assert proof.approved
+        approved = ApprovedTargetLoweringPlan(
+            plan=plan, constraints=derived.constraints, proof=proof,
+            source_model_id=proof.evidence.source_model_id,
+            preservation_decision_id=proof.evidence.preservation_decision_id,
+            target_environment_id=proof.evidence.target_environment_id,
+            selection_policy_id="test", selection_policy_version="1",
+            selection_tier=SelectionTier.X86_INLINE_ASM,
+        )
+        renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+        assert renderer_contract is not None
+        rendered = render_approved_target_lowering(Phase6FRenderRequest(
+            approved_plan=approved, target_environment=environment,
+            renderer_context=RendererContext(
+                contracts_by_plan_id={plan.plan_id: renderer_contract},
+                operand_bindings={0: "out", 1: "left", 2: "right", 3: "when_true", 4: "when_false"},
+            )))
+        assert rendered.emitted_text is not None and expected_jump in rendered.emitted_text
 
 
 def test_rv64_add_has_proven_att_renderer_contract() -> None:

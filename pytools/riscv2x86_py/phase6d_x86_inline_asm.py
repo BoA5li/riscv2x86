@@ -7,7 +7,7 @@ def prove(r):
     if not cc.supports_gnu_inline_asm:return reject(r,SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if c.x86_gnu_inline_asm_contract is None and c.x86_memory_inline_asm_contract is None:return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
-    local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1"
+    local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
     if s.atomic.present or s.barrier.present or (s.operation.has_control_flow and not local_branch_select_route):return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     if (s.shell.has_cc_clobber and not c.preserve_cc_clobber) or (s.shell.is_volatile and not c.preserve_volatile):return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
@@ -17,7 +17,10 @@ def prove(r):
         operands = {item.source_operand_index: item for item in c.operand_constraints}
         contract_select = None if contract is None else contract.local_branch_select
         if (select is None or contract_select is None or
-                select.condition_kind not in {select.condition_kind.EQUAL, select.condition_kind.NOT_EQUAL} or
+                select.condition_kind.value not in {
+                    "equal", "not_equal", "signed_less", "unsigned_less",
+                    "signed_less_equal", "unsigned_less_equal",
+                } or
                 contract.value_operation_kind is not select.condition_kind or
                 contract_select.condition_kind is not select.condition_kind or
                 (contract_select.left_operand_index, contract_select.right_operand_index,

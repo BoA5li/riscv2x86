@@ -65,7 +65,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.straight-line-u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
-    "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1",
+    "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
 })
 
 
@@ -135,7 +135,7 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             })
         return None
 
-    if semantic_id == "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1":
+    if semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1":
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
         inputs = [op for op in target_operands if op.role.name == "INPUT"]
         if (len(outputs) != 1 or len(inputs) != 4 or outputs[0].early_clobber or
@@ -264,7 +264,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     feature="x86:gpr_inline_asm"
     if feature not in target_environment.available_features: return _fail(candidate_plan,"X86_INLINE_ASM_FEATURE_UNAVAILABLE",{"feature":feature})
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
-    local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1"
+    local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
     if not source_model.operands.complete or not source_model.operation.complete or not source_model.implicit_state.complete: return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
     if ((not local_branch_select_route and source_model.operation.kind.value != "register_only") or
             source_model.operation.reads_memory or source_model.operation.writes_memory or
@@ -274,7 +274,11 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if (not local_branch_select_route and (source_model.operation.has_control_flow or source_model.operation.has_call or source_model.operation.has_return is not False or source_model.operation.may_trap is not False or cf.has_internal_branch or cf.has_call or cf.has_return is not False or cf.has_asm_goto or cf.has_multiple_exits or cf.has_indirect_control_flow is not False)): return _fail(candidate_plan,"X86_INLINE_ASM_CONTROL_FLOW_UNSUPPORTED")
     if local_branch_select_route:
         select = source_model.local_branch_select
-        if (select is None or select.condition_kind not in {SourceValueOperationKind.EQUAL, SourceValueOperationKind.NOT_EQUAL} or
+        if (select is None or select.condition_kind not in {
+                SourceValueOperationKind.EQUAL, SourceValueOperationKind.NOT_EQUAL,
+                SourceValueOperationKind.SIGNED_LESS, SourceValueOperationKind.UNSIGNED_LESS,
+                SourceValueOperationKind.SIGNED_LESS_EQUAL, SourceValueOperationKind.UNSIGNED_LESS_EQUAL,
+            } or
                 not source_model.operation.has_control_flow or source_model.operation.may_trap is not False or
                 not cf.has_internal_branch or cf.has_call or cf.has_return is not False or cf.has_asm_goto or
                 cf.has_multiple_exits or cf.has_indirect_control_flow is not False or cf.has_unknown_target):

@@ -3580,7 +3580,7 @@ def _build_local_branch_select_model(
 ) -> SourceLocalBranchSelectModel | None:
     """Recognize a fully local canonical compare-and-select CFG.
 
-    Accepted shape: an ``INT_EQUAL``/``INT_NOTEQUAL`` predicate feeds one
+    Accepted shape: one canonical integer comparison predicate feeds one
     ``CBRANCH``; its taken and fallthrough blocks each copy one declared input
     into the same declared output; the fallthrough arm has one direct local
     join branch.  This consumes typed operations and authoritative block-edge
@@ -3601,8 +3601,16 @@ def _build_local_branch_select_model(
             set(getattr(entry, "successors", ())) != {taken_address, fallthrough_address}):
         return None
     entry_ops = [item for item in entry.ops if getattr(item, "opcode", "").upper() != "IMARK"]
-    compares = [item for item in entry_ops if getattr(item, "opcode", "").upper()
-                in {"INT_EQUAL", "INT_NOTEQUAL"}]
+    comparison_kinds = {
+        "INT_EQUAL": SourceValueOperationKind.EQUAL,
+        "INT_NOTEQUAL": SourceValueOperationKind.NOT_EQUAL,
+        "INT_SLESS": SourceValueOperationKind.SIGNED_LESS,
+        "INT_LESS": SourceValueOperationKind.UNSIGNED_LESS,
+        "INT_SLESSEQUAL": SourceValueOperationKind.SIGNED_LESS_EQUAL,
+        "INT_LESSEQUAL": SourceValueOperationKind.UNSIGNED_LESS_EQUAL,
+    }
+    compares = [item for item in entry_ops
+                if getattr(item, "opcode", "").upper() in comparison_kinds]
     branches = [item for item in entry_ops if getattr(item, "opcode", "").upper() == "CBRANCH"]
     if len(entry_ops) != 2 or len(compares) != 1 or len(branches) != 1:
         return None
@@ -3652,8 +3660,7 @@ def _build_local_branch_select_model(
         return None
     if set(indexes) | {result} != set(bound):
         return None
-    kind = {"INT_EQUAL": SourceValueOperationKind.EQUAL,
-            "INT_NOTEQUAL": SourceValueOperationKind.NOT_EQUAL}[getattr(compare, "opcode", "").upper()]
+    kind = comparison_kinds[getattr(compare, "opcode", "").upper()]
     return SourceLocalBranchSelectModel(kind, indexes[0], indexes[1], indexes[2], indexes[3], result, result_binding.width_bits)
 
 
