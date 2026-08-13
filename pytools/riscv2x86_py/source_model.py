@@ -669,7 +669,7 @@ def build_source_semantic_model(
     )
     local_unconditional_jump = _build_local_unconditional_jump_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
-        memory=memory,
+        memory=memory, cfg=cfg,
     )
     read_only_csr = _build_read_only_csr_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
@@ -3727,7 +3727,7 @@ def _build_local_branch_select_model(
 
 def _build_local_unconditional_jump_model(
     *, blocks: Sequence[Block], runtime_status: RuntimeFactStatus,
-    operands: SourceOperandModel, memory: SourceMemoryModel,
+    operands: SourceOperandModel, memory: SourceMemoryModel, cfg: CFGResult,
 ) -> SourceLocalUnconditionalJumpModel | None:
     """Prove a finite direct-jump-to-copy CFG family.
 
@@ -3744,18 +3744,42 @@ def _build_local_unconditional_jump_model(
             memory.has_instruction_barrier):
         return None
     entry = blocks[0]
-    successors = tuple(getattr(entry, "successors", ()))
-    if len(successors) != 1 or getattr(entry, "is_indirect", False) or getattr(entry, "has_unknown_target", False):
-        return None
-    target_address = successors[0]
-    if getattr(entry, "successor_kinds", {}).get(target_address) not in {"branch", "direct", "jump", "direct_jump", "branch_taken"}:
+    if getattr(entry, "is_indirect", False) or getattr(entry, "has_unknown_target", False):
         return None
     entry_ops = [item for item in entry.ops if getattr(item, "opcode", "").upper() != "IMARK"]
     if len(entry_ops) != 1 or getattr(entry_ops[0], "opcode", "").upper() != "BRANCH":
         return None
     by_address = {block.addr: block for block in blocks}
+    branch_target = None
+    branch_inputs = getattr(entry_ops[0], "inputs", ())
+    if len(branch_inputs) == 1 and getattr(branch_inputs[0], "kind", None) is VarKind.MEM:
+        candidate = getattr(branch_inputs[0], "offset", None)
+        if isinstance(candidate, int) and candidate in by_address:
+            branch_target = candidate
+    block_successors = tuple(getattr(entry, "successors", ()))
+    node = getattr(cfg, "nodes", {}).get(entry.addr) if _cfg_ok(cfg) else None
+    cfg_successors = tuple(getattr(node, "successors", ())) if node is not None else ()
+    edge_candidates = [candidate for candidate in (
+        branch_target,
+        block_successors[0] if len(block_successors) == 1 else None,
+        cfg_successors[0] if len(cfg_successors) == 1 else None,
+    ) if candidate is not None]
+    # Every available structured edge representation must agree.  A missing
+    # Block successor is normal for canonical p-code; it is not license to
+    # guess the target from source text or block order.
+    if (not edge_candidates or len(block_successors) > 1 or len(cfg_successors) > 1 or
+            len(set(edge_candidates)) != 1):
+        return None
+    target_address = edge_candidates[0]
+    edge_kind = getattr(entry, "successor_kinds", {}).get(target_address)
+    if edge_kind is None and node is not None:
+        edge_kind = getattr(node, "successor_kinds", {}).get(target_address)
+    if edge_kind is not None and edge_kind not in {"branch", "direct", "jump", "direct_jump", "branch_taken"}:
+        return None
     target = by_address.get(target_address)
-    if target is None or target is entry or getattr(target, "successors", ()):
+    target_node = getattr(cfg, "nodes", {}).get(target_address) if _cfg_ok(cfg) else None
+    if (target is None or target is entry or getattr(target, "successors", ()) or
+            (target_node is not None and getattr(target_node, "successors", ()))):
         return None
     target_ops = [item for item in target.ops if getattr(item, "opcode", "").upper() != "IMARK"]
     if (len(target_ops) != 1 or getattr(target_ops[0], "opcode", "").upper() != "COPY" or
@@ -3785,21 +3809,9 @@ def _build_local_unconditional_jump_model(
             result_binding.width_bits not in {32, 64} or
             selected_binding.width_bits != result_binding.width_bits):
         return None
-    # The direct successor is the complete reachable CFG.  Any other blocks
-    # are unreachable from entry and have no influence on this fragment.
-    reachable: set[int] = set()
-    pending = [entry.addr]
-    while pending:
-        address = pending.pop()
-        if address in reachable:
-            continue
-        reachable.add(address)
-        block = by_address.get(address)
-        if block is None:
-            return None
-        pending.extend(getattr(block, "successors", ()))
-    if reachable != {entry.addr, target_address}:
-        return None
+    # BRANCH has exactly one direct target and the target terminates locally;
+    # therefore no other fragment block is reachable from the entry.  The
+    # proof is from typed terminators/edges, not block sequence order.
     return SourceLocalUnconditionalJumpModel(
         selected, result, result_binding.width_bits, entry.addr, target_address,
     )
