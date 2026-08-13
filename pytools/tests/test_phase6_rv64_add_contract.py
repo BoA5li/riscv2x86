@@ -50,6 +50,7 @@ class _IngressLift:
 _CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
 _IMMEDIATE_CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
 _LOCAL_BRANCH_SELECT_CONTRACT_ID = "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
+_LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID = "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
 
 
 def _build_rv64_add_model():
@@ -168,6 +169,67 @@ def test_rv64_local_branch_select_is_proof_bound_and_renderable() -> None:
         )))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
     assert rendered.emitted_text is not None and "cmpq" in rendered.emitted_text and "je 1f" in rendered.emitted_text
+
+
+def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -> None:
+    """A direct local jump may elide only CFG-proven unreachable code."""
+    fragment = AsmFragment(
+        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        inputs=[AsmOperand(constraint="r", exprText="init"),
+                AsmOperand(constraint="r", exprText="alt")],
+        isVolatile=True,
+    )
+    a0 = Var(VarKind.REG, "register", 10, 8, "a0")
+    a1 = Var(VarKind.REG, "register", 11, 8, "a1")
+    a2 = Var(VarKind.REG, "register", 12, 8, "a2")
+    target = Var(VarKind.MEM, "ram", 0x1010, 8)
+    entry = Block(0x1000, [Op(0x1000, "BRANCH", None, [target])],
+                  successors=[0x1010], successor_kinds={0x1010: "branch"},
+                  terminator_kind="branch", has_branch=True)
+    unreachable = Block(0x1004, [Op(0x1004, "COPY", a0, [a2])])
+    selected = Block(0x1010, [Op(0x1010, "COPY", a0, [a1])])
+    summary = IRSummary(
+        is_single_block=False, has_branch=True, has_call_or_return=False,
+        has_memory_barrier=False, has_atomic=False,
+        reads_regs={"a1", "a2"}, writes_regs={"a0"},
+        reads_mem=False, writes_mem=False,
+    )
+    model = build_source_semantic_model(
+        fragment=fragment, blocks=(entry, unreachable, selected),
+        cfg=CFGResult(ok=True), summary=summary, xlen=64,
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1, "a2": 2},
+            operand_width_bits={0: 64, 1: 64, 2: 64}, provenance="phase4-test",
+        ),
+    )
+    assert model.local_unconditional_jump is not None
+    plan = next(item for item in generate_candidate_plans(model)
+                if item.metadata.get("renderer_semantic_contract_id") == _LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID)
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    derived = derive_target_constraints(source_model=model, candidate_plan=plan, target_environment=environment)
+    assert derived.success and derived.constraints is not None
+    proof = run_semantic_proof_gate(
+        source_model=model, preservation_decision=model.preservation,
+        candidate_plan=plan, constraints=derived.constraints,
+        target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            frozenset({plan.kind}), frozenset({_LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID}),
+            "local-unconditional-jump-test-v1"),
+        compiler_capabilities=CompilerCapabilityModel(True, False),
+    )
+    assert proof.approved
+    approved = ApprovedTargetLoweringPlan(
+        plan, derived.constraints, proof, proof.evidence.source_model_id,
+        proof.evidence.preservation_decision_id, proof.evidence.target_environment_id,
+        "test", "1", SelectionTier.X86_INLINE_ASM,
+    )
+    renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+    rendered = render_approved_target_lowering(Phase6FRenderRequest(
+        approved, environment,
+        RendererContext({plan.plan_id: renderer_contract}, {0: "out", 1: "init", 2: "alt"}),
+    ))
+    assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+    assert rendered.emitted_text == '__asm__ volatile ("movq %1, %0" : "=r"(out) : "r"(init), "r"(alt) : );'
 
 
 def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None:

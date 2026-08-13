@@ -8,7 +8,9 @@ def prove(r):
     if c.x86_gnu_inline_asm_contract is None and c.x86_memory_inline_asm_contract is None:return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
     local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
-    if s.atomic.present or s.barrier.present or (s.operation.has_control_flow and not local_branch_select_route):return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
+    local_unconditional_jump_route = semantic_id == "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
+    local_cfg_route = local_branch_select_route or local_unconditional_jump_route
+    if s.atomic.present or s.barrier.present or (s.operation.has_control_flow and not local_cfg_route):return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     if (s.shell.has_cc_clobber and not c.preserve_cc_clobber) or (s.shell.is_volatile and not c.preserve_volatile):return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
@@ -48,6 +50,39 @@ def prove(r):
         # edges.  The registered recipe emits cmp + j{e,ne} and copies exactly
         # those two bindings, so the proof is route-specific rather than a
         # generic control-flow equivalence claim.
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
+    if local_unconditional_jump_route:
+        jump = s.local_unconditional_jump
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        contract_jump = None if contract is None else contract.local_unconditional_jump
+        if (jump is None or contract_jump is None or
+                contract.value_operation_kind.value != "copy" or
+                (contract_jump.selected_input_operand_index,
+                 contract_jump.result_operand_index, contract_jump.width_bits,
+                 contract_jump.entry_block_address, contract_jump.target_block_address) !=
+                (jump.selected_input_operand_index, jump.result_operand_index,
+                 jump.width_bits, jump.entry_block_address, jump.target_block_address) or
+                not c.control_flow_constraint.preserve_control_flow or
+                c.control_flow_constraint.preserve_condition_codes or
+                c.preserve_cc_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        result = operands.get(jump.result_operand_index)
+        selected = operands.get(jump.selected_input_operand_index)
+        if (result is None or selected is None or result.role.value != "output" or
+                selected.role.value != "input" or result.early_clobber or
+                selected.early_clobber or result.required_width_bits != jump.width_bits or
+                selected.required_width_bits != jump.width_bits or
+                result.required_width_bits not in {32, 64}):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        # Every source input remains a GNU input in the derived contract.  The
+        # selected value is copied; unused inputs preserve source C operand
+        # evaluation rather than being silently removed with unreachable CFG.
+        if any(item.role.value != "input" or item.early_clobber or
+               item.required_width_bits != jump.width_bits
+               for index, item in operands.items()
+               if index != jump.result_operand_index):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
         return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
                             PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1":

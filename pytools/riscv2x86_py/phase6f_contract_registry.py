@@ -713,6 +713,43 @@ def _local_branch_select_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+def _local_unconditional_jump_recipe(approved: ApprovedTargetLoweringPlan):
+    """Encode the registered direct-jump-to-copy CFG contract.
+
+    This emits only the proven reachable copy.  All source inputs are retained
+    as GNU inputs, even when the canonical CFG proves one is unreachable, so
+    source operand evaluation remains part of the compiler-shell contract.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    jump = None if contract is None else contract.local_unconditional_jump
+    if (contract is None or jump is None or
+            contract.value_operation_kind is not SourceValueOperationKind.COPY or
+            not c.control_flow_constraint.preserve_control_flow or
+            c.control_flow_constraint.preserve_condition_codes or
+            c.preserve_cc_clobber):
+        return None
+    by_index = {item.source_operand_index: item for item in c.operand_constraints}
+    result = by_index.get(jump.result_operand_index)
+    selected = by_index.get(jump.selected_input_operand_index)
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if (result is None or selected is None or result.role is not TargetOperandRole.OUTPUT or
+            selected.role is not TargetOperandRole.INPUT or result.early_clobber or
+            result.required_width_bits not in {32, 64} or
+            any(item.early_clobber or item.requires_fixed_register or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes or
+                item.required_width_bits != result.required_width_bits
+                for item in inputs)):
+        return None
+    suffix = "l" if result.required_width_bits == 32 else "q"
+    selected_template_index = 1 + inputs.index(selected)
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=f"mov{suffix} %{selected_template_index}, %0",
+        output_operand_indexes=(result.source_operand_index,),
+        input_operand_indexes=tuple(item.source_operand_index for item in inputs),
+    ))
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -1014,6 +1051,14 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             TargetLoweringKind.X86_GNU_INLINE_ASM,
             "x86.gnu-att.local-branch-select.compare.u32-u64",
             _local_branch_select_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.local-unconditional-jump.copy.u32-u64",
+            _local_unconditional_jump_recipe,
             "x86_gnu_inline_asm_contract",
             frozenset({"x86:gpr_inline_asm"}),
         ),

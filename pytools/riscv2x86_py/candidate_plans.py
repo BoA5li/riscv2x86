@@ -85,6 +85,7 @@ class Phase6BCandidateFacts:
     has_return_semantics: bool
     has_branch_semantics: bool
     has_proven_local_branch_select: bool
+    has_proven_local_unconditional_jump: bool
     asm_goto_condition_kind: str | None
     asm_goto_condition_operand_index: int | None
 
@@ -519,6 +520,29 @@ def _generate_cfg_candidates(
             rationale=("A canonical local two-way compare/select CFG has a "
                        "registered proof-bound x86 inline-asm route.",),
             reason_codes=("x86-local-branch-select-candidate",),
+        )]
+    if facts.has_proven_local_unconditional_jump:
+        return [_plan(
+            plan_id="x86.local-unconditional-jump-copy",
+            kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+            family=TargetLoweringFamily.X86_INLINE_ASM,
+            priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+            deterministic_rank=34,
+            required_features=frozenset({"x86:gpr_inline_asm"}),
+            requirements=frozenset({
+                PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+                PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                PlanRequirement.PRESERVE_CONTROL_FLOW,
+                PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
+            }),
+            metadata={
+                "strategy": "x86_local_unconditional_jump_copy_inline_asm",
+                "renderer_semantic_contract_id":
+                    "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
+            },
+            rationale=("A canonical direct local jump with one reachable bound "
+                       "copy has a registered proof-bound x86 inline-asm route.",),
+            reason_codes=("x86-local-unconditional-jump-copy-candidate",),
         )]
     requirements = {
         PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
