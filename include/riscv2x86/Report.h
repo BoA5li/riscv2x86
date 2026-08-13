@@ -71,6 +71,8 @@ struct TranslationApprovalArtifact {
     std::string replacementDigest, sourceSliceDigest;
     std::string helperRuntimeContractId, helperSemanticVersion;
     std::string helperRequiredHeader, helperRuntimeLibrary, helperRuntimeManifestVersion;
+    bool functionalFallbackEnabled = false;
+    std::string preservationMode, sourceSemanticContractId, targetSemanticContractId;
 };
 
 struct Finding {

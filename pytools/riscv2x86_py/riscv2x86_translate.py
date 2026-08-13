@@ -322,7 +322,28 @@ def validate_translated_report(
             rule_name = str(finding.get("ruleName") or finding.get("rule") or "")
             phase6_artifact = finding.get("approvalArtifact")
             public_artifact = finding.get("publicApprovalArtifact")
-            if rule_name.startswith("phase6."):
+            if rule_name.startswith("phase6.functional."):
+                if (
+                    not isinstance(phase6_artifact, dict)
+                    or phase6_artifact.get("artifactVersion")
+                    != "phase6-functional-fallback-v1"
+                    or phase6_artifact.get("proofStatus")
+                    != "functional_approved"
+                    or phase6_artifact.get("functionalFallbackEnabled") is not True
+                    or phase6_artifact.get("preservationMode")
+                    != "functional_equivalence_only"
+                    or not isinstance(
+                        phase6_artifact.get("sourceSemanticContractId"), str
+                    )
+                    or not phase6_artifact["sourceSemanticContractId"]
+                    or not isinstance(
+                        phase6_artifact.get("targetSemanticContractId"), str
+                    )
+                    or not phase6_artifact["targetSemanticContractId"]
+                ):
+                    invalid_replaceable.append(finding)
+                    continue
+            elif rule_name.startswith("phase6."):
                 if not isinstance(phase6_artifact, dict) or phase6_artifact.get("proofStatus") != "approved":
                     invalid_replaceable.append(finding)
                     continue
@@ -566,6 +587,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--allow-functional-fallbacks",
+        action="store_true",
+        help=(
+            "Permit explicitly registered functional-only fallbacks when "
+            "strict architecture-semantic equivalence is unavailable. "
+            "Default: fail closed and leave the finding routed."
+        ),
+    )
+
+    parser.add_argument(
         "--keep-work-dir",
         action="store_true",
         help="Keep automatically created temporary work directory.",
@@ -661,6 +692,9 @@ def translate_one(
                 "--ghidra-language-id",
                 args.ghidra_language_id,
         ])
+
+    if args.allow_functional_fallbacks:
+        backend_cmd.append("--allow-functional-fallbacks")
 
     # Do not permit a globally installed/stale ``riscv2x86_py`` package to
     # shadow the semantic pipeline in this source checkout.

@@ -2792,6 +2792,88 @@ def _translate_level_d(context: TranslationContext) -> TranslationOutput:
 # =============================================================================
 # Public entry
 # =============================================================================
+def _render_counter_csr_functional_fallback(
+    *,
+    context: TranslationContext,
+    csr_name: str,
+    result_operand_index: int,
+    width_bits: int,
+    target_environment: TargetEnvironment,
+) -> TranslationOutput | None:
+    """Render one explicitly approved *functional-only* counter adapter.
+
+    This is deliberately separate from the normal Phase-6 proof pipeline.
+    RISC-V counter CSRs are architecture-defined environment interfaces, and
+    x86 ``rdtsc`` is not a strict replacement for their time domain.  A caller
+    must opt in to this documented semantic downgrade.  The registry is keyed
+    by structured Phase-6A CSR facts, never by an asm mnemonic or source text.
+
+    ``time`` and ``cycle`` are the only 64-bit counter families currently
+    registered.  ``instret`` has no matching x86 counter contract, while the
+    high-half RV32 CSRs need a separate width/rollover contract.  Returning
+    ``None`` preserves fail-closed routing for every unregistered family.
+    """
+    if (csr_name not in {"time", "cycle"} or width_bits != 64 or
+            target_environment.architecture.value != "x86_64" or
+            "x86:rdtsc" not in target_environment.available_features or
+            "compiler:x86-rdtsc-builtin" not in target_environment.builtin_capabilities):
+        return None
+
+    binding = _output_operand_expr(context, result_operand_index)
+    if not binding:
+        return None
+
+    source_contract = f"riscv.readonly-counter-csr.{csr_name}.u64.v1"
+    target_contract = "x86.builtin.rdtsc.u64.v1"
+    replacement = f"{binding} = (uint64_t)__builtin_ia32_rdtsc();"
+    artifact = {
+        "artifactVersion": "phase6-functional-fallback-v1",
+        "proofStatus": "functional_approved",
+        "functionalFallbackEnabled": True,
+        "preservationMode": "functional_equivalence_only",
+        "sourceSemanticContractId": source_contract,
+        "targetSemanticContractId": target_contract,
+        "sourceFragmentId": context.fragment.id,
+        "sourceModelId": "phase6a:" + context.fragment.id,
+        "preservationDecisionId": (
+            "phase6a-functional-fallback:" + context.fragment.id
+        ),
+        "planId": "functional-fallback:" + source_contract,
+        "constraintsId": "functional-fallback:x86-rdtsc-u64",
+        "targetEnvironmentId": "phase6:" + ":".join((
+            target_environment.architecture.value,
+            target_environment.abi.value,
+            target_environment.asm_dialect.value,
+            target_environment.compiler_family,
+            target_environment.compiler_version,
+        )),
+        "targetCatalogVersion": "functional-counter-registry-v1",
+        "selectionPolicyId": "explicit-functional-fallback",
+        "selectionPolicyVersion": "v1",
+        "selectionTier": "functional_fallback",
+        "rendererId": "x86-rdtsc-builtin-renderer",
+        "rendererVersion": "v1",
+        "replacementKind": "c_builtin",
+        "replacementDigest": _approval_digest(replacement),
+        "sourceSliceDigest": "",
+    }
+    return _output(
+        kind="functional_c",
+        replacement=replacement,
+        context=context,
+        route="explicit_functional_counter_fallback",
+        notes=[
+            f"functional fallback enabled: RISC-V {csr_name} CSR is rendered "
+            "through the registered x86 rdtsc counter adapter; architecture "
+            "time-domain equivalence is intentionally not claimed"
+        ],
+        reason_codes=["TR_FUNCTIONAL_COUNTER_CSR_FALLBACK"],
+        build_family="x86_gnu_c_builtin",
+        requires_build_check=True,
+        metadata={"approvalArtifact": artifact},
+    )
+
+
 def translate(
     frag: AsmFragment,
     lift: Any,
@@ -2808,6 +2890,7 @@ def translate(
     selection_policy: Phase6ESelectionPolicy = Phase6ESelectionPolicy(),
     renderer_context: Optional[RendererContext] = None,
     renderer_contract_registry: RendererContractRegistry = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY,
+    allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
     Phase 6 / 7 translation entry.
@@ -2949,6 +3032,41 @@ def translate(
 
     context.sourceModel = source_model
     context.decision = source_model.preservation
+
+    # A RISC-V counter CSR is an environment-defined architectural source,
+    # not an unbound integer register and not a portable x86 timer synonym.
+    # Phase 6A recognized this from canonical register varnodes; do not let
+    # later phases reinterpret the original asm or substitute rdtsc/clock().
+    # A target deployment must explicitly register a versioned runtime time
+    # domain contract before this family becomes renderable.
+    if source_model.read_only_csr is not None:
+        csr = source_model.read_only_csr
+        if allow_functional_fallbacks:
+            fallback = _render_counter_csr_functional_fallback(
+                context=context,
+                csr_name=csr.csr_name,
+                result_operand_index=csr.result_operand_index,
+                width_bits=csr.width_bits,
+                target_environment=target_environment,
+            )
+            if fallback is not None:
+                return fallback
+        return _needs_route(
+            context,
+            route="riscv_counter_csr_runtime_adapter",
+            reason=(
+                f"RISC-V read-only counter CSR '{csr.csr_name}' requires an "
+                "explicit target runtime time-domain contract; no implicit "
+                "x86 timer or C clock substitute is permitted"
+            ),
+            reason_code="TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED",
+            metadata={
+                "csrName": csr.csr_name,
+                "resultOperandIndex": csr.result_operand_index,
+                "widthBits": csr.width_bits,
+                "requiredRuntimeContractFamily": "riscv.readonly-counter-csr",
+            },
+        )
 
     return _translate_phase6_proof_pipeline(
         context=context,

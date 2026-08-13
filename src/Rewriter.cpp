@@ -45,8 +45,17 @@ static bool validApprovalArtifact(const Finding &f, const std::string &sourceSli
     // Direct replacements have exactly two allowed origins.  A legacy rule
     // name is not an approval artifact and may not bypass proof/contract
     // validation during --apply.
-    if (f.ruleName.rfind("phase6.", 0) != 0) return false;
-    if (!a.present || a.artifactVersion != "phase6-approval-v1" || a.proofStatus != "approved") return false;
+    if (f.ruleName.rfind("phase6.functional.", 0) == 0) {
+        if (!a.present ||
+            a.artifactVersion != "phase6-functional-fallback-v1" ||
+            a.proofStatus != "functional_approved" ||
+            !a.functionalFallbackEnabled ||
+            a.preservationMode != "functional_equivalence_only" ||
+            a.sourceSemanticContractId.empty() ||
+            a.targetSemanticContractId.empty()) return false;
+    } else if (f.ruleName.rfind("phase6.", 0) == 0) {
+        if (!a.present || a.artifactVersion != "phase6-approval-v1" || a.proofStatus != "approved") return false;
+    } else return false;
     if (a.sourceFragmentId.empty() || a.planId.empty() || a.constraintsId.empty() || a.targetEnvironmentId.empty() || a.rendererId.empty() || a.rendererVersion.empty() || a.replacementKind.empty()) return false;
     if (!f.fragment.has_value() || a.sourceFragmentId != f.fragment->id) return false;
     if (a.replacementKind == "helper_call" &&

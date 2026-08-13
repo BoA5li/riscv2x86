@@ -62,6 +62,15 @@ def main() -> int:
             "Output findings will be marked not_verified."
         ),
     )
+    ap.add_argument(
+        "--allow-functional-fallbacks",
+        action="store_true",
+        help=(
+            "Allow only explicitly registered functional-equivalence "
+            "fallbacks when strict architecture-semantic equivalence is "
+            "unavailable. Default: fail closed."
+        ),
+    )
 
     args = ap.parse_args()
 
@@ -100,6 +109,7 @@ def main() -> int:
             language=None,
             register_name_resolver=resolver,
             verify_enabled=not args.skip_verify,
+            allow_functional_fallbacks=args.allow_functional_fallbacks,
         )
     except Exception as exc:
         print(

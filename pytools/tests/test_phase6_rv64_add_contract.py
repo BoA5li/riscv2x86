@@ -7,7 +7,7 @@ import tempfile
 
 from riscv2x86_py.candidate_plans import generate_candidate_plans
 from riscv2x86_py.cfg import CFGResult
-from riscv2x86_py.pcode_ir import Block, IRSummary, Op, Var, VarKind
+from riscv2x86_py.pcode_ir import Block, CanonicalInsn, IRSummary, Op, Var, VarKind
 from riscv2x86_py.phase6c_constraints import (
     TargetEnvironment,
     derive_target_constraints,
@@ -33,6 +33,17 @@ from riscv2x86_py.phase6f_renderer import (
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
 from riscv2x86_py.schema import AsmFragment, AsmOperand
 from riscv2x86_py.source_model import build_source_semantic_model
+from riscv2x86_py.translate import translate
+
+
+class _IngressLiftInsn:
+    addr = 0x1000
+    length = 4
+
+
+class _IngressLift:
+    ok = True
+    insns = (_IngressLiftInsn(),)
 
 
 _CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
@@ -201,6 +212,57 @@ def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None
                 operand_bindings={0: "out", 1: "left", 2: "right", 3: "when_true", 4: "when_false"},
             )))
         assert rendered.emitted_text is not None and expected_jump in rendered.emitted_text
+
+
+def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
+    """Counter CSRs must not become an accidental rdtsc/clock rewrite."""
+    fragment = AsmFragment(
+        outputs=[AsmOperand(constraint="=r", exprText="time_val", isOutput=True)],
+        isVolatile=True,
+    )
+    a0 = Var(VarKind.REG, "register", 10, 8, "a0")
+    time = Var(VarKind.REG, "register", 0, 8, "time")
+    summary = IRSummary(
+        is_single_block=False, has_branch=True, has_call_or_return=False,
+        has_memory_barrier=False, has_atomic=False,
+        reads_regs={"time"}, writes_regs={"a0"}, reads_mem=False, writes_mem=False,
+    )
+    blocks = (Block(0x1000, [Op(0x1000, "COPY", a0, [time])], summary=summary,
+                    instructions=[CanonicalInsn(addr=0x1000, size=4)]),)
+    facts = TranslationRuntimeFacts(
+        rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64}, provenance="phase4-test",
+    )
+    model = build_source_semantic_model(
+        fragment=fragment, blocks=blocks, cfg=CFGResult(ok=True), summary=summary,
+        runtime_facts=facts, xlen=64,
+    )
+    assert model.read_only_csr is not None
+    assert model.read_only_csr.csr_name == "time"
+    routed = translate(
+        frag=fragment, lift=_IngressLift(), summary=summary, machine_code=b"\0\0\0\0", xlen=64,
+        blocks=blocks, cfg=CFGResult(ok=True), runtime_facts=facts,
+    )
+    assert routed.kind == "needs_route"
+    assert "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
+
+    functional_environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
+        available_features={"x86:gpr_inline_asm", "x86:rdtsc"},
+        builtin_capabilities={"compiler:x86-rdtsc-builtin"},
+    )
+    functional = translate(
+        frag=fragment, lift=_IngressLift(), summary=summary,
+        machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
+        cfg=CFGResult(ok=True), runtime_facts=facts,
+        target_environment=functional_environment,
+        allow_functional_fallbacks=True,
+    )
+    assert functional.kind == "functional_c"
+    assert functional.replacement == (
+        "time_val = (uint64_t)__builtin_ia32_rdtsc();"
+    )
+    artifact = functional.metadata["approvalArtifact"]
+    assert artifact["proofStatus"] == "functional_approved"
+    assert artifact["preservationMode"] == "functional_equivalence_only"
 
 
 def test_rv64_add_has_proven_att_renderer_contract() -> None:

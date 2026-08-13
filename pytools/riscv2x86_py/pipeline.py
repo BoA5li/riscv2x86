@@ -209,6 +209,7 @@ _PURE_C_KINDS = {
     "c",
     "builtin",
     "lower_to_c",
+    "functional_c",
 }
 
 
@@ -571,6 +572,28 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
 
     is_x86_inline_asm = kind in _X86_INLINE_ASM_KINDS
 
+    # ---------- explicitly opted-in functional fallback ----------
+    #
+    # This is not a generic pure-C exception.  It is an auditable, explicit
+    # downgrade selected by the caller and may only be used by a registered
+    # semantic-family adapter.  In particular, it must not become a route for
+    # silently discarding volatile/clobber semantics from arbitrary asm.
+    if kind == "functional_c":
+        artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        required = (
+            artifact.get("artifactVersion") == "phase6-functional-fallback-v1"
+            and artifact.get("proofStatus") == "functional_approved"
+            and artifact.get("functionalFallbackEnabled") is True
+            and artifact.get("preservationMode") == "functional_equivalence_only"
+            and isinstance(artifact.get("sourceSemanticContractId"), str)
+            and isinstance(artifact.get("targetSemanticContractId"), str)
+        )
+        if not required:
+            reasons.append(
+                "functional C fallback lacks its required explicit approval artifact"
+            )
+        return reasons
+
     # ---------- pure C / lower_to_c 路径 ----------
     if not is_x86_inline_asm:
         if is_volatile:
@@ -828,11 +851,17 @@ def run(
     register_name_resolver: Optional[RegisterNameResolver] = None,
     verify_enabled: bool = True,
     target_environment: TargetEnvironment | None = None,
+    allow_functional_fallbacks: bool = False,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
+    default_features = {"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id}
+    default_builtins = {"c_builtin:atomic", "c_builtin:compiler_barrier"}
+    if allow_functional_fallbacks:
+        default_features.add("x86:rdtsc")
+        default_builtins.add("compiler:x86-rdtsc-builtin")
     public_environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
-        available_features={"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id},
-        builtin_capabilities={"c_builtin:atomic", "c_builtin:compiler_barrier"},
+        available_features=default_features,
+        builtin_capabilities=default_builtins,
         supports_gnu_asm_goto=True,
         helper_contract_capabilities={
             RV64_MULHU_U64.runtime_contract_id,
@@ -1180,6 +1209,7 @@ def run(
             # 同一个 authoritative facts source。
             runtime_facts=f.translationRuntimeFacts,
             target_environment=environment,
+            allow_functional_fallbacks=allow_functional_fallbacks,
         )
 
         # 先读取 translate 结果，但不要立刻把 replacement 写入 finding。
@@ -1338,7 +1368,9 @@ def run(
         f.suggestedReplacement = replacement
         f.category = "ReplaceableByRule"
 
-        if apply_kind == "x86_goto":
+        if translation_kind == "functional_c":
+            f.ruleName = "phase6.functional.counter_csr_rdtsc"
+        elif apply_kind == "x86_goto":
             f.ruleName = "phase6.lower_to_x86_asm_goto"
         elif apply_kind == "x86":
             f.ruleName = "phase6.lower_to_x86_inline_asm"
