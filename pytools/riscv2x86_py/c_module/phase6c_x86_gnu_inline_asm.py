@@ -73,6 +73,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
     "x86.gnu-att.gpr.straight-line-u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
+    "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
     "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
     "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
@@ -127,6 +128,22 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": semantic_id,
                 "expected": "early_clobber_output_value_and_cl_shift_inputs",
+            })
+        return None
+
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1":
+        outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
+        inputs = [op for op in target_operands if op.role.name == "INPUT"]
+        if (len(outputs) != 1 or len(inputs) != 1 or not outputs[0].early_clobber or
+                outputs[0].required_width_bits not in {32, 64} or
+                any(item.required_width_bits != outputs[0].required_width_bits or
+                    item.early_clobber or item.requires_fixed_register or
+                    item.tied_to_source_operand_index is not None or
+                    TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                    for item in inputs)):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "early_clobber_output_and_one_gpr_input_for_immediate_shift",
             })
         return None
 
@@ -383,6 +400,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
             })
     sequence_route = semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1"
     immediate_route = semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
+    immediate_shift_route = semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1"
     if sequence_route:
         value = source_model.value_operation
         if (
@@ -406,9 +424,22 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
                 "renderer_semantic_contract_id": str(semantic_id),
                 "expected": "proven_matching_immediate_value",
             })
+    if immediate_shift_route:
+        value = source_model.value_operation
+        if (value is None or value.kind not in {
+                SourceValueOperationKind.SHIFT_LEFT_IMMEDIATE,
+                SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
+                SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
+            } or value.immediate_value is None or
+                not 0 <= value.immediate_value < source_model.xlen or
+                candidate_plan.metadata.get("source_shift_amount") != value.immediate_value):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": str(semantic_id),
+                "expected": "proven_immediate_shift_count",
+            })
     elif (source_model.value_operation is not None and
           source_model.value_operation.immediate_value is not None and
-          not sequence_route and not program_route):
+          not sequence_route and not immediate_shift_route and not program_route):
         return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
             "renderer_semantic_contract_id": str(semantic_id),
             "expected": "dedicated_immediate_contract",
@@ -428,6 +459,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
                 "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
+                "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
             }
             and role is X86OperandRole.OUTPUT
         )
@@ -445,7 +477,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     )
     if contract_failure is not None:
         return contract_failure
-    target_writes_cc = local_branch_select_route or program_route or variable_shift_route or comparison_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
+    target_writes_cc = local_branch_select_route or program_route or variable_shift_route or immediate_shift_route or comparison_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
     operation_kind = (branch_select_contract.condition_kind if branch_select_contract is not None else
                       (SourceValueOperationKind.COPY if local_jump_contract is not None else
                        (SourceValueOperationKind.COPY if program_route else source_model.value_operation.kind)))

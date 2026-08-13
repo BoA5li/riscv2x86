@@ -623,6 +623,38 @@ def _gpr_variable_shift_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+def _gpr_immediate_shift_recipe(approved: ApprovedTargetLoweringPlan):
+    """Render one approved fixed-count 32/64-bit shift, never from asm text."""
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    opcodes = {
+        SourceValueOperationKind.SHIFT_LEFT_IMMEDIATE: "shl",
+        SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_IMMEDIATE: "shr",
+        SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE: "sar",
+    }
+    if (contract is None or contract.value_operation_kind not in opcodes or
+            contract.immediate_value is None):
+        return None
+    outputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.OUTPUT]
+    inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
+    if len(outputs) != 1 or len(inputs) != 1:
+        return None
+    output, source = outputs[0], inputs[0]
+    if (output.required_width_bits not in {32, 64} or not output.early_clobber or
+            source.required_width_bits != output.required_width_bits or source.early_clobber or
+            not 0 <= contract.immediate_value < output.required_width_bits or
+            any(item.requires_fixed_register or item.tied_to_source_operand_index is not None or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in (output, source))):
+        return None
+    suffix = "l" if output.required_width_bits == 32 else "q"
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=f"mov{suffix} %1, %0\n\t{opcodes[contract.value_operation_kind]}{suffix} ${contract.immediate_value}, %0",
+        output_operand_indexes=(output.source_operand_index,),
+        input_operand_indexes=(source.source_operand_index,),
+    ))
+
+
 def _gpr_boolean_compare_recipe(approved: ApprovedTargetLoweringPlan):
     """Encode a proof-bound XLEN boolean result from an x86 comparison."""
     c = approved.constraints
@@ -1088,6 +1120,14 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             TargetLoweringKind.X86_GNU_INLINE_ASM,
             "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64",
             _gpr_variable_shift_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
+        RegisteredRendererContract(
+            "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64",
+            _gpr_immediate_shift_recipe,
             "x86_gnu_inline_asm_contract",
             frozenset({"x86:gpr_inline_asm"}),
         ),

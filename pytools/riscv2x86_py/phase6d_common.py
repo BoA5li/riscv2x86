@@ -193,6 +193,7 @@ def _validate_operand_bindings(request):
                 "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
+                "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
             }
             and target.role.value == "output"
             and source.access.value == "output"

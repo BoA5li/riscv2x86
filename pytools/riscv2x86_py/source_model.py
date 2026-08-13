@@ -2338,6 +2338,9 @@ class SourceValueOperationKind(str, Enum):
     SHIFT_LEFT_REGISTER = "shift_left_register"
     SHIFT_RIGHT_LOGICAL_REGISTER = "shift_right_logical_register"
     SHIFT_RIGHT_ARITHMETIC_REGISTER = "shift_right_arithmetic_register"
+    SHIFT_LEFT_IMMEDIATE = "shift_left_immediate"
+    SHIFT_RIGHT_LOGICAL_IMMEDIATE = "shift_right_logical_immediate"
+    SHIFT_RIGHT_ARITHMETIC_IMMEDIATE = "shift_right_arithmetic_immediate"
     SIGNED_LESS = "signed_less"
     UNSIGNED_LESS = "unsigned_less"
     SIGNED_LESS_EQUAL = "signed_less_equal"
@@ -4773,9 +4776,9 @@ def _build_value_operation_model(
             if constant_position != 1 or immediate_value < 0 or immediate_value >= result.width_bits:
                 return None
             kind = {
-                SourceValueOperationKind.SHIFT_LEFT_REGISTER: SourceValueOperationKind.SHIFT_LEFT_REGISTER,
-                SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER: SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER,
-                SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER: SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER,
+                SourceValueOperationKind.SHIFT_LEFT_REGISTER: SourceValueOperationKind.SHIFT_LEFT_IMMEDIATE,
+                SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_REGISTER: SourceValueOperationKind.SHIFT_RIGHT_LOGICAL_IMMEDIATE,
+                SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_REGISTER: SourceValueOperationKind.SHIFT_RIGHT_ARITHMETIC_IMMEDIATE,
             }[kind]
         # x86-64 ALU immediate encodings sign-extend an imm32.  Restricting
         # this contract to that exact shared value domain prevents a renderer

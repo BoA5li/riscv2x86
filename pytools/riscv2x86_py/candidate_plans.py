@@ -1017,6 +1017,28 @@ def _generate_register_only_candidates(
                 reason_codes=("x86-register-sequence-candidate",),
             ))
             return candidates
+        if (value is not None and value.complete and value.immediate_value is not None and
+                value.kind.value in {"shift_left_immediate", "shift_right_logical_immediate",
+                                     "shift_right_arithmetic_immediate"}):
+            candidates.append(_plan(
+                plan_id="x86.register-only-inline-asm.out-gpr-immediate-shift",
+                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+                family=TargetLoweringFamily.X86_INLINE_ASM,
+                priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+                deterministic_rank=38,
+                required_features=frozenset({"x86:gpr_inline_asm"}),
+                requirements=_x86_requirements(preserve_cc=True),
+                metadata={
+                    "strategy": "x86_register_immediate_shift_inline_asm",
+                    "renderer_semantic_contract_id":
+                        "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
+                    "source_shift_amount": value.immediate_value,
+                },
+                rationale=("Registered immediate-count shift with a typed operation, "
+                           "width and count-range contract.",),
+                reason_codes=("x86-immediate-shift-candidate",),
+            ))
+            return candidates
         # These are deliberately separate candidates.  Phase 6C validates the
         # exact operand-contract precondition selected here; Phase 6F must
         # never select a recipe from the incidental shape of an operand.

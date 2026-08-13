@@ -3282,6 +3282,7 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1",
             "x86.gnu-att.gpr.straight-line-u32-u64.v1",
             "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
+            "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
             "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
             "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
             "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",

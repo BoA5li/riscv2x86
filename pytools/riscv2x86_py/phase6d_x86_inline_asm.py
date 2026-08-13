@@ -139,6 +139,27 @@ def prove(r):
             return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
         return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
                             PreservationConclusion.SHELL_PRESERVED))
+    if semantic_id == "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1":
+        value = s.value_operation
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        if (value is None or value.kind.value not in {
+                "shift_left_immediate", "shift_right_logical_immediate",
+                "shift_right_arithmetic_immediate"} or value.immediate_value is None or
+                contract is None or contract.value_operation_kind is not value.kind or
+                contract.immediate_value != value.immediate_value or
+                r.candidate_plan.metadata.get("source_shift_amount") != value.immediate_value or
+                not 0 <= value.immediate_value < s.xlen or not c.preserve_cc_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        output = operands.get(value.result_operand_index)
+        source = operands.get(value.input_operand_indexes[0]) if len(value.input_operand_indexes) == 1 else None
+        if (output is None or source is None or output.role.value != "output" or
+                not output.early_clobber or source.role.value != "input" or
+                output.required_width_bits not in {32, 64} or
+                source.required_width_bits != output.required_width_bits or
+                source.early_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1":
         program = s.value_program
         operands = {item.source_operand_index: item for item in c.operand_constraints}
