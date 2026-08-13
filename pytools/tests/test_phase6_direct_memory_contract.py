@@ -88,7 +88,7 @@ def test_direct_u64_load_preserves_memory_shell_and_compiles() -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "load.c"
             source.write_text("#include <stdint.h>\nvoid f(const uint64_t *addr) { uint64_t out; " + rendered.emitted_text + " }\n")
-            completed = subprocess.run([compiler, "-c", "-std=gnu11", str(source)], capture_output=True, text=True, check=False)
+            completed = subprocess.run([compiler, "-c", "-std=gnu11", str(source), "-o", str(Path(directory) / "load.o")], capture_output=True, text=True, check=False)
             assert completed.returncode == 0, completed.stderr
 
 
@@ -147,3 +147,81 @@ def test_direct_u64_load_accepts_transparent_copy_and_add_zero_address_chain() -
     assert model.operands.operands[1].address is not None
     plan = generate_candidate_plans(model)[0]
     assert plan.metadata["renderer_semantic_contract_id"] == "x86.gnu-att.memory.load.gpr-address.u64.v1"
+
+
+def test_direct_u64_load_binds_proven_signed_disp32_and_compiles() -> None:
+    """A non-zero p-code displacement must survive candidate, proof and rendering."""
+    class LoadInsn:
+        addr = 0
+        size = 4
+        asm_mnem = "ld"
+        asm_body = "a0, 8(a1)"
+        terminator_kind = None
+
+    base = SimpleNamespace(space="register", offset=11, size=8, name="a1")
+    offset = SimpleNamespace(space="const", offset=8, size=8, name="")
+    address = SimpleNamespace(space="unique", offset=0x200, size=8, name="")
+
+    class AddOffsetOp:
+        opcode = "INT_ADD"
+        output = address
+        inputs = [base, offset]
+
+    class LoadOp:
+        opcode = "LOAD"
+        output = SimpleNamespace(space="register", offset=10, size=8, name="a0")
+        inputs = [SimpleNamespace(space="const", offset=0, size=8, name=""), address]
+
+    LoadInsn.raw_ops = [AddOffsetOp(), LoadOp()]
+    blocks, summary = from_lifted([LoadInsn()])
+    fragment = AsmFragment(
+        rawAsmText="ld %[dst], 8(%[base])", isVolatile=True, clobbers=["memory"],
+        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        inputs=[AsmOperand(constraint="r", exprText="base", isOutput=False)],
+    )
+    model = build_source_semantic_model(
+        fragment=fragment, blocks=blocks, cfg=CFGResult(ok=True), summary=summary,
+        xlen=64,
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1},
+            operand_width_bits={0: 64, 1: 64},
+        ),
+    )
+    address_operand = next(item for item in model.operands.operands if item.address is not None)
+    assert address_operand.address.byte_offset == 8
+    plan = generate_candidate_plans(model)[0]
+    semantic_id = "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1"
+    assert plan.metadata["renderer_semantic_contract_id"] == semantic_id
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
+        available_features={"x86:gpr_inline_asm"},
+    )
+    derived = derive_target_constraints(source_model=model, candidate_plan=plan, target_environment=environment)
+    assert derived.success and derived.constraints is not None
+    assert derived.constraints.x86_memory_inline_asm_contract.address_displacement_bytes == 8
+    proof = run_semantic_proof_gate(
+        source_model=model, preservation_decision=model.preservation,
+        candidate_plan=plan, constraints=derived.constraints,
+        target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            frozenset({plan.kind}), frozenset({semantic_id}), "direct-memory-disp32-test-v1"),
+        compiler_capabilities=CompilerCapabilityModel(True, False),
+    )
+    assert proof.approved and proof.evidence is not None
+    approved = ApprovedTargetLoweringPlan(
+        plan, derived.constraints, proof, proof.evidence.source_model_id,
+        proof.evidence.preservation_decision_id, proof.evidence.target_environment_id,
+        "test", "1", SelectionTier.X86_INLINE_ASM,
+    )
+    contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+    rendered = render_approved_target_lowering(Phase6FRenderRequest(
+        approved, environment,
+        RendererContext({plan.plan_id: contract}, {0: "out", 1: "base"}),
+    ))
+    assert rendered.emitted_text == '__asm__ volatile ("movq 8(%1), %0" : "=r"(out) : "r"(base) : "memory");'
+    compiler = shutil.which("cc")
+    if compiler:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "load_offset.c"
+            source.write_text("#include <stdint.h>\nvoid f(const uint64_t *base) { uint64_t out; " + rendered.emitted_text + " }\n")
+            completed = subprocess.run([compiler, "-c", "-std=gnu11", str(source), "-o", str(Path(directory) / "load_offset.o")], capture_output=True, text=True, check=False)
+            assert completed.returncode == 0, completed.stderr

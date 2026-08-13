@@ -2448,6 +2448,9 @@ class SourceAddressBinding:
     pointee_type_id: Optional[str]
     alignment_bytes: Optional[int]
     provenance_known: bool
+    # Canonical byte displacement from the bound address operand.  It is
+    # derived from typed p-code address arithmetic, never from asm text.
+    byte_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -3088,7 +3091,7 @@ def _build_operand_model(
         runtime_facts,
         shell=shell,
         authoritative_bindings=authoritative_bindings,
-        memory_address_operand_indexes=_memory_address_operand_indexes(
+        memory_address_operand_offsets=_memory_address_operand_offsets(
             blocks=blocks,
             runtime_facts=runtime_facts,
         ),
@@ -3379,7 +3382,7 @@ def _runtime_operand_semantics(
     *,
     shell: SourceShellModel,
     authoritative_bindings: dict[int, object],
-    memory_address_operand_indexes: set[int],
+    memory_address_operand_offsets: Mapping[int, int],
 ) -> dict[int, RuntimeOperandSemanticFact]:
     """
     Return runtime operand semantic records.
@@ -3421,7 +3424,7 @@ def _runtime_operand_semantics(
             )
         else:
             access = SourceOperandAccess.INPUT
-        if index in memory_address_operand_indexes:
+        if index in memory_address_operand_offsets:
             kind = SourceOperandKind.ADDRESS
             access = SourceOperandAccess.ADDRESS
         reads = access in {SourceOperandAccess.INPUT, SourceOperandAccess.READ_WRITE, SourceOperandAccess.ADDRESS}
@@ -3458,24 +3461,25 @@ def _runtime_operand_semantics(
                 pointee_type_id=None,
                 alignment_bytes=None,
                 provenance_known=True,
-            ) if index in memory_address_operand_indexes else None),
+                byte_offset=memory_address_operand_offsets[index],
+            ) if index in memory_address_operand_offsets else None),
         )
     return result
 
 
-def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: TranslationRuntimeFacts) -> set[int]:
-    """Recover one transparent memory-address binding inside Phase 6A only.
+def _memory_address_operand_offsets(*, blocks: Sequence[Block], runtime_facts: TranslationRuntimeFacts) -> dict[int, int]:
+    """Recover one ``base + signed-disp32`` address binding in Phase 6A.
 
     Lifting commonly represents ``0(base)`` as a UNIQUE varnode produced by
-    ``COPY base`` or ``INT_ADD base, 0`` before the LOAD/STORE.  Those are
-    representation-only steps, not a different source address contract.  We
-    accept only that deliberately tiny transparent chain.  Any non-zero
-    offset, arithmetic, merge, or ambiguous producer remains unmodelled and
-    is rejected by the memory lowering path.
+    ``COPY base`` or ``INT_ADD base, constant`` before the LOAD/STORE.  The
+    accepted arithmetic is deliberately finite: transparent width-preserving
+    copies/extensions plus additions of typed constants, with a final signed
+    32-bit byte displacement.  General arithmetic, merges and ambiguous
+    producers remain unmodelled and are rejected by the memory path.
     """
     raw_map = getattr(runtime_facts, "rv_to_operand_index", {})
     if not isinstance(raw_map, Mapping):
-        return set()
+        return {}
     canonical_map = {
         canonicalize_riscv_register_name(register): index
         for register, index in raw_map.items()
@@ -3485,18 +3489,18 @@ def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: T
     memory_ops = [op for block in blocks for instruction in block.instructions
                   for op in instruction.ops if op.opcode in {"LOAD", "STORE"}]
     if len(memory_ops) != 1:
-        return set()
+        return {}
 
     memory_op = memory_ops[0]
     if memory_op.opcode == "LOAD":
         # SLEIGH LOAD has (space, address) inputs.
         if len(memory_op.inputs) != 2:
-            return set()
+            return {}
         address = memory_op.inputs[1]
     else:
         # SLEIGH STORE has (space, address, value) inputs.
         if len(memory_op.inputs) != 3:
-            return set()
+            return {}
         address = memory_op.inputs[1]
 
     producers = {
@@ -3507,59 +3511,61 @@ def _memory_address_operand_indexes(*, blocks: Sequence[Block], runtime_facts: T
         if op.output is not None
     }
 
-    def is_proven_zero(item: object, visiting: set[object]) -> bool:
-        """Recognize only width-preserving representations of integer zero.
-
-        RISC-V SLEIGH semantics commonly sign-extend the immediate before
-        computing an effective address.  For ``0(base)`` this yields a UNIQUE
-        ``INT_SEXT(const:0)`` rather than a direct constant input to
-        ``INT_ADD``.  Zero remains zero through these listed data-flow nodes;
-        every other expression, including a non-zero offset, stays rejected.
-        """
+    def literal_constant(item: object, visiting: set[object]) -> int | None:
+        """Return a typed signed integer constant through transparent nodes."""
         if getattr(item, "kind", None) is VarKind.CONST:
-            return getattr(item, "offset", None) == 0
+            raw, size = getattr(item, "offset", None), getattr(item, "size", None)
+            if not isinstance(raw, int) or not isinstance(size, int) or size <= 0:
+                return None
+            bits = size * 8
+            return raw - (1 << bits) if raw & (1 << (bits - 1)) else raw
         if item in visiting:
-            return False
+            return None
         producer = producers.get(item)
         if producer is None:
-            return False
+            return None
         next_visiting = visiting | {item}
         if producer.opcode in {"COPY", "INT_ZEXT", "INT_SEXT", "SUBPIECE"}:
-            return (
-                len(producer.inputs) == 1
-                and is_proven_zero(producer.inputs[0], next_visiting)
-            )
-        if producer.opcode == "PIECE":
-            return (
-                len(producer.inputs) == 2
-                and all(is_proven_zero(value, next_visiting) for value in producer.inputs)
-            )
-        return False
+            return (literal_constant(producer.inputs[0], next_visiting)
+                    if len(producer.inputs) == 1 else None)
+        return None
 
-    def resolve_transparent_register(item: object, visiting: set[object]) -> set[str]:
+    def resolve_address(item: object, visiting: set[object]) -> set[tuple[str, int]]:
         if getattr(item, "kind", None) is VarKind.REG:
             name = getattr(item, "name", "")
-            return {canonicalize_riscv_register_name(name)} if isinstance(name, str) and name.strip() else set()
+            canonical = (canonicalize_riscv_register_name(name)
+                         if isinstance(name, str) and name.strip() else "")
+            return {(canonical, 0)} if canonical else set()
         if item in visiting:
             return set()
         producer = producers.get(item)
         if producer is None:
             return set()
         if producer.opcode == "COPY" and len(producer.inputs) == 1:
-            return resolve_transparent_register(producer.inputs[0], visiting | {item})
+            return resolve_address(producer.inputs[0], visiting | {item})
+        if producer.opcode in {"INT_ZEXT", "INT_SEXT", "SUBPIECE"} and len(producer.inputs) == 1:
+            return resolve_address(producer.inputs[0], visiting | {item})
         if producer.opcode == "INT_ADD" and len(producer.inputs) == 2:
             left, right = producer.inputs
-            if is_proven_zero(left, set()):
-                return resolve_transparent_register(right, visiting | {item})
-            if is_proven_zero(right, set()):
-                return resolve_transparent_register(left, visiting | {item})
+            left_constant = literal_constant(left, set())
+            right_constant = literal_constant(right, set())
+            if left_constant is not None:
+                return {(register, offset + left_constant)
+                        for register, offset in resolve_address(right, visiting | {item})}
+            if right_constant is not None:
+                return {(register, offset + right_constant)
+                        for register, offset in resolve_address(left, visiting | {item})}
         return set()
 
-    registers = resolve_transparent_register(address, set())
-    if len(registers) != 1:
-        return set()
-    operand_index = canonical_map.get(next(iter(registers)))
-    return set() if operand_index is None else {operand_index}
+    addresses = resolve_address(address, set())
+    if len(addresses) != 1:
+        return {}
+    register, byte_offset = next(iter(addresses))
+    operand_index = canonical_map.get(register)
+    if (operand_index is None or not isinstance(byte_offset, int) or
+            not -(1 << 31) <= byte_offset < (1 << 31)):
+        return {}
+    return {operand_index: byte_offset}
 
 def _runtime_fact_structural_errors(
     runtime_facts: TranslationRuntimeFacts,

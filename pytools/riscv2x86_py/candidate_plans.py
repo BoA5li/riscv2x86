@@ -787,16 +787,22 @@ def _memory_renderer_semantic_contract_id(
     address = [item for item in operands if item.kind is SourceOperandKind.ADDRESS]
     if len(address) != 1 or address[0].address is None or not address[0].address.provenance_known:
         return None
+    displacement = address[0].address.byte_offset
+    if (not isinstance(displacement, int) or isinstance(displacement, bool) or
+            not -(1 << 31) <= displacement < (1 << 31)):
+        return None
     if any(item.early_clobber or item.tied_to_source_operand_index is not None for item in operands):
         return None
     if source_model.operation.kind is SourceOperationKind.LOAD:
         values = [item for item in operands if item.access is SourceOperandAccess.OUTPUT]
         if len(operands) == 2 and len(values) == 1 and values[0].width_bits in {32, 64}:
-            return f"x86.gnu-att.memory.load.gpr-address.u{values[0].width_bits}.v1"
+            suffix = "gpr-address" if displacement == 0 else "gpr-address-disp32"
+            return f"x86.gnu-att.memory.load.{suffix}.u{values[0].width_bits}.v1"
     if source_model.operation.kind is SourceOperationKind.STORE:
         values = [item for item in operands if item.access is SourceOperandAccess.INPUT]
         if len(operands) == 2 and len(values) == 1 and values[0].width_bits in {32, 64}:
-            return f"x86.gnu-att.memory.store.gpr-address.u{values[0].width_bits}.v1"
+            suffix = "gpr-address" if displacement == 0 else "gpr-address-disp32"
+            return f"x86.gnu-att.memory.store.{suffix}.u{values[0].width_bits}.v1"
     return None
 
 

@@ -34,15 +34,20 @@ class X86MemoryInlineAsmContract:
     address_operand_index: int | None = None
     value_operand_index: int | None = None
     value_width_bits: int | None = None
+    address_displacement_bytes: int | None = None
 
 
 _LOAD_IDS = {
     "x86.gnu-att.memory.load.gpr-address.u32.v1": 32,
     "x86.gnu-att.memory.load.gpr-address.u64.v1": 64,
+    "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1": 32,
+    "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": 64,
 }
 _STORE_IDS = {
     "x86.gnu-att.memory.store.gpr-address.u32.v1": 32,
     "x86.gnu-att.memory.store.gpr-address.u64.v1": 64,
+    "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": 32,
+    "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": 64,
 }
 
 
@@ -88,6 +93,13 @@ def derive_x86_memory_inline_asm_constraints(source_model: SourceSemanticModel, 
     if len(address) != 1 or address[0].address is None or not address[0].address.provenance_known:
         return _fail(candidate_plan, "X86_MEMORY_ASM_ADDRESS_BINDING_MISSING")
     address = address[0]
+    displacement = address.address.byte_offset
+    expects_displacement = "gpr-address-disp32" in str(semantic_id)
+    if (not isinstance(displacement, int) or isinstance(displacement, bool) or
+            not -(1 << 31) <= displacement < (1 << 31) or
+            (expects_displacement and displacement == 0) or
+            (not expects_displacement and displacement != 0)):
+        return _fail(candidate_plan, "X86_MEMORY_ASM_ADDRESS_BINDING_MISSING")
     if address.early_clobber or address.tied_to_source_operand_index is not None:
         return _fail(candidate_plan, "X86_MEMORY_ASM_ADDRESS_BINDING_MISSING")
     if expected_kind is SourceOperationKind.LOAD:
@@ -126,6 +138,7 @@ def derive_x86_memory_inline_asm_constraints(source_model: SourceSemanticModel, 
         address_operand_index=address.source_operand_index,
         value_operand_index=value.source_operand_index,
         value_width_bits=width,
+        address_displacement_bytes=displacement,
     )
     memory = TargetMemoryConstraint(
         requires_memory_clobber=True,
