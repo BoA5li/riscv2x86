@@ -3774,7 +3774,7 @@ def _build_local_unconditional_jump_model(
     edge_kind = getattr(entry, "successor_kinds", {}).get(target_address)
     if edge_kind is None and node is not None:
         edge_kind = getattr(node, "successor_kinds", {}).get(target_address)
-    if edge_kind is not None and edge_kind not in {"branch", "direct", "jump", "direct_jump", "branch_taken"}:
+    if edge_kind is not None and edge_kind not in {"taken", "branch", "direct", "jump", "direct_jump", "branch_taken"}:
         return None
     target = by_address.get(target_address)
     target_node = getattr(cfg, "nodes", {}).get(target_address) if _cfg_ok(cfg) else None
