@@ -84,6 +84,7 @@ class Phase6BCandidateFacts:
     has_call_semantics: bool
     has_return_semantics: bool
     has_branch_semantics: bool
+    has_proven_local_branch_select: bool
     asm_goto_condition_kind: str | None
     asm_goto_condition_operand_index: int | None
 
@@ -495,6 +496,30 @@ def _generate_registered_helper_candidates(facts: Phase6BCandidateFacts) -> list
 def _generate_cfg_candidates(
     facts: Phase6BCandidateFacts,
 ) -> list[TargetLoweringPlan]:
+    if facts.has_proven_local_branch_select:
+        return [_plan(
+            plan_id="x86.local-branch-select",
+            kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
+            family=TargetLoweringFamily.X86_INLINE_ASM,
+            priority_tier=PlanPriorityTier.X86_INLINE_ASM,
+            deterministic_rank=35,
+            required_features=frozenset({"x86:gpr_inline_asm"}),
+            requirements=frozenset({
+                PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+                PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                PlanRequirement.PRESERVE_CONTROL_FLOW,
+                PlanRequirement.PRESERVE_CC_CLOBBER,
+                PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
+            }),
+            metadata={
+                "strategy": "x86_local_branch_select_inline_asm",
+                "renderer_semantic_contract_id":
+                    "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1",
+            },
+            rationale=("A canonical local two-way compare/select CFG has a "
+                       "registered proof-bound x86 inline-asm route.",),
+            reason_codes=("x86-local-branch-select-candidate",),
+        )]
     requirements = {
         PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
         PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,

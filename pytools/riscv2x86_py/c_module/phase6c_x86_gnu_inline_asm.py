@@ -34,6 +34,21 @@ class X86GnuInlineAsmContract:
     value_operation_kind: SourceValueOperationKind
     immediate_value: int | None = None
     straight_line_program: SourceStraightLineValueProgram | None = None
+    # A local branch-select is not an asm-goto contract: all successors stay
+    # within the template and merge into a declared result operand.  Keep its
+    # binding facts in the derived constraint so 6D and 6F never need to
+    # recover them from p-code, labels, or a template.
+    local_branch_select: "X86LocalBranchSelectContract | None" = None
+
+@dataclass(frozen=True)
+class X86LocalBranchSelectContract:
+    condition_kind: SourceValueOperationKind
+    left_operand_index: int
+    right_operand_index: int
+    true_value_operand_index: int
+    false_value_operand_index: int
+    result_operand_index: int
+    width_bits: int
 
 def _fail(plan, code, details=None):
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetConstraintReasonCode
@@ -50,6 +65,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.straight-line-u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
+    "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1",
 })
 
 
@@ -116,6 +132,22 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": semantic_id,
                 "expected": "output_and_two_gpr_inputs_for_boolean_compare",
+            })
+        return None
+
+    if semantic_id == "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1":
+        outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
+        inputs = [op for op in target_operands if op.role.name == "INPUT"]
+        if (len(outputs) != 1 or len(inputs) != 4 or outputs[0].early_clobber or
+                outputs[0].required_width_bits not in {32, 64} or
+                any(item.required_width_bits != outputs[0].required_width_bits or
+                    item.early_clobber or item.requires_fixed_register or
+                    item.tied_to_source_operand_index is not None or
+                    TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                    for item in (*outputs, *inputs))):
+            return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+                "renderer_semantic_contract_id": semantic_id,
+                "expected": "output_and_four_uniform_gpr_inputs_for_local_branch_select",
             })
         return None
 
@@ -231,21 +263,41 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if candidate_plan.kind is not TargetLoweringKind.X86_GNU_INLINE_ASM: return _fail(candidate_plan,"X86_INLINE_ASM_PLAN_KIND_MISMATCH")
     feature="x86:gpr_inline_asm"
     if feature not in target_environment.available_features: return _fail(candidate_plan,"X86_INLINE_ASM_FEATURE_UNAVAILABLE",{"feature":feature})
+    semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
+    local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1"
     if not source_model.operands.complete or not source_model.operation.complete or not source_model.implicit_state.complete: return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
-    if source_model.operation.kind.value != "register_only" or source_model.operation.reads_memory or source_model.operation.writes_memory or source_model.memory.reads_memory or source_model.memory.writes_memory or source_model.atomic.present or source_model.barrier.present: return _fail(candidate_plan,"X86_INLINE_ASM_NON_REGISTER_SEMANTICS")
+    if ((not local_branch_select_route and source_model.operation.kind.value != "register_only") or
+            source_model.operation.reads_memory or source_model.operation.writes_memory or
+            source_model.memory.reads_memory or source_model.memory.writes_memory or
+            source_model.atomic.present or source_model.barrier.present): return _fail(candidate_plan,"X86_INLINE_ASM_NON_REGISTER_SEMANTICS")
     cf=source_model.control_flow
-    if source_model.operation.has_control_flow or source_model.operation.has_call or source_model.operation.has_return is not False or source_model.operation.may_trap is not False or cf.has_internal_branch or cf.has_call or cf.has_return is not False or cf.has_asm_goto or cf.has_multiple_exits or cf.has_indirect_control_flow is not False: return _fail(candidate_plan,"X86_INLINE_ASM_CONTROL_FLOW_UNSUPPORTED")
+    if (not local_branch_select_route and (source_model.operation.has_control_flow or source_model.operation.has_call or source_model.operation.has_return is not False or source_model.operation.may_trap is not False or cf.has_internal_branch or cf.has_call or cf.has_return is not False or cf.has_asm_goto or cf.has_multiple_exits or cf.has_indirect_control_flow is not False)): return _fail(candidate_plan,"X86_INLINE_ASM_CONTROL_FLOW_UNSUPPORTED")
+    if local_branch_select_route:
+        select = source_model.local_branch_select
+        if (select is None or select.condition_kind not in {SourceValueOperationKind.EQUAL, SourceValueOperationKind.NOT_EQUAL} or
+                not source_model.operation.has_control_flow or source_model.operation.may_trap is not False or
+                not cf.has_internal_branch or cf.has_call or cf.has_return is not False or cf.has_asm_goto or
+                cf.has_multiple_exits or cf.has_indirect_control_flow is not False or cf.has_unknown_target):
+            return _fail(candidate_plan, "X86_INLINE_ASM_CONTROL_FLOW_UNSUPPORTED")
     st=source_model.implicit_state
     if source_model.registers.reads_or_writes_stack_pointer or source_model.registers.reads_or_writes_frame_pointer or st.reads_stack_pointer or st.writes_stack_pointer or st.reads_frame_pointer or st.writes_frame_pointer or st.reads_implicit_machine_state or st.writes_implicit_machine_state: return _fail(candidate_plan,"X86_INLINE_ASM_IMPLICIT_STATE_UNSUPPORTED")
     shell=source_model.shell
     if shell.has_memory_clobber or shell.has_asm_goto or shell.has_external_control_flow: return _fail(candidate_plan,"X86_INLINE_ASM_SHELL_UNSUPPORTED")
-    if ((source_model.value_operation is None or not source_model.value_operation.complete) and
+    if (not local_branch_select_route and (source_model.value_operation is None or not source_model.value_operation.complete) and
             (source_model.value_program is None or not source_model.value_program.complete)):
         return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
-    semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
     program_route = semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1"
     variable_shift_route = semantic_id == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1"
     comparison_route = semantic_id == "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1"
+    branch_select_contract = None
+    if local_branch_select_route:
+        select = source_model.local_branch_select
+        assert select is not None
+        branch_select_contract = X86LocalBranchSelectContract(
+            select.condition_kind, select.left_operand_index, select.right_operand_index,
+            select.true_value_operand_index, select.false_value_operand_index,
+            select.result_operand_index, select.width_bits,
+        )
     if program_route:
         program = source_model.value_program
         if (program is None or not program.complete or
@@ -344,7 +396,8 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     )
     if contract_failure is not None:
         return contract_failure
-    target_writes_cc = program_route or variable_shift_route or comparison_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
-    operation_kind = (SourceValueOperationKind.COPY if program_route else source_model.value_operation.kind)
-    immediate_value = None if program_route else source_model.value_operation.immediate_value
-    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,operation_kind,immediate_value,source_model.value_program if program_route else None),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))
+    target_writes_cc = local_branch_select_route or program_route or variable_shift_route or comparison_route or (source_model.value_operation is not None and source_model.value_operation.kind in {SourceValueOperationKind.UNSIGNED_ADD, SourceValueOperationKind.UNSIGNED_SUB, SourceValueOperationKind.BIT_AND, SourceValueOperationKind.BIT_OR, SourceValueOperationKind.BIT_XOR, SourceValueOperationKind.ADD_THEN_SHIFT_LEFT_IMMEDIATE})
+    operation_kind = (branch_select_contract.condition_kind if branch_select_contract is not None else
+                      (SourceValueOperationKind.COPY if program_route else source_model.value_operation.kind))
+    immediate_value = None if (program_route or local_branch_select_route) else source_model.value_operation.immediate_value
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,operand_constraints=tuple(target_operands),x86_gnu_inline_asm_contract=X86GnuInlineAsmContract(tuple(operands),shell.is_volatile,shell.has_cc_clobber or target_writes_cc,feature,operation_kind,immediate_value,source_model.value_program if program_route else None,branch_select_contract),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint(preserve_control_flow=local_branch_select_route, preserve_condition_codes=local_branch_select_route),preserve_volatile=shell.is_volatile,preserve_cc_clobber=shell.has_cc_clobber or target_writes_cc))

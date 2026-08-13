@@ -6,11 +6,47 @@ def prove(r):
         return prove(r)
     if not cc.supports_gnu_inline_asm:return reject(r,SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if c.x86_gnu_inline_asm_contract is None and c.x86_memory_inline_asm_contract is None:return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
-    if s.atomic.present or s.barrier.present or s.operation.has_control_flow:return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
+    semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1"
+    if s.atomic.present or s.barrier.present or (s.operation.has_control_flow and not local_branch_select_route):return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     if (s.shell.has_cc_clobber and not c.preserve_cc_clobber) or (s.shell.is_volatile and not c.preserve_volatile):return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)
     if s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber:return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_gnu_inline_asm_contract
-    semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
+    if local_branch_select_route:
+        select = s.local_branch_select
+        operands = {item.source_operand_index: item for item in c.operand_constraints}
+        contract_select = None if contract is None else contract.local_branch_select
+        if (select is None or contract_select is None or
+                select.condition_kind not in {select.condition_kind.EQUAL, select.condition_kind.NOT_EQUAL} or
+                contract.value_operation_kind is not select.condition_kind or
+                contract_select.condition_kind is not select.condition_kind or
+                (contract_select.left_operand_index, contract_select.right_operand_index,
+                 contract_select.true_value_operand_index, contract_select.false_value_operand_index,
+                 contract_select.result_operand_index, contract_select.width_bits) !=
+                (select.left_operand_index, select.right_operand_index,
+                 select.true_value_operand_index, select.false_value_operand_index,
+                 select.result_operand_index, select.width_bits) or
+                not c.control_flow_constraint.preserve_control_flow or
+                not c.control_flow_constraint.preserve_condition_codes or
+                not c.preserve_cc_clobber):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        result = operands.get(select.result_operand_index)
+        inputs = [operands.get(index) for index in (
+            select.left_operand_index, select.right_operand_index,
+            select.true_value_operand_index, select.false_value_operand_index,
+        )]
+        if (result is None or result.role.value != "output" or result.early_clobber or
+                result.required_width_bits != select.width_bits or
+                result.required_width_bits not in {32, 64} or len(operands) != 5 or
+                any(item is None or item.role.value != "input" or item.early_clobber or
+                    item.required_width_bits != select.width_bits for item in inputs)):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        # The source model's true/false bindings are taken from canonical CFG
+        # edges.  The registered recipe emits cmp + j{e,ne} and copies exactly
+        # those two bindings, so the proof is route-specific rather than a
+        # generic control-flow equivalence claim.
+        return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
+                            PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1":
         value = s.value_operation
         operands = {item.source_operand_index: item for item in c.operand_constraints}

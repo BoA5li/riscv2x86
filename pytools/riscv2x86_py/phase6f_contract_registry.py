@@ -658,6 +658,50 @@ def _gpr_boolean_compare_recipe(approved: ApprovedTargetLoweringPlan):
     ))
 
 
+def _local_branch_select_recipe(approved: ApprovedTargetLoweringPlan):
+    """Render the one registered local compare/select CFG family.
+
+    Numeric labels are fresh *template-local* encoder labels.  They are not
+    recovered source labels and do not describe host-C control flow.  All
+    operand/arm bindings originate from the Phase-6C local-branch-select
+    contract, which Phase 6D already proved against the canonical CFG.
+    """
+    c = approved.constraints
+    contract = c.x86_gnu_inline_asm_contract
+    select = None if contract is None else contract.local_branch_select
+    if (contract is None or select is None or
+            contract.value_operation_kind not in {
+                SourceValueOperationKind.EQUAL, SourceValueOperationKind.NOT_EQUAL,
+            } or
+            not c.control_flow_constraint.preserve_control_flow or
+            not c.control_flow_constraint.preserve_condition_codes or
+            not c.preserve_cc_clobber):
+        return None
+    by_index = {item.source_operand_index: item for item in c.operand_constraints}
+    result = by_index.get(select.result_operand_index)
+    inputs = [by_index.get(index) for index in (
+        select.left_operand_index, select.right_operand_index,
+        select.true_value_operand_index, select.false_value_operand_index,
+    )]
+    if (result is None or result.role is not TargetOperandRole.OUTPUT or
+            result.early_clobber or result.required_width_bits not in {32, 64} or
+            any(item is None or item.role is not TargetOperandRole.INPUT or
+                item.early_clobber or item.required_width_bits != result.required_width_bits or
+                item.requires_fixed_register or
+                TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
+                for item in inputs) or len(by_index) != 5):
+        return None
+    suffix = "l" if result.required_width_bits == 32 else "q"
+    jump = "je" if select.condition_kind is SourceValueOperationKind.EQUAL else "jne"
+    return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
+        template=(f"cmp{suffix} %2, %1\n\t{jump} 1f\n\t"
+                  f"mov{suffix} %4, %0\n\tjmp 2f\n\t"
+                  f"1: mov{suffix} %3, %0\n\t2:"),
+        output_operand_indexes=(result.source_operand_index,),
+        input_operand_indexes=tuple(item.source_operand_index for item in inputs),
+    ))
+
+
 _ORDER_CONSTANTS = {
     "relaxed": "__ATOMIC_RELAXED",
     "consume": "__ATOMIC_CONSUME",
@@ -954,6 +998,14 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract(
+            "x86.gnu-att.local-branch-select.eq-ne.u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,
+            "x86.gnu-att.local-branch-select.eq-ne.u32-u64",
+            _local_branch_select_recipe,
+            "x86_gnu_inline_asm_contract",
+            frozenset({"x86:gpr_inline_asm"}),
+        ),
         RegisteredRendererContract(
             "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
             TargetLoweringKind.X86_GNU_INLINE_ASM,

@@ -1,7 +1,7 @@
 # translator/phase6/source_model.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
@@ -106,6 +106,23 @@ class SourceControlFlowModel:
     asm_goto_successor_continuation_ids: Tuple[str, ...] = ()
     asm_goto_condition_kind: str | None = None
     asm_goto_condition_operand_index: int | None = None
+
+
+@dataclass(frozen=True)
+class SourceLocalBranchSelectModel:
+    """Canonical local two-way value selection proven in Phase 6A.
+
+    This is deliberately distinct from ``asm goto``: both branch arms remain
+    inside the inline-assembly fragment and merge into one declared output.
+    No source label spelling or source-template order is retained here.
+    """
+    condition_kind: "SourceValueOperationKind"
+    left_operand_index: int
+    right_operand_index: int
+    true_value_operand_index: int
+    false_value_operand_index: int
+    result_operand_index: int
+    width_bits: int
 
 
 @dataclass(frozen=True)
@@ -234,6 +251,7 @@ class SourceSemanticModel:
     # ``value_operation`` it can retain multiple observable values and their
     # data dependencies without exposing raw p-code to Phase 6B-F.
     value_program: SourceStraightLineValueProgram | None
+    local_branch_select: SourceLocalBranchSelectModel | None
 
     @property
     def phase6b_candidate_facts(self):
@@ -328,6 +346,7 @@ class SourceSemanticModel:
             has_call_semantics=self.control_flow.has_call,
             has_return_semantics=self.control_flow.has_return is True,
             has_branch_semantics=self.control_flow.has_internal_branch,
+            has_proven_local_branch_select=self.local_branch_select is not None,
             asm_goto_condition_kind=self.control_flow.asm_goto_condition_kind,
             asm_goto_condition_operand_index=self.control_flow.asm_goto_condition_operand_index,
             has_atomic_semantics=self.atomic.present,
@@ -598,14 +617,6 @@ def build_source_semantic_model(
 
     memory = _build_memory_model(summary)
 
-    microarch = _build_microarch_model(
-        fragment=fragment,
-        shell=shell,
-        summary=summary,
-    )
-
-    registers = _build_register_model(summary)
-
     # ------------------------------------------------------------------
     # Phase 6C-1 semantic facts.
     # ------------------------------------------------------------------
@@ -617,12 +628,39 @@ def build_source_semantic_model(
         runtime_status=runtime_status,
     )
 
+    local_branch_select = _build_local_branch_select_model(
+        blocks=blocks, runtime_status=runtime_status, operands=operands,
+        memory=memory,
+    )
+    # A matched local select has no calls, returns, indirect edges or
+    # microarchitecture operation.  Record these facts here at the Phase-6A
+    # boundary instead of treating the summary producer's former
+    # straight-line-only policy as an unknown semantic effect.
+    analysis_summary = summary
+    if local_branch_select is not None:
+        analysis_summary = replace(
+            summary, has_return=False, has_tail_call=False,
+            has_indirect_control_flow=False, has_timing_source=False,
+            has_cache_operation=False, has_speculation_control=False,
+        )
+        control_flow = _build_control_flow_model(
+            shell=shell, blocks=blocks, cfg=cfg, summary=analysis_summary,
+            runtime_facts=runtime_facts,
+        )
+        memory = _build_memory_model(analysis_summary)
+
+    microarch = _build_microarch_model(
+        fragment=fragment, shell=shell, summary=analysis_summary,
+    )
+    registers = _build_register_model(analysis_summary)
+
     operation = _build_operation_model(
         shell=shell,
         control_flow=control_flow,
         memory=memory,
         operands=operands,
-        preservation_input_summary=summary,
+        preservation_input_summary=analysis_summary,
+        proven_local_branch_select=local_branch_select is not None,
     )
 
     value_operation = _build_value_operation_model(
@@ -637,7 +675,7 @@ def build_source_semantic_model(
     # later Phase-6 stage consumes it and it never changes a lowering choice.
     # Keeping the ledger at this boundary prevents debugging from becoming a
     # raw-asm or textual-pcode backdoor in 6B--6F.
-    if value_operation is None:
+    if value_operation is None and local_branch_select is None:
         def _var_ledger(value: object) -> dict[str, object]:
             return {
                 "kind": getattr(getattr(value, "kind", None), "value", None),
@@ -666,7 +704,7 @@ def build_source_semantic_model(
         })
 
     atomic = _build_atomic_operation_model(
-        summary=summary,
+        summary=analysis_summary,
         memory=memory,
         operands=operands,
     )
@@ -675,7 +713,7 @@ def build_source_semantic_model(
         shell=shell,
         memory=memory,
         microarch=microarch,
-        summary=summary,
+        summary=analysis_summary,
     )
 
     implicit_state = _build_implicit_state_model(
@@ -690,7 +728,7 @@ def build_source_semantic_model(
         memory=memory,
         microarch=microarch,
         registers=registers,
-        summary=summary,
+        summary=analysis_summary,
     )
 
     features, reasons, reason_codes = _collect_source_semantic_evidence(
@@ -719,7 +757,7 @@ def build_source_semantic_model(
         barrier=barrier,
         implicit_state=implicit_state,
         helper_abi=_build_helper_abi_model(
-            summary=summary,
+            summary=analysis_summary,
             operation=operation,
             registers=registers,
         ),
@@ -742,6 +780,7 @@ def build_source_semantic_model(
             blocks=blocks, runtime_status=runtime_status, operands=operands,
             operation=operation,
         ),
+        local_branch_select=local_branch_select,
     )
 
 def _build_control_flow_model(
@@ -3535,6 +3574,89 @@ def _runtime_fact_structural_errors(
 
     return tuple(sorted(set(errors)))
 
+def _build_local_branch_select_model(
+    *, blocks: Sequence[Block], runtime_status: RuntimeFactStatus,
+    operands: SourceOperandModel, memory: SourceMemoryModel,
+) -> SourceLocalBranchSelectModel | None:
+    """Recognize a fully local canonical compare-and-select CFG.
+
+    Accepted shape: an ``INT_EQUAL``/``INT_NOTEQUAL`` predicate feeds one
+    ``CBRANCH``; its taken and fallthrough blocks each copy one declared input
+    into the same declared output; the fallthrough arm has one direct local
+    join branch.  This consumes typed operations and authoritative block-edge
+    metadata only, never source labels or instruction spelling.
+    """
+    if (len(blocks) != 3 or not runtime_status.structurally_valid or
+            not operands.complete or memory.reads_memory or memory.writes_memory or
+            memory.has_atomic or memory.has_memory_barrier or memory.has_instruction_barrier):
+        return None
+    entry = blocks[0]
+    taken_address = next((address for address, kind in getattr(entry, "successor_kinds", {}).items()
+                          if kind in {"taken", "branch_taken"}), None)
+    fallthrough_address = next((address for address, kind in getattr(entry, "successor_kinds", {}).items()
+                                if kind == "fallthrough"), None)
+    by_address = {block.addr: block for block in blocks}
+    taken, fallthrough = by_address.get(taken_address), by_address.get(fallthrough_address)
+    if (taken is None or fallthrough is None or taken is fallthrough or
+            set(getattr(entry, "successors", ())) != {taken_address, fallthrough_address}):
+        return None
+    entry_ops = [item for item in entry.ops if getattr(item, "opcode", "").upper() != "IMARK"]
+    compares = [item for item in entry_ops if getattr(item, "opcode", "").upper()
+                in {"INT_EQUAL", "INT_NOTEQUAL"}]
+    branches = [item for item in entry_ops if getattr(item, "opcode", "").upper() == "CBRANCH"]
+    if len(entry_ops) != 2 or len(compares) != 1 or len(branches) != 1:
+        return None
+    compare, branch = compares[0], branches[0]
+    if (getattr(compare, "output", None) is None or len(getattr(compare, "inputs", ())) != 2 or
+            len(getattr(branch, "inputs", ())) != 2 or branch.inputs[-1] != compare.output):
+        return None
+
+    def arm_copy(block: Block, *, requires_branch: bool) -> object | None:
+        items = [item for item in block.ops if getattr(item, "opcode", "").upper() != "IMARK"]
+        copies = [item for item in items if getattr(item, "opcode", "").upper() == "COPY"]
+        jumps = [item for item in items if getattr(item, "opcode", "").upper() == "BRANCH"]
+        if len(copies) != 1 or len(getattr(copies[0], "inputs", ())) != 1:
+            return None
+        if requires_branch:
+            if len(items) != 2 or len(jumps) != 1:
+                return None
+        elif len(items) != 1 or jumps:
+            return None
+        return copies[0]
+
+    true_copy = arm_copy(taken, requires_branch=False)
+    false_copy = arm_copy(fallthrough, requires_branch=True)
+    if true_copy is None or false_copy is None or true_copy.output != false_copy.output:
+        return None
+    reg_to_index: dict[str, int] = {}
+    for register, index in runtime_status.rv_to_operand_index.items():
+        canonical = canonicalize_riscv_register_name(register)
+        if not canonical or canonical in reg_to_index:
+            return None
+        reg_to_index[canonical] = index
+    def operand_index(value: object) -> int | None:
+        if getattr(value, "kind", None) is not VarKind.REG:
+            return None
+        return reg_to_index.get(canonicalize_riscv_register_name(getattr(value, "name", "")))
+    result = operand_index(true_copy.output)
+    indexes = tuple(operand_index(item) for item in (*compare.inputs, true_copy.inputs[0], false_copy.inputs[0]))
+    if result is None or any(index is None for index in indexes):
+        return None
+    bound = {item.source_operand_index: item for item in operands.operands}
+    result_binding = bound.get(result)
+    inputs = tuple(bound.get(index) for index in indexes)
+    if (result_binding is None or result_binding.access is not SourceOperandAccess.OUTPUT or
+            result_binding.width_bits not in {32, 64} or
+            any(item is None or item.access is not SourceOperandAccess.INPUT or
+                item.width_bits != result_binding.width_bits for item in inputs)):
+        return None
+    if set(indexes) | {result} != set(bound):
+        return None
+    kind = {"INT_EQUAL": SourceValueOperationKind.EQUAL,
+            "INT_NOTEQUAL": SourceValueOperationKind.NOT_EQUAL}[getattr(compare, "opcode", "").upper()]
+    return SourceLocalBranchSelectModel(kind, indexes[0], indexes[1], indexes[2], indexes[3], result, result_binding.width_bits)
+
+
 def _build_operation_model(
     *,
     shell: SourceShellModel,
@@ -3542,6 +3664,7 @@ def _build_operation_model(
     memory: SourceMemoryModel,
     operands: SourceOperandModel,
     preservation_input_summary: IRSummary,
+    proven_local_branch_select: bool = False,
 ) -> SourceOperationModel:
     """
     Build semantic operation category from structured source analysis.
@@ -3623,7 +3746,8 @@ def _build_operation_model(
         # A fully modelled asm-goto branch with no memory operation has no
         # architectural faulting access in the current narrow route.  All
         # other operation kinds retain unknown and therefore fail closed.
-        may_trap=(False if ((control_flow.has_asm_goto and
+        may_trap=(False if (proven_local_branch_select or
+                            (control_flow.has_asm_goto and
                              control_flow.asm_goto_condition_kind in {"zero", "nonzero"} and
                              control_flow.asm_goto_condition_operand_index is not None and
                              not memory.reads_memory and
