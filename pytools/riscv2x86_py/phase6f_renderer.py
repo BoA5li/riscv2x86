@@ -29,6 +29,7 @@ class RendererContractKind(str, Enum):
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
+    ABI_WRAPPER_CALL = "abi_wrapper_call"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
 
@@ -42,6 +43,7 @@ class RenderedReplacementKind(str, Enum):
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
+    ABI_WRAPPER_CALL = "abi_wrapper_call"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
     INTERNAL_ERROR = "internal_error"
@@ -175,6 +177,12 @@ class VirtualPrivateFrameRecipe:
     storage_identifier:str="__rv2x86_frame"
     required_header:str="string.h"
     explicit_host_stack_pointer_mutation_forbidden:bool=True
+
+@dataclass(frozen=True)
+class AbiWrapperCallRecipe:
+    contract_id:str; wrapper_symbol:str
+    argument_operand_indexes:tuple[int,...]; return_operand_indexes:tuple[int,...]
+    required_headers:tuple[str,...]=(); required_library:str|None=None
 
 
 @dataclass(frozen=True)
@@ -382,6 +390,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         RendererContractKind.STRUCTURED_CONTROL_FLOW: {TargetLoweringKind.STRUCTURED_CONTROL_FLOW},
         RendererContractKind.STACK_ADDRESS_REBINDING: {TargetLoweringKind.STACK_ADDRESS_REBINDING},
         RendererContractKind.VIRTUAL_PRIVATE_FRAME: {TargetLoweringKind.VIRTUAL_PRIVATE_FRAME},
+        RendererContractKind.ABI_WRAPPER_CALL: {TargetLoweringKind.ABI_WRAPPER_CALL},
     }
     if a.plan.kind not in expected.get(kind, set()): return _failure(request, RenderReasonCode.PLAN_KIND_CONTRACT_MISMATCH, internal=True)
     if kind is RendererContractKind.GNU_INLINE_ASM and isinstance(p, GnuInlineAsmRecipe): return _render_gnu(request, p, is_goto=False)
@@ -453,6 +462,16 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
             else:return _failure(request,RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE,internal=False)
         text="{ _Alignas("+str(p.required_alignment_bytes)+") unsigned char "+p.storage_identifier+"["+str(p.frame_size_bytes)+"]; "+" ".join(statements)+" }"
         return RenderedReplacement(RenderedReplacementKind.VIRTUAL_PRIVATE_FRAME,p,text,(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
+    if kind is RendererContractKind.ABI_WRAPPER_CALL and isinstance(p, AbiWrapperCallRecipe):
+        constraint=a.constraints.abi_wrapper_constraint
+        if constraint is None or constraint.wrapper_contract.contract_id != p.contract_id or constraint.wrapper_contract.target_wrapper_symbol != p.wrapper_symbol:
+            return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        args=[_binding(ctx,i) for i in p.argument_operand_indexes]; outs=[_binding(ctx,i) for i in p.return_operand_indexes]
+        if any(x is None for x in args+outs) or len(outs)>1:
+            return _failure(request,RenderReasonCode.OPERAND_BINDING_MISSING,internal=True)
+        call=p.wrapper_symbol+"("+", ".join(args)+")"
+        text=(f"{outs[0]} = {call};" if outs else f"{call};")
+        return RenderedReplacement(RenderedReplacementKind.ABI_WRAPPER_CALL,p,text,(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
     return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
 
 
