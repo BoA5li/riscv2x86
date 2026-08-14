@@ -41,6 +41,10 @@ class TargetLoweringKind(str, Enum):
     # 对 structured multi-block CFG 的 future plan family。
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
 
+    # Rebind a proven, non-escaping logical RISC-V stack access to an
+    # authoritative C object.  This never means using the host stack.
+    STACK_ADDRESS_REBINDING = "stack_address_rebinding"
+
     # 显式保留 unsupported，而不是猜测性 lower。
     UNSUPPORTED = "unsupported"
 
@@ -57,6 +61,7 @@ class TargetLoweringFamily(str, Enum):
     X86_BARRIER = "x86_barrier"
     HELPER = "helper"
     STRUCTURED_CFG = "structured_cfg"
+    STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     UNSUPPORTED = "unsupported"
 
 
@@ -81,6 +86,7 @@ class PlanPriorityTier(int, Enum):
     X86_ATOMIC_OR_BARRIER = 40
     HELPER = 50
     STRUCTURED_CFG = 60
+    STACK_ADDRESS_REBINDING = 25
     UNSUPPORTED = 1000
 
 
@@ -113,6 +119,12 @@ class PlanRequirement(str, Enum):
     PRESERVE_CONTROL_FLOW = "preserve_control_flow"
     PRESERVE_ASM_GOTO = "preserve_asm_goto"
     PRESERVE_STACK_FRAME = "preserve_stack_frame"
+    AUTHORITATIVE_STACK_ACCESS_BINDINGS = "authoritative_stack_access_bindings"
+    PRESERVE_STACK_LAYOUT = "preserve_stack_layout"
+    PRESERVE_STACK_ALIGNMENT = "preserve_stack_alignment"
+    PROVE_NO_STACK_ADDRESS_ESCAPE = "prove_no_stack_address_escape"
+    PROVE_NO_HOST_STACK_POINTER_MUTATION = "prove_no_host_stack_pointer_mutation"
+    PROVE_STACK_OBJECT_BOUNDS = "prove_stack_object_bounds"
 
     PRESERVE_MICROARCH_INTENT = "preserve_microarch_intent"
     PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY = (
@@ -143,6 +155,8 @@ _KIND_TO_FAMILY: Mapping[
             TargetLoweringFamily.HELPER,
         TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
             TargetLoweringFamily.STRUCTURED_CFG,
+        TargetLoweringKind.STACK_ADDRESS_REBINDING:
+            TargetLoweringFamily.STACK_ADDRESS_REBINDING,
         TargetLoweringKind.UNSUPPORTED:
             TargetLoweringFamily.UNSUPPORTED,
     }
@@ -167,6 +181,8 @@ _FAMILY_TO_PRIORITY_TIER: Mapping[
             PlanPriorityTier.HELPER,
         TargetLoweringFamily.STRUCTURED_CFG:
             PlanPriorityTier.STRUCTURED_CFG,
+        TargetLoweringFamily.STACK_ADDRESS_REBINDING:
+            PlanPriorityTier.STACK_ADDRESS_REBINDING,
         TargetLoweringFamily.UNSUPPORTED:
             PlanPriorityTier.UNSUPPORTED,
     }
