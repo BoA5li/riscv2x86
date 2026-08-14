@@ -1155,6 +1155,7 @@ class TargetConstraintModel:
     helper_abi_contract: object | None = None
     stack_rebinding_constraint: object | None = None
     virtual_private_frame_constraint: object | None = None
+    abi_wrapper_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1255,6 +1256,10 @@ class TargetConstraintModel:
             from .virtual_private_frame import TargetVirtualPrivateFrameConstraint
             if not isinstance(self.virtual_private_frame_constraint, TargetVirtualPrivateFrameConstraint):
                 raise TypeError("virtual_private_frame_constraint must be TargetVirtualPrivateFrameConstraint or None")
+        if self.abi_wrapper_constraint is not None:
+            from .abi_wrapper import TargetAbiWrapperConstraint
+            if not isinstance(self.abi_wrapper_constraint, TargetAbiWrapperConstraint):
+                raise TypeError("abi_wrapper_constraint must be TargetAbiWrapperConstraint or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
         specialized_contracts = (
@@ -1268,6 +1273,7 @@ class TargetConstraintModel:
             self.helper_abi_contract,
             self.stack_rebinding_constraint,
             self.virtual_private_frame_constraint,
+            self.abi_wrapper_constraint,
         )
         if sum(contract is not None for contract in specialized_contracts) > 1:
             raise ValueError("target constraints must contain exactly one lowering contract")
@@ -1658,6 +1664,18 @@ def _derive_explicit_unsupported_0(
         },
     )
 
+def _derive_abi_wrapper_0(*, source_model, candidate_plan, target_environment):
+    from .abi_wrapper import DEFAULT_ABI_WRAPPER_REGISTRY, TargetAbiWrapperArgument, TargetAbiWrapperConstraint, TargetAbiWrapperReturn
+    effects=source_model.abi_effects
+    contract=DEFAULT_ABI_WRAPPER_REGISTRY.resolve(effects, target_environment.abi.value) if effects else None
+    if contract is None:
+        return TargetConstraintDerivationResult.failure(plan_id=candidate_plan.plan_id,reason_codes=(TargetConstraintReasonCode.MISSING_SEMANTIC_CONTRACT,),details={"route":"exact_abi_wrapper"})
+    call=effects.calls[0]
+    args=tuple(TargetAbiWrapperArgument(i,n,loc.width_bits or 0,contract.argument_types[n],loc.signedness) for n,(i,loc) in enumerate(zip(contract.argument_operand_indexes,call.arguments)))
+    returns=tuple(TargetAbiWrapperReturn(i,n,loc.width_bits or 0,contract.return_types[n],loc.signedness) for n,(i,loc) in enumerate(zip(contract.return_operand_indexes,call.returns)))
+    c=TargetAbiWrapperConstraint(contract,args,returns,call.stack_alignment_bytes or 0)
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,abi_wrapper_constraint=c,memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint()))
+
 
 _Deriver = Callable[
     [
@@ -1719,6 +1737,7 @@ _PLAN_KIND_DISPATCH: Mapping[TargetLoweringKind, _Deriver] = (
             TargetLoweringKind.VIRTUAL_PRIVATE_FRAME: _adapt_deriver(
                 _derive_virtual_private_frame_0
             ),
+            TargetLoweringKind.ABI_WRAPPER_CALL: _adapt_deriver(_derive_abi_wrapper_0),
             TargetLoweringKind.UNSUPPORTED: _adapt_deriver(
                 _derive_explicit_unsupported_0
             ),
