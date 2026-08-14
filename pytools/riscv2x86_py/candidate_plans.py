@@ -132,6 +132,7 @@ class Phase6BCandidateFacts:
     has_private_balanced_stack_frame: bool = False
     requires_whole_function_abi_lowering: bool = False
     has_stack_address_rebinding_eligibility: bool = False
+    has_virtual_private_frame_eligibility: bool = False
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
@@ -518,6 +519,22 @@ def _generate_registered_helper_candidates(facts: Phase6BCandidateFacts) -> list
         rationale=("SourceSemanticModel explicitly requires this registered helper semantic family.",),
         reason_codes=("registered-helper-candidate",),
     )]
+
+def _generate_virtual_private_frame_candidates(facts: Phase6BCandidateFacts) -> list[TargetLoweringPlan]:
+    if not facts.has_virtual_private_frame_eligibility:
+        return [_unsupported_candidate(reason_code="virtual-private-frame-facts-incomplete", rationale="Balanced stack adjustment lacks a closed private-frame proof.")]
+    return [_plan(plan_id="virtual-private-frame.c.scalar-v1", kind=TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,
+        family=TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME, priority_tier=PlanPriorityTier.VIRTUAL_PRIVATE_FRAME,
+        deterministic_rank=20, requirements=frozenset({PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+            PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,PlanRequirement.PROVE_STATIC_BALANCED_PRIVATE_FRAME,
+            PlanRequirement.PROVE_FRAME_LAYOUT_COMPLETE,PlanRequirement.PROVE_FRAME_ACCESS_BOUNDS,
+            PlanRequirement.PROVE_PRIVATE_FRAME_INITIALIZATION,PlanRequirement.PROVE_NO_STACK_ADDRESS_ESCAPE,
+            PlanRequirement.PROVE_NO_REAL_STACK_IDENTITY,PlanRequirement.PROVE_NO_EXPLICIT_HOST_STACK_POINTER_MUTATION,
+            PlanRequirement.PROVE_PRIVATE_FRAME_VALUE_FLOW,PlanRequirement.PRESERVE_PRIVATE_FRAME_ALIGNMENT,
+            PlanRequirement.PROVE_DEFINED_C_SEMANTICS}), metadata={"strategy":"virtual_private_frame",
+            "renderer_semantic_contract_id":"virtual-private-frame.c.scalar-v1"},
+        rationale=("Static private frame has complete layout, initialization and value-flow proofs.",),
+        reason_codes=("virtual-private-frame-candidate",))]
 
 
 def _generate_cfg_candidates(
@@ -1252,6 +1269,8 @@ def generate_candidate_plans(
 
     # 4. stack/frame-sensitive。
     if facts.is_stack_or_frame_sensitive:
+        if facts.has_virtual_private_frame_eligibility:
+            return _stable_sort_and_freeze(_generate_virtual_private_frame_candidates(facts))
         if facts.has_stack_address_rebinding_eligibility:
             return _stable_sort_and_freeze(_generate_stack_address_rebinding_candidates(facts))
         return _stable_sort_and_freeze(
