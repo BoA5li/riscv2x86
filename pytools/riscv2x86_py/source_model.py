@@ -7,13 +7,13 @@ from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple,
 from enum import Enum
 try:
     from .cfg import CFGResult
-    from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase
+    from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
     from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
     from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
-    from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase
+    from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
     from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
     from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
@@ -172,6 +172,23 @@ class SourceStackFrameKind(str, Enum):
     WHOLE_FUNCTION = "whole_function"
     UNKNOWN = "unknown"
 
+@dataclass(frozen=True)
+class SourcePrivateFrameAccess:
+    source_block_address:int; source_operation_index:int
+    source_offset_bytes:int; virtual_offset_bytes:int
+    width_bits:int; required_alignment_bytes:int; access:StackAccessKind
+    signed_load:bool|None; value_operand_index:int|None
+    definitely_initialized_before_read:bool; complete:bool
+
+@dataclass(frozen=True)
+class SourceVirtualPrivateFrameModel:
+    frame_size_bytes:int; required_alignment_bytes:int
+    source_frame_start_offset_bytes:int; source_frame_end_offset_bytes:int
+    accesses:Tuple[SourcePrivateFrameAccess,...]
+    initialization_complete:bool; overlap_complete:bool; layout_complete:bool
+    no_address_escape_proven:bool; no_real_stack_identity_required:bool
+    complete:bool; missing_fact_codes:Tuple[str,...]=()
+
 
 @dataclass(frozen=True)
 class SourceStackFrameModel:
@@ -197,6 +214,8 @@ class SourceStackFrameModel:
     has_dynamic_adjustment: bool = False
     rebinding_accesses: Tuple[SourceStackRebindingAccess, ...] = ()
     stack_address_rebinding_eligible: bool = False
+    virtual_private_frame: SourceVirtualPrivateFrameModel | None = None
+    virtual_private_frame_eligible: bool = False
     missing_fact_codes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -384,7 +403,7 @@ class SourceSemanticModel:
         missing_non_stack_widths = tuple(x for x in self.completeness.missing_operand_width_registers
                                          if x not in _STACK_REGISTERS | _FRAME_REGISTERS)
         operand_facts_complete = (
-            (self.operands.complete or (stack_frame is not None and stack_frame.stack_address_rebinding_eligible))
+            (self.operands.complete or (stack_frame is not None and (stack_frame.stack_address_rebinding_eligible or stack_frame.virtual_private_frame_eligible)))
             and self.completeness.runtime_facts_structurally_valid
             and not missing_non_stack_bindings
             and not missing_non_stack_widths
@@ -404,12 +423,13 @@ class SourceSemanticModel:
             (stack_frame is None or not stack_frame.complete or
              stack_frame.kind is SourceStackFrameKind.UNKNOWN)
         )
+        private_frame_route = stack_frame is not None and stack_frame.virtual_private_frame_eligible
         unmodelled = any((
-            not self.operation.complete,
-            not self.implicit_state.complete,
+            not self.operation.complete and not private_frame_route,
+            not self.implicit_state.complete and not private_frame_route,
             self.memory.has_unknown_barrier,
             self.registers.has_unresolved_register_identity,
-            control_unknown,
+            control_unknown and not private_frame_route,
             stack_frame_unknown,
         ))
         shell_known = isinstance(self.shell, SourceShellModel)
@@ -464,6 +484,9 @@ class SourceSemanticModel:
             has_private_balanced_stack_frame=(
                 stack_frame is not None and
                 stack_frame.is_local_virtual_frame_candidate
+            ),
+            has_virtual_private_frame_eligibility=(
+                stack_frame is not None and stack_frame.virtual_private_frame_eligible
             ),
             has_stack_address_rebinding_eligibility=(
                 stack_frame is not None and
@@ -938,6 +961,7 @@ def build_source_semantic_model(
             summary=analysis_summary,
             registers=registers,
             stack_rebinding_facts=stack_rebinding_facts,
+            runtime_status=runtime_status,
         ),
     )
 
@@ -3073,6 +3097,7 @@ def _build_stack_frame_model(
     summary: IRSummary,
     registers: SourceRegisterModel,
     stack_rebinding_facts: StackAddressRebindingFacts | None = None,
+    runtime_status: RuntimeFactStatus | None = None,
 ) -> SourceStackFrameModel:
     """Adapt typed Phase-5 stack metadata without inspecting assembly text.
 
@@ -3100,6 +3125,21 @@ def _build_stack_frame_model(
         rebinding_accesses: list[SourceStackRebindingAccess] = []
         reasons = list(raw.missing_fact_codes)
         eligible = False
+        private_model = None
+        private_eligible = False
+        if kind is SourceStackFrameKind.PRIVATE_BALANCED:
+            layout = raw.private_frame_layout
+            bindings = _normalized_runtime_binding_map(runtime_status) if isinstance(runtime_status, RuntimeFactStatus) else {}
+            if isinstance(layout, PrivateFrameLayoutFacts) and layout.frame_range is not None and layout.complete:
+                private_accesses=[]; private_reasons=list(layout.missing_fact_codes)
+                for slot in layout.slots:
+                    reg = (slot.value_node_id or "").removeprefix("reg:")
+                    value_index = bindings.get(reg)
+                    if value_index is None or not slot.complete:
+                        private_reasons.append("private-frame-value-flow-incomplete"); continue
+                    private_accesses.append(SourcePrivateFrameAccess(slot.source_block_address,slot.source_operation_index,slot.source_offset_bytes,slot.virtual_offset_bytes,slot.width_bits,slot.required_alignment_bytes,slot.access,slot.signed_load,value_index,slot.definitely_initialized_before_read,slot.complete))
+                private_eligible=(len(private_accesses)==len(layout.slots) and not private_reasons and raw.net_stack_delta_bytes==0 and not raw.escape_facts.pointer_escapes and not raw.escape_facts.requires_real_stack_identity and not raw.has_call and raw.has_return is False and raw.has_unwind_or_exception_edge is False)
+                private_model=SourceVirtualPrivateFrameModel(layout.frame_range.frame_size_bytes,layout.frame_range.required_alignment_bytes,layout.frame_range.start_offset_bytes,layout.frame_range.end_offset_bytes,tuple(private_accesses),layout.initialization_complete,layout.overlap_complete,layout.all_accesses_in_range,not raw.escape_facts.pointer_escapes,not raw.escape_facts.requires_real_stack_identity,private_eligible,tuple(sorted(set(private_reasons))))
         if kind is SourceStackFrameKind.ADDRESS_ONLY:
             if not isinstance(stack_rebinding_facts, StackAddressRebindingFacts):
                 reasons.append("stack-rebind.binding-missing")
@@ -3156,6 +3196,8 @@ def _build_stack_frame_model(
             has_dynamic_adjustment=raw.has_dynamic_adjustment,
             rebinding_accesses=tuple(sorted(rebinding_accesses, key=lambda x: (x.source_block_address, x.source_operation_index))),
             stack_address_rebinding_eligible=eligible,
+            virtual_private_frame=private_model,
+            virtual_private_frame_eligible=private_eligible,
             missing_fact_codes=tuple(sorted(set(reasons))) if not complete else (),
         )
     except (TypeError, ValueError):
