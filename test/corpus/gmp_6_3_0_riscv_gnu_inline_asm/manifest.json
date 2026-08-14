@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "corpus_id": "gmp-6.3.0-riscv-gnu-inline-asm",
+  "selected_fragment_count": 1,
+  "source": {
+    "project": "GNU MP",
+    "version": "6.3.0",
+    "source_package": "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz",
+    "license": "LGPL-3.0-or-later or GPL-2.0-or-later",
+    "file": "longlong.h"
+  },
+  "records": [
+    {
+      "id": "gmp-6.3.0-longlong-rv64-mulhu",
+      "source_path": "longlong.h",
+      "source_guard": "defined (__riscv) && defined (__riscv_mul) && W_TYPE_SIZE == 64",
+      "macro": "umul_ppmm",
+      "gnu_asm": "__asm__ (\"mulhu\\t%0, %1, %2\" : \"=r\" (ph) : \"%r\" (__u), \"r\" (__v));",
+      "template": "mulhu\\t%0, %1, %2",
+      "outputs": [
+        {
+          "constraint": "=r",
+          "expression": "ph",
+          "role": "write"
+        }
+      ],
+      "inputs": [
+        {
+          "constraint": "%r",
+          "expression": "__u",
+          "role": "read",
+          "commutative": true
+        },
+        {
+          "constraint": "r",
+          "expression": "__v",
+          "role": "read"
+        }
+      ],
+      "clobbers": [],
+      "volatile": false,
+      "isa": "RV64",
+      "extensions": [
+        "M"
+      ],
+      "semantic_category": "unsigned high-half multiply",
+      "surrounding_c": "pl = __u * __v;"
+    }
+  ]
+}
