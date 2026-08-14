@@ -6,7 +6,7 @@ an explicit renderer contract registered for that exact plan id.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Mapping
 
@@ -27,6 +27,7 @@ class RendererContractKind(str, Enum):
     GNU_ASM_GOTO = "gnu_asm_goto"
     HELPER_CALL = "helper_call"
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
+    STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
 
@@ -38,6 +39,7 @@ class RenderedReplacementKind(str, Enum):
     GNU_ASM_GOTO = "gnu_asm_goto"
     HELPER_CALL = "helper_call"
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
+    STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
     INTERNAL_ERROR = "internal_error"
@@ -157,6 +159,14 @@ class StructuredStatement:
     kind: str
     text: str
 
+@dataclass(frozen=True)
+class StackAddressRebindingRecipe:
+    contract_id: str
+    # memcpy is deliberately used instead of a cast/dereference: it avoids
+    # inventing effective-type or alignment semantics in the renderer.
+    use_memcpy: bool = True
+    required_header: str = "string.h"
+
 
 @dataclass(frozen=True)
 class RendererContract:
@@ -172,6 +182,7 @@ class RendererContext:
     """Explicit C-expression/lvalue bindings and plan-id keyed recipes."""
     contracts_by_plan_id: Mapping[str, RendererContract]
     operand_bindings: Mapping[int, str]
+    stack_object_bindings: Mapping[str, str] = field(default_factory=dict)  # verified lvalue/address expressions
     renderer_id: str = "phase6f.gnu-att"
     renderer_version: str = "1"
     source_fragment_id: str = ""
@@ -360,6 +371,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         RendererContractKind.C_BUILTIN: {TargetLoweringKind.C_BUILTIN}, RendererContractKind.GNU_INLINE_ASM: {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER},
         RendererContractKind.GNU_ASM_GOTO: {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.STRUCTURED_CONTROL_FLOW}, RendererContractKind.HELPER_CALL: {TargetLoweringKind.HELPER_CALL},
         RendererContractKind.STRUCTURED_CONTROL_FLOW: {TargetLoweringKind.STRUCTURED_CONTROL_FLOW},
+        RendererContractKind.STACK_ADDRESS_REBINDING: {TargetLoweringKind.STACK_ADDRESS_REBINDING},
     }
     if a.plan.kind not in expected.get(kind, set()): return _failure(request, RenderReasonCode.PLAN_KIND_CONTRACT_MISMATCH, internal=True)
     if kind is RendererContractKind.GNU_INLINE_ASM and isinstance(p, GnuInlineAsmRecipe): return _render_gnu(request, p, is_goto=False)
@@ -398,6 +410,22 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         if expected_labels != recipe_labels:
             return _failure(request, RenderReasonCode.ASM_GOTO_LABEL_CONTRACT_MISMATCH, internal=True)
         return RenderedReplacement(RenderedReplacementKind.STRUCTURED_CONTROL_FLOW,p,"\n".join(item.text for item in p.statements),(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
+    if kind is RendererContractKind.STACK_ADDRESS_REBINDING and isinstance(p, StackAddressRebindingRecipe):
+        rebinding = a.constraints.stack_rebinding_constraint
+        if rebinding is None or not rebinding.forbids_host_stack_pointer_mutation or not p.use_memcpy:
+            return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
+        objects = ctx.stack_object_bindings or {}
+        statements = []
+        for access in rebinding.accesses:
+            obj, value = objects.get(access.c_lvalue_binding_id), _binding(ctx, access.value_operand_index)
+            if not isinstance(obj, str) or not obj.strip() or value is None or access.width_bits not in {8,16,32,64}:
+                return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
+            n = access.width_bits // 8
+            address = f"((const unsigned char *)({obj}) + {access.byte_offset})"
+            if access.access.value == "load": statements.append(f"memcpy(&({value}), {address}, {n});")
+            elif access.access.value == "store": statements.append(f"memcpy((unsigned char *)({obj}) + {access.byte_offset}, &({value}), {n});")
+            else: return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
+        return RenderedReplacement(RenderedReplacementKind.STACK_ADDRESS_REBINDING,p," ".join(statements),(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
     return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
 
 
