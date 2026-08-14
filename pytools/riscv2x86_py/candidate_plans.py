@@ -1253,7 +1253,8 @@ def generate_candidate_plans(
             reason_code="whole-function-abi-lowering-required",
             rationale=(
                 "Source stack-frame semantics cross a function ABI boundary; "
-                "fragment-local lowering is forbidden."
+                "fragment-local lowering is forbidden; dispatch to the "
+                "independent whole-function translation mode."
             ),
         )])
 
