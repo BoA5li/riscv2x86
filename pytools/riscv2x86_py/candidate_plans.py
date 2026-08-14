@@ -133,6 +133,7 @@ class Phase6BCandidateFacts:
     requires_whole_function_abi_lowering: bool = False
     has_stack_address_rebinding_eligibility: bool = False
     has_virtual_private_frame_eligibility: bool = False
+    has_exact_abi_wrapper_eligibility: bool = False
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
@@ -1254,6 +1255,34 @@ def generate_candidate_plans(
                 "Source stack-frame semantics cross a function ABI boundary; "
                 "fragment-local lowering is forbidden."
             ),
+        )])
+
+    # A source local ABI call is never a generic helper call.  It can only be
+    # lowered through the independently modelled exact-wrapper route.
+    if facts.has_exact_abi_wrapper_eligibility:
+        return _stable_sort_and_freeze([_plan(
+            plan_id="abi-wrapper.scalar-direct-call.v1",
+            kind=TargetLoweringKind.ABI_WRAPPER_CALL,
+            family=TargetLoweringFamily.ABI_WRAPPER,
+            priority_tier=PlanPriorityTier.ABI_WRAPPER,
+            deterministic_rank=10,
+            requirements=frozenset({
+                PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+                PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                PlanRequirement.PROVE_EXACT_ABI_WRAPPER_CONTRACT,
+                PlanRequirement.PROVE_DIRECT_CALLEE_IDENTITY,
+                PlanRequirement.PROVE_ARGUMENT_LOCATION_MAPPING,
+                PlanRequirement.PROVE_RETURN_LOCATION_MAPPING,
+                PlanRequirement.PROVE_CALLER_SAVED_EFFECTS,
+                PlanRequirement.PROVE_CALLEE_SAVED_PRESERVATION,
+                PlanRequirement.PROVE_CALL_STACK_ALIGNMENT,
+                PlanRequirement.PROVE_CALL_MEMORY_EFFECTS,
+                PlanRequirement.PROVE_NO_UNWIND_OR_NONLOCAL_TRANSFER,
+                PlanRequirement.PROVE_PIC_PLT_TLS_COMPATIBILITY,
+                PlanRequirement.PROVE_NO_OBSERVABLE_RA_STATE,
+                PlanRequirement.PROVE_DEFINED_C_SEMANTICS,
+            }),
+            metadata={"strategy":"exact_abi_wrapper_call", "renderer_semantic_contract_id":"abi-wrapper.scalar-direct-call.v1"},
         )])
 
     # An explicit source helper contract has priority over family heuristics.
