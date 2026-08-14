@@ -106,6 +106,7 @@ def constraint_identity(c):
             c.x86_atomic_contract, c.x86_barrier_contract,
             c.structured_control_flow_contract, c.helper_abi_contract,
             c.stack_rebinding_constraint,
+            c.virtual_private_frame_constraint,
         ) if item is not None
     )
     # Contract payload is part of the proof binding.  Type names alone would
@@ -118,7 +119,7 @@ def constraint_identity(c):
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
     stack=request.source_model.stack_frame
-    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
+    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
     return ProofEvidence(
         source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id)),
         preservation_level=request.preservation_decision.level.value,
@@ -143,7 +144,7 @@ def validate_common(request: SemanticProofRequest):
     # A GNU-asm candidate is proof-eligible only when its *specific*,
     # versioned renderer semantic contract is present in the target catalog.
     # This checks structured plan metadata only; it does not inspect asm text.
-    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER, TargetLoweringKind.STRUCTURED_CONTROL_FLOW, TargetLoweringKind.HELPER_CALL, TargetLoweringKind.STACK_ADDRESS_REBINDING}:
+    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER, TargetLoweringKind.STRUCTURED_CONTROL_FLOW, TargetLoweringKind.HELPER_CALL, TargetLoweringKind.STACK_ADDRESS_REBINDING, TargetLoweringKind.VIRTUAL_PRIVATE_FRAME}:
         semantic_contract_id = p.metadata.get("renderer_semantic_contract_id")
         if semantic_contract_id is None and p.kind is TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
             flow = c.structured_control_flow_contract
@@ -158,13 +159,15 @@ def validate_common(request: SemanticProofRequest):
                     semantic_contract_id if isinstance(semantic_contract_id, str) else None
                 ),
             })
-    rebinding_complete = p.kind is TargetLoweringKind.STACK_ADDRESS_REBINDING and s.stack_frame is not None and s.stack_frame.stack_address_rebinding_eligible
+    rebinding_complete = p.kind in {TargetLoweringKind.STACK_ADDRESS_REBINDING,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME} and s.stack_frame is not None and (s.stack_frame.stack_address_rebinding_eligible or s.stack_frame.virtual_private_frame_eligible)
     operand_complete = s.operands.complete or rebinding_complete
     implicit_complete = s.implicit_state.complete or rebinding_complete
-    if not all((s.operation.complete,operand_complete,implicit_complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,s.control_flow.has_indirect_control_flow is not None,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    operation_complete=s.operation.complete or (p.kind is TargetLoweringKind.VIRTUAL_PRIVATE_FRAME and s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible)
+    control_complete=(s.control_flow.has_indirect_control_flow is not None or (p.kind is TargetLoweringKind.VIRTUAL_PRIVATE_FRAME and s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible))
+    if not all((operation_complete,operand_complete,implicit_complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,control_complete,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     stack_sensitive = s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer
     if stack_sensitive and (s.stack_frame is None or not s.stack_frame.complete): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
-    if (s.atomic.present and not s.atomic.complete) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete and p.kind is not TargetLoweringKind.STACK_ADDRESS_REBINDING): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    if (s.atomic.present and not s.atomic.complete) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete and p.kind not in {TargetLoweringKind.STACK_ADDRESS_REBINDING,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME}): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     if s.microarch.explicitly_microarch_sensitive and any(value is None for value in (s.microarch.has_timing_source,s.microarch.has_cache_operation,s.microarch.has_speculation_control)): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     return None
 
@@ -187,10 +190,18 @@ def _validate_requirements(request):
         PlanRequirement.PROVE_NO_STACK_ADDRESS_ESCAPE: (s.stack_frame is not None and not s.stack_frame.pointer_escapes and not s.stack_frame.requires_real_stack_identity),
         PlanRequirement.PROVE_NO_HOST_STACK_POINTER_MUTATION: (c.stack_rebinding_constraint is not None and c.stack_rebinding_constraint.forbids_host_stack_pointer_mutation),
         PlanRequirement.PROVE_STACK_OBJECT_BOUNDS: (s.stack_frame is not None and all(x.object_size_bytes is not None and x.target_object_offset_bytes + x.width_bits // 8 <= x.object_size_bytes for x in s.stack_frame.rebinding_accesses)),
+        PlanRequirement.PROVE_STATIC_BALANCED_PRIVATE_FRAME: (s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible and s.stack_frame.net_stack_delta_bytes == 0),
+        PlanRequirement.PROVE_FRAME_LAYOUT_COMPLETE: (s.stack_frame is not None and s.stack_frame.virtual_private_frame is not None and s.stack_frame.virtual_private_frame.layout_complete),
+        PlanRequirement.PROVE_FRAME_ACCESS_BOUNDS: (s.stack_frame is not None and s.stack_frame.virtual_private_frame is not None and all(x.complete for x in s.stack_frame.virtual_private_frame.accesses)),
+        PlanRequirement.PROVE_PRIVATE_FRAME_INITIALIZATION: (s.stack_frame is not None and s.stack_frame.virtual_private_frame is not None and s.stack_frame.virtual_private_frame.initialization_complete),
+        PlanRequirement.PROVE_NO_REAL_STACK_IDENTITY: (s.stack_frame is not None and not s.stack_frame.requires_real_stack_identity),
+        PlanRequirement.PROVE_NO_EXPLICIT_HOST_STACK_POINTER_MUTATION: (c.virtual_private_frame_constraint is not None and c.virtual_private_frame_constraint.forbids_explicit_host_stack_pointer_mutation),
+        PlanRequirement.PROVE_PRIVATE_FRAME_VALUE_FLOW: (s.stack_frame is not None and s.stack_frame.virtual_private_frame is not None and all(x.value_operand_index is not None for x in s.stack_frame.virtual_private_frame.accesses)),
+        PlanRequirement.PRESERVE_PRIVATE_FRAME_ALIGNMENT: (s.stack_frame is not None and s.stack_frame.virtual_private_frame is not None and c.virtual_private_frame_constraint is not None and c.virtual_private_frame_constraint.required_alignment_bytes >= s.stack_frame.virtual_private_frame.required_alignment_bytes),
         PlanRequirement.PRESERVE_MICROARCH_INTENT: (not s.microarch.explicitly_microarch_sensitive or s.microarch.has_structured_microarch_intent),
         PlanRequirement.PROVE_HELPER_ABI_CONTRACT: (p.kind is not TargetLoweringKind.HELPER_CALL or c.helper_abi_contract is not None),
         PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY: all(x.width_bits is not None for x in s.operands.operands),
-        PlanRequirement.PROVE_DEFINED_C_SEMANTICS: (p.kind is not TargetLoweringKind.C_EXPRESSION or (s.value_operation is not None and s.value_operation.complete)) and (p.kind is not TargetLoweringKind.STACK_ADDRESS_REBINDING or (s.stack_frame is not None and s.stack_frame.stack_address_rebinding_eligible)),
+        PlanRequirement.PROVE_DEFINED_C_SEMANTICS: (p.kind is not TargetLoweringKind.C_EXPRESSION or (s.value_operation is not None and s.value_operation.complete)) and (p.kind is not TargetLoweringKind.STACK_ADDRESS_REBINDING or (s.stack_frame is not None and s.stack_frame.stack_address_rebinding_eligible)) and (p.kind is not TargetLoweringKind.VIRTUAL_PRIVATE_FRAME or (s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible)),
     }
     for requirement in p.requirements:
         if requirement in checks and not checks[requirement]: return reject(request,SemanticProofReasonCode.REQUIREMENT_UNPROVEN,{"requirement":requirement.value})
@@ -258,8 +269,8 @@ def run_semantic_proof_gate(*, source_model, preservation_decision=None, candida
     common=validate_common(request)
     if common is not None:return common
     from . import phase6d_c_expression as ce, phase6d_c_builtin as cb, phase6d_x86_inline_asm as xa, phase6d_atomic as ab, phase6d_control_flow as cf, phase6d_helper_abi as ha
-    from . import phase6d_stack_rebinding as sr
-    dispatch={TargetLoweringKind.C_EXPRESSION:ce.prove,TargetLoweringKind.C_BUILTIN:cb.prove,TargetLoweringKind.X86_GNU_INLINE_ASM:xa.prove,TargetLoweringKind.X86_ATOMIC:ab.prove_atomic,TargetLoweringKind.X86_BARRIER:ab.prove_barrier,TargetLoweringKind.STRUCTURED_CONTROL_FLOW:cf.prove,TargetLoweringKind.HELPER_CALL:ha.prove,TargetLoweringKind.STACK_ADDRESS_REBINDING:sr.prove}
+    from . import phase6d_stack_rebinding as sr, phase6d_virtual_private_frame as vp
+    dispatch={TargetLoweringKind.C_EXPRESSION:ce.prove,TargetLoweringKind.C_BUILTIN:cb.prove,TargetLoweringKind.X86_GNU_INLINE_ASM:xa.prove,TargetLoweringKind.X86_ATOMIC:ab.prove_atomic,TargetLoweringKind.X86_BARRIER:ab.prove_barrier,TargetLoweringKind.STRUCTURED_CONTROL_FLOW:cf.prove,TargetLoweringKind.HELPER_CALL:ha.prove,TargetLoweringKind.STACK_ADDRESS_REBINDING:sr.prove,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME:vp.prove}
     fn=dispatch.get(candidate_plan.kind)
     if fn is None:return reject(request,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     try:return fn(request)
