@@ -77,7 +77,7 @@ class FinalSelectionResult:
 
 def _source_id(s):
     stack=s.stack_frame
-    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
+    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
     return "|".join((s.operation.kind.value, ",".join(sorted(x.value for x in s.features)), ",".join(sorted(s.reason_codes)), stack_id))
 def _environment_id(e): return f"{e.architecture.value}:{e.abi.value}:{e.asm_dialect.value}"
 def _preservation_id(p): return p.level.value+":"+",".join(sorted(p.reason_codes))
@@ -109,7 +109,7 @@ def _tier(c):
     if PreservationConclusion.BEST_EFFORT in x:return SelectionTier.BEST_EFFORT
     if PreservationConclusion.MICROARCH_STRENGTHENED in x:return SelectionTier.STRENGTHENED
     if k in {TargetLoweringKind.C_EXPRESSION,TargetLoweringKind.C_BUILTIN}:return SelectionTier.PUBLIC_PORTABLE
-    if k is TargetLoweringKind.C_STRUCTURED:return SelectionTier.STRUCTURED_C
+    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME}:return SelectionTier.STRUCTURED_C
     return SelectionTier.X86_INLINE_ASM
 def _key(c): return (int(_tier(c)),c.plan.sort_key,c.plan.kind.value)
 
