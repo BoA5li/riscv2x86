@@ -131,6 +131,7 @@ class Phase6BCandidateFacts:
     # adapters remain source-compatible while defaulting conservatively.
     has_private_balanced_stack_frame: bool = False
     requires_whole_function_abi_lowering: bool = False
+    has_stack_address_rebinding_eligibility: bool = False
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
@@ -475,6 +476,21 @@ def _generate_abi_aware_candidates(
             reason_codes=("stack-or-frame-sensitive",),
         )
     ]
+
+
+def _generate_stack_address_rebinding_candidates(facts: Phase6BCandidateFacts) -> list[TargetLoweringPlan]:
+    if not facts.has_stack_address_rebinding_eligibility:
+        return [_unsupported_candidate(reason_code="stack-address-rebinding-facts-incomplete", rationale="ADDRESS_ONLY stack accesses need authoritative complete C-object bindings.")]
+    return [_plan(plan_id="stack-rebind.c.scalar-load-store.v1", kind=TargetLoweringKind.STACK_ADDRESS_REBINDING,
+        family=TargetLoweringFamily.STACK_ADDRESS_REBINDING, priority_tier=PlanPriorityTier.STACK_ADDRESS_REBINDING,
+        deterministic_rank=10, requirements=frozenset({PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+            PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS, PlanRequirement.AUTHORITATIVE_STACK_ACCESS_BINDINGS,
+            PlanRequirement.PRESERVE_STACK_LAYOUT, PlanRequirement.PRESERVE_STACK_ALIGNMENT,
+            PlanRequirement.PROVE_NO_STACK_ADDRESS_ESCAPE, PlanRequirement.PROVE_NO_HOST_STACK_POINTER_MUTATION,
+            PlanRequirement.PROVE_STACK_OBJECT_BOUNDS, PlanRequirement.PROVE_DEFINED_C_SEMANTICS}),
+        metadata={"strategy": "stack_address_rebinding", "renderer_semantic_contract_id": "stack-rebind.c.scalar-load-store.v1", "host_stack_pointer_mutation_forbidden": True},
+        rationale=("Every logical stack access is bound to one authoritative, non-escaping C object.",),
+        reason_codes=("stack-address-rebinding-candidate",))]
 
 
 def _generate_registered_helper_candidates(facts: Phase6BCandidateFacts) -> list[TargetLoweringPlan]:
@@ -1236,6 +1252,8 @@ def generate_candidate_plans(
 
     # 4. stack/frame-sensitive。
     if facts.is_stack_or_frame_sensitive:
+        if facts.has_stack_address_rebinding_eligibility:
+            return _stable_sort_and_freeze(_generate_stack_address_rebinding_candidates(facts))
         return _stable_sort_and_freeze(
             _generate_abi_aware_candidates(facts)
         )
