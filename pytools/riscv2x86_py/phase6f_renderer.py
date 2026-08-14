@@ -28,6 +28,7 @@ class RendererContractKind(str, Enum):
     HELPER_CALL = "helper_call"
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
+    VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
 
@@ -40,6 +41,7 @@ class RenderedReplacementKind(str, Enum):
     HELPER_CALL = "helper_call"
     STRUCTURED_CONTROL_FLOW = "structured_control_flow"
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
+    VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
     INTERNAL_ERROR = "internal_error"
@@ -166,6 +168,13 @@ class StackAddressRebindingRecipe:
     # inventing effective-type or alignment semantics in the renderer.
     use_memcpy: bool = True
     required_header: str = "string.h"
+
+@dataclass(frozen=True)
+class VirtualPrivateFrameRecipe:
+    contract_id:str; frame_size_bytes:int; required_alignment_bytes:int
+    storage_identifier:str="__rv2x86_frame"
+    required_header:str="string.h"
+    explicit_host_stack_pointer_mutation_forbidden:bool=True
 
 
 @dataclass(frozen=True)
@@ -372,6 +381,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         RendererContractKind.GNU_ASM_GOTO: {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.STRUCTURED_CONTROL_FLOW}, RendererContractKind.HELPER_CALL: {TargetLoweringKind.HELPER_CALL},
         RendererContractKind.STRUCTURED_CONTROL_FLOW: {TargetLoweringKind.STRUCTURED_CONTROL_FLOW},
         RendererContractKind.STACK_ADDRESS_REBINDING: {TargetLoweringKind.STACK_ADDRESS_REBINDING},
+        RendererContractKind.VIRTUAL_PRIVATE_FRAME: {TargetLoweringKind.VIRTUAL_PRIVATE_FRAME},
     }
     if a.plan.kind not in expected.get(kind, set()): return _failure(request, RenderReasonCode.PLAN_KIND_CONTRACT_MISMATCH, internal=True)
     if kind is RendererContractKind.GNU_INLINE_ASM and isinstance(p, GnuInlineAsmRecipe): return _render_gnu(request, p, is_goto=False)
@@ -426,6 +436,23 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
             elif access.access.value == "store": statements.append(f"memcpy((unsigned char *)({obj}) + {access.byte_offset}, &({value}), {n});")
             else: return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
         return RenderedReplacement(RenderedReplacementKind.STACK_ADDRESS_REBINDING,p," ".join(statements),(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
+    if kind is RendererContractKind.VIRTUAL_PRIVATE_FRAME and isinstance(p, VirtualPrivateFrameRecipe):
+        vf=a.constraints.virtual_private_frame_constraint
+        if (vf is None or not p.explicit_host_stack_pointer_mutation_forbidden or
+                vf.frame_size_bytes != p.frame_size_bytes or vf.required_alignment_bytes != p.required_alignment_bytes or
+                not vf.forbids_explicit_host_stack_pointer_mutation or not vf.forbids_frame_address_builtin):
+            return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        statements=[]
+        for access in vf.accesses:
+            value=_binding(ctx,access.value_operand_index)
+            if value is None or access.width_bits not in {8,16,32,64}:
+                return _failure(request,RenderReasonCode.OPERAND_BINDING_MISSING,internal=True)
+            n=access.width_bits//8; base=p.storage_identifier
+            if access.access.value == "store": statements.append(f"memcpy({base} + {access.byte_offset}, &({value}), {n});")
+            elif access.access.value == "load": statements.append(f"memcpy(&({value}), {base} + {access.byte_offset}, {n});")
+            else:return _failure(request,RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE,internal=False)
+        text="{ _Alignas("+str(p.required_alignment_bytes)+") unsigned char "+p.storage_identifier+"["+str(p.frame_size_bytes)+"]; "+" ".join(statements)+" }"
+        return RenderedReplacement(RenderedReplacementKind.VIRTUAL_PRIVATE_FRAME,p,text,(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
     return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
 
 
