@@ -109,7 +109,7 @@ def _tier(c):
     if PreservationConclusion.BEST_EFFORT in x:return SelectionTier.BEST_EFFORT
     if PreservationConclusion.MICROARCH_STRENGTHENED in x:return SelectionTier.STRENGTHENED
     if k in {TargetLoweringKind.C_EXPRESSION,TargetLoweringKind.C_BUILTIN}:return SelectionTier.PUBLIC_PORTABLE
-    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME}:return SelectionTier.STRUCTURED_C
+    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,TargetLoweringKind.ABI_WRAPPER_CALL}:return SelectionTier.STRUCTURED_C
     return SelectionTier.X86_INLINE_ASM
 def _key(c): return (int(_tier(c)),c.plan.sort_key,c.plan.kind.value)
 
