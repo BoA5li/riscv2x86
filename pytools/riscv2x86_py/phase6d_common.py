@@ -117,7 +117,7 @@ def constraint_identity(c):
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
     stack=request.source_model.stack_frame
-    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.net_stack_delta_bytes),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.complete)))
+    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
     return ProofEvidence(
         source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id)),
         preservation_level=request.preservation_decision.level.value,

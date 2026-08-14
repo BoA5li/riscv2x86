@@ -444,6 +444,60 @@ class VarKind(Enum):
     OTHER = "other"
 
 
+class StackFrameClassification(str, Enum):
+    NONE="none"; ADDRESS_ONLY="address_only"; PRIVATE_BALANCED="private_balanced"
+    CALL_FRAME="call_frame"; WHOLE_FUNCTION="whole_function"; UNKNOWN="unknown"
+
+
+class StackAddressBase(str, Enum):
+    ENTRY_SP="entry_sp"; CURRENT_SP="current_sp"; FRAME_POINTER="frame_pointer"
+    BOUND_C_OBJECT="bound_c_object"; UNKNOWN="unknown"
+
+
+class StackAccessKind(str, Enum):
+    LOAD="load"; STORE="store"; READ_WRITE="read_write"
+
+
+@dataclass(frozen=True)
+class StackAdjustment:
+    block_address:int; operation_index:int; register:str
+    delta_bytes:int|None; before_affine_offset:int|None; after_affine_offset:int|None
+
+
+@dataclass(frozen=True)
+class StackMemoryAccess:
+    block_address:int; operation_index:int; base:StackAddressBase
+    base_operand_index:int|None; offset_bytes:int|None; width_bits:int|None
+    required_alignment_bytes:int|None; access:StackAccessKind
+    signed_load:bool|None; address_is_affine:bool; aliases_external_memory:bool
+
+
+@dataclass(frozen=True)
+class StackEscapeFacts:
+    pointer_escapes:bool; passed_to_call:bool; returned_to_c:bool
+    stored_to_external_memory:bool; compared_or_exposed:bool
+    requires_real_stack_identity:bool
+
+
+@dataclass(frozen=True)
+class StackFrameSemantics:
+    classification:StackFrameClassification; initial_sp_origin:StackAddressBase
+    source_abi_alignment_bytes:int|None; frame_size_bytes:int|None
+    net_stack_delta_bytes:int|None; adjustments:tuple[StackAdjustment,...]
+    accesses:tuple[StackMemoryAccess,...]; escape_facts:StackEscapeFacts
+    has_dynamic_adjustment:bool; has_call:bool; has_return:bool|None
+    has_unwind_or_exception_edge:bool|None; complete:bool
+    missing_fact_codes:tuple[str,...]=()
+
+    def __post_init__(self):
+        if not isinstance(self.classification,StackFrameClassification): raise TypeError("invalid stack classification")
+        if not isinstance(self.initial_sp_origin,StackAddressBase): raise TypeError("invalid stack origin")
+        if not self.complete and not self.missing_fact_codes: raise ValueError("incomplete stack semantics need reason codes")
+        if self.complete and self.missing_fact_codes: raise ValueError("complete stack semantics cannot have missing facts")
+        if tuple(sorted(self.adjustments,key=lambda x:(x.block_address,x.operation_index))) != self.adjustments: raise ValueError("stack adjustments must be sorted")
+        if tuple(sorted(self.accesses,key=lambda x:(x.block_address,x.operation_index))) != self.accesses: raise ValueError("stack accesses must be sorted")
+
+
 @dataclass(frozen=True)
 class Var:
     kind: VarKind
@@ -535,7 +589,7 @@ class IRSummary:
     # Optional typed metadata produced by a Phase-5 stack-frame analyser.
     # Phase 6 consumes this only through SourceStackFrameModel and must never
     # reconstruct it from assembly spelling.
-    stack_frame_semantics: Any = None
+    stack_frame_semantics: StackFrameSemantics | None = None
 
     @property
     def barrier_info(self) -> Optional[BarrierInfo]:
@@ -2160,6 +2214,13 @@ def from_lifted(
     summary = _summarize_instructions(
         canonical_insns,
         is_single_block=(len(blocks) == 1),
+    )
+    # Phase 5 owns stack-frame analysis.  The resulting typed summary is the
+    # only stack-layout input permitted to reach Phase 6A.
+    from .stack_frame_analysis import analyze_stack_frame_semantics
+    summary.stack_frame_semantics = analyze_stack_frame_semantics(
+        blocks=blocks,
+        summary=summary,
     )
 
     return blocks, summary

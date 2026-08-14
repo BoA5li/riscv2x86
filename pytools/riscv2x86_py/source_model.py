@@ -7,12 +7,12 @@ from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple,
 from enum import Enum
 try:
     from .cfg import CFGResult
-    from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind
+    from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase
     from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
-    from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind
+    from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase
     from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
 
@@ -187,6 +187,13 @@ class SourceStackFrameModel:
     pointer_escapes: bool = False
     requires_real_stack_identity: bool = False
     complete: bool = False
+    initial_sp_origin: str = "unknown"
+    source_abi_alignment_bytes: int | None = None
+    accesses: Tuple[object, ...] = ()
+    adjustments: Tuple[object, ...] = ()
+    escape_facts: object | None = None
+    has_dynamic_adjustment: bool = False
+    missing_fact_codes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceStackFrameKind):
@@ -207,6 +214,8 @@ class SourceStackFrameModel:
                     self.net_stack_delta_bytes != 0 or self.pointer_escapes or
                     self.requires_real_stack_identity):
                 raise ValueError("PRIVATE_BALANCED requires a closed balanced logical frame")
+        if not self.complete and not self.missing_fact_codes:
+            raise ValueError("incomplete stack-frame model needs reason codes")
 
     @property
     def requires_whole_function_lowering(self) -> bool:
@@ -3059,32 +3068,37 @@ def _build_stack_frame_model(
         registers.reads_or_writes_stack_pointer or
         registers.reads_or_writes_frame_pointer
     )
-    raw = getattr(summary, "stack_frame_semantics", None)
-    if raw is None:
+    raw = summary.stack_frame_semantics
+    if not isinstance(raw, StackFrameSemantics):
         return SourceStackFrameModel(
             SourceStackFrameKind.UNKNOWN if sensitive else SourceStackFrameKind.NONE,
             complete=not sensitive,
+            missing_fact_codes=() if not sensitive else ("stack-frame-semantics-unavailable",),
         )
-
-    def get(name: str, default=None):
-        return raw.get(name, default) if isinstance(raw, Mapping) else getattr(raw, name, default)
-
     try:
-        kind = SourceStackFrameKind(str(get("kind", "unknown")).strip().lower())
+        kind = SourceStackFrameKind(raw.classification.value)
     except ValueError:
         kind = SourceStackFrameKind.UNKNOWN
     try:
         return SourceStackFrameModel(
             kind=kind,
-            frame_size_bytes=get("frame_size_bytes"),
-            required_alignment_bytes=get("required_alignment_bytes"),
-            net_stack_delta_bytes=get("net_stack_delta_bytes"),
-            pointer_escapes=bool(get("pointer_escapes", False)),
-            requires_real_stack_identity=bool(get("requires_real_stack_identity", False)),
-            complete=bool(get("complete", False)),
+            frame_size_bytes=raw.frame_size_bytes,
+            required_alignment_bytes=raw.source_abi_alignment_bytes,
+            net_stack_delta_bytes=raw.net_stack_delta_bytes,
+            pointer_escapes=raw.escape_facts.pointer_escapes,
+            requires_real_stack_identity=raw.escape_facts.requires_real_stack_identity,
+            complete=raw.complete,
+            initial_sp_origin=raw.initial_sp_origin.value,
+            source_abi_alignment_bytes=raw.source_abi_alignment_bytes,
+            accesses=raw.accesses,
+            adjustments=raw.adjustments,
+            escape_facts=raw.escape_facts,
+            has_dynamic_adjustment=raw.has_dynamic_adjustment,
+            missing_fact_codes=raw.missing_fact_codes,
         )
     except (TypeError, ValueError):
-        return SourceStackFrameModel(SourceStackFrameKind.UNKNOWN, complete=False)
+        return SourceStackFrameModel(SourceStackFrameKind.UNKNOWN, complete=False,
+            missing_fact_codes=("invalid-stack-frame-semantics",))
 
 
 def _build_helper_abi_model(*, summary: IRSummary, operation: SourceOperationModel,
