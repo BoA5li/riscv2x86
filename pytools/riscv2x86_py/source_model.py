@@ -11,12 +11,14 @@ try:
     from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
     from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
+    from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
     from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
     from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
     from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
+    from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects
 
 from .runtime_fact_model import RuntimeFactStatus
 from .semantic_types import (
@@ -384,6 +386,9 @@ class SourceSemanticModel:
     # 6A always supplies it; a missing value is treated as UNKNOWN whenever
     # stack/frame registers are observed.
     stack_frame: SourceStackFrameModel | None = None
+    # Phase-5 typed call-boundary facts.  This is deliberately independent
+    # from stack-frame facts and is the sole input for ABI wrapper lowering.
+    abi_effects: SourceAbiEffectModel | None = None
 
     @property
     def phase6b_candidate_facts(self):
@@ -424,12 +429,13 @@ class SourceSemanticModel:
              stack_frame.kind is SourceStackFrameKind.UNKNOWN)
         )
         private_frame_route = stack_frame is not None and stack_frame.virtual_private_frame_eligible
+        abi_wrapper_route = self.abi_effects is not None and self.abi_effects.complete
         unmodelled = any((
-            not self.operation.complete and not private_frame_route,
-            not self.implicit_state.complete and not private_frame_route,
+            not self.operation.complete and not private_frame_route and not abi_wrapper_route,
+            not self.implicit_state.complete and not private_frame_route and not abi_wrapper_route,
             self.memory.has_unknown_barrier,
             self.registers.has_unresolved_register_identity,
-            control_unknown and not private_frame_route,
+            control_unknown and not private_frame_route and not abi_wrapper_route,
             stack_frame_unknown,
         ))
         shell_known = isinstance(self.shell, SourceShellModel)
@@ -488,6 +494,7 @@ class SourceSemanticModel:
             has_virtual_private_frame_eligibility=(
                 stack_frame is not None and stack_frame.virtual_private_frame_eligible
             ),
+            has_exact_abi_wrapper_eligibility=abi_wrapper_route and shell_known and not self.shell.is_volatile and not self.shell.has_memory_clobber and not self.shell.has_cc_clobber and not self.shell.has_asm_goto,
             has_stack_address_rebinding_eligibility=(
                 stack_frame is not None and
                 stack_frame.stack_address_rebinding_eligible
@@ -750,6 +757,7 @@ def build_source_semantic_model(
         None,
     ],
     stack_rebinding_facts: StackAddressRebindingFacts | None = None,
+    abi_call_bindings: tuple[SourceAbiCallBinding, ...] = (),
 ) -> SourceSemanticModel:
     """
     Construct the authoritative immutable Phase-6A SourceSemanticModel.
@@ -963,6 +971,7 @@ def build_source_semantic_model(
             stack_rebinding_facts=stack_rebinding_facts,
             runtime_status=runtime_status,
         ),
+        abi_effects=build_abi_effects(has_call=control_flow.has_call, bindings=abi_call_bindings),
     )
 
 def _build_control_flow_model(
