@@ -45,6 +45,7 @@ class TargetLoweringKind(str, Enum):
     # authoritative C object.  This never means using the host stack.
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
+    ABI_WRAPPER_CALL = "abi_wrapper_call"
 
     # 显式保留 unsupported，而不是猜测性 lower。
     UNSUPPORTED = "unsupported"
@@ -64,6 +65,7 @@ class TargetLoweringFamily(str, Enum):
     STRUCTURED_CFG = "structured_cfg"
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
+    ABI_WRAPPER = "abi_wrapper"
     UNSUPPORTED = "unsupported"
 
 
@@ -90,6 +92,7 @@ class PlanPriorityTier(int, Enum):
     STRUCTURED_CFG = 60
     STACK_ADDRESS_REBINDING = 25
     VIRTUAL_PRIVATE_FRAME = 20
+    ABI_WRAPPER = 50
     UNSUPPORTED = 1000
 
 
@@ -136,6 +139,17 @@ class PlanRequirement(str, Enum):
     PROVE_NO_EXPLICIT_HOST_STACK_POINTER_MUTATION = "prove_no_explicit_host_stack_pointer_mutation"
     PROVE_PRIVATE_FRAME_VALUE_FLOW = "prove_private_frame_value_flow"
     PRESERVE_PRIVATE_FRAME_ALIGNMENT = "preserve_private_frame_alignment"
+    PROVE_EXACT_ABI_WRAPPER_CONTRACT = "prove_exact_abi_wrapper_contract"
+    PROVE_DIRECT_CALLEE_IDENTITY = "prove_direct_callee_identity"
+    PROVE_ARGUMENT_LOCATION_MAPPING = "prove_argument_location_mapping"
+    PROVE_RETURN_LOCATION_MAPPING = "prove_return_location_mapping"
+    PROVE_CALLER_SAVED_EFFECTS = "prove_caller_saved_effects"
+    PROVE_CALLEE_SAVED_PRESERVATION = "prove_callee_saved_preservation"
+    PROVE_CALL_STACK_ALIGNMENT = "prove_call_stack_alignment"
+    PROVE_CALL_MEMORY_EFFECTS = "prove_call_memory_effects"
+    PROVE_NO_UNWIND_OR_NONLOCAL_TRANSFER = "prove_no_unwind_or_nonlocal_transfer"
+    PROVE_PIC_PLT_TLS_COMPATIBILITY = "prove_pic_plt_tls_compatibility"
+    PROVE_NO_OBSERVABLE_RA_STATE = "prove_no_observable_ra_state"
 
     PRESERVE_MICROARCH_INTENT = "preserve_microarch_intent"
     PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY = (
@@ -170,6 +184,8 @@ _KIND_TO_FAMILY: Mapping[
             TargetLoweringFamily.STACK_ADDRESS_REBINDING,
         TargetLoweringKind.VIRTUAL_PRIVATE_FRAME:
             TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME,
+        TargetLoweringKind.ABI_WRAPPER_CALL:
+            TargetLoweringFamily.ABI_WRAPPER,
         TargetLoweringKind.UNSUPPORTED:
             TargetLoweringFamily.UNSUPPORTED,
     }
@@ -198,6 +214,8 @@ _FAMILY_TO_PRIORITY_TIER: Mapping[
             PlanPriorityTier.STACK_ADDRESS_REBINDING,
         TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME:
             PlanPriorityTier.VIRTUAL_PRIVATE_FRAME,
+        TargetLoweringFamily.ABI_WRAPPER:
+            PlanPriorityTier.ABI_WRAPPER,
         TargetLoweringFamily.UNSUPPORTED:
             PlanPriorityTier.UNSUPPORTED,
     }
