@@ -1153,6 +1153,7 @@ class TargetConstraintModel:
     x86_barrier_contract: object | None = None
     structured_control_flow_contract: object | None = None
     helper_abi_contract: object | None = None
+    stack_rebinding_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1245,6 +1246,10 @@ class TargetConstraintModel:
             from .c_module.phase6c_helper_abi import HelperAbiContract
             if not isinstance(self.helper_abi_contract, HelperAbiContract):
                 raise TypeError("helper_abi_contract must be HelperAbiContract or None")
+        if self.stack_rebinding_constraint is not None:
+            from .stack_rebinding import TargetStackRebindingConstraint
+            if not isinstance(self.stack_rebinding_constraint, TargetStackRebindingConstraint):
+                raise TypeError("stack_rebinding_constraint must be TargetStackRebindingConstraint or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
         specialized_contracts = (
@@ -1256,6 +1261,7 @@ class TargetConstraintModel:
             self.x86_barrier_contract,
             self.structured_control_flow_contract,
             self.helper_abi_contract,
+            self.stack_rebinding_constraint,
         )
         if sum(contract is not None for contract in specialized_contracts) > 1:
             raise ValueError("target constraints must contain exactly one lowering contract")
@@ -1512,6 +1518,20 @@ def _derive_c_builtin_0(
     return derive_c_builtin_constraints(source_model, candidate_plan, target_environment)
 
 
+def _derive_stack_address_rebinding_0(*, source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: TargetEnvironment) -> TargetConstraintDerivationResult:
+    from .stack_rebinding import TargetStackRebindingAccess, TargetStackRebindingConstraint
+    frame = source_model.stack_frame
+    shell = source_model.shell
+    shell_safe = not any((shell.is_volatile, shell.has_memory_clobber, shell.has_cc_clobber,
+                          shell.has_asm_goto, shell.has_early_clobber,
+                          shell.has_tied_operands, shell.has_control_flow_surface))
+    if frame is None or not frame.stack_address_rebinding_eligible or not shell_safe:
+        return TargetConstraintDerivationResult.failure(plan_id=candidate_plan.plan_id, reason_codes=(TargetConstraintReasonCode.C_STRUCTURED_NOT_IMPLEMENTED,), details={"reason": "stack-rebinding-ineligible"})
+    accesses = tuple(TargetStackRebindingAccess(x.source_block_address, x.source_operation_index, x.c_lvalue_binding_id, x.target_object_offset_bytes, x.width_bits, x.access, x.value_operand_index) for x in frame.rebinding_accesses)
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id, environment=target_environment,
+        stack_rebinding_constraint=TargetStackRebindingConstraint(accesses), memory_constraint=TargetMemoryConstraint(), control_flow_constraint=TargetControlFlowConstraint()))
+
+
 def _derive_x86_gnu_inline_asm_0(
     *,
     source_model: SourceSemanticModel,
@@ -1676,6 +1696,9 @@ _PLAN_KIND_DISPATCH: Mapping[TargetLoweringKind, _Deriver] = (
             ),
             TargetLoweringKind.STRUCTURED_CONTROL_FLOW: _adapt_deriver(
                 _derive_structured_control_flow_0
+            ),
+            TargetLoweringKind.STACK_ADDRESS_REBINDING: _adapt_deriver(
+                _derive_stack_address_rebinding_0
             ),
             TargetLoweringKind.UNSUPPORTED: _adapt_deriver(
                 _derive_explicit_unsupported_0
