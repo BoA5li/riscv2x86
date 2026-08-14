@@ -478,6 +478,28 @@ class StackEscapeFacts:
     stored_to_external_memory:bool; compared_or_exposed:bool
     requires_real_stack_identity:bool
 
+@dataclass(frozen=True)
+class PrivateFrameRange:
+    start_offset_bytes:int; end_offset_bytes:int
+    frame_size_bytes:int; required_alignment_bytes:int
+
+@dataclass(frozen=True)
+class PrivateFrameSlotAccess:
+    source_block_address:int; source_operation_index:int
+    source_offset_bytes:int; virtual_offset_bytes:int
+    width_bits:int; required_alignment_bytes:int; access:StackAccessKind
+    signed_load:bool|None; value_node_id:str|None
+    aliases_external_memory:bool; definitely_initialized_before_read:bool
+    complete:bool
+
+@dataclass(frozen=True)
+class PrivateFrameLayoutFacts:
+    frame_range:PrivateFrameRange|None
+    slots:tuple[PrivateFrameSlotAccess,...]
+    overlap_complete:bool; initialization_complete:bool
+    all_accesses_in_range:bool; complete:bool
+    missing_fact_codes:tuple[str,...]=()
+
 
 @dataclass(frozen=True)
 class StackFrameSemantics:
@@ -488,6 +510,7 @@ class StackFrameSemantics:
     has_dynamic_adjustment:bool; has_call:bool; has_return:bool|None
     has_unwind_or_exception_edge:bool|None; complete:bool
     missing_fact_codes:tuple[str,...]=()
+    private_frame_layout:PrivateFrameLayoutFacts|None=None
 
     def __post_init__(self):
         if not isinstance(self.classification,StackFrameClassification): raise TypeError("invalid stack classification")
