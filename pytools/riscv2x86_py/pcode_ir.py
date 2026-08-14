@@ -532,6 +532,11 @@ class IRSummary:
     has_cache_operation: Optional[bool] = None
     has_speculation_control: Optional[bool] = None
 
+    # Optional typed metadata produced by a Phase-5 stack-frame analyser.
+    # Phase 6 consumes this only through SourceStackFrameModel and must never
+    # reconstruct it from assembly spelling.
+    stack_frame_semantics: Any = None
+
     @property
     def barrier_info(self) -> Optional[BarrierInfo]:
         if len(self.barrier_infos) == 1:

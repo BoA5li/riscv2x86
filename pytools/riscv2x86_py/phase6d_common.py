@@ -116,8 +116,10 @@ def constraint_identity(c):
 
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
+    stack=request.source_model.stack_frame
+    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.net_stack_delta_bytes),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.complete)))
     return ProofEvidence(
-        source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)))),
+        source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id)),
         preservation_level=request.preservation_decision.level.value,
         preservation_decision_id=request.preservation_decision.level.value+":"+",".join(sorted(request.preservation_decision.reason_codes)),
         plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id, constraints_id=constraint_identity(request.constraints),
@@ -156,6 +158,8 @@ def validate_common(request: SemanticProofRequest):
                 ),
             })
     if not all((s.operation.complete,s.operands.complete,s.implicit_state.complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,s.control_flow.has_indirect_control_flow is not None,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    stack_sensitive = s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer
+    if stack_sensitive and (s.stack_frame is None or not s.stack_frame.complete): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     if (s.atomic.present and not s.atomic.complete) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     if s.microarch.explicitly_microarch_sensitive and any(value is None for value in (s.microarch.has_timing_source,s.microarch.has_cache_operation,s.microarch.has_speculation_control)): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     return None
@@ -172,7 +176,7 @@ def _validate_requirements(request):
         PlanRequirement.PRESERVE_ATOMIC_ORDERING: (not s.atomic.present or c.memory_constraint.requires_atomic_ordering),
         PlanRequirement.PRESERVE_CONTROL_FLOW: (not s.operation.has_control_flow or c.control_flow_constraint.preserve_control_flow),
         PlanRequirement.PRESERVE_ASM_GOTO: (not s.control_flow.has_asm_goto or c.control_flow_constraint.preserve_asm_goto),
-        PlanRequirement.PRESERVE_STACK_FRAME: (not (s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer) or (c.control_flow_constraint.preserve_stack_pointer and c.control_flow_constraint.preserve_frame_pointer)),
+        PlanRequirement.PRESERVE_STACK_FRAME: (not (s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer) or (s.stack_frame is not None and s.stack_frame.complete and not s.stack_frame.requires_whole_function_lowering and c.control_flow_constraint.preserve_stack_pointer and c.control_flow_constraint.preserve_frame_pointer)),
         PlanRequirement.PRESERVE_MICROARCH_INTENT: (not s.microarch.explicitly_microarch_sensitive or s.microarch.has_structured_microarch_intent),
         PlanRequirement.PROVE_HELPER_ABI_CONTRACT: (p.kind is not TargetLoweringKind.HELPER_CALL or c.helper_abi_contract is not None),
         PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY: all(x.width_bits is not None for x in s.operands.operands),

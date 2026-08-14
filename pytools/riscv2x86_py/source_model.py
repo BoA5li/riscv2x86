@@ -155,6 +155,68 @@ class SourceReadOnlyCsrModel:
     width_bits: int
 
 
+class SourceStackFrameKind(str, Enum):
+    """Phase-6A classification of source stack/frame semantics.
+
+    The classification describes the *source logical frame*, never the host
+    compiler's physical stack.  In particular, a non-NONE classification must
+    not be lowered by writing x86 %rsp/%rbp from ordinary GNU inline asm.
+    """
+
+    NONE = "none"
+    ADDRESS_ONLY = "address_only"
+    PRIVATE_BALANCED = "private_balanced"
+    CALL_FRAME = "call_frame"
+    WHOLE_FUNCTION = "whole_function"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class SourceStackFrameModel:
+    """Structured stack/frame facts owned by Phase 6A.
+
+    Phase 6B-F may route and prove these facts, but may not recreate them from
+    mnemonics, raw p-code, or rendered target code.  ``UNKNOWN`` is an
+    intentional fail-closed result, not a request to use the target stack.
+    """
+
+    kind: SourceStackFrameKind
+    frame_size_bytes: int | None = None
+    required_alignment_bytes: int | None = None
+    net_stack_delta_bytes: int | None = None
+    pointer_escapes: bool = False
+    requires_real_stack_identity: bool = False
+    complete: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, SourceStackFrameKind):
+            raise TypeError("kind must be SourceStackFrameKind")
+        for name in ("frame_size_bytes", "required_alignment_bytes"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+                raise ValueError(f"{name} must be a positive int or None")
+        if self.net_stack_delta_bytes is not None and (isinstance(self.net_stack_delta_bytes, bool) or not isinstance(self.net_stack_delta_bytes, int)):
+            raise TypeError("net_stack_delta_bytes must be an int or None")
+        if not isinstance(self.pointer_escapes, bool) or not isinstance(self.requires_real_stack_identity, bool) or not isinstance(self.complete, bool):
+            raise TypeError("stack-frame flags must be bool")
+        if self.kind is SourceStackFrameKind.NONE and not self.complete:
+            raise ValueError("NONE stack-frame model must be complete")
+        if self.kind is SourceStackFrameKind.PRIVATE_BALANCED:
+            if (not self.complete or self.frame_size_bytes is None or
+                    self.required_alignment_bytes is None or
+                    self.net_stack_delta_bytes != 0 or self.pointer_escapes or
+                    self.requires_real_stack_identity):
+                raise ValueError("PRIVATE_BALANCED requires a closed balanced logical frame")
+
+    @property
+    def requires_whole_function_lowering(self) -> bool:
+        return self.kind in {SourceStackFrameKind.CALL_FRAME, SourceStackFrameKind.WHOLE_FUNCTION}
+
+    @property
+    def is_local_virtual_frame_candidate(self) -> bool:
+        return self.kind is SourceStackFrameKind.PRIVATE_BALANCED
+
+
 @dataclass(frozen=True)
 class SourceMemoryModel:
     """
@@ -286,6 +348,10 @@ class SourceSemanticModel:
     local_branch_select: SourceLocalBranchSelectModel | None
     local_unconditional_jump: SourceLocalUnconditionalJumpModel | None
     read_only_csr: SourceReadOnlyCsrModel | None
+    # Optional only for constructor compatibility with older callers.  Phase
+    # 6A always supplies it; a missing value is treated as UNKNOWN whenever
+    # stack/frame registers are observed.
+    stack_frame: SourceStackFrameModel | None = None
 
     @property
     def phase6b_candidate_facts(self):
@@ -312,12 +378,20 @@ class SourceSemanticModel:
             SourceOperationKind.OPAQUE,
             SourceOperationKind.UNKNOWN,
         }
+        stack_frame = self.stack_frame
+        stack_frame_unknown = (
+            (self.registers.reads_or_writes_stack_pointer or
+             self.registers.reads_or_writes_frame_pointer) and
+            (stack_frame is None or not stack_frame.complete or
+             stack_frame.kind is SourceStackFrameKind.UNKNOWN)
+        )
         unmodelled = any((
             not self.operation.complete,
             not self.implicit_state.complete,
             self.memory.has_unknown_barrier,
             self.registers.has_unresolved_register_identity,
             control_unknown,
+            stack_frame_unknown,
         ))
         shell_known = isinstance(self.shell, SourceShellModel)
         stack_sensitive = (
@@ -368,6 +442,14 @@ class SourceSemanticModel:
             ),
             has_stack_sensitive_semantics=stack_sensitive,
             has_frame_sensitive_semantics=frame_sensitive,
+            has_private_balanced_stack_frame=(
+                stack_frame is not None and
+                stack_frame.is_local_virtual_frame_candidate
+            ),
+            requires_whole_function_abi_lowering=(
+                stack_frame is not None and
+                stack_frame.requires_whole_function_lowering
+            ),
             has_required_helper_semantics=(
                 self.operation.requires_helper_abi_contract and self.helper_abi.complete
             ),
@@ -828,6 +910,10 @@ def build_source_semantic_model(
         local_branch_select=local_branch_select,
         local_unconditional_jump=local_unconditional_jump,
         read_only_csr=read_only_csr,
+        stack_frame=_build_stack_frame_model(
+            summary=analysis_summary,
+            registers=registers,
+        ),
     )
 
 def _build_control_flow_model(
@@ -2955,6 +3041,50 @@ class SourceHelperAbiModel:
     preserves_stack_pointer: Optional[bool]; preserves_frame_pointer: Optional[bool]
     caller_saved_registers: Tuple[str, ...]; callee_saved_registers: Tuple[str, ...]
     pic_plt_compatible: Optional[bool]; runtime_available: Optional[bool]; complete: bool
+
+
+def _build_stack_frame_model(
+    *,
+    summary: IRSummary,
+    registers: SourceRegisterModel,
+) -> SourceStackFrameModel:
+    """Adapt typed Phase-5 stack metadata without inspecting assembly text.
+
+    The decoder/lifter may provide ``summary.stack_frame_semantics`` as a
+    mapping or DTO with the fields below.  Until it does, any observed source
+    stack/frame register is deliberately UNKNOWN.  This prevents accidental
+    use of the host x86 stack as a stand-in for the RISC-V frame.
+    """
+    sensitive = (
+        registers.reads_or_writes_stack_pointer or
+        registers.reads_or_writes_frame_pointer
+    )
+    raw = getattr(summary, "stack_frame_semantics", None)
+    if raw is None:
+        return SourceStackFrameModel(
+            SourceStackFrameKind.UNKNOWN if sensitive else SourceStackFrameKind.NONE,
+            complete=not sensitive,
+        )
+
+    def get(name: str, default=None):
+        return raw.get(name, default) if isinstance(raw, Mapping) else getattr(raw, name, default)
+
+    try:
+        kind = SourceStackFrameKind(str(get("kind", "unknown")).strip().lower())
+    except ValueError:
+        kind = SourceStackFrameKind.UNKNOWN
+    try:
+        return SourceStackFrameModel(
+            kind=kind,
+            frame_size_bytes=get("frame_size_bytes"),
+            required_alignment_bytes=get("required_alignment_bytes"),
+            net_stack_delta_bytes=get("net_stack_delta_bytes"),
+            pointer_escapes=bool(get("pointer_escapes", False)),
+            requires_real_stack_identity=bool(get("requires_real_stack_identity", False)),
+            complete=bool(get("complete", False)),
+        )
+    except (TypeError, ValueError):
+        return SourceStackFrameModel(SourceStackFrameKind.UNKNOWN, complete=False)
 
 
 def _build_helper_abi_model(*, summary: IRSummary, operation: SourceOperationModel,

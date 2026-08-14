@@ -127,6 +127,11 @@ class Phase6BCandidateFacts:
     # 是否可表达为 structured C statement/block。
     c_structured_eligible: bool
 
+    # Added after the original required fields so external test fixtures and
+    # adapters remain source-compatible while defaulting conservatively.
+    has_private_balanced_stack_frame: bool = False
+    requires_whole_function_abi_lowering: bool = False
+
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
             if field_name in {
@@ -453,9 +458,14 @@ def _generate_abi_aware_candidates(
                 }
             ),
             metadata={
-                "strategy": "abi_aware_helper",
+                "strategy": (
+                    "virtual_private_stack_frame"
+                    if facts.has_private_balanced_stack_frame
+                    else "abi_aware_helper"
+                ),
                 "stack_sensitive": facts.has_stack_sensitive_semantics,
                 "frame_sensitive": facts.has_frame_sensitive_semantics,
+                "host_stack_pointer_mutation_forbidden": True,
             },
             rationale=(
                 "Stack/frame-sensitive semantics require an explicit helper "
@@ -1200,6 +1210,18 @@ def generate_candidate_plans(
     # Phase 6B does not approve that route: 6C derives the exact volatile /
     # operand / clobber contract and 6D proves it.  Pure C remains restricted
     # to shell-neutral candidates in _generate_register_only_candidates().
+
+    # ret/jr ra, call frames, and ABI-visible save/restore operations change
+    # the containing C function's contract.  They are not safe fragment-local
+    # helper calls and must be handled by a future whole-function route.
+    if facts.requires_whole_function_abi_lowering:
+        return _stable_sort_and_freeze([_unsupported_candidate(
+            reason_code="whole-function-abi-lowering-required",
+            rationale=(
+                "Source stack-frame semantics cross a function ABI boundary; "
+                "fragment-local lowering is forbidden."
+            ),
+        )])
 
     # An explicit source helper contract has priority over family heuristics.
     # No helper candidate is emitted for an unknown symbol or absent contract.
