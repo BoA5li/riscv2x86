@@ -12,6 +12,7 @@ try:
     from .schema import AsmFragment
     from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
     from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects
+    from .whole_function import WholeFunctionRouteDecision, classify_whole_function_route
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
     from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover - direct-module compatibility
     from schema import AsmFragment
     from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
     from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects
+    from whole_function import WholeFunctionRouteDecision, classify_whole_function_route
 
 from .runtime_fact_model import RuntimeFactStatus
 from .semantic_types import (
@@ -389,6 +391,7 @@ class SourceSemanticModel:
     # Phase-5 typed call-boundary facts.  This is deliberately independent
     # from stack-frame facts and is the sole input for ABI wrapper lowering.
     abi_effects: SourceAbiEffectModel | None = None
+    whole_function_route: WholeFunctionRouteDecision | None = None
 
     @property
     def phase6b_candidate_facts(self):
@@ -500,8 +503,7 @@ class SourceSemanticModel:
                 stack_frame.stack_address_rebinding_eligible
             ),
             requires_whole_function_abi_lowering=(
-                stack_frame is not None and
-                stack_frame.requires_whole_function_lowering
+                self.whole_function_route is not None and self.whole_function_route.required
             ),
             has_required_helper_semantics=(
                 self.operation.requires_helper_abi_contract and self.helper_abi.complete
@@ -928,6 +930,19 @@ def build_source_semantic_model(
         reasons=reasons,
         reason_codes=reason_codes,
     )
+    stack_frame_model = _build_stack_frame_model(
+        summary=analysis_summary, registers=registers,
+        stack_rebinding_facts=stack_rebinding_facts, runtime_status=runtime_status,
+    )
+    whole_function_route = classify_whole_function_route(
+        reads_registers=registers.reads_registers, writes_registers=registers.writes_registers,
+        has_call=control_flow.has_call, has_return=control_flow.has_return,
+        has_tail_call=control_flow.has_tail_call,
+        stack_kind=None if stack_frame_model is None else stack_frame_model.kind.value,
+        dynamic_adjustment=False if stack_frame_model is None else stack_frame_model.has_dynamic_adjustment,
+        stack_complete=True if stack_frame_model is None else stack_frame_model.complete,
+        has_unwind_or_exception_edge=_optional_summary_flag(analysis_summary,"has_unwind_or_exception_edge"),
+    )
 
     return SourceSemanticModel(
         shell=shell,
@@ -965,13 +980,9 @@ def build_source_semantic_model(
         local_branch_select=local_branch_select,
         local_unconditional_jump=local_unconditional_jump,
         read_only_csr=read_only_csr,
-        stack_frame=_build_stack_frame_model(
-            summary=analysis_summary,
-            registers=registers,
-            stack_rebinding_facts=stack_rebinding_facts,
-            runtime_status=runtime_status,
-        ),
+        stack_frame=stack_frame_model,
         abi_effects=build_abi_effects(has_call=control_flow.has_call, bindings=abi_call_bindings),
+        whole_function_route=whole_function_route,
     )
 
 def _build_control_flow_model(
