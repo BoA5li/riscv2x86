@@ -1154,6 +1154,7 @@ class TargetConstraintModel:
     structured_control_flow_contract: object | None = None
     helper_abi_contract: object | None = None
     stack_rebinding_constraint: object | None = None
+    virtual_private_frame_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1250,6 +1251,10 @@ class TargetConstraintModel:
             from .stack_rebinding import TargetStackRebindingConstraint
             if not isinstance(self.stack_rebinding_constraint, TargetStackRebindingConstraint):
                 raise TypeError("stack_rebinding_constraint must be TargetStackRebindingConstraint or None")
+        if self.virtual_private_frame_constraint is not None:
+            from .virtual_private_frame import TargetVirtualPrivateFrameConstraint
+            if not isinstance(self.virtual_private_frame_constraint, TargetVirtualPrivateFrameConstraint):
+                raise TypeError("virtual_private_frame_constraint must be TargetVirtualPrivateFrameConstraint or None")
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
         specialized_contracts = (
@@ -1262,6 +1267,7 @@ class TargetConstraintModel:
             self.structured_control_flow_contract,
             self.helper_abi_contract,
             self.stack_rebinding_constraint,
+            self.virtual_private_frame_constraint,
         )
         if sum(contract is not None for contract in specialized_contracts) > 1:
             raise ValueError("target constraints must contain exactly one lowering contract")
@@ -1531,6 +1537,16 @@ def _derive_stack_address_rebinding_0(*, source_model: SourceSemanticModel, cand
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id, environment=target_environment,
         stack_rebinding_constraint=TargetStackRebindingConstraint(accesses), memory_constraint=TargetMemoryConstraint(), control_flow_constraint=TargetControlFlowConstraint()))
 
+def _derive_virtual_private_frame_0(*, source_model: SourceSemanticModel, candidate_plan: TargetLoweringPlan, target_environment: TargetEnvironment) -> TargetConstraintDerivationResult:
+    from .virtual_private_frame import TargetVirtualPrivateFrameAccess, TargetVirtualPrivateFrameConstraint
+    frame=source_model.stack_frame; private=None if frame is None else frame.virtual_private_frame
+    shell=source_model.shell
+    shell_safe=not any((shell.is_volatile,shell.has_memory_clobber,shell.has_cc_clobber,shell.has_asm_goto,shell.has_early_clobber,shell.has_tied_operands,shell.has_control_flow_surface))
+    if private is None or not frame.virtual_private_frame_eligible or not shell_safe:
+        return TargetConstraintDerivationResult.failure(plan_id=candidate_plan.plan_id,reason_codes=(TargetConstraintReasonCode.C_STRUCTURED_NOT_IMPLEMENTED,),details={"reason":"virtual-private-frame-ineligible"})
+    accesses=tuple(TargetVirtualPrivateFrameAccess(x.source_block_address,x.source_operation_index,x.virtual_offset_bytes,x.width_bits,x.access,x.value_operand_index,x.signed_load) for x in private.accesses)
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,virtual_private_frame_constraint=TargetVirtualPrivateFrameConstraint(private.frame_size_bytes,private.required_alignment_bytes,accesses),memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint()))
+
 
 def _derive_x86_gnu_inline_asm_0(
     *,
@@ -1699,6 +1715,9 @@ _PLAN_KIND_DISPATCH: Mapping[TargetLoweringKind, _Deriver] = (
             ),
             TargetLoweringKind.STACK_ADDRESS_REBINDING: _adapt_deriver(
                 _derive_stack_address_rebinding_0
+            ),
+            TargetLoweringKind.VIRTUAL_PRIVATE_FRAME: _adapt_deriver(
+                _derive_virtual_private_frame_0
             ),
             TargetLoweringKind.UNSUPPORTED: _adapt_deriver(
                 _derive_explicit_unsupported_0
