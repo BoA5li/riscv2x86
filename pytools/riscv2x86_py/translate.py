@@ -85,6 +85,7 @@ from .instruction_stream_sync_contracts import (
     RUNTIME_LOCAL_SYNC,
 )
 from .plan_types import TargetLoweringKind, TargetLoweringPlan
+from .stack_rebinding import StackAddressRebindingFacts
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -242,6 +243,10 @@ class TranslationContext:
     # A missing TranslationRuntimeFacts object is a pipeline ingress failure,
     # not a normal route-selection condition.
     runtimeFacts: TranslationRuntimeFacts
+
+    # Optional Phase-4 sidecar/annotation evidence.  Its absence is safe:
+    # ADDRESS_ONLY fragments then remain ineligible for stack rebinding.
+    stackRebindingFacts: StackAddressRebindingFacts | None = None
 
     # Authoritative Phase-6A source semantic model.
     #
@@ -3149,6 +3154,7 @@ def translate(
             summary=context.summary,
             runtime_facts=context.runtimeFacts,
             xlen=context.xlen,
+            stack_rebinding_facts=context.stackRebindingFacts,
         )
     except ValueError as exc:
         return _unsupported(
