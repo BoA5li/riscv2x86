@@ -44,6 +44,7 @@ class TargetLoweringKind(str, Enum):
     # Rebind a proven, non-escaping logical RISC-V stack access to an
     # authoritative C object.  This never means using the host stack.
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
+    VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
 
     # 显式保留 unsupported，而不是猜测性 lower。
     UNSUPPORTED = "unsupported"
@@ -62,6 +63,7 @@ class TargetLoweringFamily(str, Enum):
     HELPER = "helper"
     STRUCTURED_CFG = "structured_cfg"
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
+    VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     UNSUPPORTED = "unsupported"
 
 
@@ -87,6 +89,7 @@ class PlanPriorityTier(int, Enum):
     HELPER = 50
     STRUCTURED_CFG = 60
     STACK_ADDRESS_REBINDING = 25
+    VIRTUAL_PRIVATE_FRAME = 20
     UNSUPPORTED = 1000
 
 
@@ -125,6 +128,14 @@ class PlanRequirement(str, Enum):
     PROVE_NO_STACK_ADDRESS_ESCAPE = "prove_no_stack_address_escape"
     PROVE_NO_HOST_STACK_POINTER_MUTATION = "prove_no_host_stack_pointer_mutation"
     PROVE_STACK_OBJECT_BOUNDS = "prove_stack_object_bounds"
+    PROVE_STATIC_BALANCED_PRIVATE_FRAME = "prove_static_balanced_private_frame"
+    PROVE_FRAME_LAYOUT_COMPLETE = "prove_frame_layout_complete"
+    PROVE_FRAME_ACCESS_BOUNDS = "prove_frame_access_bounds"
+    PROVE_PRIVATE_FRAME_INITIALIZATION = "prove_private_frame_initialization"
+    PROVE_NO_REAL_STACK_IDENTITY = "prove_no_real_stack_identity"
+    PROVE_NO_EXPLICIT_HOST_STACK_POINTER_MUTATION = "prove_no_explicit_host_stack_pointer_mutation"
+    PROVE_PRIVATE_FRAME_VALUE_FLOW = "prove_private_frame_value_flow"
+    PRESERVE_PRIVATE_FRAME_ALIGNMENT = "preserve_private_frame_alignment"
 
     PRESERVE_MICROARCH_INTENT = "preserve_microarch_intent"
     PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY = (
@@ -157,6 +168,8 @@ _KIND_TO_FAMILY: Mapping[
             TargetLoweringFamily.STRUCTURED_CFG,
         TargetLoweringKind.STACK_ADDRESS_REBINDING:
             TargetLoweringFamily.STACK_ADDRESS_REBINDING,
+        TargetLoweringKind.VIRTUAL_PRIVATE_FRAME:
+            TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME,
         TargetLoweringKind.UNSUPPORTED:
             TargetLoweringFamily.UNSUPPORTED,
     }
@@ -183,6 +196,8 @@ _FAMILY_TO_PRIORITY_TIER: Mapping[
             PlanPriorityTier.STRUCTURED_CFG,
         TargetLoweringFamily.STACK_ADDRESS_REBINDING:
             PlanPriorityTier.STACK_ADDRESS_REBINDING,
+        TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME:
+            PlanPriorityTier.VIRTUAL_PRIVATE_FRAME,
         TargetLoweringFamily.UNSUPPORTED:
             PlanPriorityTier.UNSUPPORTED,
     }
