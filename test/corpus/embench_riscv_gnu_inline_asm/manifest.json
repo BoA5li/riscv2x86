@@ -1,0 +1,198 @@
+{
+  "schema_version": "1.0",
+  "corpus_id": "embench-riscv-gnu-inline-asm",
+  "selection_status": "complete_for_asm_spelling_scan_at_pinned_commit",
+  "selected_fragment_count": 9,
+  "source": {
+    "repository": "https://github.com/embench/embench-iot",
+    "commit": "09c2ed8c3b7008c95d08b038de4a3f6dc103ed70",
+    "default_branch_at_lookup": "master",
+    "license": "GPL-3.0-or-later (source-file header)",
+    "target_directories": [
+      "examples/riscv32/ri5cyverilator",
+      "examples/riscv32/cv32e40pv2fpga"
+    ]
+  },
+  "method": {
+    "candidate_searches": [
+      "__asm__",
+      "__asm__ volatile",
+      "asm volatile",
+      "riscv"
+    ],
+    "inclusion_rule": "A source occurrence is included only when it uses GNU inline-assembly syntax and is located in an Embench RISC-V target directory at the pinned source commit.",
+    "identity_rule": "Each source occurrence is retained separately, even when its assembly template duplicates another occurrence."
+  },
+  "records": [
+    {
+      "id": "embench-ri5cyverilator-initialise-board-li-a0-0",
+      "source_path": "examples/riscv32/ri5cyverilator/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/ri5cyverilator/boardsupport.c",
+      "function": "initialise_board",
+      "source_line": 13,
+      "gnu_asm": "__asm__ volatile (\"li a0, 0\" : : : \"memory\");",
+      "template": "li a0, 0",
+      "volatile": true,
+      "outputs": [],
+      "inputs": [],
+      "clobbers": [
+        "memory"
+      ],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Writes fixed ABI register a0 without declaring it as an output or register clobber; this is preserved as found."
+    },
+    {
+      "id": "embench-ri5cyverilator-start-trigger-li-a0-0",
+      "source_path": "examples/riscv32/ri5cyverilator/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/ri5cyverilator/boardsupport.c",
+      "function": "start_trigger",
+      "source_line": 19,
+      "gnu_asm": "__asm__ volatile (\"li a0, 0\" : : : \"memory\");",
+      "template": "li a0, 0",
+      "volatile": true,
+      "outputs": [],
+      "inputs": [],
+      "clobbers": [
+        "memory"
+      ],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Writes fixed ABI register a0 without declaring it as an output or register clobber; this is preserved as found."
+    },
+    {
+      "id": "embench-ri5cyverilator-stop-trigger-li-a0-0",
+      "source_path": "examples/riscv32/ri5cyverilator/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/ri5cyverilator/boardsupport.c",
+      "function": "stop_trigger",
+      "source_line": 25,
+      "gnu_asm": "__asm__ volatile (\"li a0, 0\" : : : \"memory\");",
+      "template": "li a0, 0",
+      "volatile": true,
+      "outputs": [],
+      "inputs": [],
+      "clobbers": [
+        "memory"
+      ],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Writes fixed ABI register a0 without declaring it as an output or register clobber; this is preserved as found."
+    },
+    {
+      "id": "embench-cv32e40pv2fpga-initialise-board-li-a0-0",
+      "source_path": "examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "function": "initialise_board",
+      "source_line": 17,
+      "gnu_asm": "__asm__ volatile (\"li a0, 0\" : : : \"memory\");",
+      "template": "li a0, 0",
+      "volatile": true,
+      "outputs": [],
+      "inputs": [],
+      "clobbers": [
+        "memory"
+      ],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Writes fixed ABI register a0 without declaring it as an output or register clobber; this is preserved as found."
+    },
+    {
+      "id": "embench-cv32e40pv2fpga-start-trigger-csrci-mcountinhibit-0x1",
+      "source_path": "examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "function": "start_trigger",
+      "source_line": 26,
+      "gnu_asm": "__asm__ volatile(\"csrci mcountinhibit, 0x1\");",
+      "template": "csrci mcountinhibit, 0x1",
+      "volatile": true,
+      "outputs": [],
+      "inputs": [],
+      "clobbers": [],
+      "isa": "RV32 (RISC-V)",
+      "extensions": [
+        "Zicsr"
+      ],
+      "notes": "Clears the CY inhibit bit to enable cycle counting."
+    },
+    {
+      "id": "embench-cv32e40pv2fpga-start-trigger-rdcycle",
+      "source_path": "examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "function": "start_trigger",
+      "source_line": 27,
+      "gnu_asm": "__asm__ volatile(\"rdcycle %0\" : \"=r\"(start_cycles_lo));",
+      "template": "rdcycle %0",
+      "volatile": true,
+      "outputs": [
+        {
+          "constraint": "=r",
+          "expression": "start_cycles_lo",
+          "role": "write"
+        }
+      ],
+      "inputs": [],
+      "clobbers": [],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Reads the low 32 bits of the cycle counter."
+    },
+    {
+      "id": "embench-cv32e40pv2fpga-start-trigger-rdcycleh",
+      "source_path": "examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "function": "start_trigger",
+      "source_line": 28,
+      "gnu_asm": "__asm__ volatile(\"rdcycleh %0\" : \"=r\"(start_cycles_hi));",
+      "template": "rdcycleh %0",
+      "volatile": true,
+      "outputs": [
+        {
+          "constraint": "=r",
+          "expression": "start_cycles_hi",
+          "role": "write"
+        }
+      ],
+      "inputs": [],
+      "clobbers": [],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Reads the high 32 bits of the cycle counter; RV32-only instruction form."
+    },
+    {
+      "id": "embench-cv32e40pv2fpga-stop-trigger-rdcycle",
+      "source_path": "examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "function": "stop_trigger",
+      "source_line": 34,
+      "gnu_asm": "__asm__ volatile(\"rdcycle %0\" : \"=r\"(stop_cycles_lo));",
+      "template": "rdcycle %0",
+      "volatile": true,
+      "outputs": [
+        {
+          "constraint": "=r",
+          "expression": "stop_cycles_lo",
+          "role": "write"
+        }
+      ],
+      "inputs": [],
+      "clobbers": [],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Reads the low 32 bits of the cycle counter."
+    },
+    {
+      "id": "embench-cv32e40pv2fpga-stop-trigger-rdcycleh",
+      "source_path": "examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "source_url": "https://github.com/embench/embench-iot/blob/09c2ed8c3b7008c95d08b038de4a3f6dc103ed70/examples/riscv32/cv32e40pv2fpga/boardsupport.c",
+      "function": "stop_trigger",
+      "source_line": 35,
+      "gnu_asm": "__asm__ volatile(\"rdcycleh %0\" : \"=r\"(stop_cycles_hi));",
+      "template": "rdcycleh %0",
+      "volatile": true,
+      "outputs": [
+        {
+          "constraint": "=r",
+          "expression": "stop_cycles_hi",
+          "role": "write"
+        }
+      ],
+      "inputs": [],
+      "clobbers": [],
+      "isa": "RV32 (RISC-V)",
+      "notes": "Reads the high 32 bits of the cycle counter; RV32-only instruction form."
+    }
+  ]
+}
