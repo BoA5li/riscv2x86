@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "corpus_id": "vee2018-riscv-gnu-inline-asm",
+  "status": "empty_by_source_scope",
+  "selected_fragment_count": 0,
+  "records": [],
+  "source": {
+    "title": "An Analysis of x86-64 Inline Assembly in C Programs",
+    "venue": "VEE 2018",
+    "database_repository": "https://github.com/jku-ssw/inline-assembly",
+    "database_file": "database.db",
+    "database_git_blob_sha": "4ff5a3464a6da540f9cb46f664e8ee0322da10e1",
+    "database_size_bytes": 2566144,
+    "source_default_branch": "master"
+  },
+  "inclusion_rule": "A record may be included only when the source database itself identifies the asm fragment as GNU inline assembly for a RISC-V target.",
+  "exclusion_reason": "The cited database's documented collection scope is x86-64 Linux. It therefore contains no records that can truthfully satisfy the RISC-V-target inclusion rule."
+}
