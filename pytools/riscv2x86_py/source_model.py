@@ -10,11 +10,13 @@ try:
     from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase
     from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
+    from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
     from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase
     from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
+    from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
 
 from .runtime_fact_model import RuntimeFactStatus
 from .semantic_types import (
@@ -193,6 +195,8 @@ class SourceStackFrameModel:
     adjustments: Tuple[object, ...] = ()
     escape_facts: object | None = None
     has_dynamic_adjustment: bool = False
+    rebinding_accesses: Tuple[SourceStackRebindingAccess, ...] = ()
+    stack_address_rebinding_eligible: bool = False
     missing_fact_codes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -372,11 +376,18 @@ class SourceSemanticModel:
         """
         from .candidate_plans import Phase6BCandidateFacts
 
+        stack_frame = self.stack_frame
+        # sp/fp themselves are deliberately not GNU operands on this route;
+        # their accesses are covered by a stronger object-binding witness.
+        missing_non_stack_bindings = tuple(x for x in self.completeness.missing_operand_binding_registers
+                                           if x not in _STACK_REGISTERS | _FRAME_REGISTERS)
+        missing_non_stack_widths = tuple(x for x in self.completeness.missing_operand_width_registers
+                                         if x not in _STACK_REGISTERS | _FRAME_REGISTERS)
         operand_facts_complete = (
-            self.operands.complete
+            (self.operands.complete or (stack_frame is not None and stack_frame.stack_address_rebinding_eligible))
             and self.completeness.runtime_facts_structurally_valid
-            and not self.completeness.missing_operand_binding_registers
-            and not self.completeness.missing_operand_width_registers
+            and not missing_non_stack_bindings
+            and not missing_non_stack_widths
         )
         control_unknown = (
             not self.control_flow.cfg_ok
@@ -387,7 +398,6 @@ class SourceSemanticModel:
             SourceOperationKind.OPAQUE,
             SourceOperationKind.UNKNOWN,
         }
-        stack_frame = self.stack_frame
         stack_frame_unknown = (
             (self.registers.reads_or_writes_stack_pointer or
              self.registers.reads_or_writes_frame_pointer) and
@@ -454,6 +464,10 @@ class SourceSemanticModel:
             has_private_balanced_stack_frame=(
                 stack_frame is not None and
                 stack_frame.is_local_virtual_frame_candidate
+            ),
+            has_stack_address_rebinding_eligibility=(
+                stack_frame is not None and
+                stack_frame.stack_address_rebinding_eligible
             ),
             requires_whole_function_abi_lowering=(
                 stack_frame is not None and
@@ -712,6 +726,7 @@ def build_source_semantic_model(
         RuntimeFactStatus,
         None,
     ],
+    stack_rebinding_facts: StackAddressRebindingFacts | None = None,
 ) -> SourceSemanticModel:
     """
     Construct the authoritative immutable Phase-6A SourceSemanticModel.
@@ -922,6 +937,7 @@ def build_source_semantic_model(
         stack_frame=_build_stack_frame_model(
             summary=analysis_summary,
             registers=registers,
+            stack_rebinding_facts=stack_rebinding_facts,
         ),
     )
 
@@ -3056,6 +3072,7 @@ def _build_stack_frame_model(
     *,
     summary: IRSummary,
     registers: SourceRegisterModel,
+    stack_rebinding_facts: StackAddressRebindingFacts | None = None,
 ) -> SourceStackFrameModel:
     """Adapt typed Phase-5 stack metadata without inspecting assembly text.
 
@@ -3080,6 +3097,49 @@ def _build_stack_frame_model(
     except ValueError:
         kind = SourceStackFrameKind.UNKNOWN
     try:
+        rebinding_accesses: list[SourceStackRebindingAccess] = []
+        reasons = list(raw.missing_fact_codes)
+        eligible = False
+        if kind is SourceStackFrameKind.ADDRESS_ONLY:
+            if not isinstance(stack_rebinding_facts, StackAddressRebindingFacts):
+                reasons.append("stack-rebind.binding-missing")
+            elif not stack_rebinding_facts.complete:
+                reasons.extend(stack_rebinding_facts.missing_fact_codes)
+            elif raw.escape_facts.pointer_escapes or raw.escape_facts.requires_real_stack_identity:
+                reasons.append("stack-rebind.address-escapes")
+            else:
+                by_location: dict[tuple[int, int], list[object]] = {}
+                for binding in stack_rebinding_facts.bindings:
+                    by_location.setdefault((binding.source_block_address, binding.source_operation_index), []).append(binding)
+                for access in raw.accesses:
+                    candidates = by_location.get((access.block_address, access.operation_index), [])
+                    if len(candidates) != 1:
+                        reasons.append("stack-rebind.binding-ambiguous" if candidates else "stack-rebind.binding-missing")
+                        continue
+                    binding = candidates[0]
+                    width_bytes = None if access.width_bits is None else access.width_bits // 8
+                    bounds_ok = (width_bytes is not None and binding.object_size_bytes is not None and
+                                 0 <= binding.object_offset_bytes and
+                                 binding.object_offset_bytes + width_bytes <= binding.object_size_bytes)
+                    alignment_ok = (access.required_alignment_bytes is not None and
+                                    binding.guaranteed_alignment_bytes is not None and
+                                    binding.guaranteed_alignment_bytes >= access.required_alignment_bytes)
+                    same = (binding.binding_complete and binding.lifetime_proven and binding.effective_type_proven and
+                            binding.source_offset_bytes == access.offset_bytes and binding.access is access.access and
+                            access.width_bits is not None and bounds_ok and alignment_ok)
+                    if not same:
+                        reasons.append("stack-rebind.object-bounds-unproven" if not bounds_ok else "stack-rebind.alignment-unproven")
+                        continue
+                    rebinding_accesses.append(SourceStackRebindingAccess(
+                        access.block_address, access.operation_index, binding.c_object_id,
+                        binding.c_lvalue_binding_id, binding.c_base_operand_index,
+                        binding.source_offset_bytes, binding.object_offset_bytes,
+                        binding.object_size_bytes, access.required_alignment_bytes,
+                        binding.guaranteed_alignment_bytes, access.width_bits, access.access,
+                        access.signed_load, binding.value_operand_index,
+                        access.aliases_external_memory, binding.source_compiler_provenance, True))
+                eligible = len(rebinding_accesses) == len(raw.accesses) and bool(raw.accesses) and not reasons
+        complete = raw.complete and (kind is not SourceStackFrameKind.ADDRESS_ONLY or eligible)
         return SourceStackFrameModel(
             kind=kind,
             frame_size_bytes=raw.frame_size_bytes,
@@ -3087,14 +3147,16 @@ def _build_stack_frame_model(
             net_stack_delta_bytes=raw.net_stack_delta_bytes,
             pointer_escapes=raw.escape_facts.pointer_escapes,
             requires_real_stack_identity=raw.escape_facts.requires_real_stack_identity,
-            complete=raw.complete,
+            complete=complete,
             initial_sp_origin=raw.initial_sp_origin.value,
             source_abi_alignment_bytes=raw.source_abi_alignment_bytes,
             accesses=raw.accesses,
             adjustments=raw.adjustments,
             escape_facts=raw.escape_facts,
             has_dynamic_adjustment=raw.has_dynamic_adjustment,
-            missing_fact_codes=raw.missing_fact_codes,
+            rebinding_accesses=tuple(sorted(rebinding_accesses, key=lambda x: (x.source_block_address, x.source_operation_index))),
+            stack_address_rebinding_eligible=eligible,
+            missing_fact_codes=tuple(sorted(set(reasons))) if not complete else (),
         )
     except (TypeError, ValueError):
         return SourceStackFrameModel(SourceStackFrameKind.UNKNOWN, complete=False,
