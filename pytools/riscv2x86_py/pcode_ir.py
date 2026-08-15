@@ -56,6 +56,10 @@ def canonicalize_lifted_instruction(
     asm_mnem = (getattr(ins, "asm_mnem", "") or "").strip().lower()
     asm_body = (getattr(ins, "asm_body", "") or "").strip()
     semantic_tags = _structured_semantic_tags_from_instruction(ins)
+    privileged_operations = _structured_privileged_operations_from_instruction(
+        ins
+    )
+    privileged_metadata_invalid = _has_invalid_privileged_metadata(ins)
 
     terminator_kind = _terminator_kind(ins)
     direct_target = _direct_target(ins, terminator_kind)
@@ -140,6 +144,8 @@ def canonicalize_lifted_instruction(
         atomic_reads_mem=atomic_reads_mem,
         atomic_writes_mem=atomic_writes_mem,
         semantic_tags=semantic_tags,
+        privileged_operations=privileged_operations,
+        privileged_metadata_invalid=privileged_metadata_invalid,
         asm_mnem=asm_mnem,
         asm_body=asm_body,
     )
@@ -248,6 +254,43 @@ class StructuredSemanticTag(str, Enum):
 
     ARCHITECTURAL_NOP = "architectural_nop"
     SPIN_WAIT_HINT = "spin_wait_hint"
+
+
+class CanonicalPrivilegedOperationKind(str, Enum):
+    CSR_ACCESS = "csr_access"
+    TRAP = "trap"
+    PRIVILEGE_RETURN = "privilege_return"
+    INTERRUPT_STATE = "interrupt_state"
+    ADDRESS_TRANSLATION = "address_translation"
+    VIRTUALIZATION_STATE = "virtualization_state"
+    DEBUG_STATE = "debug_state"
+
+
+class CanonicalCsrOperationKind(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    READ_WRITE = "read_write"
+    SET_BITS = "set_bits"
+    CLEAR_BITS = "clear_bits"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class CanonicalPrivilegedOperation:
+    """Typed decoder/lifter evidence for one privileged machine effect."""
+
+    kind: CanonicalPrivilegedOperationKind
+    csr_id: str | None = None
+    csr_operation: CanonicalCsrOperationKind | None = None
+    required_privilege_mode: str | None = None
+    trap_kind: str | None = None
+    return_kind: str | None = None
+    interrupt_kind: str | None = None
+    address_translation_kind: str | None = None
+    virtualization_kind: str | None = None
+    debug_kind: str | None = None
+    may_trap: bool | None = None
+    state_complete: bool = False
 
 
 _FENCE_TEXT_TO_BIT = {
@@ -376,6 +419,36 @@ def _structured_semantic_tags_from_instruction(
             tags.add(tag)
 
     return frozenset(tags)
+
+
+def _structured_privileged_operations_from_instruction(
+    ins: Any,
+) -> tuple[CanonicalPrivilegedOperation, ...]:
+    """Read decoder-owned privileged metadata without textual inference."""
+    raw = getattr(ins, "privileged_operations", None)
+    if raw is None:
+        return ()
+    if isinstance(raw, CanonicalPrivilegedOperation):
+        return (raw,)
+    if not isinstance(raw, Iterable) or isinstance(raw, (str, bytes)):
+        return ()
+    return tuple(
+        item for item in raw
+        if isinstance(item, CanonicalPrivilegedOperation)
+    )
+
+
+def _has_invalid_privileged_metadata(ins: Any) -> bool:
+    """Distinguish absent metadata from decoder metadata with a bad shape."""
+    raw = getattr(ins, "privileged_operations", None)
+    if raw is None or isinstance(raw, CanonicalPrivilegedOperation):
+        return False
+    if not isinstance(raw, Iterable) or isinstance(raw, (str, bytes)):
+        return True
+    return any(
+        not isinstance(item, CanonicalPrivilegedOperation)
+        for item in raw
+    )
 
 @dataclass(frozen=True)
 class BarrierInfo:
@@ -597,6 +670,12 @@ class CanonicalInsn:
     # 仅用于 debug / display / compatibility。
     asm_mnem: str = ""
     asm_body: str = ""
+
+    # Decoder/lifter-owned privileged semantics.  Keep this field after the
+    # legacy display fields so existing positional CanonicalInsn builders do
+    # not silently change meaning.
+    privileged_operations: tuple[CanonicalPrivilegedOperation, ...] = ()
+    privileged_metadata_invalid: bool = False
 
 @dataclass
 class IRSummary:
