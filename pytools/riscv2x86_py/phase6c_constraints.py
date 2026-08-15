@@ -15,6 +15,10 @@ from .source_model import (
     SourceSemanticModel,
     SourceSignedness,
 )
+from .target_register_policy import (
+    POLICY_VERSION,
+    is_forbidden_host_stack_frame_register,
+)
 
 
 # ============================================================================
@@ -120,6 +124,7 @@ class TargetConstraintReasonCode(str, Enum):
     UNSUPPORTED_TARGET_ABI = "phase6c.unsupported_target_abi"
 
     GNU_INLINE_ASM_UNAVAILABLE = "phase6c.gnu_inline_asm_unavailable"
+    HOST_STACK_FRAME_FIXED_REGISTER_FORBIDDEN = "phase6c.host_stack_frame_fixed_register_forbidden"
 
     PLAN_REQUIRED_FEATURE_MISSING = (
         "phase6c.plan_required_feature_missing"
@@ -1160,6 +1165,7 @@ class TargetConstraintModel:
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
     preserve_implicit_machine_state: bool = False
+    target_register_policy_version: str = POLICY_VERSION
 
     def __post_init__(self) -> None:
         if (
@@ -1177,6 +1183,8 @@ class TargetConstraintModel:
             )
 
         normalized_operands = tuple(self.operand_constraints)
+        if self.target_register_policy_version != POLICY_VERSION:
+            raise ValueError("target_register_policy_version must be the active policy version")
 
         invalid_operands = tuple(
             item
@@ -1819,6 +1827,25 @@ def _validate_result_invariants(
         )
 
     constraints = result.constraints
+
+    # This is intentionally global rather than A/B-specific.  A target
+    # inline-asm route may not pin the compiler-owned stack/frame pointer.
+    forbidden = tuple(
+        item for item in constraints.operand_constraints
+        if item.requires_fixed_register
+        and is_forbidden_host_stack_frame_register(item.fixed_register_name)
+    )
+    if forbidden:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.HOST_STACK_FRAME_FIXED_REGISTER_FORBIDDEN,
+            ),
+            details={
+                "fixed_register": forbidden[0].fixed_register_name,
+                "target_register_policy_version": POLICY_VERSION,
+            },
+        )
 
     if constraints.plan_id != candidate_plan.plan_id:
         return TargetConstraintDerivationResult.failure(
