@@ -10,6 +10,7 @@ from .ghidra_pythonrun_bridge import (
     load_riscv_register_resolver_via_pythonrun,
 )
 from .pipeline import run
+from .abi_sidecar import load_abi_call_sidecar, load_target_abi_wrapper_registry
 
 
 def main() -> int:
@@ -71,6 +72,16 @@ def main() -> int:
             "unavailable. Default: fail closed."
         ),
     )
+    ap.add_argument(
+        "--abi-call-sidecar",
+        default=None,
+        help="Versioned Phase-4 ABI call-sidecar JSON, keyed by fragmentId.",
+    )
+    ap.add_argument(
+        "--abi-wrapper-registry",
+        default=None,
+        help="Versioned target ABI wrapper-registry JSON.",
+    )
 
     args = ap.parse_args()
 
@@ -102,6 +113,14 @@ def main() -> int:
         return 2
 
     try:
+        abi_call_sidecar = (
+            None if args.abi_call_sidecar is None
+            else load_abi_call_sidecar(args.abi_call_sidecar)
+        )
+        abi_wrapper_registry = (
+            None if args.abi_wrapper_registry is None
+            else load_target_abi_wrapper_registry(args.abi_wrapper_registry)
+        )
         stats = run(
             args.inp,
             args.out,
@@ -109,6 +128,8 @@ def main() -> int:
             language=None,
             register_name_resolver=resolver,
             verify_enabled=not args.skip_verify,
+            abi_call_sidecar=abi_call_sidecar,
+            abi_wrapper_registry=abi_wrapper_registry,
             allow_functional_fallbacks=args.allow_functional_fallbacks,
         )
     except Exception as exc:
