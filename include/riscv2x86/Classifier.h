@@ -22,11 +22,13 @@ private:
     class FileScopeAsmCallback;
     class TargetBuiltinCallback;
     class GlobalRegVarCallback;
+    class FunctionDeclCallback;
 
     std::unique_ptr<AsmStmtCallback> asmCb_;
     std::unique_ptr<FileScopeAsmCallback> fileAsmCb_;
     std::unique_ptr<TargetBuiltinCallback> builtinCb_;
     std::unique_ptr<GlobalRegVarCallback> globalRegCb_;
+    std::unique_ptr<FunctionDeclCallback> functionDeclCb_;
 };
 
 } // namespace riscv2x86

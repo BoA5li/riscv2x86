@@ -299,6 +299,26 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
         os << "\n";
     }
 
+    os << "  ],\n  \"functionFrontendFacts\": [\n";
+    for (size_t i = 0; i < functionFrontendFacts.size(); ++i) {
+        const auto &ff = functionFrontendFacts[i];
+        os << "    {\"functionId\":\"" << escape(ff.functionId)
+           << "\",\"cAstFunctionBindingId\":\"" << escape(ff.cAstFunctionBindingId)
+           << "\",\"sourceFile\":\"" << escape(ff.fileName)
+           << "\",\"definitionRange\":{\"start\":" << ff.definitionBeginOffset << ",\"end\":" << ff.definitionEndOffset
+           << "},\"bodyRange\":{\"start\":" << ff.bodyBeginOffset << ",\"end\":" << ff.bodyEndOffset
+           << "},\"hasVlaOrCleanupSensitiveScope\":" << (ff.hasVLAOrCleanupSensitiveScope ? "true" : "false")
+           << ",\"macroSensitiveScope\":" << (ff.macroSensitiveScope ? "true" : "false")
+           << ",\"regions\":[{\"regionId\":\"c-body\",\"kind\":\"c_body\",\"start\":" << ff.bodyBeginOffset << ",\"end\":" << ff.bodyEndOffset << ",\"complete\":" << (ff.complete ? "true" : "false") << "}]"
+           << ",\"fragmentIds\":[";
+        bool first = true;
+        for (const auto &finding : findings) if (finding.fragment.has_value()) { const auto &g=*finding.fragment; if (g.fileName == ff.fileName && g.beginOffset >= ff.bodyBeginOffset && g.endOffset <= ff.bodyEndOffset) { if (!first) os << ","; os << "\"" << escape(g.id) << "\""; first=false; } }
+        os << "],\"missingFactCodes\":[";
+        for (size_t j=0;j<ff.missingFactCodes.size();++j) { os << "\"" << escape(ff.missingFactCodes[j]) << "\""; if(j+1<ff.missingFactCodes.size()) os << ","; }
+        os << "],\"complete\":" << (ff.complete ? "true" : "false") << ",\"provenance\":\"clang-frontend.v1\"}";
+        if (i + 1 < functionFrontendFacts.size()) os << ",";
+        os << "\n";
+    }
     os << "  ]\n";
     os << "}\n";
 }

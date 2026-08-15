@@ -3,6 +3,8 @@
 #include <clang/AST/Stmt.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/Expr.h>
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/Attr.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Lex/Lexer.h>
 #include <sstream>
@@ -489,6 +491,54 @@ private:
     ClassificationReport &report_;
 };
 
+class FunctionScopeVisitor : public RecursiveASTVisitor<FunctionScopeVisitor> {
+public:
+    bool hasSensitiveScope = false;
+    bool VisitVarDecl(VarDecl *VD) {
+        if (VD && (VD->getType()->isVariableArrayType() || VD->hasAttr<CleanupAttr>()))
+            hasSensitiveScope = true;
+        return true;
+    }
+};
+
+class Classifier::FunctionDeclCallback : public MatchFinder::MatchCallback {
+public:
+    explicit FunctionDeclCallback(ClassificationReport &r) : report_(r) {}
+    void run(const MatchFinder::MatchResult &Result) override {
+        const auto *FD = Result.Nodes.getNodeAs<FunctionDecl>("functionDecl");
+        if (!FD || !FD->hasBody() || !Result.Context) return;
+        ASTContext &Ctx = *Result.Context;
+        SourceManager &SM = Ctx.getSourceManager();
+        const Stmt *body = FD->getBody();
+        SourceLocation begin = SM.getExpansionLoc(FD->getBeginLoc());
+        SourceLocation end = SM.getExpansionLoc(FD->getEndLoc());
+        SourceLocation bodyBegin = SM.getExpansionLoc(body->getBeginLoc());
+        SourceLocation bodyEnd = SM.getExpansionLoc(body->getEndLoc());
+        PresumedLoc PL = SM.getPresumedLoc(begin);
+        FunctionFrontendFact fact;
+        fact.fileName = PL.isValid() ? PL.getFilename() : "";
+        fact.functionId = fact.fileName + ":function:" + std::to_string(SM.getFileOffset(begin));
+        fact.cAstFunctionBindingId = "clang-function:" + fact.functionId;
+        fact.macroSensitiveScope = FD->getBeginLoc().isMacroID() || FD->getEndLoc().isMacroID() || body->getBeginLoc().isMacroID() || body->getEndLoc().isMacroID();
+        if (!begin.isValid() || !end.isValid() || !bodyBegin.isValid() || !bodyEnd.isValid() || fact.fileName.empty() || SM.getFileID(begin) != SM.getFileID(end) || SM.getFileID(begin) != SM.getFileID(bodyBegin) || SM.getFileID(begin) != SM.getFileID(bodyEnd)) {
+            fact.missingFactCodes.push_back("function-frontend.definition-range-unavailable");
+        } else {
+            fact.definitionBeginOffset = SM.getFileOffset(begin);
+            fact.definitionEndOffset = getStmtLikeEndOffsetIncludingSemi(end, SM, Ctx.getLangOpts());
+            fact.bodyBeginOffset = SM.getFileOffset(bodyBegin);
+            fact.bodyEndOffset = getStmtLikeEndOffsetIncludingSemi(bodyEnd, SM, Ctx.getLangOpts());
+        }
+        if (fact.macroSensitiveScope)
+            fact.missingFactCodes.push_back("function-frontend.macro-sensitive-scope");
+        FunctionScopeVisitor visitor;
+        visitor.TraverseStmt(const_cast<Stmt *>(body));
+        fact.hasVLAOrCleanupSensitiveScope = visitor.hasSensitiveScope;
+        fact.complete = fact.missingFactCodes.empty();
+        report_.functionFrontendFacts.push_back(std::move(fact));
+    }
+private: ClassificationReport &report_;
+};
+
 // ---------- FileScopeAsmCallback ----------
 class Classifier::FileScopeAsmCallback : public MatchFinder::MatchCallback {
 public:
@@ -647,6 +697,7 @@ Classifier::Classifier() {
     fileAsmCb_   = std::make_unique<FileScopeAsmCallback>(report_);
     builtinCb_   = std::make_unique<TargetBuiltinCallback>(report_);
     globalRegCb_ = std::make_unique<GlobalRegVarCallback>(report_);
+    functionDeclCb_ = std::make_unique<FunctionDeclCallback>(report_);
 }
 
 Classifier::~Classifier() = default;
@@ -656,4 +707,5 @@ void Classifier::registerMatchers(MatchFinder &finder) {
     finder.addMatcher(decl().bind("fileAsm"), fileAsmCb_.get());
     finder.addMatcher(callExpr().bind("call"), builtinCb_.get());
     finder.addMatcher(varDecl(hasGlobalStorage()).bind("var"), globalRegCb_.get());
+    finder.addMatcher(functionDecl(isDefinition()).bind("functionDecl"), functionDeclCb_.get());
 }

@@ -112,8 +112,25 @@ struct Finding {
     TranslationApprovalArtifact approvalArtifact;
 };
 
+// Phase-4 whole-function frontend facts.  These are source/AST facts only:
+// they deliberately do not claim ABI, unwind, or callee-saved semantics.
+struct FunctionFrontendFact {
+    std::string functionId;
+    std::string cAstFunctionBindingId;
+    std::string fileName;
+    unsigned definitionBeginOffset = 0;
+    unsigned definitionEndOffset = 0;
+    unsigned bodyBeginOffset = 0;
+    unsigned bodyEndOffset = 0;
+    bool hasVLAOrCleanupSensitiveScope = false;
+    bool macroSensitiveScope = false;
+    bool complete = false;
+    std::vector<std::string> missingFactCodes;
+};
+
 struct ClassificationReport {
     std::vector<Finding> findings;
+    std::vector<FunctionFrontendFact> functionFrontendFacts;
     void dumpJSON(const std::string &path) const;
     void dumpText(std::ostream &os) const;
 };
