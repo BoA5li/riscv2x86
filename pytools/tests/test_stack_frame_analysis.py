@@ -73,3 +73,11 @@ def test_cfg_conditional_store_does_not_prove_private_initialization():
     model=analyze_stack_frame_semantics(blocks=blocks,summary=_summary(reads={"sp","a0"},writes={"sp","a1"},branch=True))
     assert model.classification is StackFrameClassification.UNKNOWN
     assert "private-frame-initial-content-observable" in model.missing_fact_codes
+
+def test_private_frame_pointer_stored_outside_frame_is_rejected_as_escape():
+    sp=Var(VarKind.REG,"register",2,8,"sp"); t0=Var(VarKind.REG,"register",5,8,"t0"); a1=Var(VarKind.REG,"register",11,8,"a1"); mem=Var(VarKind.OTHER,"ram",0,0)
+    block=Block(0x1000,ops=[_adjust(0x1000,-8),Op(0x1000,"COPY",t0,[sp]),Op(0x1000,"STORE",None,[mem,a1,t0]),_adjust(0x1000,8)])
+    model=analyze_stack_frame_semantics(blocks=[block],summary=_summary(reads={"sp"},writes={"sp","t0"}))
+    assert model.classification is StackFrameClassification.UNKNOWN
+    assert model.escape_facts.stored_to_external_memory
+    assert any(x.use_kind.value == "stored_to_external_memory" for x in model.pointer_uses)
