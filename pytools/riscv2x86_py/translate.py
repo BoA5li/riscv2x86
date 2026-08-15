@@ -86,6 +86,8 @@ from .instruction_stream_sync_contracts import (
 )
 from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
+from .abi_effects import SourceAbiCallBinding
+from .abi_effects import TargetAbiWrapperRegistry
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -247,6 +249,10 @@ class TranslationContext:
     # Optional Phase-4 sidecar/annotation evidence.  Its absence is safe:
     # ADDRESS_ONLY fragments then remain ineligible for stack rebinding.
     stackRebindingFacts: StackAddressRebindingFacts | None = None
+    # Phase-4 compiler sidecar facts for exact local ABI calls.  An empty
+    # tuple is safe only when canonical Phase 5 reports no call.
+    abiCallBindings: tuple[SourceAbiCallBinding, ...] = ()
+    abiWrapperRegistry: TargetAbiWrapperRegistry | None = None
 
     # Authoritative Phase-6A source semantic model.
     #
@@ -3155,6 +3161,7 @@ def translate(
             runtime_facts=context.runtimeFacts,
             xlen=context.xlen,
             stack_rebinding_facts=context.stackRebindingFacts,
+            abi_call_bindings=context.abiCallBindings,
         )
     except ValueError as exc:
         return _unsupported(
@@ -3335,6 +3342,7 @@ def _translate_phase6_proof_pipeline(
             source_model=source_model,
             candidate_plan=plan,
             target_environment=target_environment,
+            abi_wrapper_registry=context.abiWrapperRegistry,
         )
         if not constraint_result.success:
             rejected_attempts.append(TargetLoweringAttempt.from_constraint_failure(plan, constraint_result))
