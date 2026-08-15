@@ -6,7 +6,10 @@ def prove(r):
     if effects is None or not effects.complete or len(effects.calls)!=1 or target is None:
         return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     call=effects.calls[0]; contract=target.wrapper_contract; shell=r.source_model.shell
-    if any((shell.is_volatile,shell.has_memory_clobber,shell.has_cc_clobber,shell.has_asm_goto,shell.has_early_clobber,shell.has_tied_operands,call.reads_ra,call.writes_ra,not call.return_continuation_internal,call.may_return is not True,call.may_unwind is not False)):
+    # A direct RISC-V call normally writes ra.  This is acceptable only when
+    # the canonical CFG proves it is the fragment-local continuation; a read
+    # or exposed post-call ra remains function-scope ABI semantics.
+    if any((shell.is_volatile,shell.has_memory_clobber,shell.has_cc_clobber,shell.has_asm_goto,shell.has_early_clobber,shell.has_tied_operands,call.reads_ra,not call.return_continuation_internal,call.may_return is not True,call.may_unwind is not False,call.may_trap is not False)):
         return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)
     if contract.source_target_id != call.target.target_id or contract.exact_semantic_contract_id != call.target.semantic_contract_id or contract.semantic_version != call.target.semantic_version:
         return reject(r,SemanticProofReasonCode.ABI_UNPRESERVED)
