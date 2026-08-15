@@ -3,7 +3,7 @@ from riscv2x86_py.whole_function import (
     FunctionCfgEdge, FunctionCfgNode, FunctionExitBinding, FunctionExitKind,
     FunctionFramePathSummary, FunctionTranslationUnit, SourceFunctionControlFlowModel,
     SourceFunctionStackModel, SourceTextRange, WholeFunctionRendererContract,
-    WholeFunctionTranslationFacts, classify_whole_function_route,
+    WholeFunctionPhase5Evidence, WholeFunctionTranslationFacts, classify_whole_function_route,
     translate_whole_function,
 )
 from riscv2x86_py.whole_function_writeback import apply_function_replacements
@@ -28,7 +28,8 @@ def _facts(source_text: str = "int f(int x) { return x; }") -> WholeFunctionTran
         "whole-function.structured-c.static.v1", "1", "f",
         "int f(int x) { return x + 1; }", complete=True,
     )
-    return WholeFunctionTranslationFacts(unit, ast, cfg, stack, abi, (), ("frag:0",), recipe, True)
+    return WholeFunctionTranslationFacts(unit, ast, cfg, stack, abi, (), ("frag:0",), recipe, True, (),
+        WholeFunctionPhase5Evidence("cfg", "frame", "declaration", "join"))
 
 
 def _route():
@@ -65,12 +66,35 @@ def test_exceptional_exit_and_host_stack_recipe_fail_closed():
     assert proof is None or not proof.approved
 
 
+def test_static_recipe_requires_complete_phase5_evidence_and_binds_it_into_proof_identity():
+    facts = _facts()
+    no_evidence = WholeFunctionTranslationFacts(
+        facts.unit, facts.ast_binding, facts.control_flow, facts.stack, facts.abi,
+        facts.callee_saved_effects, facts.fragment_ids, facts.renderer_contract, True,
+    )
+    artifact, proof = translate_whole_function(facts=no_evidence, route=_route())
+    assert artifact is None
+    assert proof is not None
+    assert "phase6d.whole_function.phase5-evidence-missing" in proof.reason_codes
+
+    changed = WholeFunctionTranslationFacts(
+        facts.unit, facts.ast_binding, facts.control_flow, facts.stack, facts.abi,
+        facts.callee_saved_effects, facts.fragment_ids, facts.renderer_contract, True, (),
+        WholeFunctionPhase5Evidence("changed-cfg", "frame", "declaration", "join"),
+    )
+    _, first = translate_whole_function(facts=facts, route=_route())
+    _, second = translate_whole_function(facts=changed, route=_route())
+    assert first is not None and second is not None
+    assert first.approved and second.approved
+    assert first.proof_identity != second.proof_identity
+
+
 def test_writeback_rejects_overlapping_function_ranges():
     source = "abcdef"
     facts = _facts("abcdef")
     artifact, proof = translate_whole_function(facts=facts, route=_route())
     assert artifact is not None and proof is not None and proof.approved
-    duplicate = type(artifact)("g", "ast:g", SourceTextRange(2, 5), "X", artifact.proof_identity, artifact.renderer_contract_id, artifact.renderer_contract_version, (), ())
+    duplicate = type(artifact)("g", "ast:g", SourceTextRange(2, 5), "X", artifact.proof_identity, artifact.renderer_contract_id, artifact.renderer_contract_version, (), (), artifact.phase5_evidence)
     result = apply_function_replacements(source_text=source, artifacts=(artifact, duplicate))
     assert not result.approved
     assert result.reason_codes == ("whole-function.writeback-overlap-or-range-invalid",)

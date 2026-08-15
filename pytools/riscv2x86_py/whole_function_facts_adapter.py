@@ -1,6 +1,7 @@
 """Phase-6A read-only adapter for validated whole-function facts."""
 from __future__ import annotations
 from dataclasses import dataclass
+from hashlib import sha256
 from .whole_function import *
 from .function_abi_sidecar import FunctionAbiDeclarationFacts
 from .function_abi_machine_join import FunctionAbiMachineJoin
@@ -26,4 +27,10 @@ def build_whole_function_translation_facts(*,frontend:FrontendFunctionFacts|None
         if renderer_contract and renderer_contract.function_id!=frontend.function_id: reasons.append("whole-function.renderer-function-mismatch")
     complete=not reasons
     unit=FunctionTranslationUnit("" if frontend is None else frontend.function_id,None if frontend is None else frontend.ast_binding.c_ast_function_binding_id,"unknown" if declaration is None else declaration.source_abi_profile,complete,tuple(sorted(set(reasons))))
-    return WholeFunctionTranslationFacts(unit,None if frontend is None else frontend.ast_binding,mixed_cfg,None if frame is None else frame.stack,None if abi_join is None else abi_join.abi,() if frame is None else frame.callee_saved_effects,() if frontend is None else frontend.fragment_ids,renderer_contract,complete,tuple(sorted(set(reasons))))
+    evidence=None if reasons else WholeFunctionPhase5Evidence(
+        "sha256:"+sha256(repr(mixed_cfg).encode()).hexdigest(),
+        "sha256:"+sha256(repr(frame).encode()).hexdigest(),
+        "sha256:"+sha256(repr(declaration).encode()).hexdigest(),
+        "sha256:"+sha256(repr(abi_join).encode()).hexdigest(),
+    )
+    return WholeFunctionTranslationFacts(unit,None if frontend is None else frontend.ast_binding,mixed_cfg,None if frame is None else frame.stack,None if abi_join is None else abi_join.abi,() if frame is None else frame.callee_saved_effects,() if frontend is None else frontend.fragment_ids,renderer_contract,complete,tuple(sorted(set(reasons))),evidence)

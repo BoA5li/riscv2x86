@@ -42,7 +42,11 @@ def _facts(v,provenance):
     b=_d(x["abi"],"abi"); abi=FunctionAbiFacts(b["sourceAbiProfile"],bool(b.get("entryComplete",False)),bool(b.get("exitsComplete",False)),bool(b.get("callsComplete",False)),bool(b.get("picPltTlsComplete",False)),b.get("mayUnwind"),b.get("mayTrap"),bool(b.get("complete",False)))
     effects=tuple(CalleeSavedRegisterEffect(e["register"],tuple(e.get("saveSiteIds",())),tuple(e.get("restoreSiteIds",())),tuple(e.get("modifiedSiteIds",())),bool(e.get("restoredOnAllNormalExits",False)),bool(e.get("complete",False))) for e in _t(x.get("calleeSavedEffects",[]),"calleeSavedEffects"))
     r=_d(x["rendererContract"],"rendererContract"); recipe=WholeFunctionRendererContract(r["contractId"],r["version"],r["functionId"],r["replacementText"],tuple(r.get("requiredHeaders",())),tuple(r.get("requiredLibraries",())),bool(r.get("compilerManagedStackOnly",True)),bool(r.get("complete",False)))
-    return WholeFunctionTranslationFacts(unit,ast,cfg,stack,abi,effects,tuple(x.get("fragmentIds",())),recipe,bool(x.get("complete",False)),tuple(x.get("missingFactCodes",())))
+    evidence=None
+    if "phase5Evidence" in x:
+        e=_d(x["phase5Evidence"],"phase5Evidence")
+        evidence=WholeFunctionPhase5Evidence(e["mixedCfgIdentity"],e["frameDataflowIdentity"],e["abiDeclarationIdentity"],e["abiMachineJoinIdentity"],e.get("analysisVersion","phase5-whole-function-evidence.v1"))
+    return WholeFunctionTranslationFacts(unit,ast,cfg,stack,abi,effects,tuple(x.get("fragmentIds",())),recipe,bool(x.get("complete",False)),tuple(x.get("missingFactCodes",())),evidence)
 
 def whole_function_sidecar_from_dict(value)->WholeFunctionSidecar:
     x=_d(value,"whole-function sidecar")

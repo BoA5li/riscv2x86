@@ -87,11 +87,28 @@ class FunctionTranslationUnit:
     function_id:str; c_ast_function_binding_id:str|None; source_abi_profile:str; complete:bool
     missing_fact_codes:tuple[str,...]=()
 @dataclass(frozen=True)
+class WholeFunctionPhase5Evidence:
+    """Stable identities of the Phase-5 products consumed by a D-class proof.
+
+    The values deliberately identify products rather than carrying raw CFG or
+    p-code into Phase 6D.  A proof is valid only for this exact tuple.
+    """
+    mixed_cfg_identity:str
+    frame_dataflow_identity:str
+    abi_declaration_identity:str
+    abi_machine_join_identity:str
+    analysis_version:str="phase5-whole-function-evidence.v1"
+    @property
+    def complete(self)->bool:
+        return all((self.mixed_cfg_identity,self.frame_dataflow_identity,
+                    self.abi_declaration_identity,self.abi_machine_join_identity))
+@dataclass(frozen=True)
 class WholeFunctionTranslationFacts:
     unit:FunctionTranslationUnit; ast_binding:FunctionAstBinding|None; control_flow:SourceFunctionControlFlowModel|None
     stack:SourceFunctionStackModel|None; abi:FunctionAbiFacts|None
     callee_saved_effects:tuple[CalleeSavedRegisterEffect,...]=(); fragment_ids:tuple[str,...]=()
     renderer_contract:WholeFunctionRendererContract|None=None; complete:bool=False; missing_fact_codes:tuple[str,...]=()
+    phase5_evidence:WholeFunctionPhase5Evidence|None=None
     def __post_init__(self):
         if len(set(self.fragment_ids)) != len(self.fragment_ids): raise ValueError("whole-function fragment ids must be unique")
         if self.complete and self.ast_binding is None: raise ValueError("complete whole-function facts need AST binding")
@@ -108,6 +125,7 @@ class WholeFunctionSemanticModel:
     ast_binding:FunctionAstBinding|None=None; control_flow:SourceFunctionControlFlowModel|None=None
     abi:FunctionAbiFacts|None=None; callee_saved_effects:tuple[CalleeSavedRegisterEffect,...]=()
     renderer_contract:WholeFunctionRendererContract|None=None
+    phase5_evidence:WholeFunctionPhase5Evidence|None=None
 @dataclass(frozen=True)
 class WholeFunctionLoweringPlan:
     plan_id:str; kind:WholeFunctionLoweringKind; route_id:str; requirements:frozenset[str]; reason_codes:tuple[str,...]=()
@@ -119,6 +137,7 @@ class FunctionReplacementArtifact:
     function_id:str; ast_binding_id:str; source_definition_range:SourceTextRange; replacement_text:str
     proof_identity:str; renderer_contract_id:str; renderer_contract_version:str
     required_headers:tuple[str,...]; required_libraries:tuple[str,...]
+    phase5_evidence:WholeFunctionPhase5Evidence
 
 def _ordered(values:Iterable[str])->tuple[str,...]: return tuple(sorted(set(x for x in values if x)))
 
@@ -152,7 +171,7 @@ def build_whole_function_semantic_model(*, unit:FunctionTranslationUnit, route:W
         missing=list(unit.missing_fact_codes)+list(facts.missing_fact_codes)+([] if route.complete else list(route.reason_codes))
         if not exits_ok:missing.append("whole-function.exit-facts-incomplete")
         if not callee_ok:missing.append("whole-function.callee-saved-facts-incomplete")
-        return WholeFunctionSemanticModel(unit,stack,False,False,bool(cfg and any(x.kind=="call" for x in cfg.nodes)),bool(cfg and cfg.normal_exits),False,tuple(x.register for x in effects),bool(cfg and cfg.has_exceptional_exit),complete,_ordered(missing),facts.ast_binding,cfg,abi,effects,facts.renderer_contract)
+        return WholeFunctionSemanticModel(unit,stack,False,False,bool(cfg and any(x.kind=="call" for x in cfg.nodes)),bool(cfg and cfg.normal_exits),False,tuple(x.register for x in effects),bool(cfg and cfg.has_exceptional_exit),complete,_ordered(missing),facts.ast_binding,cfg,abi,effects,facts.renderer_contract,facts.phase5_evidence)
     stack0=getattr(source_model,"stack_frame",None); control=getattr(source_model,"control_flow",None); registers=getattr(source_model,"registers",None)
     if control is None or registers is None: raise TypeError("source_model must expose structured Phase-6A facts")
     stack=SourceFunctionStackModel("none" if stack0 is None else stack0.kind.value,0 if stack0 is None else stack0.net_stack_delta_bytes,False if stack0 is None else stack0.has_dynamic_adjustment,False if stack0 is None else stack0.requires_real_stack_identity,True if stack0 is None else stack0.complete)
@@ -168,11 +187,13 @@ def generate_whole_function_candidate_plans(model:WholeFunctionSemanticModel,rou
     return (WholeFunctionLoweringPlan("whole-function.route-required.v1",kind,route.route_id or "whole-function-abi-lowering.v1",frozenset(),route.reason_codes),)
 def _proof_id(model,plan):
     c=model.renderer_contract
-    return "sha256:"+sha256(repr((model.unit,model.ast_binding,model.control_flow,model.stack,model.abi,model.callee_saved_effects,plan.plan_id,None if c is None else (c.contract_id,c.version))).encode()).hexdigest()
+    return "sha256:"+sha256(repr((model.unit,model.ast_binding,model.control_flow,model.stack,model.abi,model.callee_saved_effects,model.phase5_evidence,plan.plan_id,None if c is None else (c.contract_id,c.version))).encode()).hexdigest()
 def prove_whole_function_plan(*,model:WholeFunctionSemanticModel,plan:WholeFunctionLoweringPlan)->WholeFunctionProofResult:
     if plan.kind is not WholeFunctionLoweringKind.STRUCTURED_C_FUNCTION:return WholeFunctionProofResult(False,plan.plan_id,plan.reason_codes or ("whole-function.route-not-implemented",))
     reasons=[]; ast,cfg,abi,contract=model.ast_binding,model.control_flow,model.abi,model.renderer_contract
     if not model.complete:reasons.append("phase6d.whole_function.facts-incomplete")
+    if model.phase5_evidence is None or not model.phase5_evidence.complete:
+        reasons.append("phase6d.whole_function.phase5-evidence-missing")
     if ast is None or not ast.complete or ast.c_ast_function_binding_id!=model.unit.c_ast_function_binding_id:reasons.append("phase6d.whole_function.ast_binding_missing")
     if cfg is None or not cfg.complete or not cfg.normal_exits:reasons.append("phase6d.whole_function.cfg_incomplete")
     elif cfg.has_exceptional_exit:reasons.append("phase6d.whole_function.unwind_or_nonlocal_transfer")
@@ -190,7 +211,9 @@ def render_whole_function_replacement(*,model:WholeFunctionSemanticModel,plan:Wh
     if not proof.approved or plan.kind is not WholeFunctionLoweringKind.STRUCTURED_C_FUNCTION:return None
     ast,contract=model.ast_binding,model.renderer_contract
     if ast is None or contract is None or not contract.replacement_text.strip() or proof.proof_identity is None:return None
-    return FunctionReplacementArtifact(model.unit.function_id,ast.c_ast_function_binding_id,ast.definition_range,contract.replacement_text,proof.proof_identity,contract.contract_id,contract.version,tuple(sorted(contract.required_headers)),tuple(sorted(contract.required_libraries)))
+    evidence=model.phase5_evidence
+    if evidence is None or not evidence.complete: return None
+    return FunctionReplacementArtifact(model.unit.function_id,ast.c_ast_function_binding_id,ast.definition_range,contract.replacement_text,proof.proof_identity,contract.contract_id,contract.version,tuple(sorted(contract.required_headers)),tuple(sorted(contract.required_libraries)),evidence)
 def translate_whole_function(*,facts:WholeFunctionTranslationFacts,route:WholeFunctionRouteDecision)->tuple[FunctionReplacementArtifact|None,WholeFunctionProofResult|None]:
     model=build_whole_function_semantic_model(unit=facts.unit,route=route,facts=facts); plans=generate_whole_function_candidate_plans(model,route)
     if not plans:return None,None

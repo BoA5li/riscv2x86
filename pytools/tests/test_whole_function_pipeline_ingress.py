@@ -22,7 +22,9 @@ def _facts():
         (FunctionFramePathSummary("exit", 0, 16, True),), True, True)
     abi = FunctionAbiFacts("rv64-lp64", True, True, True, True, False, False, True)
     recipe = WholeFunctionRendererContract("wf.static", "1", "f", "int f(void) { return 1; }", complete=True)
-    return WholeFunctionTranslationFacts(unit, ast, cfg, stack, abi, (), ("frag:0",), recipe, True)
+    from riscv2x86_py.whole_function import WholeFunctionPhase5Evidence
+    return WholeFunctionTranslationFacts(unit, ast, cfg, stack, abi, (), ("frag:0",), recipe, True, (),
+        WholeFunctionPhase5Evidence("cfg", "frame", "declaration", "join"))
 
 
 def test_pipeline_scheduler_emits_function_rewrite_only_after_proof():
@@ -33,6 +35,7 @@ def test_pipeline_scheduler_emits_function_rewrite_only_after_proof():
     assert emitted[0].subjectKind == "Function"
     assert emitted[0].rewriteBeginOffset == 0
     assert emitted[0].approvalArtifact["proofStatus"] == "approved"
+    assert emitted[0].approvalArtifact["phase5Evidence"]["mixedCfgIdentity"] == "cfg"
     assert finding.category == "AlreadyRule"
 
 
