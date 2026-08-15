@@ -221,6 +221,7 @@ class SourceStackFrameModel:
     virtual_private_frame: SourceVirtualPrivateFrameModel | None = None
     virtual_private_frame_eligible: bool = False
     missing_fact_codes: Tuple[str, ...] = ()
+    pointer_uses: Tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceStackFrameKind):
@@ -3213,6 +3214,7 @@ def _build_stack_frame_model(
             accesses=raw.accesses,
             adjustments=raw.adjustments,
             escape_facts=raw.escape_facts,
+            pointer_uses=raw.pointer_uses,
             has_dynamic_adjustment=raw.has_dynamic_adjustment,
             rebinding_accesses=tuple(sorted(rebinding_accesses, key=lambda x: (x.source_block_address, x.source_operation_index))),
             stack_address_rebinding_eligible=eligible,
