@@ -16,6 +16,8 @@ from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
 from .helper_runtime_manifest import RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL
 from .target_register_policy import audit_translator_emitted_target_registers
+from .abi_effects import TargetAbiWrapperRegistry
+from .abi_sidecar import AbiCallSidecar
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -874,6 +876,8 @@ def run(
     register_name_resolver: Optional[RegisterNameResolver] = None,
     verify_enabled: bool = True,
     target_environment: TargetEnvironment | None = None,
+    abi_call_sidecar: AbiCallSidecar | None = None,
+    abi_wrapper_registry: TargetAbiWrapperRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
@@ -909,6 +913,8 @@ def run(
         "shell_semantics_blocked": 0,
         "register_name_blocked": 0,
         "translated_unverified": 0,
+        "abi_sidecar_bound": 0,
+        "abi_sidecar_missing_for_call": 0,
     }
 
     for f in findings:
@@ -1222,6 +1228,14 @@ def run(
         )
 
         environment = public_environment
+        abi_facts = (
+            None if abi_call_sidecar is None
+            else abi_call_sidecar.facts_for(f.fragment.id)
+        )
+        abi_bindings = () if abi_facts is None else abi_facts.bindings
+        if abi_facts is not None:
+            stats["abi_sidecar_bound"] += 1
+
         tr = translate(
             frag=f.fragment,
             lift=lr,
@@ -1237,6 +1251,8 @@ def run(
             # 同一个 authoritative facts source。
             runtime_facts=f.translationRuntimeFacts,
             target_environment=environment,
+            abi_call_bindings=abi_bindings,
+            abi_wrapper_registry=abi_wrapper_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,
         )
 

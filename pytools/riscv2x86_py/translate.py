@@ -88,7 +88,6 @@ from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
 from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
-from .target_register_policy import POLICY_VERSION
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -96,6 +95,7 @@ from .whole_function import (
     WholeFunctionProofResult,
     translate_whole_function,
 )
+from .target_register_policy import POLICY_VERSION
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -2826,7 +2826,7 @@ def translate_whole_function_definition(
 ) -> tuple[FunctionReplacementArtifact | None, WholeFunctionProofResult | None]:
     """Run the independent D-class 6B--6F function-definition pipeline.
 
-    This deliberately has no `AsmFragment` argument.  It cannot be called
+    This deliberately has no ``AsmFragment`` argument.  It cannot be called
     by the ordinary fragment renderer, which prevents overlapping statement
     and function replacements at the same source location.
     """
@@ -3055,6 +3055,8 @@ def translate(
     selection_policy: Phase6ESelectionPolicy = Phase6ESelectionPolicy(),
     renderer_context: Optional[RendererContext] = None,
     renderer_contract_registry: RendererContractRegistry = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY,
+    abi_call_bindings: tuple[SourceAbiCallBinding, ...] = (),
+    abi_wrapper_registry: TargetAbiWrapperRegistry | None = None,
     whole_function_facts: WholeFunctionTranslationFacts | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
@@ -3161,12 +3163,32 @@ def translate(
             machine_code=machine_code,
             xlen=xlen,
         )
-
         return _unsupported(
             fallback_context,
             reason=f"invalid translate input: {error}",
             reason_code="TR_INVALID_TRANSLATION_INPUT",
         )
+
+    # Phase-4 ABI sidecar ingress.  It remains optional only for fragments
+    # without calls; an ABI wrapper candidate cannot be derived from absence.
+    if not isinstance(abi_call_bindings, tuple) or any(
+        not isinstance(item, SourceAbiCallBinding) for item in abi_call_bindings
+    ):
+        return _unsupported(
+            context,
+            reason="ABI call sidecar bindings are not typed SourceAbiCallBinding facts",
+            reason_code="TR_ABI_CALL_SIDECAR_INVALID",
+        )
+    if abi_wrapper_registry is not None and not isinstance(
+        abi_wrapper_registry, TargetAbiWrapperRegistry
+    ):
+        return _unsupported(
+            context,
+            reason="ABI wrapper registry is not a typed versioned registry",
+            reason_code="TR_ABI_WRAPPER_REGISTRY_INVALID",
+        )
+    context.abiCallBindings = abi_call_bindings
+    context.abiWrapperRegistry = abi_wrapper_registry
 
     # Retain a verified Phase-4 function sidecar for the independent D-class
     # entry point.  It is intentionally not fed into fragment replacement.
@@ -3490,6 +3512,20 @@ def _translate_phase6_proof_pipeline(
             "helperRequiredHeader": recipe.required_header,
             "helperRuntimeLibrary": recipe.runtime_library,
             "helperRuntimeManifestVersion": RUNTIME_HELPER_MANIFEST_VERSION,
+        })
+    if rendered.kind is RenderedReplacementKind.ABI_WRAPPER_CALL:
+        effects = source_model.abi_effects
+        call = None if effects is None or len(effects.calls) != 1 else effects.calls[0]
+        constraint = selection.selected_plan.constraints.abi_wrapper_constraint
+        artifact.update({
+            "sourceAbiProfile": None if effects is None else effects.source_abi_profile.value,
+            "sourceDirectTargetId": None if call is None else call.target.target_id,
+            "sourceAbiCallBindingProvenance": None if call is None else (
+                next((x.provenance for x in context.abiCallBindings
+                      if x.block_address == call.block_address and x.operation_index == call.operation_index), None)
+            ),
+            "abiWrapperRegistryVersion": None if context.abiWrapperRegistry is None else context.abiWrapperRegistry.version,
+            "abiWrapperContractId": None if constraint is None else constraint.wrapper_contract_id,
         })
     return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata, "approvalArtifact": artifact})
 

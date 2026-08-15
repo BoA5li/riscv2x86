@@ -595,6 +595,18 @@ def parse_args() -> argparse.Namespace:
             "Default: fail closed and leave the finding routed."
         ),
     )
+    parser.add_argument(
+        "--abi-call-sidecar",
+        type=Path,
+        default=None,
+        help="Versioned ABI call-sidecar JSON produced by the frontend/compiler plugin.",
+    )
+    parser.add_argument(
+        "--abi-wrapper-registry",
+        type=Path,
+        default=None,
+        help="Versioned target ABI wrapper-registry JSON.",
+    )
 
     parser.add_argument(
         "--keep-work-dir",
@@ -695,6 +707,10 @@ def translate_one(
 
     if args.allow_functional_fallbacks:
         backend_cmd.append("--allow-functional-fallbacks")
+    if args.abi_call_sidecar is not None:
+        backend_cmd.extend(["--abi-call-sidecar", str(args.abi_call_sidecar.resolve())])
+    if args.abi_wrapper_registry is not None:
+        backend_cmd.extend(["--abi-wrapper-registry", str(args.abi_wrapper_registry.resolve())])
 
     # Do not permit a globally installed/stale ``riscv2x86_py`` package to
     # shadow the semantic pipeline in this source checkout.
