@@ -88,6 +88,7 @@ from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
 from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
+from .target_register_policy import POLICY_VERSION
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -3478,6 +3479,8 @@ def _translate_phase6_proof_pipeline(
         "replacementKind": rendered.kind.value,
         "replacementDigest": _approval_digest(rendered.emitted_text),
         "sourceSliceDigest": _approval_digest(context.fragment.rawAsmText),
+        "targetRegisterPolicyVersion": POLICY_VERSION,
+        "explicitHostStackFrameRegisterUse": False,
     }
     if rendered.kind is RenderedReplacementKind.HELPER_CALL:
         recipe = rendered.target_ast
