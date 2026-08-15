@@ -8,6 +8,7 @@ from .phase6c_constraints import TargetConstraintModel, TargetEnvironment
 from .plan_types import PlanRequirement, TargetLoweringKind, TargetLoweringPlan
 from .semantic_types import PreservationDecision
 from .source_model import SourceSemanticModel
+from .target_register_policy import POLICY_VERSION, is_forbidden_host_stack_frame_register
 
 class SemanticProofReasonCode(str, Enum):
     INVALID_REQUEST="phase6d.invalid_request"; SOURCE_INCOMPLETE="phase6d.source_incomplete"
@@ -19,6 +20,7 @@ class SemanticProofReasonCode(str, Enum):
     MICROARCH_UNPRESERVED="phase6d.microarch_unpreserved"; PLAN_CONTRACT_MISSING="phase6d.plan_contract_missing"
     UNSUPPORTED_PLAN_KIND="phase6d.unsupported_plan_kind"; INTERNAL_INVARIANT="phase6d.internal_invariant"
     REQUIREMENT_UNPROVEN="phase6d.requirement_unproven"; BINDING_UNSAFE="phase6d.binding_unsafe"
+    TARGET_FIXED_REGISTER_POLICY_VIOLATION="phase6d.target_fixed_register_policy_violation"
 
 class PreservationConclusion(str, Enum):
     ARCHITECTURE_EQUIVALENT="architecture_equivalent"; SHELL_PRESERVED="shell_preserved"
@@ -115,7 +117,7 @@ def constraint_identity(c):
     contract_identity = ",".join(
         f"{type(item).__name__}:{repr(item)}" for item in contracts
     )
-    return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), contract_identity))
+    return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), c.target_register_policy_version, operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), contract_identity))
 
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
@@ -140,6 +142,11 @@ def validate_common(request: SemanticProofRequest):
     if not all((isinstance(s,SourceSemanticModel),isinstance(p,TargetLoweringPlan),isinstance(c,TargetConstraintModel),isinstance(e,TargetEnvironment),isinstance(request.preservation_decision,PreservationDecision),isinstance(request.target_semantic_catalog,TargetSemanticCatalog),isinstance(request.compiler_capabilities,CompilerCapabilityModel))): return reject(request,SemanticProofReasonCode.INVALID_REQUEST)
     if request.preservation_decision != s.preservation: return reject(request,SemanticProofReasonCode.PRESERVATION_MISMATCH)
     if c.plan_id != p.plan_id or c.environment != e: return reject(request,SemanticProofReasonCode.PLAN_CONSTRAINT_MISMATCH)
+    if c.target_register_policy_version != POLICY_VERSION or any(
+        operand.requires_fixed_register and is_forbidden_host_stack_frame_register(operand.fixed_register_name)
+        for operand in c.operand_constraints
+    ):
+        return reject(request, SemanticProofReasonCode.TARGET_FIXED_REGISTER_POLICY_VIOLATION)
     if not p.supports_features(e.available_features): return reject(request,SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if p.kind not in request.target_semantic_catalog.supported_plan_kinds: return reject(request,SemanticProofReasonCode.TARGET_SEMANTICS_MISSING)
     # A GNU-asm candidate is proof-eligible only when its *specific*,
