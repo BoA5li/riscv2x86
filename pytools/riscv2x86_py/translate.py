@@ -88,6 +88,13 @@ from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
 from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
+from .whole_function import (
+    FunctionReplacementArtifact,
+    WholeFunctionRouteDecision,
+    WholeFunctionTranslationFacts,
+    WholeFunctionProofResult,
+    translate_whole_function,
+)
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -253,6 +260,11 @@ class TranslationContext:
     # tuple is safe only when canonical Phase 5 reports no call.
     abiCallBindings: tuple[SourceAbiCallBinding, ...] = ()
     abiWrapperRegistry: TargetAbiWrapperRegistry | None = None
+
+    # Function-scope sidecars are deliberately separate from fragment facts.
+    # The ordinary translate() path never consumes them to replace one asm
+    # statement; callers must invoke translate_whole_function_definition().
+    wholeFunctionFacts: WholeFunctionTranslationFacts | None = None
 
     # Authoritative Phase-6A source semantic model.
     #
@@ -2805,6 +2817,20 @@ def _translate_level_d(context: TranslationContext) -> TranslationOutput:
         },
     )
 
+
+def translate_whole_function_definition(
+    *,
+    facts: WholeFunctionTranslationFacts,
+    route: WholeFunctionRouteDecision,
+) -> tuple[FunctionReplacementArtifact | None, WholeFunctionProofResult | None]:
+    """Run the independent D-class 6B--6F function-definition pipeline.
+
+    This deliberately has no `AsmFragment` argument.  It cannot be called
+    by the ordinary fragment renderer, which prevents overlapping statement
+    and function replacements at the same source location.
+    """
+    return translate_whole_function(facts=facts, route=route)
+
 # =============================================================================
 # Public entry
 # =============================================================================
@@ -3028,6 +3054,7 @@ def translate(
     selection_policy: Phase6ESelectionPolicy = Phase6ESelectionPolicy(),
     renderer_context: Optional[RendererContext] = None,
     renderer_contract_registry: RendererContractRegistry = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY,
+    whole_function_facts: WholeFunctionTranslationFacts | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
@@ -3139,6 +3166,17 @@ def translate(
             reason=f"invalid translate input: {error}",
             reason_code="TR_INVALID_TRANSLATION_INPUT",
         )
+
+    # Retain a verified Phase-4 function sidecar for the independent D-class
+    # entry point.  It is intentionally not fed into fragment replacement.
+    if whole_function_facts is not None:
+        if whole_function_facts.unit.function_id == "" or not whole_function_facts.unit.c_ast_function_binding_id:
+            return _unsupported(
+                context,
+                reason="whole-function sidecar has no bound function identity",
+                reason_code="TR_WHOLE_FUNCTION_SIDECAR_INVALID",
+            )
+        context.wholeFunctionFacts = whole_function_facts
 
     # ------------------------------------------------------------------
     # Phase 6A: this is the sole source-semantic collection point.
