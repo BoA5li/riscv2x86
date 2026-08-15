@@ -18,6 +18,10 @@ from .phase6d_common import SemanticProofResult, constraint_identity
 from .phase6e_selection import ApprovedTargetLoweringPlan
 from .phase6e_selection import FinalSelectionKind, FinalSelectionResult
 from .plan_types import TargetLoweringKind
+from .target_register_policy import (
+    audit_translator_emitted_target_registers,
+    is_forbidden_host_stack_frame_register,
+)
 
 
 class RendererContractKind(str, Enum):
@@ -58,6 +62,7 @@ class RenderReasonCode(str, Enum):
     OPERAND_BINDING_MISSING = "phase6f.operand_binding_missing"
     TIED_OUTPUT_MISSING = "phase6f.tied_output_missing"
     FIXED_REGISTER_UNENCODABLE = "phase6f.fixed_register_constraint_unencodable"
+    HOST_STACK_FRAME_REGISTER_FORBIDDEN = "phase6f.host_stack_frame_register_forbidden"
     LABEL_BINDING_MISSING = "phase6f.label_binding_missing"
     HELPER_CONTRACT_MISSING = "phase6f.helper_contract_missing"
     PLAN_KIND_CONTRACT_MISMATCH = "phase6f.plan_kind_contract_mismatch"
@@ -298,6 +303,8 @@ def _body(op: TargetOperandConstraint) -> str | None:
     if op.gnu_constraint_body is not None:
         return op.gnu_constraint_body
     if op.requires_fixed_register:
+        if is_forbidden_host_stack_frame_register(op.fixed_register_name):
+            return None
         return "{" + op.fixed_register_name + "}" if op.fixed_register_name else None
     classes = op.allowed_classes
     # The contract must be unambiguous: renderer cannot pick a class itself.
@@ -349,6 +356,11 @@ def _render_gnu(request: Phase6FRenderRequest, recipe: GnuInlineAsmRecipe, *, is
         return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
     if is_goto and not request.target_environment.supports_gnu_asm_goto:
         return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
+    if any(
+        op.requires_fixed_register and is_forbidden_host_stack_frame_register(op.fixed_register_name)
+        for op in a.constraints.operand_constraints
+    ):
+        return _failure(request, RenderReasonCode.HOST_STACK_FRAME_REGISTER_FORBIDDEN, internal=True)
     ops = _operand_map(a.constraints); outputs = []
     for i in recipe.output_operand_indexes:
         op, binding = ops.get(i), _binding(ctx, i)
@@ -485,7 +497,10 @@ def render_approved_target_lowering(request: Phase6FRenderRequest) -> RenderedRe
     if contract is None:return _failure(request, RenderReasonCode.RENDERER_CONTRACT_MISSING, internal=True)
     if contract.plan_id != request.approved_plan.plan.plan_id:return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
     if not contract.required_features.issubset(request.target_environment.available_features):return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
-    return _render_contract(request, contract)
+    rendered = _render_contract(request, contract)
+    if rendered.emitted_text is not None and audit_translator_emitted_target_registers(rendered.emitted_text):
+        return _failure(request, RenderReasonCode.HOST_STACK_FRAME_REGISTER_FORBIDDEN, internal=True)
+    return rendered
 
 
 def render_final_selection_result(
