@@ -119,7 +119,7 @@ def constraint_identity(c):
 def _evidence(request, conclusions, requirements):
     e=request.target_environment
     stack=request.source_model.stack_frame
-    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
+    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
     return ProofEvidence(
         source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id)),
         preservation_level=request.preservation_decision.level.value,
@@ -187,7 +187,7 @@ def _validate_requirements(request):
         PlanRequirement.AUTHORITATIVE_STACK_ACCESS_BINDINGS: (s.stack_frame is not None and s.stack_frame.stack_address_rebinding_eligible),
         PlanRequirement.PRESERVE_STACK_LAYOUT: (c.stack_rebinding_constraint is not None),
         PlanRequirement.PRESERVE_STACK_ALIGNMENT: (s.stack_frame is not None and all(x.guaranteed_alignment_bytes is not None and x.required_alignment_bytes is not None and x.guaranteed_alignment_bytes >= x.required_alignment_bytes for x in s.stack_frame.rebinding_accesses)),
-        PlanRequirement.PROVE_NO_STACK_ADDRESS_ESCAPE: (s.stack_frame is not None and not s.stack_frame.pointer_escapes and not s.stack_frame.requires_real_stack_identity),
+        PlanRequirement.PROVE_NO_STACK_ADDRESS_ESCAPE: (s.stack_frame is not None and not s.stack_frame.pointer_escapes and not s.stack_frame.requires_real_stack_identity and getattr(s.stack_frame.escape_facts,"analysis_complete",False) and not getattr(s.stack_frame.escape_facts,"unknown_use_present",True)),
         PlanRequirement.PROVE_NO_HOST_STACK_POINTER_MUTATION: (c.stack_rebinding_constraint is not None and c.stack_rebinding_constraint.forbids_host_stack_pointer_mutation),
         PlanRequirement.PROVE_STACK_OBJECT_BOUNDS: (s.stack_frame is not None and all(x.object_size_bytes is not None and x.target_object_offset_bytes + x.width_bits // 8 <= x.object_size_bytes for x in s.stack_frame.rebinding_accesses)),
         PlanRequirement.PROVE_STATIC_BALANCED_PRIVATE_FRAME: (s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible and s.stack_frame.net_stack_delta_bytes == 0),
