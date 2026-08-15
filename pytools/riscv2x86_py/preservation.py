@@ -67,6 +67,21 @@ _D_FEATURES = frozenset(
         SemanticFeature.ATOMIC_OPERATION,
         SemanticFeature.INCOMPLETE_SEMANTIC_SUMMARY,
 
+        # Privileged state always requires a dedicated target environment or
+        # runtime contract.  A functional-fallback possibility is tracked
+        # separately and never weakens this strict preservation route.
+        SemanticFeature.PRIVILEGED_STATE,
+        SemanticFeature.CSR_ACCESS,
+        SemanticFeature.READ_ONLY_COUNTER_CSR,
+        SemanticFeature.PRIVILEGED_TRAP,
+        SemanticFeature.PRIVILEGE_RETURN,
+        SemanticFeature.INTERRUPT_STATE,
+        SemanticFeature.ADDRESS_TRANSLATION_STATE,
+        SemanticFeature.VIRTUALIZATION_STATE,
+        SemanticFeature.DEBUG_STATE,
+        SemanticFeature.PRIVILEGED_STATE_INCOMPLETE,
+        SemanticFeature.FUNCTIONAL_OBSERVABILITY_INCOMPLETE,
+
         # -------------------------------------------------------------------
         # Analysis or semantic-summary incompleteness that prevents safe
         # generic semantic preservation.
@@ -185,6 +200,8 @@ _PLAN_GATING_FEATURES = frozenset(
         SemanticFeature.INCOMPLETE_OPERAND_BINDING,
         SemanticFeature.INCOMPLETE_OUTPUT_BINDING,
         SemanticFeature.INCOMPLETE_OPERAND_WIDTH,
+        SemanticFeature.FUNCTIONAL_PRIVILEGED_FALLBACK_POSSIBLE,
+        SemanticFeature.IGNORED_PRIVILEGED_STATE,
     }
 )
 

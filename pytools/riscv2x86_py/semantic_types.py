@@ -136,6 +136,28 @@ class SemanticFeature(str, Enum):
     ATOMIC_OPERATION = "atomic_operation"
 
     # ------------------------------------------------------------------
+    # Privileged execution and environment state.
+    # ------------------------------------------------------------------
+
+    PRIVILEGED_STATE = "privileged_state"
+    CSR_ACCESS = "csr_access"
+    READ_ONLY_COUNTER_CSR = "read_only_counter_csr"
+    PRIVILEGED_TRAP = "privileged_trap"
+    PRIVILEGE_RETURN = "privilege_return"
+    INTERRUPT_STATE = "interrupt_state"
+    ADDRESS_TRANSLATION_STATE = "address_translation_state"
+    VIRTUALIZATION_STATE = "virtualization_state"
+    DEBUG_STATE = "debug_state"
+    PRIVILEGED_STATE_INCOMPLETE = "privileged_state_incomplete"
+    FUNCTIONAL_OBSERVABILITY_INCOMPLETE = (
+        "functional_observability_incomplete"
+    )
+    FUNCTIONAL_PRIVILEGED_FALLBACK_POSSIBLE = (
+        "functional_privileged_fallback_possible"
+    )
+    IGNORED_PRIVILEGED_STATE = "ignored_privileged_state"
+
+    # ------------------------------------------------------------------
     # Stack / ABI / register-role semantics.
     # ------------------------------------------------------------------
 

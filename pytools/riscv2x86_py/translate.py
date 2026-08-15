@@ -88,7 +88,8 @@ from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
 from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
-from .target_register_policy import POLICY_VERSION
+from .privileged_state_analysis import SourcePrivilegedStateModel
+from .functional_observability import FunctionalObservabilityContract
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -96,6 +97,7 @@ from .whole_function import (
     WholeFunctionProofResult,
     translate_whole_function,
 )
+from .target_register_policy import POLICY_VERSION
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -266,6 +268,9 @@ class TranslationContext:
     # The ordinary translate() path never consumes them to replace one asm
     # statement; callers must invoke translate_whole_function_definition().
     wholeFunctionFacts: WholeFunctionTranslationFacts | None = None
+    # Typed Phase-5 products consumed only by the Phase-6A privileged adapter.
+    privilegedStateFacts: SourcePrivilegedStateModel | None = None
+    functionalObservability: FunctionalObservabilityContract | None = None
 
     # Authoritative Phase-6A source semantic model.
     #
@@ -2826,7 +2831,7 @@ def translate_whole_function_definition(
 ) -> tuple[FunctionReplacementArtifact | None, WholeFunctionProofResult | None]:
     """Run the independent D-class 6B--6F function-definition pipeline.
 
-    This deliberately has no `AsmFragment` argument.  It cannot be called
+    This deliberately has no ``AsmFragment`` argument.  It cannot be called
     by the ordinary fragment renderer, which prevents overlapping statement
     and function replacements at the same source location.
     """
@@ -3058,6 +3063,8 @@ def translate(
     abi_call_bindings: tuple[SourceAbiCallBinding, ...] = (),
     abi_wrapper_registry: TargetAbiWrapperRegistry | None = None,
     whole_function_facts: WholeFunctionTranslationFacts | None = None,
+    privileged_state: SourcePrivilegedStateModel | None = None,
+    functional_observability: FunctionalObservabilityContract | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
@@ -3163,14 +3170,13 @@ def translate(
             machine_code=machine_code,
             xlen=xlen,
         )
-
         return _unsupported(
             fallback_context,
             reason=f"invalid translate input: {error}",
             reason_code="TR_INVALID_TRANSLATION_INPUT",
         )
 
-    # Phase-4 ABI sidecar ingress. It remains optional only for fragments
+    # Phase-4 ABI sidecar ingress.  It remains optional only for fragments
     # without calls; an ABI wrapper candidate cannot be derived from absence.
     if not isinstance(abi_call_bindings, tuple) or any(
         not isinstance(item, SourceAbiCallBinding) for item in abi_call_bindings
@@ -3190,6 +3196,25 @@ def translate(
         )
     context.abiCallBindings = abi_call_bindings
     context.abiWrapperRegistry = abi_wrapper_registry
+
+    if privileged_state is not None and not isinstance(
+        privileged_state, SourcePrivilegedStateModel
+    ):
+        return _unsupported(
+            context,
+            reason="privileged state is not a typed Phase-5 model",
+            reason_code="TR_PRIVILEGED_STATE_FACTS_INVALID",
+        )
+    if functional_observability is not None and not isinstance(
+        functional_observability, FunctionalObservabilityContract
+    ):
+        return _unsupported(
+            context,
+            reason="functional observability is not a typed Phase-5 contract",
+            reason_code="TR_FUNCTIONAL_OBSERVABILITY_INVALID",
+        )
+    context.privilegedStateFacts = privileged_state
+    context.functionalObservability = functional_observability
 
     # Retain a verified Phase-4 function sidecar for the independent D-class
     # entry point.  It is intentionally not fed into fragment replacement.
@@ -3224,6 +3249,9 @@ def translate(
             xlen=context.xlen,
             stack_rebinding_facts=context.stackRebindingFacts,
             abi_call_bindings=context.abiCallBindings,
+            privileged_state=context.privilegedStateFacts,
+            functional_observability=context.functionalObservability,
+            whole_function_facts=context.wholeFunctionFacts,
         )
     except ValueError as exc:
         return _unsupported(
@@ -3243,7 +3271,13 @@ def translate(
     # domain contract before this family becomes renderable.
     if source_model.read_only_csr is not None:
         csr = source_model.read_only_csr
-        if allow_functional_fallbacks:
+        privileged_adapter = source_model.privileged_state
+        if (
+            allow_functional_fallbacks
+            and privileged_adapter is not None
+            and privileged_adapter.functional_fallback_possible
+            and csr.complete
+        ):
             fallback = _render_counter_csr_functional_fallback(
                 context=context,
                 csr_name=csr.csr_name,

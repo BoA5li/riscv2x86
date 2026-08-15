@@ -6,8 +6,13 @@ import subprocess
 import tempfile
 
 from riscv2x86_py.candidate_plans import generate_candidate_plans
-from riscv2x86_py.cfg import CFGResult
-from riscv2x86_py.pcode_ir import Block, CanonicalInsn, IRSummary, Op, Var, VarKind
+from riscv2x86_py.cfg import CFGNode, CFGResult
+from riscv2x86_py.functional_observability import analyze_functional_observability
+from riscv2x86_py.pcode_ir import (
+    Block, CanonicalCsrOperationKind, CanonicalInsn,
+    CanonicalPrivilegedOperation, CanonicalPrivilegedOperationKind,
+    IRSummary, Op, Var, VarKind,
+)
 from riscv2x86_py.phase6c_constraints import (
     TargetEnvironment,
     derive_target_constraints,
@@ -31,8 +36,14 @@ from riscv2x86_py.phase6f_renderer import (
     render_approved_target_lowering,
 )
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
+from riscv2x86_py.privileged_execution_sidecar import (
+    CsrAccessPolicyFacts, PrivilegedExecutionFacts, SourceExecutionProfile,
+    SourcePrivilegeMode, TargetExecutionMode, UnknownCsrAccessDisposition,
+)
+from riscv2x86_py.privileged_state_analysis import analyze_privileged_state
 from riscv2x86_py.helper_runtime_manifest import INSTRUCTION_STREAM_SYNC_LOCAL
 from riscv2x86_py.schema import AsmFragment, AsmOperand
+from riscv2x86_py.shell_model import SourceShellModel
 from riscv2x86_py.source_model import build_source_semantic_model
 from riscv2x86_py.translate import translate
 
@@ -280,30 +291,74 @@ def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None
 def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
     """Counter CSRs must not become an accidental rdtsc/clock rewrite."""
     fragment = AsmFragment(
+        id="counter-frag",
         outputs=[AsmOperand(constraint="=r", exprText="time_val", isOutput=True)],
         isVolatile=True,
     )
     a0 = Var(VarKind.REG, "register", 10, 8, "a0")
     time = Var(VarKind.REG, "register", 0, 8, "time")
     summary = IRSummary(
-        is_single_block=False, has_branch=True, has_call_or_return=False,
+        is_single_block=True, has_branch=False, has_call_or_return=False,
         has_memory_barrier=False, has_atomic=False,
         reads_regs={"time"}, writes_regs={"a0"}, reads_mem=False, writes_mem=False,
+        has_return=False, has_tail_call=False, has_indirect_control_flow=False,
+        has_timing_source=False, has_cache_operation=False,
+        has_speculation_control=False,
     )
     blocks = (Block(0x1000, [Op(0x1000, "COPY", a0, [time])], summary=summary,
-                    instructions=[CanonicalInsn(addr=0x1000, size=4)]),)
+                    instructions=[CanonicalInsn(
+                        addr=0x1000, size=4,
+                        privileged_operations=(CanonicalPrivilegedOperation(
+                            kind=CanonicalPrivilegedOperationKind.CSR_ACCESS,
+                            csr_id="riscv.csr.time",
+                            csr_operation=CanonicalCsrOperationKind.READ,
+                            required_privilege_mode="u", may_trap=False,
+                            state_complete=True,
+                        ),),
+                    )]),)
+    cfg = CFGResult(
+        ok=True, entry=0x1000,
+        nodes={0x1000: CFGNode(addr=0x1000, size=4, instr_addrs=[0x1000])},
+    )
+    execution_facts = PrivilegedExecutionFacts(
+        fragment_id="counter-frag",
+        source_execution_profile=SourceExecutionProfile.RISCV_USER_PROCESS,
+        target_execution_mode=TargetExecutionMode.X86_USER_PROCESS,
+        source_privilege_spec_version="1.12",
+        source_isa_extensions=("i", "zicsr"),
+        initial_privilege_mode=SourcePrivilegeMode.U,
+        csr_access_policy=CsrAccessPolicyFacts(
+            policy_id="counter-policy-v1",
+            readable_csr_ids=("riscv.csr.time",), writable_csr_ids=(),
+            unknown_access=UnknownCsrAccessDisposition.DENY, complete=True,
+        ),
+        target_runtime_contract_set_id="x86-counter-v1", complete=True,
+        missing_fact_codes=(), provenance="compiler-plugin:test",
+    )
+    privileged_state = analyze_privileged_state(
+        fragment_id="counter-frag", blocks=blocks, cfg=cfg,
+        execution_facts=execution_facts,
+    )
+    observability = analyze_functional_observability(
+        fragment_id="counter-frag",
+        shell=SourceShellModel.from_fragment(fragment), summary=summary, cfg=cfg,
+        privileged_state=privileged_state, operand_width_bits={0: 64},
+    )
     facts = TranslationRuntimeFacts(
         rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64}, provenance="phase4-test",
     )
     model = build_source_semantic_model(
-        fragment=fragment, blocks=blocks, cfg=CFGResult(ok=True), summary=summary,
-        runtime_facts=facts, xlen=64,
+        fragment=fragment, blocks=blocks, cfg=cfg, summary=summary,
+        runtime_facts=facts, xlen=64, privileged_state=privileged_state,
+        functional_observability=observability,
     )
     assert model.read_only_csr is not None
     assert model.read_only_csr.csr_name == "time"
     routed = translate(
         frag=fragment, lift=_IngressLift(), summary=summary, machine_code=b"\0\0\0\0", xlen=64,
-        blocks=blocks, cfg=CFGResult(ok=True), runtime_facts=facts,
+        blocks=blocks, cfg=cfg, runtime_facts=facts,
+        privileged_state=privileged_state,
+        functional_observability=observability,
     )
     assert routed.kind == "needs_route"
     assert "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
@@ -315,7 +370,9 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
     functional = translate(
         frag=fragment, lift=_IngressLift(), summary=summary,
         machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
-        cfg=CFGResult(ok=True), runtime_facts=facts,
+        cfg=cfg, runtime_facts=facts,
+        privileged_state=privileged_state,
+        functional_observability=observability,
         target_environment=functional_environment,
         allow_functional_fallbacks=True,
     )

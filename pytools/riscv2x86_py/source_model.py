@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 50026)
-Total output lines: 5409
-
 # translator/phase6/source_model.py
 from __future__ import annotations
 
@@ -16,6 +13,13 @@ try:
     from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
     from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from .whole_function import WholeFunctionRouteDecision, classify_whole_function_route
+    from .privileged_state_analysis import SourcePrivilegedStateModel
+    from .functional_observability import FunctionalObservabilityContract
+    from .privileged_state_adapter import (
+        SourcePrivilegedAccessModel, SourcePrivilegedSemanticModel,
+        SourceReadOnlyCounterCsrModel, SourceReadOnlyCsrModel,
+        build_privileged_state_adapter,
+    )
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
     from pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
@@ -24,6 +28,13 @@ except ImportError:  # pragma: no cover - direct-module compatibility
     from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
     from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from whole_function import WholeFunctionRouteDecision, classify_whole_function_route
+    from privileged_state_analysis import SourcePrivilegedStateModel
+    from functional_observability import FunctionalObservabilityContract
+    from privileged_state_adapter import (
+        SourcePrivilegedAccessModel, SourcePrivilegedSemanticModel,
+        SourceReadOnlyCounterCsrModel, SourceReadOnlyCsrModel,
+        build_privileged_state_adapter,
+    )
 
 from .runtime_fact_model import RuntimeFactStatus
 from .semantic_types import (
@@ -148,20 +159,6 @@ class SourceLocalUnconditionalJumpModel:
     width_bits: int
     entry_block_address: int
     target_block_address: int
-
-
-@dataclass(frozen=True)
-class SourceReadOnlyCsrModel:
-    """Structured read of a RISC-V counter CSR.
-
-    This is an architectural/environment value, not a general-purpose
-    register binding.  The Phase-6 model therefore records it separately and
-    routes it to a versioned runtime contract; it must never be treated as an
-    unbound GNU inline-asm operand.
-    """
-    csr_name: str
-    result_operand_index: int
-    width_bits: int
 
 
 class SourceStackFrameKind(str, Enum):
@@ -387,7 +384,7 @@ class SourceSemanticModel:
     value_program: SourceStraightLineValueProgram | None
     local_branch_select: SourceLocalBranchSelectModel | None
     local_unconditional_jump: SourceLocalUnconditionalJumpModel | None
-    read_only_csr: SourceReadOnlyCsrModel | None
+    privileged_state: SourcePrivilegedSemanticModel | None
     # Optional only for constructor compatibility with older callers.  Phase
     # 6A always supplies it; a missing value is treated as UNKNOWN whenever
     # stack/frame registers are observed.
@@ -396,6 +393,13 @@ class SourceSemanticModel:
     # from stack-frame facts and is the sole input for ABI wrapper lowering.
     abi_effects: SourceAbiEffectModel | None = None
     whole_function_route: WholeFunctionRouteDecision | None = None
+
+    @property
+    def read_only_csr(self) -> SourceReadOnlyCounterCsrModel | None:
+        """Compatibility view of the nested privileged counter model."""
+        if self.privileged_state is None:
+            return None
+        return self.privileged_state.read_only_counter
 
     @property
     def phase6b_candidate_facts(self):
@@ -769,6 +773,9 @@ def build_source_semantic_model(
     ],
     stack_rebinding_facts: StackAddressRebindingFacts | None = None,
     abi_call_bindings: tuple[SourceAbiCallBinding, ...] = (),
+    privileged_state: SourcePrivilegedStateModel | None = None,
+    functional_observability: FunctionalObservabilityContract | None = None,
+    whole_function_facts: object | None = None,
 ) -> SourceSemanticModel:
     """
     Construct the authoritative immutable Phase-6A SourceSemanticModel.
@@ -819,7 +826,7 @@ def build_source_semantic_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
         memory=memory, cfg=cfg,
     )
-    read_only_csr = _build_read_only_csr_model(
+    read_only_csr_candidate = _build_read_only_csr_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
     )
     # A matched local select has no calls, returns, indirect edges or
@@ -854,6 +861,23 @@ def build_source_semantic_model(
                                     local_unconditional_jump is not None),
     )
 
+    if privileged_state is not None and privileged_state.present:
+        privileged_may_trap = bool(
+            privileged_state.trap_effects
+            or any(item.may_trap is True
+                   for item in privileged_state.csr_effects)
+        )
+        trap_complete = privileged_state.complete and all(
+            item.may_trap is not None
+            for item in privileged_state.csr_effects
+        )
+        operation = replace(
+            operation,
+            kind=SourceOperationKind.PRIVILEGED,
+            may_trap=(privileged_may_trap if trap_complete else None),
+            complete=operation.complete and privileged_state.complete,
+        )
+
     value_operation = _build_value_operation_model(
         blocks=blocks,
         runtime_status=runtime_status,
@@ -868,7 +892,8 @@ def build_source_semantic_model(
     # raw-asm or textual-pcode backdoor in 6B--6F.
     if (value_operation is None and local_branch_select is None and
             local_unconditional_jump is None and
-            read_only_csr is None and not memory.has_instruction_barrier):
+            read_only_csr_candidate is None and
+            not memory.has_instruction_barrier):
         def _var_ledger(value: object) -> dict[str, object]:
             return {
                 "kind": getattr(getattr(value, "kind", None), "value", None),
@@ -924,24 +949,15 @@ def build_source_semantic_model(
         summary=analysis_summary,
     )
 
-    features, reasons, reason_codes = _collect_source_semantic_evidence(
-        shell=shell,
-        control_flow=control_flow,
-        memory=memory,
-        microarch=microarch,
-        registers=registers,
-        completeness=completeness,
-    )
-
-    from .preservation import derive_preservation_decision
-    preservation = derive_preservation_decision(
-        features=features,
-        reasons=reasons,
-        reason_codes=reason_codes,
-    )
     stack_frame_model = _build_stack_frame_model(
         summary=analysis_summary, registers=registers,
         stack_rebinding_facts=stack_rebinding_facts, runtime_status=runtime_status,
+    )
+    abi_effects = build_abi_effects(
+        has_call=control_flow.has_call,
+        bindings=abi_call_bindings,
+        call_sites=collect_canonical_call_sites(blocks=blocks, cfg=cfg),
+        returns_from_containing_function=control_flow.has_return is True,
     )
     whole_function_route = classify_whole_function_route(
         reads_registers=registers.reads_registers, writes_registers=registers.writes_registers,
@@ -951,6 +967,35 @@ def build_source_semantic_model(
         dynamic_adjustment=False if stack_frame_model is None else stack_frame_model.has_dynamic_adjustment,
         stack_complete=True if stack_frame_model is None else stack_frame_model.complete,
         has_unwind_or_exception_edge=_optional_summary_flag(analysis_summary,"has_unwind_or_exception_edge"),
+    )
+    privileged_semantics = build_privileged_state_adapter(
+        fragment_id=fragment.id or fragment.fragmentId,
+        phase5_state=privileged_state,
+        observability=functional_observability,
+        read_only_counter_candidate=read_only_csr_candidate,
+        shell=shell,
+        memory=memory,
+        control_flow=control_flow,
+        abi_effects=abi_effects,
+        whole_function_route=whole_function_route,
+        whole_function_facts=whole_function_facts,
+    )
+
+    features, reasons, reason_codes = _collect_source_semantic_evidence(
+        shell=shell,
+        control_flow=control_flow,
+        memory=memory,
+        microarch=microarch,
+        registers=registers,
+        completeness=completeness,
+        privileged=privileged_semantics,
+    )
+
+    from .preservation import derive_preservation_decision
+    preservation = derive_preservation_decision(
+        features=features,
+        reasons=reasons,
+        reason_codes=reason_codes,
     )
 
     return SourceSemanticModel(
@@ -988,9 +1033,9 @@ def build_source_semantic_model(
         ),
         local_branch_select=local_branch_select,
         local_unconditional_jump=local_unconditional_jump,
-        read_only_csr=read_only_csr,
+        privileged_state=privileged_semantics,
         stack_frame=stack_frame_model,
-        abi_effects=build_abi_effects(has_call=control_flow.has_call, bindings=abi_call_bindings, call_sites=collect_canonical_call_sites(blocks=blocks,cfg=cfg), returns_from_containing_function=control_flow.has_return is True),
+        abi_effects=abi_effects,
         whole_function_route=whole_function_route,
     )
 
@@ -1506,6 +1551,7 @@ def _collect_source_semantic_evidence(
     microarch: SourceMicroArchModel,
     registers: SourceRegisterModel,
     completeness: SourceAnalysisCompletenessModel,
+    privileged: SourcePrivilegedSemanticModel | None = None,
 ) -> Tuple[
     Set[SemanticFeature],
     Tuple[str, ...],
@@ -1986,6 +2032,95 @@ def _collect_source_semantic_evidence(
             f"missing operand-width facts for source registers: {names}",
             "SM_INCOMPLETE_OPERAND_WIDTH",
         )
+
+    # ------------------------------------------------------------------
+    # Privileged state and functional-only fallback facts.
+    # ------------------------------------------------------------------
+
+    if privileged is not None:
+        state = privileged.state
+        if state is None or not privileged.complete:
+            add(
+                _semantic_feature("PRIVILEGED_STATE_INCOMPLETE"),
+                "privileged Phase-5 state/observability adapter is incomplete",
+                "SM_PRIVILEGED_STATE_INCOMPLETE",
+            )
+            for code in privileged.reason_codes:
+                if code not in reason_codes:
+                    reason_codes.append(code)
+        if state is not None and state.present:
+            add(
+                _semantic_feature("PRIVILEGED_STATE"),
+                "source fragment has typed privileged architectural state",
+                "SM_PRIVILEGED_STATE",
+            )
+            if state.csr_effects:
+                add(
+                    _semantic_feature("CSR_ACCESS"),
+                    "source fragment accesses typed RISC-V CSR state",
+                    "SM_CSR_ACCESS",
+                )
+            if state.trap_effects:
+                add(
+                    _semantic_feature("PRIVILEGED_TRAP"),
+                    "source fragment has an architecturally observable trap",
+                    "SM_PRIVILEGED_TRAP",
+                )
+            if state.return_effects:
+                add(
+                    _semantic_feature("PRIVILEGE_RETURN"),
+                    "source fragment performs a privilege return",
+                    "SM_PRIVILEGE_RETURN",
+                )
+            if state.interrupt_effects:
+                add(
+                    _semantic_feature("INTERRUPT_STATE"),
+                    "source fragment reads or modifies interrupt state",
+                    "SM_INTERRUPT_STATE",
+                )
+            if state.address_translation_effects:
+                add(
+                    _semantic_feature("ADDRESS_TRANSLATION_STATE"),
+                    "source fragment affects address-translation state",
+                    "SM_ADDRESS_TRANSLATION_STATE",
+                )
+            if state.virtualization_effects:
+                add(
+                    _semantic_feature("VIRTUALIZATION_STATE"),
+                    "source fragment affects virtualization state",
+                    "SM_VIRTUALIZATION_STATE",
+                )
+            if state.debug_effects:
+                add(
+                    _semantic_feature("DEBUG_STATE"),
+                    "source fragment affects privileged debug state",
+                    "SM_DEBUG_STATE",
+                )
+        if privileged.read_only_counter is not None:
+            add(
+                _semantic_feature("READ_ONLY_COUNTER_CSR"),
+                "source fragment reads a bound read-only counter CSR",
+                "SM_READ_ONLY_COUNTER_CSR",
+            )
+        observability = privileged.observability
+        if observability is not None and not observability.complete:
+            add(
+                _semantic_feature("FUNCTIONAL_OBSERVABILITY_INCOMPLETE"),
+                "functional observability facts are incomplete",
+                "SM_FUNCTIONAL_OBSERVABILITY_INCOMPLETE",
+            )
+        if observability is not None and observability.ignored_states:
+            add(
+                _semantic_feature("IGNORED_PRIVILEGED_STATE"),
+                "functional contract explicitly ignores privileged state",
+                "SM_IGNORED_PRIVILEGED_STATE",
+            )
+        if privileged.functional_fallback_possible:
+            add(
+                _semantic_feature("FUNCTIONAL_PRIVILEGED_FALLBACK_POSSIBLE"),
+                "source facts permit proof of an exact functional fallback",
+                "SM_FUNCTIONAL_PRIVILEGED_FALLBACK_POSSIBLE",
+            )
 
     return (
         features,
@@ -2477,6 +2612,7 @@ class SourceOperationKind(str, Enum):
     RETURN = "return"
 
     STACK_FRAME = "stack_frame"
+    PRIVILEGED = "privileged"
     HELPER_REQUIRED = "helper_required"
 
     OPAQUE = "opaque"
@@ -3040,7 +3176,11 @@ class SourceAtomicOperationModel:
 
 
 @dataclass(frozen=True)
-class SourceBarrierMo…26 tokens truncated…ntentionally separate.
+class SourceBarrierModel:
+    """
+    Structured barrier semantics.
+
+    compiler_barrier and hardware_memory_barrier are intentionally separate.
 
     A GNU \"memory\" clobber is a compiler barrier, not automatically a
     hardware memory fence.
@@ -4148,7 +4288,13 @@ def _build_read_only_csr_model(
     # source operand would require a distinct contract family.
     if set(bindings) != {result_index}:
         return None
-    return SourceReadOnlyCsrModel(csr_name, result_index, bindings[result_index].width_bits)
+    return SourceReadOnlyCsrModel(
+        effect_id="",
+        result_operand_index=result_index,
+        width_bits=bindings[result_index].width_bits,
+        complete=False,
+        csr_name=csr_name,
+    )
 
 
 def _build_operation_model(
