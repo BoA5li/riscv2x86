@@ -18,12 +18,15 @@ from .helper_runtime_manifest import RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOC
 from .target_register_policy import audit_translator_emitted_target_registers
 from .abi_effects import TargetAbiWrapperRegistry
 from .abi_sidecar import AbiCallSidecar
+from .whole_function_sidecar import WholeFunctionSidecar
+from .whole_function_scheduler import schedule_whole_function_replacements
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
     for byte in value.encode("utf-8"):
         state = ((state ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
     return f"fnv1a64:{state:016x}"
+
 
 
 def _phase2_target_environment_id(environment: TargetEnvironment) -> str:
@@ -878,6 +881,7 @@ def run(
     target_environment: TargetEnvironment | None = None,
     abi_call_sidecar: AbiCallSidecar | None = None,
     abi_wrapper_registry: TargetAbiWrapperRegistry | None = None,
+    whole_function_sidecar: WholeFunctionSidecar | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
@@ -915,6 +919,7 @@ def run(
         "translated_unverified": 0,
         "abi_sidecar_bound": 0,
         "abi_sidecar_missing_for_call": 0,
+        "whole_function_rewrites": 0,
     }
 
     for f in findings:
@@ -1477,5 +1482,11 @@ def run(
             )
             stats["failed"] += 1
 
+    whole_function_findings = schedule_whole_function_replacements(
+        findings, whole_function_sidecar
+    )
+    if whole_function_findings:
+        findings.extend(whole_function_findings)
+        stats["whole_function_rewrites"] += len(whole_function_findings)
     save_report(findings, out_json)
     return stats

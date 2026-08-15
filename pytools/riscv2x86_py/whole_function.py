@@ -31,6 +31,9 @@ class FunctionAstBinding:
     function_id:str; c_ast_function_binding_id:str; definition_range:SourceTextRange
     parameter_binding_ids:tuple[str,...]=(); return_binding_id:str|None=None
     has_vla_or_cleanup_sensitive_scope:bool=False; complete:bool=False; provenance:str=""
+    # The range is file-relative.  This path is part of the authoritative
+    # frontend binding, never inferred from a member asm fragment.
+    source_file:str=""
 
 @dataclass(frozen=True)
 class FunctionCfgNode:
@@ -192,4 +195,4 @@ def translate_whole_function(*,facts:WholeFunctionTranslationFacts,route:WholeFu
     model=build_whole_function_semantic_model(unit=facts.unit,route=route,facts=facts); plans=generate_whole_function_candidate_plans(model,route)
     if not plans:return None,None
     proof=prove_whole_function_plan(model=model,plan=plans[0])
-    return render_whole_function_replacement(model=model,plan=plans[0],proof=proof)
+    return render_whole_function_replacement(model=model,plan=plans[0],proof=proof),proof

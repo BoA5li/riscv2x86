@@ -11,6 +11,7 @@ from .ghidra_pythonrun_bridge import (
 )
 from .pipeline import run
 from .abi_sidecar import load_abi_call_sidecar, load_target_abi_wrapper_registry
+from .whole_function_sidecar import load_whole_function_sidecar
 
 
 def main() -> int:
@@ -82,6 +83,11 @@ def main() -> int:
         default=None,
         help="Versioned target ABI wrapper-registry JSON.",
     )
+    ap.add_argument(
+        "--whole-function-sidecar",
+        default=None,
+        help="Versioned frontend whole-function facts and registered renderer contracts.",
+    )
 
     args = ap.parse_args()
 
@@ -121,6 +127,10 @@ def main() -> int:
             None if args.abi_wrapper_registry is None
             else load_target_abi_wrapper_registry(args.abi_wrapper_registry)
         )
+        whole_function_sidecar = (
+            None if args.whole_function_sidecar is None
+            else load_whole_function_sidecar(args.whole_function_sidecar)
+        )
         stats = run(
             args.inp,
             args.out,
@@ -130,6 +140,7 @@ def main() -> int:
             verify_enabled=not args.skip_verify,
             abi_call_sidecar=abi_call_sidecar,
             abi_wrapper_registry=abi_wrapper_registry,
+            whole_function_sidecar=whole_function_sidecar,
             allow_functional_fallbacks=args.allow_functional_fallbacks,
         )
     except Exception as exc:

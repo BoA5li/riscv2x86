@@ -607,6 +607,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Versioned target ABI wrapper-registry JSON.",
     )
+    parser.add_argument(
+        "--whole-function-sidecar",
+        type=Path,
+        default=None,
+        help="Versioned frontend whole-function sidecar JSON.",
+    )
 
     parser.add_argument(
         "--keep-work-dir",
@@ -711,6 +717,8 @@ def translate_one(
         backend_cmd.extend(["--abi-call-sidecar", str(args.abi_call_sidecar.resolve())])
     if args.abi_wrapper_registry is not None:
         backend_cmd.extend(["--abi-wrapper-registry", str(args.abi_wrapper_registry.resolve())])
+    if args.whole_function_sidecar is not None:
+        backend_cmd.extend(["--whole-function-sidecar", str(args.whole_function_sidecar.resolve())])
 
     # Do not permit a globally installed/stale ``riscv2x86_py`` package to
     # shadow the semantic pipeline in this source checkout.
