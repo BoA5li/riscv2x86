@@ -90,6 +90,7 @@ from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
 from .privileged_state_analysis import SourcePrivilegedStateModel
 from .functional_observability import FunctionalObservabilityContract
+from .privileged_runtime_contracts import PrivilegedRuntimeRegistry
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -271,6 +272,7 @@ class TranslationContext:
     # Typed Phase-5 products consumed only by the Phase-6A privileged adapter.
     privilegedStateFacts: SourcePrivilegedStateModel | None = None
     functionalObservability: FunctionalObservabilityContract | None = None
+    privilegedRuntimeRegistry: PrivilegedRuntimeRegistry | None = None
 
     # Authoritative Phase-6A source semantic model.
     #
@@ -3065,6 +3067,7 @@ def translate(
     whole_function_facts: WholeFunctionTranslationFacts | None = None,
     privileged_state: SourcePrivilegedStateModel | None = None,
     functional_observability: FunctionalObservabilityContract | None = None,
+    privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
@@ -3215,6 +3218,15 @@ def translate(
         )
     context.privilegedStateFacts = privileged_state
     context.functionalObservability = functional_observability
+    if privileged_runtime_registry is not None and not isinstance(
+        privileged_runtime_registry, PrivilegedRuntimeRegistry
+    ):
+        return _unsupported(
+            context,
+            reason="privileged runtime registry is not typed/versioned",
+            reason_code="TR_PRIVILEGED_RUNTIME_REGISTRY_INVALID",
+        )
+    context.privilegedRuntimeRegistry = privileged_runtime_registry
 
     # Retain a verified Phase-4 function sidecar for the independent D-class
     # entry point.  It is intentionally not fed into fragment replacement.
@@ -3269,7 +3281,10 @@ def translate(
     # later phases reinterpret the original asm or substitute rdtsc/clock().
     # A target deployment must explicitly register a versioned runtime time
     # domain contract before this family becomes renderable.
-    if source_model.read_only_csr is not None:
+    if (
+        source_model.read_only_csr is not None
+        and context.privilegedRuntimeRegistry is None
+    ):
         csr = source_model.read_only_csr
         privileged_adapter = source_model.privileged_state
         if (
@@ -3357,6 +3372,7 @@ def translate(
         selection_policy=selection_policy,
         renderer_context=renderer_context,
         renderer_contract_registry=renderer_contract_registry,
+        privileged_runtime_registry=context.privilegedRuntimeRegistry,
     )
 
 
@@ -3370,6 +3386,7 @@ def _translate_phase6_proof_pipeline(
     selection_policy: Phase6ESelectionPolicy,
     renderer_context: Optional[RendererContext],
     renderer_contract_registry: RendererContractRegistry,
+    privileged_runtime_registry: PrivilegedRuntimeRegistry | None,
 ) -> TranslationOutput:
     """Execute 6B--6F without a legacy or guessed-code fallback path."""
     source_model = context.sourceModel
@@ -3413,6 +3430,8 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.asm-goto.bzero.u32-u64.v1",
             "x86.gnu-att.asm-goto.bnonzero.u32-u64.v1",
             *("helper." + item for item in DEFAULT_RUNTIME_HELPER_CONTRACTS),
+            *(() if privileged_runtime_registry is None else
+              privileged_runtime_registry.semantic_contract_ids),
         }),
         version="phase6-default-catalog-runtime-helper-v1",
     )
@@ -3439,6 +3458,7 @@ def _translate_phase6_proof_pipeline(
             candidate_plan=plan,
             target_environment=target_environment,
             abi_wrapper_registry=context.abiWrapperRegistry,
+            privileged_runtime_registry=privileged_runtime_registry,
         )
         if not constraint_result.success:
             rejected_attempts.append(TargetLoweringAttempt.from_constraint_failure(plan, constraint_result))
@@ -3453,6 +3473,7 @@ def _translate_phase6_proof_pipeline(
             target_semantic_catalog=catalog,
             compiler_capabilities=capabilities,
             helper_contract_registry=helper_contract_registry,
+            privileged_runtime_registry=privileged_runtime_registry,
         )
         candidates.append(ProvenCandidate(plan, constraint_result, proof))
         if not proof.approved:
@@ -3469,6 +3490,8 @@ def _translate_phase6_proof_pipeline(
         target_catalog_version=catalog_id,
         compiler_capability_id=capability_id,
         helper_registry_version=None if helper_contract_registry is None else helper_contract_registry.version,
+        privileged_registry_version=(None if privileged_runtime_registry is None
+                                     else privileged_runtime_registry.version),
         selection_policy=selection_policy,
     ))
     attempt_metadata = tuple({"planId": item.plan_id, "stage": item.stage, "reasonCodes": item.reason_codes} for item in rejected_attempts)

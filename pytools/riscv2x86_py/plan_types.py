@@ -46,6 +46,7 @@ class TargetLoweringKind(str, Enum):
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER_CALL = "abi_wrapper_call"
+    PRIVILEGED_RUNTIME_ADAPTER = "privileged_runtime_adapter"
 
     # 显式保留 unsupported，而不是猜测性 lower。
     UNSUPPORTED = "unsupported"
@@ -66,6 +67,7 @@ class TargetLoweringFamily(str, Enum):
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER = "abi_wrapper"
+    PRIVILEGED_RUNTIME = "privileged_runtime"
     UNSUPPORTED = "unsupported"
 
 
@@ -93,6 +95,7 @@ class PlanPriorityTier(int, Enum):
     STACK_ADDRESS_REBINDING = 25
     VIRTUAL_PRIVATE_FRAME = 20
     ABI_WRAPPER = 50
+    PRIVILEGED_RUNTIME = 55
     UNSUPPORTED = 1000
 
 
@@ -150,6 +153,15 @@ class PlanRequirement(str, Enum):
     PROVE_NO_UNWIND_OR_NONLOCAL_TRANSFER = "prove_no_unwind_or_nonlocal_transfer"
     PROVE_PIC_PLT_TLS_COMPATIBILITY = "prove_pic_plt_tls_compatibility"
     PROVE_NO_OBSERVABLE_RA_STATE = "prove_no_observable_ra_state"
+    PROVE_EXACT_PRIVILEGED_RUNTIME_CONTRACT = "prove_exact_privileged_runtime_contract"
+    PROVE_PRIVILEGED_STATE_COMPLETE = "prove_privileged_state_complete"
+    PROVE_PRIVILEGED_EFFECT_COVERAGE = "prove_privileged_effect_coverage"
+    PROVE_TARGET_EXECUTION_PROFILE = "prove_target_execution_profile"
+    PRESERVE_PRIVILEGED_TRAPS = "preserve_privileged_traps"
+    PRESERVE_PRIVILEGED_CONTROL_FLOW = "preserve_privileged_control_flow"
+    PRESERVE_PRIVILEGED_MEMORY_EFFECTS = "preserve_privileged_memory_effects"
+    PRESERVE_PRIVILEGED_SHELL = "preserve_privileged_shell"
+    PROVE_NO_GENERIC_HELPER_FALLBACK = "prove_no_generic_helper_fallback"
 
     PRESERVE_MICROARCH_INTENT = "preserve_microarch_intent"
     PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY = (
@@ -186,6 +198,8 @@ _KIND_TO_FAMILY: Mapping[
             TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME,
         TargetLoweringKind.ABI_WRAPPER_CALL:
             TargetLoweringFamily.ABI_WRAPPER,
+        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
+            TargetLoweringFamily.PRIVILEGED_RUNTIME,
         TargetLoweringKind.UNSUPPORTED:
             TargetLoweringFamily.UNSUPPORTED,
     }
@@ -216,6 +230,8 @@ _FAMILY_TO_PRIORITY_TIER: Mapping[
             PlanPriorityTier.VIRTUAL_PRIVATE_FRAME,
         TargetLoweringFamily.ABI_WRAPPER:
             PlanPriorityTier.ABI_WRAPPER,
+        TargetLoweringFamily.PRIVILEGED_RUNTIME:
+            PlanPriorityTier.PRIVILEGED_RUNTIME,
         TargetLoweringFamily.UNSUPPORTED:
             PlanPriorityTier.UNSUPPORTED,
     }

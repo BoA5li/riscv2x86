@@ -158,6 +158,15 @@ class TargetConstraintReasonCode(str, Enum):
     HELPER_CALL_NOT_IMPLEMENTED = (
         "phase6c.helper_call_not_implemented"
     )
+    PRIVILEGED_RUNTIME_REGISTRY_MISSING = (
+        "phase6c.privileged_runtime_registry_missing"
+    )
+    PRIVILEGED_RUNTIME_CONTRACT_MISSING = (
+        "phase6c.privileged_runtime_contract_missing"
+    )
+    PRIVILEGED_RUNTIME_SOURCE_INCOMPLETE = (
+        "phase6c.privileged_runtime_source_incomplete"
+    )
     STRUCTURED_CONTROL_FLOW_NOT_IMPLEMENTED = (
         "phase6c.structured_control_flow_not_implemented"
     )
@@ -1161,6 +1170,7 @@ class TargetConstraintModel:
     stack_rebinding_constraint: object | None = None
     virtual_private_frame_constraint: object | None = None
     abi_wrapper_constraint: object | None = None
+    privileged_runtime_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1687,6 +1697,78 @@ def _derive_abi_wrapper_0(*, source_model, candidate_plan, target_environment, a
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,abi_wrapper_constraint=c,memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint()))
 
 
+def _derive_privileged_runtime_0(
+    *, source_model, candidate_plan, target_environment,
+    privileged_runtime_registry=None,
+):
+    from .privileged_runtime_contracts import (
+        PrivilegedRuntimeRegistry,
+        TargetPrivilegedRuntimeConstraint,
+        privileged_source_identity,
+        target_environment_identity,
+    )
+    source = source_model.privileged_state
+    if (
+        source is None or not source.complete or source.state is None
+        or not source.state.present or source.observability is None
+        or not source.observability.complete
+        or source.requires_whole_function_lowering
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_RUNTIME_SOURCE_INCOMPLETE,
+            ),
+        )
+    if not isinstance(privileged_runtime_registry, PrivilegedRuntimeRegistry):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_RUNTIME_REGISTRY_MISSING,
+            ),
+        )
+    contract = privileged_runtime_registry.resolve(source, target_environment)
+    if contract is None or not contract.complete:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_RUNTIME_CONTRACT_MISSING,
+            ),
+        )
+    constraint = TargetPrivilegedRuntimeConstraint(
+        runtime_contract=contract,
+        source_privileged_identity=privileged_source_identity(source),
+        target_environment_id=target_environment_identity(target_environment),
+        registry_version=privileged_runtime_registry.version,
+    )
+    shell = source_model.shell
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(
+        plan_id=candidate_plan.plan_id,
+        environment=target_environment,
+        privileged_runtime_constraint=constraint,
+        preserve_volatile=(
+            not shell.is_volatile or contract.preserves_volatile_execution
+        ),
+        preserve_cc_clobber=(
+            not shell.has_cc_clobber or contract.preserves_cc_clobber
+        ),
+        memory_constraint=TargetMemoryConstraint(
+            requires_memory_clobber=(
+                shell.has_memory_clobber
+                and contract.preserves_compiler_memory_ordering
+            ),
+            requires_compiler_barrier=(
+                shell.has_memory_clobber
+                and contract.preserves_compiler_memory_ordering
+            ),
+        ),
+        control_flow_constraint=TargetControlFlowConstraint(
+            preserve_control_flow=contract.preserves_control_flow,
+            requires_helper_abi_contract=False,
+        ),
+    ))
+
+
 _Deriver = Callable[
     [
         SourceSemanticModel,
@@ -1748,6 +1830,9 @@ _PLAN_KIND_DISPATCH: Mapping[TargetLoweringKind, _Deriver] = (
                 _derive_virtual_private_frame_0
             ),
             TargetLoweringKind.ABI_WRAPPER_CALL: _adapt_deriver(_derive_abi_wrapper_0),
+            TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER: _adapt_deriver(
+                _derive_privileged_runtime_0
+            ),
             TargetLoweringKind.UNSUPPORTED: _adapt_deriver(
                 _derive_explicit_unsupported_0
             ),
@@ -2001,6 +2086,7 @@ def derive_target_constraints(
         FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
     ),
     abi_wrapper_registry=None,
+    privileged_runtime_registry=None,
 ) -> TargetConstraintDerivationResult:
     """
     Phase 6C public entry point.
@@ -2063,6 +2149,16 @@ def derive_target_constraints(
     if candidate_plan.kind is TargetLoweringKind.ABI_WRAPPER_CALL:
         result=_derive_abi_wrapper_0(source_model=source_model,candidate_plan=candidate_plan,target_environment=target_environment,abi_wrapper_registry=abi_wrapper_registry)
         return _validate_result_invariants(candidate_plan=candidate_plan,result=result)
+    if candidate_plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
+        result = _derive_privileged_runtime_0(
+            source_model=source_model,
+            candidate_plan=candidate_plan,
+            target_environment=target_environment,
+            privileged_runtime_registry=privileged_runtime_registry,
+        )
+        return _validate_result_invariants(
+            candidate_plan=candidate_plan, result=result
+        )
     deriver = _PLAN_KIND_DISPATCH.get(candidate_plan.kind)
     if deriver is None:
         return TargetConstraintDerivationResult.failure(

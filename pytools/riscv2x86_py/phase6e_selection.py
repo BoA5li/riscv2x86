@@ -43,6 +43,7 @@ class Phase6ESelectionRequest:
     target_catalog_version: str=""
     compiler_capability_id: str=""
     helper_registry_version: str | None=None
+    privileged_registry_version: str | None=None
     selection_policy: Phase6ESelectionPolicy=Phase6ESelectionPolicy()
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ class FinalSelectionResult:
 def _source_id(s):
     stack=s.stack_frame
     stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
-    return "|".join((s.operation.kind.value, ",".join(sorted(x.value for x in s.features)), ",".join(sorted(s.reason_codes)), stack_id,repr(s.abi_effects)))
+    return "|".join((s.operation.kind.value, ",".join(sorted(x.value for x in s.features)), ",".join(sorted(s.reason_codes)), stack_id,repr(s.abi_effects),repr(s.privileged_state)))
 def _environment_id(e): return f"{e.architecture.value}:{e.abi.value}:{e.asm_dialect.value}"
 def _preservation_id(p): return p.level.value+":"+",".join(sorted(p.reason_codes))
 def _summary(plan, *codes): return CandidateRejectionSummary(plan.plan_id,tuple(sorted(codes)))
@@ -90,7 +91,7 @@ def _artifact_error(r,c):
     if c.constraint_result.success and (c.constraint_result.constraints is None or c.constraint_result.constraints.environment != r.target_environment):return "constraint_environment_mismatch"
     if c.proof_result.approved and e is None:return "approved_proof_without_evidence"
     if e is not None and c.constraint_result.constraints is None:return "proof_without_constraints"
-    if e is not None and (e.plan_id != p.plan_id or e.constraints_plan_id != p.plan_id or e.constraints_id != constraint_identity(c.constraint_result.constraints) or e.source_model_id != _source_id(r.source_model) or e.preservation_decision_id != _preservation_id(r.preservation_decision) or e.target_environment_id != _environment_id(r.target_environment) or e.target_catalog_version != r.target_catalog_version or e.compiler_capability_id != r.compiler_capability_id or e.helper_registry_version != r.helper_registry_version):return "proof_binding_mismatch"
+    if e is not None and (e.plan_id != p.plan_id or e.constraints_plan_id != p.plan_id or e.constraints_id != constraint_identity(c.constraint_result.constraints) or e.source_model_id != _source_id(r.source_model) or e.preservation_decision_id != _preservation_id(r.preservation_decision) or e.target_environment_id != _environment_id(r.target_environment) or e.target_catalog_version != r.target_catalog_version or e.compiler_capability_id != r.compiler_capability_id or e.helper_registry_version != r.helper_registry_version or e.privileged_registry_version != r.privileged_registry_version):return "proof_binding_mismatch"
     return None
 
 def _policy_allows(r,c):
@@ -109,7 +110,7 @@ def _tier(c):
     if PreservationConclusion.BEST_EFFORT in x:return SelectionTier.BEST_EFFORT
     if PreservationConclusion.MICROARCH_STRENGTHENED in x:return SelectionTier.STRENGTHENED
     if k in {TargetLoweringKind.C_EXPRESSION,TargetLoweringKind.C_BUILTIN}:return SelectionTier.PUBLIC_PORTABLE
-    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,TargetLoweringKind.ABI_WRAPPER_CALL}:return SelectionTier.STRUCTURED_C
+    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,TargetLoweringKind.ABI_WRAPPER_CALL,TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER}:return SelectionTier.STRUCTURED_C
     return SelectionTier.X86_INLINE_ASM
 def _key(c): return (int(_tier(c)),c.plan.sort_key,c.plan.kind.value)
 

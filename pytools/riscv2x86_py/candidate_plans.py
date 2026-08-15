@@ -1235,6 +1235,62 @@ def generate_candidate_plans(
     """
     facts = _facts_from(source_model)
 
+    # Privileged architectural state is an exclusive family.  It may never
+    # compete with generic HELPER_CALL, register-only, or pure-C lowering.
+    privileged = getattr(source_model, "privileged_state", None)
+    if privileged is not None:
+        if privileged.requires_whole_function_lowering:
+            return _stable_sort_and_freeze([_unsupported_candidate(
+                reason_code="privileged-whole-function-lowering-required",
+                rationale=("Privilege return/function-boundary state cannot "
+                           "be replaced by a fragment runtime adapter.",),
+            )])
+        if (
+            not privileged.complete or privileged.state is None
+            or not privileged.state.present
+            or privileged.observability is None
+            or not privileged.observability.complete
+            or not facts.model_is_consistent
+            or facts.has_opaque_semantics
+            or facts.has_unmodelled_semantics
+            or not facts.shell_semantics_are_known
+            or not source_model.operands.complete
+            or any(item.width_bits is None
+                   for item in source_model.operands.operands)
+        ):
+            return ()
+        requirements = {
+            PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+            PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+            PlanRequirement.PROVE_EXACT_PRIVILEGED_RUNTIME_CONTRACT,
+            PlanRequirement.PROVE_PRIVILEGED_STATE_COMPLETE,
+            PlanRequirement.PROVE_PRIVILEGED_EFFECT_COVERAGE,
+            PlanRequirement.PROVE_TARGET_EXECUTION_PROFILE,
+            PlanRequirement.PRESERVE_PRIVILEGED_TRAPS,
+            PlanRequirement.PRESERVE_PRIVILEGED_CONTROL_FLOW,
+            PlanRequirement.PRESERVE_PRIVILEGED_MEMORY_EFFECTS,
+            PlanRequirement.PRESERVE_PRIVILEGED_SHELL,
+            PlanRequirement.PROVE_NO_GENERIC_HELPER_FALLBACK,
+            PlanRequirement.PRESERVE_VOLATILE,
+            PlanRequirement.PRESERVE_MEMORY_CLOBBER,
+            PlanRequirement.PRESERVE_CC_CLOBBER,
+        }
+        if source_model.microarch.explicitly_microarch_sensitive:
+            requirements.add(PlanRequirement.PRESERVE_MICROARCH_INTENT)
+        return _stable_sort_and_freeze([_plan(
+            plan_id="privileged-runtime.strict-adapter.v1",
+            kind=TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+            family=TargetLoweringFamily.PRIVILEGED_RUNTIME,
+            priority_tier=PlanPriorityTier.PRIVILEGED_RUNTIME,
+            deterministic_rank=10,
+            required_features=frozenset({"target:x86"}),
+            requirements=frozenset(requirements),
+            metadata={"strategy": "strict_privileged_runtime_adapter"},
+            rationale=("Complete privileged effects require one exact, "
+                       "versioned target runtime contract.",),
+            reason_codes=("privileged-runtime-contract-required",),
+        )])
+
     # 1. 验证 SourceSemanticModel 依赖状态一致性；
     # 2. 全局 fail-closed gate。
     if _has_global_fail_closed_state(facts):
