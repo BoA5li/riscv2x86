@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 50026)
+Total output lines: 5409
+
 # translator/phase6/source_model.py
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ try:
     from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from .schema import AsmFragment
     from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
-    from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects
+    from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from .whole_function import WholeFunctionRouteDecision, classify_whole_function_route
 except ImportError:  # pragma: no cover - direct-module compatibility
     from cfg import CFGResult
@@ -19,7 +22,7 @@ except ImportError:  # pragma: no cover - direct-module compatibility
     from runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
     from schema import AsmFragment
     from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
-    from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects
+    from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from whole_function import WholeFunctionRouteDecision, classify_whole_function_route
 
 from .runtime_fact_model import RuntimeFactStatus
@@ -504,7 +507,12 @@ class SourceSemanticModel:
                 stack_frame.stack_address_rebinding_eligible
             ),
             requires_whole_function_abi_lowering=(
-                self.whole_function_route is not None and self.whole_function_route.required
+                self.whole_function_route is not None and self.whole_function_route.required and not (
+                    abi_wrapper_route and len(self.abi_effects.calls) == 1 and
+                    not self.abi_effects.calls[0].reads_ra and
+                    self.abi_effects.calls[0].return_continuation_internal and
+                    (stack_frame is None or not stack_frame.requires_whole_function_lowering)
+                )
             ),
             has_required_helper_semantics=(
                 self.operation.requires_helper_abi_contract and self.helper_abi.complete
@@ -982,7 +990,7 @@ def build_source_semantic_model(
         local_unconditional_jump=local_unconditional_jump,
         read_only_csr=read_only_csr,
         stack_frame=stack_frame_model,
-        abi_effects=build_abi_effects(has_call=control_flow.has_call, bindings=abi_call_bindings),
+        abi_effects=build_abi_effects(has_call=control_flow.has_call, bindings=abi_call_bindings, call_sites=collect_canonical_call_sites(blocks=blocks,cfg=cfg), returns_from_containing_function=control_flow.has_return is True),
         whole_function_route=whole_function_route,
     )
 
@@ -3032,11 +3040,7 @@ class SourceAtomicOperationModel:
 
 
 @dataclass(frozen=True)
-class SourceBarrierModel:
-    """
-    Structured barrier semantics.
-
-    compiler_barrier and hardware_memory_barrier are intentionally separate.
+class SourceBarrierMo…26 tokens truncated…ntentionally separate.
 
     A GNU \"memory\" clobber is a compiler barrier, not automatically a
     hardware memory fence.
