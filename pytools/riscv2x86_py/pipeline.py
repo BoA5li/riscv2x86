@@ -15,6 +15,7 @@ from .verify import verify
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
 from .helper_runtime_manifest import RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL
+from .target_register_policy import audit_translator_emitted_target_registers
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -539,7 +540,11 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
     if not kind or kind == "unsupported" or kind in _KEEP_KINDS:
         return []
 
-    reasons: List[str] = []
+    # This audits translator-emitted replacement text, not compiler output.
+    # A normal compiler-generated prologue may use rsp/rbp and is allowed.
+    reasons: List[str] = list(audit_translator_emitted_target_registers(
+        getattr(tr, "replacement", None)
+    ))
 
     goto_labels = list(
         _read_field(frag, "gotoLabels", "goto_labels", default=[]) or []
