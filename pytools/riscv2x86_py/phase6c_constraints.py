@@ -1664,16 +1664,18 @@ def _derive_explicit_unsupported_0(
         },
     )
 
-def _derive_abi_wrapper_0(*, source_model, candidate_plan, target_environment):
-    from .abi_wrapper import DEFAULT_ABI_WRAPPER_REGISTRY, TargetAbiWrapperArgument, TargetAbiWrapperConstraint, TargetAbiWrapperReturn
+def _derive_abi_wrapper_0(*, source_model, candidate_plan, target_environment, abi_wrapper_registry=None):
+    from .abi_wrapper import TargetAbiWrapperArgument, TargetAbiWrapperConstraint, TargetAbiWrapperReturn
+    from .abi_effects import TargetAbiWrapperRegistry
+    if abi_wrapper_registry is None: abi_wrapper_registry=TargetAbiWrapperRegistry()
     effects=source_model.abi_effects
-    contract=DEFAULT_ABI_WRAPPER_REGISTRY.resolve(effects, target_environment.abi.value) if effects else None
+    contract=abi_wrapper_registry.resolve(effects, target_environment.abi.value) if effects else None
     if contract is None:
         return TargetConstraintDerivationResult.failure(plan_id=candidate_plan.plan_id,reason_codes=(TargetConstraintReasonCode.MISSING_SEMANTIC_CONTRACT,),details={"route":"exact_abi_wrapper"})
     call=effects.calls[0]
     args=tuple(TargetAbiWrapperArgument(i,n,loc.width_bits or 0,contract.argument_types[n],loc.signedness) for n,(i,loc) in enumerate(zip(contract.argument_operand_indexes,call.arguments)))
     returns=tuple(TargetAbiWrapperReturn(i,n,loc.width_bits or 0,contract.return_types[n],loc.signedness) for n,(i,loc) in enumerate(zip(contract.return_operand_indexes,call.returns)))
-    c=TargetAbiWrapperConstraint(contract,args,returns,call.stack_alignment_bytes or 0)
+    c=TargetAbiWrapperConstraint(contract,args,returns,call.stack_alignment_bytes or 0,getattr(abi_wrapper_registry,"version","") )
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,abi_wrapper_constraint=c,memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint()))
 
 
@@ -1971,6 +1973,7 @@ def derive_target_constraints(
     target_environment: TargetEnvironment = (
         FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
     ),
+    abi_wrapper_registry=None,
 ) -> TargetConstraintDerivationResult:
     """
     Phase 6C public entry point.
@@ -2030,6 +2033,9 @@ def derive_target_constraints(
             },
         )
 
+    if candidate_plan.kind is TargetLoweringKind.ABI_WRAPPER_CALL:
+        result=_derive_abi_wrapper_0(source_model=source_model,candidate_plan=candidate_plan,target_environment=target_environment,abi_wrapper_registry=abi_wrapper_registry)
+        return _validate_result_invariants(candidate_plan=candidate_plan,result=result)
     deriver = _PLAN_KIND_DISPATCH.get(candidate_plan.kind)
     if deriver is None:
         return TargetConstraintDerivationResult.failure(
