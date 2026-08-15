@@ -88,6 +88,7 @@ from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
 from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
+from .target_register_policy import POLICY_VERSION
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -95,7 +96,6 @@ from .whole_function import (
     WholeFunctionProofResult,
     translate_whole_function,
 )
-from .target_register_policy import POLICY_VERSION
 # =============================================================================
 # Translation context
 # =============================================================================
@@ -2826,7 +2826,7 @@ def translate_whole_function_definition(
 ) -> tuple[FunctionReplacementArtifact | None, WholeFunctionProofResult | None]:
     """Run the independent D-class 6B--6F function-definition pipeline.
 
-    This deliberately has no ``AsmFragment`` argument.  It cannot be called
+    This deliberately has no `AsmFragment` argument.  It cannot be called
     by the ordinary fragment renderer, which prevents overlapping statement
     and function replacements at the same source location.
     """
@@ -3163,13 +3163,14 @@ def translate(
             machine_code=machine_code,
             xlen=xlen,
         )
+
         return _unsupported(
             fallback_context,
             reason=f"invalid translate input: {error}",
             reason_code="TR_INVALID_TRANSLATION_INPUT",
         )
 
-    # Phase-4 ABI sidecar ingress.  It remains optional only for fragments
+    # Phase-4 ABI sidecar ingress. It remains optional only for fragments
     # without calls; an ABI wrapper candidate cannot be derived from absence.
     if not isinstance(abi_call_bindings, tuple) or any(
         not isinstance(item, SourceAbiCallBinding) for item in abi_call_bindings
