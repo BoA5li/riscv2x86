@@ -19,15 +19,9 @@ class TargetAbiWrapperConstraint:
     arguments:tuple[TargetAbiWrapperArgument,...]
     returns:tuple[TargetAbiWrapperReturn,...]
     target_call_stack_alignment_bytes:int
+    registry_version:str=""
     forbids_unwind:bool=True
     forbids_implicit_shell_barrier:bool=True
 
-# Empty by default: a project/corpus must explicitly register exact contracts.
-DEFAULT_ABI_WRAPPER_REGISTRY=TargetAbiWrapperRegistry()
-
-def install_abi_wrapper_registry(registry: TargetAbiWrapperRegistry) -> None:
-    """Install corpus-owned contracts before translation; no implicit lookup exists."""
-    if not isinstance(registry, TargetAbiWrapperRegistry):
-        raise TypeError("registry must be TargetAbiWrapperRegistry")
-    global DEFAULT_ABI_WRAPPER_REGISTRY
-    DEFAULT_ABI_WRAPPER_REGISTRY = registry
+# Registries are supplied explicitly by TranslationContext / Phase 6C.  A
+# mutable module-global registry would make proof artifacts process-dependent.
