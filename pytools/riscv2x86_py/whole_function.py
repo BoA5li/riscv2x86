@@ -182,7 +182,10 @@ def build_whole_function_semantic_model(*, unit:FunctionTranslationUnit, route:W
 _STATIC_REQUIREMENTS=frozenset({"prove_function_ast_binding","prove_function_cfg_completeness","prove_function_entry_abi","prove_function_exit_abi","prove_all_exit_stack_restoration","prove_static_function_frame","prove_function_frame_layout","prove_callee_saved_state","prove_function_call_effects","prove_return_continuation","prove_no_real_stack_identity","prove_no_unwind_or_nonlocal_transfer","prove_function_shell_integration","prove_function_writeback_binding"})
 def generate_whole_function_candidate_plans(model:WholeFunctionSemanticModel,route:WholeFunctionRouteDecision)->tuple[WholeFunctionLoweringPlan,...]:
     if not route.required:return ()
-    if route.classification is WholeFunctionClassification.ELIGIBLE_STATIC and model.complete:return (WholeFunctionLoweringPlan("whole-function.structured-c.static.v1",WholeFunctionLoweringKind.STRUCTURED_C_FUNCTION,route.route_id or "whole-function-abi-lowering.v1",_STATIC_REQUIREMENTS,route.reason_codes),)
+    # A static route is a Phase-6B candidate even with incomplete facts.  The
+    # concrete Phase-6D gate must see and report the exact failed obligation;
+    # it remains the only approval path.
+    if route.classification is WholeFunctionClassification.ELIGIBLE_STATIC:return (WholeFunctionLoweringPlan("whole-function.structured-c.static.v1",WholeFunctionLoweringKind.STRUCTURED_C_FUNCTION,route.route_id or "whole-function-abi-lowering.v1",_STATIC_REQUIREMENTS,route.reason_codes),)
     kind=WholeFunctionLoweringKind.NEEDS_UNWIND_ROUTE if route.classification is WholeFunctionClassification.REQUIRES_UNWIND_ROUTE else WholeFunctionLoweringKind.UNSUPPORTED
     return (WholeFunctionLoweringPlan("whole-function.route-required.v1",kind,route.route_id or "whole-function-abi-lowering.v1",frozenset(),route.reason_codes),)
 def _proof_id(model,plan):
@@ -197,8 +200,13 @@ def prove_whole_function_plan(*,model:WholeFunctionSemanticModel,plan:WholeFunct
     if ast is None or not ast.complete or ast.c_ast_function_binding_id!=model.unit.c_ast_function_binding_id:reasons.append("phase6d.whole_function.ast_binding_missing")
     if cfg is None or not cfg.complete or not cfg.normal_exits:reasons.append("phase6d.whole_function.cfg_incomplete")
     elif cfg.has_exceptional_exit:reasons.append("phase6d.whole_function.unwind_or_nonlocal_transfer")
+    elif (not model.stack.all_normal_exits_restore_entry_sp or
+          {x.exit_id for x in model.stack.exit_summaries} != {x.exit_id for x in cfg.normal_exits} or
+          any(not x.complete or x.final_sp_offset_bytes != 0 for x in model.stack.exit_summaries)):
+        reasons.append("phase6d.whole_function.normal-exit-stack-restoration-unproven")
     if model.stack.dynamic_adjustment_present or model.stack.net_stack_delta_bytes not in {0,None}:reasons.append("phase6d.whole_function.frame_unbalanced")
     if not model.stack.complete or not model.stack.all_normal_exits_restore_entry_sp:reasons.append("phase6d.whole_function.frame_layout_unproven")
+    if not model.stack.all_call_sites_aligned:reasons.append("phase6d.whole_function.call_alignment_unproven")
     if model.stack.real_stack_identity_required:reasons.append("phase6d.whole_function.real_stack_identity_required")
     if abi is None or not abi.complete or not (abi.entry_complete and abi.exits_complete and abi.calls_complete and abi.pic_plt_tls_complete):reasons.append("phase6d.whole_function.entry_or_exit_abi_unproven")
     if abi is not None and (abi.may_unwind is not False or abi.may_trap is not False):reasons.append("phase6d.whole_function.unwind_or_trap_unproven")
