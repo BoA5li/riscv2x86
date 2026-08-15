@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from .pcode_ir import (Block, IRSummary, Var, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, StackAccessKind, StackAdjustment, StackMemoryAccess, StackEscapeFacts, PrivateFrameRange, PrivateFrameSlotAccess, PrivateFrameLayoutFacts)
 from .cfg import CFGResult, build_cfg_from_blocks
+from .stack_pointer_escape_analysis import analyze_stack_pointer_escapes
 
 _SP={"sp","x2"}; _FP={"fp","s0","x8"}
 def _reg(v): return "" if v is None or v.kind is not VarKind.REG else (v.name or "").strip().lower()
@@ -80,14 +81,15 @@ def analyze_stack_frame_semantics(*, blocks:tuple[Block,...]|list[Block], summar
     if conflict or any(out_states[a][0] is None for a in exits):
         reason="stack-frame-non-convergent-affine-state" if _has_cycle(cfg.nodes) else "stack-frame-affine-merge-conflict"
         return StackFrameSemantics(StackFrameClassification.UNKNOWN,StackAddressBase.UNKNOWN,None,None,None,(),(),empty,True,False,summary.has_return,None,False,(reason,))
-    adjustments=[]; items=[]; exposed=False
+    adjustments=[]; items=[]
     for addr in sorted(states):
-        _,a,x,_,e=_transfer(by_addr[addr],states[addr]); adjustments.extend(a); items.extend(x); exposed|=e
-    adjustments=tuple(sorted(adjustments,key=lambda x:(x.block_address,x.operation_index))); items=tuple(sorted(items,key=lambda x:(x[0].block_address,x[0].operation_index))); accesses=tuple(x[0] for x in items); escape=StackEscapeFacts(exposed,False,False,False,exposed,exposed)
+        _,a,x,_,_=_transfer(by_addr[addr],states[addr]); adjustments.extend(a); items.extend(x)
+    adjustments=tuple(sorted(adjustments,key=lambda x:(x.block_address,x.operation_index))); items=tuple(sorted(items,key=lambda x:(x[0].block_address,x[0].operation_index))); accesses=tuple(x[0] for x in items)
     if not adjustments:
-        return StackFrameSemantics(StackFrameClassification.ADDRESS_ONLY,StackAddressBase.ENTRY_SP,None,None,0,adjustments,accesses,escape,False,False,False,False,not exposed,() if not exposed else ("stack-address-escapes",))
+        escape,pointer_uses=analyze_stack_pointer_escapes(blocks=blocks,states=states,frame_start=None)
+        return StackFrameSemantics(StackFrameClassification.ADDRESS_ONLY,StackAddressBase.ENTRY_SP,None,None,0,adjustments,accesses,escape,False,False,False,False,not escape.pointer_escapes,() if not escape.pointer_escapes else ("stack-address-escapes",),None,pointer_uses)
     unbalanced_exit=any(out_states[a][0][1]!=0 for a in exits)
-    min_sp=min([0]+[x.after_affine_offset for x in adjustments if x.register in _SP and x.after_affine_offset is not None]); size=-min_sp; reasons=[]; by_block={}
+    min_sp=min([0]+[x.after_affine_offset for x in adjustments if x.register in _SP and x.after_affine_offset is not None]); size=-min_sp; reasons=[]; by_block={}; escape,pointer_uses=analyze_stack_pointer_escapes(blocks=blocks,states=states,frame_start=-size if size>0 else None)
     for access,value in items:by_block.setdefault(access.block_address,[]).append((access,value))
     init={cfg.entry:frozenset()}; queue=deque([cfg.entry]); slots=[]
     while queue:
@@ -103,8 +105,9 @@ def analyze_stack_frame_semantics(*, blocks:tuple[Block,...]|list[Block], summar
         for successor in cfg.nodes[addr].successors:
             old=init.get(successor); merged=out if old is None else old & out
             if old!=merged:init[successor]=merged;queue.append(successor)
-    if exposed:reasons.append("private-frame-address-escape")
+    if escape.pointer_escapes:reasons.append("private-frame-address-escape")
+    if not escape.analysis_complete:reasons.append("stack-escape-analysis-incomplete")
     if unbalanced_exit:reasons.append("private-frame-unbalanced-exit")
     complete=bool(slots) and not reasons; required=max((x.required_alignment_bytes for x in slots),default=1); layout=PrivateFrameLayoutFacts(PrivateFrameRange(-size,0,size,required) if size>0 else None,tuple(sorted(slots,key=lambda x:(x.source_block_address,x.source_operation_index))),True,not any("initial-content" in x for x in reasons),not any("out-of-range" in x for x in reasons),complete,tuple(sorted(set(reasons))))
-    if complete:return StackFrameSemantics(StackFrameClassification.PRIVATE_BALANCED,StackAddressBase.ENTRY_SP,required,size,0,adjustments,accesses,escape,False,False,False,False,True,(),layout)
-    return StackFrameSemantics(StackFrameClassification.UNKNOWN,StackAddressBase.ENTRY_SP,None,size or None,None,adjustments,accesses,escape,False,False,False,False,False,tuple(sorted(set(reasons or ["private-frame-layout-incomplete"]))),layout)
+    if complete:return StackFrameSemantics(StackFrameClassification.PRIVATE_BALANCED,StackAddressBase.ENTRY_SP,required,size,0,adjustments,accesses,escape,False,False,False,False,True,(),layout,pointer_uses)
+    return StackFrameSemantics(StackFrameClassification.UNKNOWN,StackAddressBase.ENTRY_SP,None,size or None,None,adjustments,accesses,escape,False,False,False,False,False,tuple(sorted(set(reasons or ["private-frame-layout-incomplete"]))),layout,pointer_uses)
