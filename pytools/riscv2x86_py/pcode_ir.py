@@ -477,6 +477,22 @@ class StackEscapeFacts:
     pointer_escapes:bool; passed_to_call:bool; returned_to_c:bool
     stored_to_external_memory:bool; compared_or_exposed:bool
     requires_real_stack_identity:bool
+    analysis_complete:bool=True
+    unknown_use_present:bool=False
+
+class StackPointerUseKind(str, Enum):
+    FRAME_LOAD_ADDRESS="frame_load_address"; FRAME_STORE_ADDRESS="frame_store_address"
+    COPY="copy"; AFFINE_OFFSET="affine_offset"
+    PASSED_TO_DIRECT_CALL="passed_to_direct_call"; PASSED_TO_INDIRECT_CALL="passed_to_indirect_call"
+    STORED_TO_EXTERNAL_MEMORY="stored_to_external_memory"; RETURNED_TO_C="returned_to_c"
+    POINTER_COMPARISON="pointer_comparison"; POINTER_TO_INTEGER="pointer_to_integer"
+    OUT_OF_FRAME_MEMORY_ACCESS="out_of_frame_memory_access"; UNKNOWN_USE="unknown_use"
+
+@dataclass(frozen=True)
+class StackDerivedPointerUse:
+    pointer_value_id:str; block_address:int; operation_index:int
+    operand_index:int|None; use_kind:StackPointerUseKind
+    target_value_id:str|None=None; complete:bool=True
 
 @dataclass(frozen=True)
 class PrivateFrameRange:
@@ -511,6 +527,7 @@ class StackFrameSemantics:
     has_unwind_or_exception_edge:bool|None; complete:bool
     missing_fact_codes:tuple[str,...]=()
     private_frame_layout:PrivateFrameLayoutFacts|None=None
+    pointer_uses:tuple[StackDerivedPointerUse,...]=()
 
     def __post_init__(self):
         if not isinstance(self.classification,StackFrameClassification): raise TypeError("invalid stack classification")
@@ -519,6 +536,7 @@ class StackFrameSemantics:
         if self.complete and self.missing_fact_codes: raise ValueError("complete stack semantics cannot have missing facts")
         if tuple(sorted(self.adjustments,key=lambda x:(x.block_address,x.operation_index))) != self.adjustments: raise ValueError("stack adjustments must be sorted")
         if tuple(sorted(self.accesses,key=lambda x:(x.block_address,x.operation_index))) != self.accesses: raise ValueError("stack accesses must be sorted")
+        if tuple(sorted(self.pointer_uses,key=lambda x:(x.block_address,x.operation_index,-1 if x.operand_index is None else x.operand_index,x.pointer_value_id))) != self.pointer_uses: raise ValueError("stack pointer uses must be sorted")
 
 
 @dataclass(frozen=True)
