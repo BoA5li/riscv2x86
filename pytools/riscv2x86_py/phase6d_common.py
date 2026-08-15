@@ -107,6 +107,7 @@ def constraint_identity(c):
             c.structured_control_flow_contract, c.helper_abi_contract,
             c.stack_rebinding_constraint,
             c.virtual_private_frame_constraint,
+            c.abi_wrapper_constraint,
         ) if item is not None
     )
     # Contract payload is part of the proof binding.  Type names alone would
@@ -121,7 +122,7 @@ def _evidence(request, conclusions, requirements):
     stack=request.source_model.stack_frame
     stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
     return ProofEvidence(
-        source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id)),
+        source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id,repr(request.source_model.abi_effects))),
         preservation_level=request.preservation_decision.level.value,
         preservation_decision_id=request.preservation_decision.level.value+":"+",".join(sorted(request.preservation_decision.reason_codes)),
         plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id, constraints_id=constraint_identity(request.constraints),
