@@ -52,6 +52,8 @@ class PrivilegedRuntimeContract:
     required_target_capability: str
     required_headers: tuple[str, ...] = ()
     required_library: str | None = None
+    argument_operand_indexes: tuple[int, ...] = ()
+    result_operand_indexes: tuple[int, ...] = ()
     preserves_architectural_state: bool = True
     preserves_shell: bool = True
     preserves_volatile_execution: bool = True
@@ -77,6 +79,13 @@ class PrivilegedRuntimeContract:
                 raise TypeError(f"{name} must be a non-empty stripped string")
         if tuple(sorted(set(self.required_headers))) != self.required_headers:
             raise ValueError("required headers must be unique and sorted")
+        for name in ("argument_operand_indexes", "result_operand_indexes"):
+            values = getattr(self, name)
+            if any(isinstance(item, bool) or not isinstance(item, int) or item < 0
+                   for item in values):
+                raise TypeError(f"{name} must contain non-negative integers")
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must not contain duplicates")
         for name in (
             "preserves_architectural_state", "preserves_shell",
             "preserves_volatile_execution",

@@ -95,6 +95,7 @@ from .privileged_functional_contracts import (
     PrivilegedFunctionalFallbackPolicy,
     PrivilegedFunctionalFallbackRegistry,
 )
+from .privileged_emitted_audit import PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -3571,6 +3572,8 @@ def _translate_phase6_proof_pipeline(
         return _unsupported(context, reason="Phase-6F could not faithfully encode the selected approved contract", reason_code=code)
     kind = ("x86_asm_goto" if rendered.kind is RenderedReplacementKind.GNU_ASM_GOTO
             else "x86_inline_asm" if rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+            else "privileged_runtime" if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+            else "functional_c" if rendered.kind is RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
             else "c")
     proof = selection.selected_plan.proof
     evidence = proof.evidence
@@ -3587,12 +3590,49 @@ def _translate_phase6_proof_pipeline(
         "selectionPolicyVersion": selection.selected_plan.selection_policy_version,
         "selectionTier": selection.selected_plan.selection_tier.name,
         "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version,
+        "rendererContractId": rendered.renderer_contract_id,
+        "rendererRegistryId": renderer_contract_registry.registry_id,
+        "rendererRegistryVersion": renderer_contract_registry.version,
         "replacementKind": rendered.kind.value,
         "replacementDigest": _approval_digest(rendered.emitted_text),
         "sourceSliceDigest": _approval_digest(context.fragment.rawAsmText),
         "targetRegisterPolicyVersion": POLICY_VERSION,
         "explicitHostStackFrameRegisterUse": False,
+        "requiredHeaders": list(rendered.required_headers),
+        "requiredLibraries": list(rendered.required_libraries),
     }
+    if rendered.kind in {
+        RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER,
+        RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
+    }:
+        recipe = rendered.target_ast
+        constraint = (
+            selection.selected_plan.constraints.privileged_runtime_constraint
+            if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+            else selection.selected_plan.constraints.privileged_functional_constraint
+        )
+        semantic = (
+            constraint.runtime_contract
+            if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+            else constraint.fallback_contract
+        )
+        artifact.update({
+            "privilegedRendererManifestId": rendered.runtime_manifest_id,
+            "privilegedRendererManifestVersion": rendered.runtime_manifest_version,
+            "privilegedRecipeKind": recipe.recipe_kind.value,
+            "privilegedCallableIdentifier": recipe.callable_identifier,
+            "privilegedSemanticContractId": semantic.semantic_contract_id,
+            "privilegedSourceRegistryVersion": constraint.registry_version,
+            "privilegedEmittedTextAuditVersion": PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
+            "preservationMode": (
+                "architecture_equivalent"
+                if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+                else "functional_equivalence_only"
+            ),
+            "functionalFallbackEnabled": (
+                rendered.kind is RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
+            ),
+        })
     if rendered.kind is RenderedReplacementKind.HELPER_CALL:
         recipe = rendered.target_ast
         artifact.update({

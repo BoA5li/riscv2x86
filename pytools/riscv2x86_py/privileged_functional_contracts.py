@@ -69,6 +69,8 @@ class PrivilegedFunctionalFallbackContract:
     required_target_capability: str
     required_headers: tuple[str, ...] = ()
     required_library: str | None = None
+    argument_operand_indexes: tuple[int, ...] = ()
+    result_operand_indexes: tuple[int, ...] = ()
     preserves_outputs: bool = True
     preserves_memory: bool = True
     preserves_errors: bool = True
@@ -98,6 +100,13 @@ class PrivilegedFunctionalFallbackContract:
             value = getattr(self, name)
             if tuple(sorted(set(value))) != value:
                 raise ValueError(f"{name} must be unique and sorted")
+        for name in ("argument_operand_indexes", "result_operand_indexes"):
+            values = getattr(self, name)
+            if any(isinstance(item, bool) or not isinstance(item, int) or item < 0
+                   for item in values):
+                raise TypeError(f"{name} must contain non-negative integers")
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must not contain duplicates")
         for name in (
             "preserves_outputs", "preserves_memory", "preserves_errors",
             "preserves_termination", "preserves_traps", "preserves_shell",

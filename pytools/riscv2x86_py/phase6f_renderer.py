@@ -22,6 +22,8 @@ from .target_register_policy import (
     audit_translator_emitted_target_registers,
     is_forbidden_host_stack_frame_register,
 )
+from .privileged_emitted_audit import audit_privileged_emitted_text
+from .privileged_renderer_manifest import PrivilegedRecipeKind
 
 
 class RendererContractKind(str, Enum):
@@ -34,6 +36,7 @@ class RendererContractKind(str, Enum):
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER_CALL = "abi_wrapper_call"
+    PRIVILEGED_RUNTIME = "privileged_runtime"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
 
@@ -48,6 +51,8 @@ class RenderedReplacementKind(str, Enum):
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER_CALL = "abi_wrapper_call"
+    PRIVILEGED_RUNTIME_ADAPTER = "privileged_runtime_adapter"
+    PRIVILEGED_FUNCTIONAL_FALLBACK = "privileged_functional_fallback"
     KEEP_ANNOTATION = "keep_annotation"
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
     INTERNAL_ERROR = "internal_error"
@@ -68,6 +73,8 @@ class RenderReasonCode(str, Enum):
     PLAN_KIND_CONTRACT_MISMATCH = "phase6f.plan_kind_contract_mismatch"
     ASM_GOTO_LABEL_CONTRACT_MISMATCH = "phase6f.asm_goto_label_contract_mismatch"
     SELECTION_RESULT_INCONSISTENT = "phase6f.selection_result_inconsistent"
+    PRIVILEGED_RECIPE_INCONSISTENT = "phase6f.privileged_recipe_inconsistent"
+    PRIVILEGED_EMITTED_TEXT_FORBIDDEN = "phase6f.privileged_emitted_text_forbidden"
 
 
 @dataclass(frozen=True)
@@ -191,6 +198,21 @@ class AbiWrapperCallRecipe:
 
 
 @dataclass(frozen=True)
+class PrivilegedRuntimeRecipe:
+    semantic_contract_id: str
+    renderer_contract_id: str
+    recipe_kind: PrivilegedRecipeKind
+    callable_identifier: str
+    argument_operand_indexes: tuple[int, ...]
+    result_operand_indexes: tuple[int, ...]
+    required_headers: tuple[str, ...]
+    required_libraries: tuple[str, ...]
+    manifest_id: str
+    manifest_version: str
+    source_registry_version: str
+
+
+@dataclass(frozen=True)
 class RendererContract:
     contract_id: str
     plan_id: str
@@ -243,6 +265,11 @@ class RenderedReplacement:
     approved_plan_id: str | None
     renderer_id: str
     renderer_version: str
+    renderer_contract_id: str = ""
+    required_headers: tuple[str, ...] = ()
+    required_libraries: tuple[str, ...] = ()
+    runtime_manifest_id: str = ""
+    runtime_manifest_version: str = ""
 
 
 def _environment_id(e: TargetEnvironment) -> str:
@@ -403,6 +430,10 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         RendererContractKind.STACK_ADDRESS_REBINDING: {TargetLoweringKind.STACK_ADDRESS_REBINDING},
         RendererContractKind.VIRTUAL_PRIVATE_FRAME: {TargetLoweringKind.VIRTUAL_PRIVATE_FRAME},
         RendererContractKind.ABI_WRAPPER_CALL: {TargetLoweringKind.ABI_WRAPPER_CALL},
+        RendererContractKind.PRIVILEGED_RUNTIME: {
+            TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+            TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
+        },
     }
     if a.plan.kind not in expected.get(kind, set()): return _failure(request, RenderReasonCode.PLAN_KIND_CONTRACT_MISMATCH, internal=True)
     if kind is RendererContractKind.GNU_INLINE_ASM and isinstance(p, GnuInlineAsmRecipe): return _render_gnu(request, p, is_goto=False)
@@ -484,6 +515,59 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         call=p.wrapper_symbol+"("+", ".join(args)+")"
         text=(f"{outs[0]} = {call};" if outs else f"{call};")
         return RenderedReplacement(RenderedReplacementKind.ABI_WRAPPER_CALL,p,text,(),a.source_model_id,a.plan.plan_id,ctx.renderer_id,ctx.renderer_version)
+    if kind is RendererContractKind.PRIVILEGED_RUNTIME and isinstance(p, PrivilegedRuntimeRecipe):
+        constraint = (
+            a.constraints.privileged_runtime_constraint
+            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else a.constraints.privileged_functional_constraint
+        )
+        if constraint is None:
+            return _failure(request, RenderReasonCode.PRIVILEGED_RECIPE_INCONSISTENT, internal=True)
+        semantic = (
+            constraint.runtime_contract
+            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else constraint.fallback_contract
+        )
+        expected_identifier = (
+            semantic.runtime_symbol
+            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else semantic.implementation_id
+        )
+        libraries = (() if semantic.required_library is None else (semantic.required_library,))
+        if (
+            p.semantic_contract_id != semantic.semantic_contract_id
+            or p.callable_identifier != expected_identifier
+            or p.argument_operand_indexes != semantic.argument_operand_indexes
+            or p.result_operand_indexes != semantic.result_operand_indexes
+            or p.required_headers != semantic.required_headers
+            or p.required_libraries != libraries
+            or p.source_registry_version != constraint.registry_version
+        ):
+            return _failure(request, RenderReasonCode.PRIVILEGED_RECIPE_INCONSISTENT, internal=True)
+        args = [_binding(ctx, index) for index in p.argument_operand_indexes]
+        results = [_binding(ctx, index) for index in p.result_operand_indexes]
+        if any(item is None for item in args + results) or len(results) > 1:
+            return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
+        call = p.callable_identifier + "(" + ", ".join(args) + ")"
+        text = f"{results[0]} = {call};" if results else f"{call};"
+        rendered_kind = (
+            RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
+        )
+        if audit_privileged_emitted_text(
+            text, expected_callable_identifier=p.callable_identifier
+        ):
+            return _failure(request, RenderReasonCode.PRIVILEGED_EMITTED_TEXT_FORBIDDEN, internal=True)
+        return RenderedReplacement(
+            rendered_kind, p, text, (), a.source_model_id, a.plan.plan_id,
+            ctx.renderer_id, ctx.renderer_version,
+            renderer_contract_id=p.renderer_contract_id,
+            required_headers=p.required_headers,
+            required_libraries=p.required_libraries,
+            runtime_manifest_id=p.manifest_id,
+            runtime_manifest_version=p.manifest_version,
+        )
     return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
 
 

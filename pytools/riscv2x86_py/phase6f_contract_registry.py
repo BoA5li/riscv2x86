@@ -17,6 +17,7 @@ from .phase6f_renderer import (
     GnuAsmGotoRecipe,
     GnuAsmGotoLabelBinding,
     HelperCallRecipe,
+    PrivilegedRuntimeRecipe,
     RendererContractKind,
     StructuredControlFlowRecipe,
 )
@@ -24,6 +25,10 @@ from .phase6c_constraints import TargetOperandRole, TargetOperandClass
 from .source_model import SourceAtomicRmwOperation, SourceMemoryOrdering, SourceValueOperationKind, SourceStraightLineValueOpcode
 from .plan_types import TargetLoweringKind
 from .helper_runtime_manifest import RV64_MULHU_U64, RUNTIME_HELPER_MANIFEST_VERSION
+from .privileged_renderer_manifest import (
+    PrivilegedRendererManifest,
+    PrivilegedRendererManifestEntry,
+)
 
 
 RecipeFactory = Callable[[ApprovedTargetLoweringPlan], object | None]
@@ -98,6 +103,14 @@ class RendererContractRegistry:
         if semantic_id is None and approved.plan.kind is TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
             flow = approved.constraints.structured_control_flow_contract
             semantic_id = None if flow is None else flow.semantic_contract_id
+        if semantic_id is None and approved.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
+            constraint = approved.constraints.privileged_runtime_constraint
+            semantic_id = (None if constraint is None else
+                           constraint.runtime_contract.semantic_contract_id)
+        if semantic_id is None and approved.plan.kind is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
+            constraint = approved.constraints.privileged_functional_constraint
+            semantic_id = (None if constraint is None else
+                           constraint.fallback_contract.semantic_contract_id)
         if not isinstance(semantic_id, str):
             return None
         entry = self._entries.get(semantic_id)
@@ -263,6 +276,100 @@ def register_structured_control_flow_contracts(
     return RendererContractRegistry(
         registry_id=base_registry.registry_id,
         version=base_registry.version + "+structured-cfg",
+        entries=entries,
+    )
+
+
+def _privileged_renderer_entry(
+    registration: PrivilegedRendererManifestEntry,
+    manifest: PrivilegedRendererManifest,
+) -> RegisteredRendererContract:
+    constraint_field = (
+        "privileged_runtime_constraint"
+        if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        else "privileged_functional_constraint"
+    )
+
+    def make_payload(approved: ApprovedTargetLoweringPlan):
+        constraint = getattr(approved.constraints, constraint_field, None)
+        evidence = approved.proof.evidence
+        if constraint is None or evidence is None or not registration.complete:
+            return None
+        semantic = (
+            constraint.runtime_contract
+            if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else constraint.fallback_contract
+        )
+        expected_identifier = (
+            semantic.runtime_symbol
+            if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else semantic.implementation_id
+        )
+        libraries = (() if semantic.required_library is None else (semantic.required_library,))
+        evidence_registry = (
+            evidence.privileged_registry_version
+            if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            else evidence.privileged_functional_registry_version
+        )
+        if (
+            semantic.semantic_contract_id != registration.semantic_contract_id
+            or expected_identifier != registration.callable_identifier
+            or semantic.argument_operand_indexes != registration.argument_operand_indexes
+            or semantic.result_operand_indexes != registration.result_operand_indexes
+            or semantic.required_headers != registration.required_headers
+            or libraries != registration.required_libraries
+            or semantic.required_target_capability != registration.required_target_capability
+            or semantic.target_environment_id != registration.target_environment_id
+            or constraint.registry_version != registration.source_registry_version
+            or evidence_registry != registration.source_registry_version
+        ):
+            return None
+        return (
+            RendererContractKind.PRIVILEGED_RUNTIME,
+            PrivilegedRuntimeRecipe(
+                semantic_contract_id=registration.semantic_contract_id,
+                renderer_contract_id=registration.renderer_contract_id,
+                recipe_kind=registration.recipe_kind,
+                callable_identifier=registration.callable_identifier,
+                argument_operand_indexes=registration.argument_operand_indexes,
+                result_operand_indexes=registration.result_operand_indexes,
+                required_headers=registration.required_headers,
+                required_libraries=registration.required_libraries,
+                manifest_id=manifest.manifest_id,
+                manifest_version=manifest.version,
+                source_registry_version=registration.source_registry_version,
+            ),
+        )
+
+    return RegisteredRendererContract(
+        semantic_contract_id=registration.semantic_contract_id,
+        plan_kind=registration.plan_kind,
+        renderer_contract_id=registration.renderer_contract_id,
+        make_payload=make_payload,
+        required_constraint_field=constraint_field,
+        # Phase 6D already proved this deployment capability through the
+        # helper-contract capability channel.  Do not reinterpret it as a
+        # CPU feature in Phase 6F.
+        required_features=frozenset(),
+    )
+
+
+def register_privileged_renderer_manifest(
+    base_registry: RendererContractRegistry,
+    manifest: PrivilegedRendererManifest,
+) -> RendererContractRegistry:
+    """Extend a renderer registry with exact runtime/builtin recipes only."""
+    if not isinstance(base_registry, RendererContractRegistry):
+        raise TypeError("base_registry must be RendererContractRegistry")
+    if not isinstance(manifest, PrivilegedRendererManifest):
+        raise TypeError("manifest must be PrivilegedRendererManifest")
+    entries = tuple(base_registry._entries.values()) + tuple(
+        _privileged_renderer_entry(item, manifest)
+        for item in manifest.entries
+    )
+    return RendererContractRegistry(
+        registry_id=base_registry.registry_id,
+        version=(base_registry.version + "+privileged-renderers@" + manifest.version),
         entries=entries,
     )
 

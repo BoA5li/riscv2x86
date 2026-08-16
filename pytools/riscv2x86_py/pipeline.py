@@ -21,6 +21,10 @@ from .abi_sidecar import AbiCallSidecar
 from .whole_function_sidecar import WholeFunctionSidecar
 from .whole_function_scheduler import schedule_whole_function_replacements
 from .privileged_functional_contracts import PrivilegedFunctionalFallbackRegistry
+from .privileged_emitted_audit import (
+    PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
+    audit_privileged_emitted_text,
+)
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -218,6 +222,7 @@ _PURE_C_KINDS = {
     "lower_to_c",
     "functional_c",
     "instruction_stream_elision",
+    "privileged_runtime",
 }
 
 
@@ -590,19 +595,57 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
     # downgrade selected by the caller and may only be used by a registered
     # semantic-family adapter.  In particular, it must not become a route for
     # silently discarding volatile/clobber semantics from arbitrary asm.
-    if kind == "functional_c":
+    if kind in {"privileged_runtime", "functional_c"}:
         artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
-        required = (
-            artifact.get("artifactVersion") == "phase6-functional-fallback-v1"
-            and artifact.get("proofStatus") == "functional_approved"
-            and artifact.get("functionalFallbackEnabled") is True
-            and artifact.get("preservationMode") == "functional_equivalence_only"
-            and isinstance(artifact.get("sourceSemanticContractId"), str)
-            and isinstance(artifact.get("targetSemanticContractId"), str)
-        )
+        is_registered_privileged = artifact.get("replacementKind") in {
+            "privileged_runtime_adapter",
+            "privileged_functional_fallback",
+        }
+        if is_registered_privileged:
+            expected_mode = (
+                "architecture_equivalent"
+                if kind == "privileged_runtime"
+                else "functional_equivalence_only"
+            )
+            required = (
+                artifact.get("artifactVersion") == "phase6-approval-v1"
+                and artifact.get("proofStatus") == "approved"
+                and artifact.get("preservationMode") == expected_mode
+                and isinstance(artifact.get("privilegedSemanticContractId"), str)
+                and isinstance(artifact.get("privilegedRendererManifestId"), str)
+                and isinstance(artifact.get("privilegedRendererManifestVersion"), str)
+                and isinstance(artifact.get("rendererContractId"), str)
+                and isinstance(artifact.get("requiredHeaders"), list)
+                and isinstance(artifact.get("requiredLibraries"), list)
+                and all(isinstance(item, str) and item
+                        for item in artifact.get("requiredHeaders", ()))
+                and all(isinstance(item, str) and item
+                        for item in artifact.get("requiredLibraries", ()))
+                and artifact.get("privilegedEmittedTextAuditVersion")
+                    == PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION
+            )
+            callable_id = artifact.get("privilegedCallableIdentifier")
+            if not isinstance(callable_id, str) or not callable_id:
+                required = False
+            else:
+                reasons.extend(audit_privileged_emitted_text(
+                    replacement,
+                    expected_callable_identifier=callable_id,
+                ))
+        else:
+            # Compatibility gate for older non-privileged functional routes.
+            required = (
+                kind == "functional_c"
+                and artifact.get("artifactVersion") == "phase6-functional-fallback-v1"
+                and artifact.get("proofStatus") == "functional_approved"
+                and artifact.get("functionalFallbackEnabled") is True
+                and artifact.get("preservationMode") == "functional_equivalence_only"
+                and isinstance(artifact.get("sourceSemanticContractId"), str)
+                and isinstance(artifact.get("targetSemanticContractId"), str)
+            )
         if not required:
             reasons.append(
-                "functional C fallback lacks its required explicit approval artifact"
+                "privileged/functional C route lacks its required registered approval artifact"
             )
         return reasons
 
