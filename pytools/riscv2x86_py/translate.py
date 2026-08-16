@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from enum import Enum
 import re
@@ -91,6 +91,10 @@ from .abi_effects import TargetAbiWrapperRegistry
 from .privileged_state_analysis import SourcePrivilegedStateModel
 from .functional_observability import FunctionalObservabilityContract
 from .privileged_runtime_contracts import PrivilegedRuntimeRegistry
+from .privileged_functional_contracts import (
+    PrivilegedFunctionalFallbackPolicy,
+    PrivilegedFunctionalFallbackRegistry,
+)
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -273,6 +277,10 @@ class TranslationContext:
     privilegedStateFacts: SourcePrivilegedStateModel | None = None
     functionalObservability: FunctionalObservabilityContract | None = None
     privilegedRuntimeRegistry: PrivilegedRuntimeRegistry | None = None
+    privilegedFunctionalRegistry: PrivilegedFunctionalFallbackRegistry | None = None
+    privilegedFunctionalPolicy: PrivilegedFunctionalFallbackPolicy = (
+        PrivilegedFunctionalFallbackPolicy()
+    )
 
     # Authoritative Phase-6A source semantic model.
     #
@@ -3068,6 +3076,7 @@ def translate(
     privileged_state: SourcePrivilegedStateModel | None = None,
     functional_observability: FunctionalObservabilityContract | None = None,
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
+    privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
@@ -3227,6 +3236,24 @@ def translate(
             reason_code="TR_PRIVILEGED_RUNTIME_REGISTRY_INVALID",
         )
     context.privilegedRuntimeRegistry = privileged_runtime_registry
+    if privileged_functional_registry is not None and not isinstance(
+        privileged_functional_registry, PrivilegedFunctionalFallbackRegistry
+    ):
+        return _unsupported(
+            context,
+            reason="privileged functional fallback registry is not typed/versioned",
+            reason_code="TR_PRIVILEGED_FUNCTIONAL_REGISTRY_INVALID",
+        )
+    context.privilegedFunctionalRegistry = privileged_functional_registry
+    context.privilegedFunctionalPolicy = PrivilegedFunctionalFallbackPolicy(
+        enabled=allow_functional_fallbacks
+    )
+    # The public ingress flag is authoritative.  A caller cannot enable this
+    # fidelity downgrade solely by constructing a permissive 6E policy.
+    selection_policy = replace(
+        selection_policy,
+        allow_functional_fallbacks=allow_functional_fallbacks,
+    )
 
     # Retain a verified Phase-4 function sidecar for the independent D-class
     # entry point.  It is intentionally not fed into fragment replacement.
@@ -3284,24 +3311,10 @@ def translate(
     if (
         source_model.read_only_csr is not None
         and context.privilegedRuntimeRegistry is None
+        and context.privilegedFunctionalRegistry is None
     ):
         csr = source_model.read_only_csr
         privileged_adapter = source_model.privileged_state
-        if (
-            allow_functional_fallbacks
-            and privileged_adapter is not None
-            and privileged_adapter.functional_fallback_possible
-            and csr.complete
-        ):
-            fallback = _render_counter_csr_functional_fallback(
-                context=context,
-                csr_name=csr.csr_name,
-                result_operand_index=csr.result_operand_index,
-                width_bits=csr.width_bits,
-                target_environment=target_environment,
-            )
-            if fallback is not None:
-                return fallback
         return _needs_route(
             context,
             route="riscv_counter_csr_runtime_adapter",
@@ -3373,6 +3386,8 @@ def translate(
         renderer_context=renderer_context,
         renderer_contract_registry=renderer_contract_registry,
         privileged_runtime_registry=context.privilegedRuntimeRegistry,
+        privileged_functional_registry=context.privilegedFunctionalRegistry,
+        privileged_functional_policy=context.privilegedFunctionalPolicy,
     )
 
 
@@ -3387,6 +3402,8 @@ def _translate_phase6_proof_pipeline(
     renderer_context: Optional[RendererContext],
     renderer_contract_registry: RendererContractRegistry,
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None,
+    privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None,
+    privileged_functional_policy: PrivilegedFunctionalFallbackPolicy,
 ) -> TranslationOutput:
     """Execute 6B--6F without a legacy or guessed-code fallback path."""
     source_model = context.sourceModel
@@ -3432,6 +3449,8 @@ def _translate_phase6_proof_pipeline(
             *("helper." + item for item in DEFAULT_RUNTIME_HELPER_CONTRACTS),
             *(() if privileged_runtime_registry is None else
               privileged_runtime_registry.semantic_contract_ids),
+            *(() if privileged_functional_registry is None else
+              privileged_functional_registry.semantic_contract_ids),
         }),
         version="phase6-default-catalog-runtime-helper-v1",
     )
@@ -3449,7 +3468,10 @@ def _translate_phase6_proof_pipeline(
     if not isinstance(catalog, TargetSemanticCatalog) or not isinstance(capabilities, CompilerCapabilityModel):
         return _unsupported(context, reason="Phase-6D target catalog or compiler capability artifact is invalid", reason_code="TR_INVALID_PHASE6D_ENVIRONMENT_ARTIFACT")
 
-    candidate_plans = generate_candidate_plans(source_model)
+    candidate_plans = generate_candidate_plans(
+        source_model,
+        privileged_functional_policy=privileged_functional_policy,
+    )
     candidates: list[ProvenCandidate] = []
     rejected_attempts: list[TargetLoweringAttempt] = []
     for plan in candidate_plans:
@@ -3459,6 +3481,8 @@ def _translate_phase6_proof_pipeline(
             target_environment=target_environment,
             abi_wrapper_registry=context.abiWrapperRegistry,
             privileged_runtime_registry=privileged_runtime_registry,
+            privileged_functional_registry=privileged_functional_registry,
+            privileged_functional_policy=privileged_functional_policy,
         )
         if not constraint_result.success:
             rejected_attempts.append(TargetLoweringAttempt.from_constraint_failure(plan, constraint_result))
@@ -3474,6 +3498,8 @@ def _translate_phase6_proof_pipeline(
             compiler_capabilities=capabilities,
             helper_contract_registry=helper_contract_registry,
             privileged_runtime_registry=privileged_runtime_registry,
+            privileged_functional_registry=privileged_functional_registry,
+            privileged_functional_policy=privileged_functional_policy,
         )
         candidates.append(ProvenCandidate(plan, constraint_result, proof))
         if not proof.approved:
@@ -3492,6 +3518,11 @@ def _translate_phase6_proof_pipeline(
         helper_registry_version=None if helper_contract_registry is None else helper_contract_registry.version,
         privileged_registry_version=(None if privileged_runtime_registry is None
                                      else privileged_runtime_registry.version),
+        privileged_functional_registry_version=(
+            None if privileged_functional_registry is None
+            else privileged_functional_registry.version
+        ),
+        privileged_functional_policy_identity=privileged_functional_policy.identity,
         selection_policy=selection_policy,
     ))
     attempt_metadata = tuple({"planId": item.plan_id, "stage": item.stage, "reasonCodes": item.reason_codes} for item in rejected_attempts)

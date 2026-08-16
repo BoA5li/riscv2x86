@@ -13,7 +13,7 @@ from .source_model import SourceSemanticModel
 class FinalSelectionKind(str, Enum):
     SELECTED="selected"; NEEDS_ROUTE="needs_route"; KEEP="keep"; UNSUPPORTED="unsupported"; INVARIANT_VIOLATION="invariant_violation"
 class SelectionTier(int, Enum):
-    PUBLIC_PORTABLE=1; STRUCTURED_C=2; X86_INLINE_ASM=3; STRENGTHENED=4; BEST_EFFORT=5
+    PUBLIC_PORTABLE=1; STRUCTURED_C=2; X86_INLINE_ASM=3; STRENGTHENED=4; BEST_EFFORT=5; FUNCTIONAL_FALLBACK=6
 class SelectionReasonCode(str, Enum):
     CONSTRAINT_NOT_DERIVED="phase6e.constraint_not_derived"; PROOF_REJECTED="phase6e.proof_rejected"; POLICY_EXCLUDED="phase6e.policy_excluded"; ARTIFACT_MISMATCH="phase6e.artifact_mismatch"; NO_APPROVED_PLAN="phase6e.no_approved_plan"
 
@@ -31,6 +31,7 @@ class Phase6ESelectionPolicy:
     allow_strengthened: bool=False
     allow_needs_route: bool=False
     allow_keep: bool=False
+    allow_functional_fallbacks: bool=False
     registered_route_targets: tuple[str,...]=()
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class Phase6ESelectionRequest:
     compiler_capability_id: str=""
     helper_registry_version: str | None=None
     privileged_registry_version: str | None=None
+    privileged_functional_registry_version: str | None=None
+    privileged_functional_policy_identity: str | None=None
     selection_policy: Phase6ESelectionPolicy=Phase6ESelectionPolicy()
 
 @dataclass(frozen=True)
@@ -91,7 +94,7 @@ def _artifact_error(r,c):
     if c.constraint_result.success and (c.constraint_result.constraints is None or c.constraint_result.constraints.environment != r.target_environment):return "constraint_environment_mismatch"
     if c.proof_result.approved and e is None:return "approved_proof_without_evidence"
     if e is not None and c.constraint_result.constraints is None:return "proof_without_constraints"
-    if e is not None and (e.plan_id != p.plan_id or e.constraints_plan_id != p.plan_id or e.constraints_id != constraint_identity(c.constraint_result.constraints) or e.source_model_id != _source_id(r.source_model) or e.preservation_decision_id != _preservation_id(r.preservation_decision) or e.target_environment_id != _environment_id(r.target_environment) or e.target_catalog_version != r.target_catalog_version or e.compiler_capability_id != r.compiler_capability_id or e.helper_registry_version != r.helper_registry_version or e.privileged_registry_version != r.privileged_registry_version):return "proof_binding_mismatch"
+    if e is not None and (e.plan_id != p.plan_id or e.constraints_plan_id != p.plan_id or e.constraints_id != constraint_identity(c.constraint_result.constraints) or e.source_model_id != _source_id(r.source_model) or e.preservation_decision_id != _preservation_id(r.preservation_decision) or e.target_environment_id != _environment_id(r.target_environment) or e.target_catalog_version != r.target_catalog_version or e.compiler_capability_id != r.compiler_capability_id or e.helper_registry_version != r.helper_registry_version or e.privileged_registry_version != r.privileged_registry_version or e.privileged_functional_registry_version != r.privileged_functional_registry_version or e.privileged_functional_policy_identity != r.privileged_functional_policy_identity):return "proof_binding_mismatch"
     return None
 
 def _policy_allows(r,c):
@@ -99,7 +102,11 @@ def _policy_allows(r,c):
     if not proof.approved or proof.evidence is None:return False
     x=set(proof.conclusions)
     if PreservationConclusion.NOT_PRESERVED in x:return False
-    if PreservationConclusion.ARCHITECTURE_EQUIVALENT not in x:return False
+    if c.plan.kind is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
+        if not r.selection_policy.allow_functional_fallbacks:return False
+        if PreservationConclusion.FUNCTIONAL_EQUIVALENT not in x:return False
+        if PreservationConclusion.ARCHITECTURE_EQUIVALENT in x:return False
+    elif PreservationConclusion.ARCHITECTURE_EQUIVALENT not in x:return False
     if r.source_model.microarch.explicitly_microarch_sensitive and PreservationConclusion.MICROARCH_INTENT_PRESERVED not in x:return False
     if PreservationConclusion.BEST_EFFORT in x and not r.selection_policy.allow_best_effort:return False
     if PreservationConclusion.MICROARCH_STRENGTHENED in x and not r.selection_policy.allow_strengthened:return False
@@ -108,6 +115,7 @@ def _policy_allows(r,c):
 def _tier(c):
     x=set(c.proof_result.conclusions); k=c.plan.kind
     if PreservationConclusion.BEST_EFFORT in x:return SelectionTier.BEST_EFFORT
+    if k is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:return SelectionTier.FUNCTIONAL_FALLBACK
     if PreservationConclusion.MICROARCH_STRENGTHENED in x:return SelectionTier.STRENGTHENED
     if k in {TargetLoweringKind.C_EXPRESSION,TargetLoweringKind.C_BUILTIN}:return SelectionTier.PUBLIC_PORTABLE
     if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,TargetLoweringKind.ABI_WRAPPER_CALL,TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER}:return SelectionTier.STRUCTURED_C

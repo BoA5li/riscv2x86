@@ -47,6 +47,7 @@ class TargetLoweringKind(str, Enum):
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER_CALL = "abi_wrapper_call"
     PRIVILEGED_RUNTIME_ADAPTER = "privileged_runtime_adapter"
+    PRIVILEGED_FUNCTIONAL_FALLBACK = "privileged_functional_fallback"
 
     # 显式保留 unsupported，而不是猜测性 lower。
     UNSUPPORTED = "unsupported"
@@ -68,6 +69,7 @@ class TargetLoweringFamily(str, Enum):
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER = "abi_wrapper"
     PRIVILEGED_RUNTIME = "privileged_runtime"
+    PRIVILEGED_FUNCTIONAL = "privileged_functional"
     UNSUPPORTED = "unsupported"
 
 
@@ -96,6 +98,9 @@ class PlanPriorityTier(int, Enum):
     VIRTUAL_PRIVATE_FRAME = 20
     ABI_WRAPPER = 50
     PRIVILEGED_RUNTIME = 55
+    # Functional equivalence is a deliberate fidelity downgrade and must
+    # always sort after every architecture-equivalent route.
+    PRIVILEGED_FUNCTIONAL = 900
     UNSUPPORTED = 1000
 
 
@@ -162,6 +167,16 @@ class PlanRequirement(str, Enum):
     PRESERVE_PRIVILEGED_MEMORY_EFFECTS = "preserve_privileged_memory_effects"
     PRESERVE_PRIVILEGED_SHELL = "preserve_privileged_shell"
     PROVE_NO_GENERIC_HELPER_FALLBACK = "prove_no_generic_helper_fallback"
+    PROVE_FUNCTIONAL_FALLBACK_POLICY_ENABLED = "prove_functional_fallback_policy_enabled"
+    PROVE_FUNCTIONAL_OBSERVABILITY_COMPLETE = "prove_functional_observability_complete"
+    PROVE_EXACT_PRIVILEGED_FUNCTIONAL_CONTRACT = "prove_exact_privileged_functional_contract"
+    PRESERVE_FUNCTIONAL_OUTPUTS = "preserve_functional_outputs"
+    PRESERVE_FUNCTIONAL_MEMORY = "preserve_functional_memory"
+    PRESERVE_FUNCTIONAL_ERROR = "preserve_functional_error"
+    PRESERVE_FUNCTIONAL_TERMINATION = "preserve_functional_termination"
+    PRESERVE_FUNCTIONAL_TRAPS = "preserve_functional_traps"
+    PROVE_IGNORED_PRIVILEGED_STATE_AUTHORITY = "prove_ignored_privileged_state_authority"
+    PROVE_NO_UNKNOWN_PRIVILEGED_STATE = "prove_no_unknown_privileged_state"
 
     PRESERVE_MICROARCH_INTENT = "preserve_microarch_intent"
     PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY = (
@@ -200,6 +215,8 @@ _KIND_TO_FAMILY: Mapping[
             TargetLoweringFamily.ABI_WRAPPER,
         TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
             TargetLoweringFamily.PRIVILEGED_RUNTIME,
+        TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
+            TargetLoweringFamily.PRIVILEGED_FUNCTIONAL,
         TargetLoweringKind.UNSUPPORTED:
             TargetLoweringFamily.UNSUPPORTED,
     }
@@ -232,6 +249,8 @@ _FAMILY_TO_PRIORITY_TIER: Mapping[
             PlanPriorityTier.ABI_WRAPPER,
         TargetLoweringFamily.PRIVILEGED_RUNTIME:
             PlanPriorityTier.PRIVILEGED_RUNTIME,
+        TargetLoweringFamily.PRIVILEGED_FUNCTIONAL:
+            PlanPriorityTier.PRIVILEGED_FUNCTIONAL,
         TargetLoweringFamily.UNSUPPORTED:
             PlanPriorityTier.UNSUPPORTED,
     }

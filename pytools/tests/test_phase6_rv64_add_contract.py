@@ -376,13 +376,11 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
         target_environment=functional_environment,
         allow_functional_fallbacks=True,
     )
-    assert functional.kind == "functional_c"
-    assert functional.replacement == (
-        "time_val = (uint64_t)__builtin_ia32_rdtsc();"
-    )
-    artifact = functional.metadata["approvalArtifact"]
-    assert artifact["proofStatus"] == "functional_approved"
-    assert artifact["preservationMode"] == "functional_equivalence_only"
+    # Policy is permission, not proof authority.  Without an exact versioned
+    # privileged functional registry entry, even a complete counter model
+    # remains fail-closed and must not reach the legacy direct renderer.
+    assert functional.kind == "needs_route"
+    assert "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED" in functional.reasonCodes
 
 
 def test_instruction_stream_barrier_requires_explicit_route() -> None:

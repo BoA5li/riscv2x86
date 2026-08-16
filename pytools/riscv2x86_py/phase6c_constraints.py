@@ -167,6 +167,18 @@ class TargetConstraintReasonCode(str, Enum):
     PRIVILEGED_RUNTIME_SOURCE_INCOMPLETE = (
         "phase6c.privileged_runtime_source_incomplete"
     )
+    PRIVILEGED_FUNCTIONAL_POLICY_DISABLED = (
+        "phase6c.privileged_functional_policy_disabled"
+    )
+    PRIVILEGED_FUNCTIONAL_SOURCE_INCOMPLETE = (
+        "phase6c.privileged_functional_source_incomplete"
+    )
+    PRIVILEGED_FUNCTIONAL_REGISTRY_MISSING = (
+        "phase6c.privileged_functional_registry_missing"
+    )
+    PRIVILEGED_FUNCTIONAL_CONTRACT_MISSING = (
+        "phase6c.privileged_functional_contract_missing"
+    )
     STRUCTURED_CONTROL_FLOW_NOT_IMPLEMENTED = (
         "phase6c.structured_control_flow_not_implemented"
     )
@@ -1171,6 +1183,7 @@ class TargetConstraintModel:
     virtual_private_frame_constraint: object | None = None
     abi_wrapper_constraint: object | None = None
     privileged_runtime_constraint: object | None = None
+    privileged_functional_constraint: object | None = None
 
     preserve_volatile: bool = False
     preserve_cc_clobber: bool = False
@@ -1278,6 +1291,28 @@ class TargetConstraintModel:
             from .abi_wrapper import TargetAbiWrapperConstraint
             if not isinstance(self.abi_wrapper_constraint, TargetAbiWrapperConstraint):
                 raise TypeError("abi_wrapper_constraint must be TargetAbiWrapperConstraint or None")
+        if self.privileged_runtime_constraint is not None:
+            from .privileged_runtime_contracts import TargetPrivilegedRuntimeConstraint
+            if not isinstance(
+                self.privileged_runtime_constraint,
+                TargetPrivilegedRuntimeConstraint,
+            ):
+                raise TypeError(
+                    "privileged_runtime_constraint must be "
+                    "TargetPrivilegedRuntimeConstraint or None"
+                )
+        if self.privileged_functional_constraint is not None:
+            from .privileged_functional_contracts import (
+                TargetPrivilegedFunctionalFallbackConstraint,
+            )
+            if not isinstance(
+                self.privileged_functional_constraint,
+                TargetPrivilegedFunctionalFallbackConstraint,
+            ):
+                raise TypeError(
+                    "privileged_functional_constraint must be "
+                    "TargetPrivilegedFunctionalFallbackConstraint or None"
+                )
         if self.c_expression_constraint is not None and self.c_builtin_constraint is not None:
             raise ValueError("target constraints cannot contain both C expression and C builtin contracts")
         specialized_contracts = (
@@ -1292,6 +1327,8 @@ class TargetConstraintModel:
             self.stack_rebinding_constraint,
             self.virtual_private_frame_constraint,
             self.abi_wrapper_constraint,
+            self.privileged_runtime_constraint,
+            self.privileged_functional_constraint,
         )
         if sum(contract is not None for contract in specialized_contracts) > 1:
             raise ValueError("target constraints must contain exactly one lowering contract")
@@ -1769,6 +1806,105 @@ def _derive_privileged_runtime_0(
     ))
 
 
+def _derive_privileged_functional_0(
+    *, source_model, candidate_plan, target_environment,
+    privileged_functional_registry=None,
+    privileged_functional_policy=None,
+):
+    from .functional_observability import FunctionalFallbackPossibility
+    from .privileged_functional_contracts import (
+        PrivilegedFunctionalFallbackPolicy,
+        PrivilegedFunctionalFallbackRegistry,
+        TargetPrivilegedFunctionalFallbackConstraint,
+        functional_observability_identity,
+    )
+    from .privileged_runtime_contracts import (
+        privileged_source_identity,
+        target_environment_identity,
+    )
+    if (
+        not isinstance(privileged_functional_policy,
+                       PrivilegedFunctionalFallbackPolicy)
+        or not privileged_functional_policy.enabled
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_FUNCTIONAL_POLICY_DISABLED,
+            ),
+        )
+    source = source_model.privileged_state
+    if (
+        source is None or not source.complete or source.reason_codes
+        or source.state is None or not source.state.present
+        or not source.state.complete or source.state.missing_fact_codes
+        or source.observability is None or not source.observability.complete
+        or source.observability.missing_fact_codes
+        or source.observability.fallback_possibility is not
+            FunctionalFallbackPossibility.POSSIBLE_WITH_EXACT_TARGET_CONTRACT
+        or not source.functional_fallback_possible
+        or source.requires_whole_function_lowering
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_FUNCTIONAL_SOURCE_INCOMPLETE,
+            ),
+        )
+    if not isinstance(
+        privileged_functional_registry, PrivilegedFunctionalFallbackRegistry
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_FUNCTIONAL_REGISTRY_MISSING,
+            ),
+        )
+    contract = privileged_functional_registry.resolve(source, target_environment)
+    if contract is None or not contract.complete:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_FUNCTIONAL_CONTRACT_MISSING,
+            ),
+        )
+    constraint = TargetPrivilegedFunctionalFallbackConstraint(
+        fallback_contract=contract,
+        source_privileged_identity=privileged_source_identity(source),
+        source_observability_identity=functional_observability_identity(
+            source.observability
+        ),
+        target_environment_id=target_environment_identity(target_environment),
+        registry_version=privileged_functional_registry.version,
+        policy_identity=privileged_functional_policy.identity,
+    )
+    shell = source_model.shell
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(
+        plan_id=candidate_plan.plan_id,
+        environment=target_environment,
+        privileged_functional_constraint=constraint,
+        preserve_volatile=(
+            not shell.is_volatile or contract.preserves_volatile_execution
+        ),
+        preserve_cc_clobber=(
+            not shell.has_cc_clobber or contract.preserves_cc_clobber
+        ),
+        memory_constraint=TargetMemoryConstraint(
+            requires_memory_clobber=(
+                shell.has_memory_clobber
+                and contract.preserves_compiler_memory_ordering
+            ),
+            requires_compiler_barrier=(
+                shell.has_memory_clobber
+                and contract.preserves_compiler_memory_ordering
+            ),
+        ),
+        control_flow_constraint=TargetControlFlowConstraint(
+            preserve_control_flow=contract.preserves_termination,
+        ),
+    ))
+
+
 _Deriver = Callable[
     [
         SourceSemanticModel,
@@ -1832,6 +1968,9 @@ _PLAN_KIND_DISPATCH: Mapping[TargetLoweringKind, _Deriver] = (
             TargetLoweringKind.ABI_WRAPPER_CALL: _adapt_deriver(_derive_abi_wrapper_0),
             TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER: _adapt_deriver(
                 _derive_privileged_runtime_0
+            ),
+            TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK: _adapt_deriver(
+                _derive_explicit_unsupported_0
             ),
             TargetLoweringKind.UNSUPPORTED: _adapt_deriver(
                 _derive_explicit_unsupported_0
@@ -2087,6 +2226,8 @@ def derive_target_constraints(
     ),
     abi_wrapper_registry=None,
     privileged_runtime_registry=None,
+    privileged_functional_registry=None,
+    privileged_functional_policy=None,
 ) -> TargetConstraintDerivationResult:
     """
     Phase 6C public entry point.
@@ -2155,6 +2296,17 @@ def derive_target_constraints(
             candidate_plan=candidate_plan,
             target_environment=target_environment,
             privileged_runtime_registry=privileged_runtime_registry,
+        )
+        return _validate_result_invariants(
+            candidate_plan=candidate_plan, result=result
+        )
+    if candidate_plan.kind is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
+        result = _derive_privileged_functional_0(
+            source_model=source_model,
+            candidate_plan=candidate_plan,
+            target_environment=target_environment,
+            privileged_functional_registry=privileged_functional_registry,
+            privileged_functional_policy=privileged_functional_policy,
         )
         return _validate_result_invariants(
             candidate_plan=candidate_plan, result=result

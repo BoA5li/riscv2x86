@@ -20,6 +20,7 @@ from .abi_effects import TargetAbiWrapperRegistry
 from .abi_sidecar import AbiCallSidecar
 from .whole_function_sidecar import WholeFunctionSidecar
 from .whole_function_scheduler import schedule_whole_function_replacements
+from .privileged_functional_contracts import PrivilegedFunctionalFallbackRegistry
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -882,6 +883,7 @@ def run(
     abi_call_sidecar: AbiCallSidecar | None = None,
     abi_wrapper_registry: TargetAbiWrapperRegistry | None = None,
     whole_function_sidecar: WholeFunctionSidecar | None = None,
+    privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
@@ -1258,6 +1260,7 @@ def run(
             target_environment=environment,
             abi_call_bindings=abi_bindings,
             abi_wrapper_registry=abi_wrapper_registry,
+            privileged_functional_registry=privileged_functional_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,
         )
 

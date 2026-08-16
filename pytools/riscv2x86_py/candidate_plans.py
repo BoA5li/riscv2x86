@@ -1212,6 +1212,8 @@ def _stable_sort_and_freeze(
 
 def generate_candidate_plans(
     source_model: SourceSemanticModel,
+    *,
+    privileged_functional_policy=None,
 ) -> tuple[TargetLoweringPlan, ...]:
     """
     生成 Phase 6B candidate target-lowering plans。
@@ -1277,7 +1279,7 @@ def generate_candidate_plans(
         }
         if source_model.microarch.explicitly_microarch_sensitive:
             requirements.add(PlanRequirement.PRESERVE_MICROARCH_INTENT)
-        return _stable_sort_and_freeze([_plan(
+        candidates = [_plan(
             plan_id="privileged-runtime.strict-adapter.v1",
             kind=TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
             family=TargetLoweringFamily.PRIVILEGED_RUNTIME,
@@ -1289,7 +1291,46 @@ def generate_candidate_plans(
             rationale=("Complete privileged effects require one exact, "
                        "versioned target runtime contract.",),
             reason_codes=("privileged-runtime-contract-required",),
-        )])
+        )]
+        # The explicit policy merely permits consideration.  Phase 6C still
+        # requires an exact source/observability/target registry match and
+        # Phase 6D proves every functional observable.  Incomplete/unknown
+        # privileged state returned above and can never reach this branch.
+        if bool(getattr(privileged_functional_policy, "enabled", False)) and (
+            privileged.functional_fallback_possible
+        ):
+            candidates.append(_plan(
+                plan_id="privileged-functional.exact-contract.v1",
+                kind=TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
+                family=TargetLoweringFamily.PRIVILEGED_FUNCTIONAL,
+                priority_tier=PlanPriorityTier.PRIVILEGED_FUNCTIONAL,
+                deterministic_rank=10,
+                required_features=frozenset({"target:x86"}),
+                requirements=frozenset({
+                    PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+                    PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                    PlanRequirement.PROVE_FUNCTIONAL_FALLBACK_POLICY_ENABLED,
+                    PlanRequirement.PROVE_FUNCTIONAL_OBSERVABILITY_COMPLETE,
+                    PlanRequirement.PROVE_EXACT_PRIVILEGED_FUNCTIONAL_CONTRACT,
+                    PlanRequirement.PRESERVE_FUNCTIONAL_OUTPUTS,
+                    PlanRequirement.PRESERVE_FUNCTIONAL_MEMORY,
+                    PlanRequirement.PRESERVE_FUNCTIONAL_ERROR,
+                    PlanRequirement.PRESERVE_FUNCTIONAL_TERMINATION,
+                    PlanRequirement.PRESERVE_FUNCTIONAL_TRAPS,
+                    PlanRequirement.PROVE_IGNORED_PRIVILEGED_STATE_AUTHORITY,
+                    PlanRequirement.PROVE_NO_UNKNOWN_PRIVILEGED_STATE,
+                    PlanRequirement.PRESERVE_PRIVILEGED_SHELL,
+                    PlanRequirement.PROVE_NO_GENERIC_HELPER_FALLBACK,
+                    PlanRequirement.PRESERVE_VOLATILE,
+                    PlanRequirement.PRESERVE_MEMORY_CLOBBER,
+                    PlanRequirement.PRESERVE_CC_CLOBBER,
+                }),
+                metadata={"strategy": "exact_privileged_functional_fallback"},
+                rationale=("Explicit policy permits a registered functional-only "
+                           "fallback without claiming architecture equivalence.",),
+                reason_codes=("privileged-functional-contract-required",),
+            ))
+        return _stable_sort_and_freeze(candidates)
 
     # 1. 验证 SourceSemanticModel 依赖状态一致性；
     # 2. 全局 fail-closed gate。

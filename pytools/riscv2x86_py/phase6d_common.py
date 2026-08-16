@@ -21,9 +21,12 @@ class SemanticProofReasonCode(str, Enum):
     UNSUPPORTED_PLAN_KIND="phase6d.unsupported_plan_kind"; INTERNAL_INVARIANT="phase6d.internal_invariant"
     REQUIREMENT_UNPROVEN="phase6d.requirement_unproven"; BINDING_UNSAFE="phase6d.binding_unsafe"
     TARGET_FIXED_REGISTER_POLICY_VIOLATION="phase6d.target_fixed_register_policy_violation"
+    FUNCTIONAL_FALLBACK_UNPROVEN="phase6d.privileged_functional_fallback_unproven"
+    IGNORED_STATE_UNPROVEN="phase6d.privileged_ignored_state_unproven"
 
 class PreservationConclusion(str, Enum):
     ARCHITECTURE_EQUIVALENT="architecture_equivalent"; SHELL_PRESERVED="shell_preserved"
+    FUNCTIONAL_EQUIVALENT="functional_equivalent"
     MICROARCH_INTENT_PRESERVED="microarchitecture_intent_preserved"; MICROARCH_STRENGTHENED="microarchitecture_strengthened"
     BEST_EFFORT="best_effort"; NOT_PRESERVED="not_preserved"
 
@@ -60,6 +63,8 @@ class SemanticProofRequest:
     compiler_capabilities: CompilerCapabilityModel
     helper_contract_registry: HelperSemanticContractRegistry | None = None
     privileged_runtime_registry: object | None = None
+    privileged_functional_registry: object | None = None
+    privileged_functional_policy: object | None = None
 
 @dataclass(frozen=True)
 class ProofEvidence:
@@ -69,6 +74,8 @@ class ProofEvidence:
     target_catalog_version: str; compiler_capability_id: str
     helper_registry_version: str | None
     privileged_registry_version: str | None
+    privileged_functional_registry_version: str | None
+    privileged_functional_policy_identity: str | None
     dimensions: tuple[str,...]; proved_requirements: tuple[str,...]
 
 @dataclass(frozen=True)
@@ -113,6 +120,7 @@ def constraint_identity(c):
             c.virtual_private_frame_constraint,
             c.abi_wrapper_constraint,
             c.privileged_runtime_constraint,
+            c.privileged_functional_constraint,
         ) if item is not None
     )
     # Contract payload is part of the proof binding.  Type names alone would
@@ -137,6 +145,14 @@ def _evidence(request, conclusions, requirements):
         helper_registry_version=None if request.helper_contract_registry is None else request.helper_contract_registry.version,
         privileged_registry_version=(None if request.privileged_runtime_registry is None
                                      else getattr(request.privileged_runtime_registry,"version",None)),
+        privileged_functional_registry_version=(
+            None if request.privileged_functional_registry is None
+            else getattr(request.privileged_functional_registry, "version", None)
+        ),
+        privileged_functional_policy_identity=(
+            None if request.privileged_functional_policy is None
+            else getattr(request.privileged_functional_policy, "identity", None)
+        ),
         dimensions=tuple(sorted(x.value for x in conclusions)),
         proved_requirements=tuple(sorted(x.value for x in requirements)),
     )
@@ -157,7 +173,7 @@ def validate_common(request: SemanticProofRequest):
     # A GNU-asm candidate is proof-eligible only when its *specific*,
     # versioned renderer semantic contract is present in the target catalog.
     # This checks structured plan metadata only; it does not inspect asm text.
-    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER, TargetLoweringKind.STRUCTURED_CONTROL_FLOW, TargetLoweringKind.HELPER_CALL, TargetLoweringKind.STACK_ADDRESS_REBINDING, TargetLoweringKind.VIRTUAL_PRIVATE_FRAME, TargetLoweringKind.ABI_WRAPPER_CALL, TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER}:
+    if p.kind in {TargetLoweringKind.X86_GNU_INLINE_ASM, TargetLoweringKind.X86_ATOMIC, TargetLoweringKind.X86_BARRIER, TargetLoweringKind.STRUCTURED_CONTROL_FLOW, TargetLoweringKind.HELPER_CALL, TargetLoweringKind.STACK_ADDRESS_REBINDING, TargetLoweringKind.VIRTUAL_PRIVATE_FRAME, TargetLoweringKind.ABI_WRAPPER_CALL, TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER, TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK}:
         semantic_contract_id = p.metadata.get("renderer_semantic_contract_id")
         if semantic_contract_id is None and p.kind is TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
             flow = c.structured_control_flow_contract
@@ -169,6 +185,10 @@ def validate_common(request: SemanticProofRequest):
             privileged = c.privileged_runtime_constraint
             semantic_contract_id = (None if privileged is None else
                                     privileged.runtime_contract.semantic_contract_id)
+        if semantic_contract_id is None and p.kind is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
+            privileged = c.privileged_functional_constraint
+            semantic_contract_id = (None if privileged is None else
+                                    privileged.fallback_contract.semantic_contract_id)
         if (not isinstance(semantic_contract_id, str) or
                 semantic_contract_id not in request.target_semantic_catalog.semantic_contract_ids):
             return reject(request, SemanticProofReasonCode.TARGET_SEMANTICS_MISSING, {
@@ -179,7 +199,7 @@ def validate_common(request: SemanticProofRequest):
     rebinding_complete = p.kind in {TargetLoweringKind.STACK_ADDRESS_REBINDING,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME} and s.stack_frame is not None and (s.stack_frame.stack_address_rebinding_eligible or s.stack_frame.virtual_private_frame_eligible)
     operand_complete = s.operands.complete or rebinding_complete
     implicit_complete = s.implicit_state.complete or rebinding_complete
-    operation_complete=s.operation.complete or (p.kind is TargetLoweringKind.VIRTUAL_PRIVATE_FRAME and s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible) or (p.kind is TargetLoweringKind.ABI_WRAPPER_CALL and s.abi_effects is not None and s.abi_effects.complete) or (p.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER and s.privileged_state is not None and s.privileged_state.complete)
+    operation_complete=s.operation.complete or (p.kind is TargetLoweringKind.VIRTUAL_PRIVATE_FRAME and s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible) or (p.kind is TargetLoweringKind.ABI_WRAPPER_CALL and s.abi_effects is not None and s.abi_effects.complete) or (p.kind in {TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER, TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK} and s.privileged_state is not None and s.privileged_state.complete)
     control_complete=(s.control_flow.has_indirect_control_flow is not None or (p.kind is TargetLoweringKind.VIRTUAL_PRIVATE_FRAME and s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible) or (p.kind is TargetLoweringKind.ABI_WRAPPER_CALL and s.abi_effects is not None and s.abi_effects.complete))
     if not all((operation_complete,operand_complete,implicit_complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,control_complete,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     stack_sensitive = s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer
@@ -235,8 +255,32 @@ def _validate_requirements(request):
         PlanRequirement.PRESERVE_PRIVILEGED_TRAPS: c.privileged_runtime_constraint is not None and c.privileged_runtime_constraint.runtime_contract.preserves_trap_behavior,
         PlanRequirement.PRESERVE_PRIVILEGED_CONTROL_FLOW: c.privileged_runtime_constraint is not None and c.privileged_runtime_constraint.runtime_contract.preserves_control_flow,
         PlanRequirement.PRESERVE_PRIVILEGED_MEMORY_EFFECTS: c.privileged_runtime_constraint is not None and c.privileged_runtime_constraint.runtime_contract.preserves_memory_effects,
-        PlanRequirement.PRESERVE_PRIVILEGED_SHELL: c.privileged_runtime_constraint is not None and c.privileged_runtime_constraint.runtime_contract.preserves_shell,
-        PlanRequirement.PROVE_NO_GENERIC_HELPER_FALLBACK: p.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER and c.privileged_runtime_constraint is not None and c.privileged_runtime_constraint.forbids_generic_helper_fallback,
+        PlanRequirement.PRESERVE_PRIVILEGED_SHELL: (
+            (c.privileged_runtime_constraint is not None
+             and c.privileged_runtime_constraint.runtime_contract.preserves_shell)
+            or
+            (c.privileged_functional_constraint is not None
+             and c.privileged_functional_constraint.fallback_contract.preserves_shell)
+        ),
+        PlanRequirement.PROVE_NO_GENERIC_HELPER_FALLBACK: (
+            (p.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+             and c.privileged_runtime_constraint is not None
+             and c.privileged_runtime_constraint.forbids_generic_helper_fallback)
+            or
+            (p.kind is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK
+             and c.privileged_functional_constraint is not None
+             and c.privileged_functional_constraint.forbids_generic_helper_fallback)
+        ),
+        PlanRequirement.PROVE_FUNCTIONAL_FALLBACK_POLICY_ENABLED: c.privileged_functional_constraint is not None and request.privileged_functional_policy is not None and getattr(request.privileged_functional_policy,"enabled",False),
+        PlanRequirement.PROVE_FUNCTIONAL_OBSERVABILITY_COMPLETE: s.privileged_state is not None and s.privileged_state.observability is not None and s.privileged_state.observability.complete,
+        PlanRequirement.PROVE_EXACT_PRIVILEGED_FUNCTIONAL_CONTRACT: c.privileged_functional_constraint is not None,
+        PlanRequirement.PRESERVE_FUNCTIONAL_OUTPUTS: c.privileged_functional_constraint is not None and c.privileged_functional_constraint.fallback_contract.preserves_outputs,
+        PlanRequirement.PRESERVE_FUNCTIONAL_MEMORY: c.privileged_functional_constraint is not None and c.privileged_functional_constraint.fallback_contract.preserves_memory,
+        PlanRequirement.PRESERVE_FUNCTIONAL_ERROR: c.privileged_functional_constraint is not None and c.privileged_functional_constraint.fallback_contract.preserves_errors,
+        PlanRequirement.PRESERVE_FUNCTIONAL_TERMINATION: c.privileged_functional_constraint is not None and c.privileged_functional_constraint.fallback_contract.preserves_termination,
+        PlanRequirement.PRESERVE_FUNCTIONAL_TRAPS: c.privileged_functional_constraint is not None and c.privileged_functional_constraint.fallback_contract.preserves_traps,
+        PlanRequirement.PROVE_IGNORED_PRIVILEGED_STATE_AUTHORITY: c.privileged_functional_constraint is not None and s.privileged_state is not None and s.privileged_state.observability is not None and c.privileged_functional_constraint.fallback_contract.ignored_state_ids == tuple(x.state_id for x in s.privileged_state.observability.ignored_states),
+        PlanRequirement.PROVE_NO_UNKNOWN_PRIVILEGED_STATE: s.privileged_state is not None and s.privileged_state.complete and not s.privileged_state.reason_codes and s.privileged_state.state is not None and s.privileged_state.state.complete and not s.privileged_state.state.missing_fact_codes,
         PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY: all(x.width_bits is not None for x in s.operands.operands),
         PlanRequirement.PROVE_DEFINED_C_SEMANTICS: (p.kind is not TargetLoweringKind.C_EXPRESSION or (s.value_operation is not None and s.value_operation.complete)) and (p.kind is not TargetLoweringKind.STACK_ADDRESS_REBINDING or (s.stack_frame is not None and s.stack_frame.stack_address_rebinding_eligible)) and (p.kind is not TargetLoweringKind.VIRTUAL_PRIVATE_FRAME or (s.stack_frame is not None and s.stack_frame.virtual_private_frame_eligible)),
     }
@@ -298,16 +342,16 @@ def finalize(request, conclusions):
     final=tuple(conclusions)+extra
     return SemanticProofResult.passed(request.candidate_plan.plan_id,final,_evidence(request,final,request.candidate_plan.requirements))
 
-def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None, privileged_runtime_registry=None):
+def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None, privileged_runtime_registry=None, privileged_functional_registry=None, privileged_functional_policy=None):
     """D0-D4 then exactly one plan-specific proof; unknowns reject."""
     if preservation_decision is None and isinstance(source_model,SourceSemanticModel): preservation_decision=source_model.preservation
     if target_semantic_catalog is None or compiler_capabilities is None: return SemanticProofResult.failed(getattr(candidate_plan,"plan_id",None),SemanticProofReasonCode.INVALID_REQUEST)
-    request=SemanticProofRequest(source_model,preservation_decision,candidate_plan,constraints,target_environment,target_semantic_catalog,compiler_capabilities,helper_contract_registry,privileged_runtime_registry)
+    request=SemanticProofRequest(source_model,preservation_decision,candidate_plan,constraints,target_environment,target_semantic_catalog,compiler_capabilities,helper_contract_registry,privileged_runtime_registry,privileged_functional_registry,privileged_functional_policy)
     common=validate_common(request)
     if common is not None:return common
     from . import phase6d_c_expression as ce, phase6d_c_builtin as cb, phase6d_x86_inline_asm as xa, phase6d_atomic as ab, phase6d_control_flow as cf, phase6d_helper_abi as ha
-    from . import phase6d_stack_rebinding as sr, phase6d_virtual_private_frame as vp, phase6d_abi_wrapper as aw, phase6d_privileged_runtime as pr
-    dispatch={TargetLoweringKind.C_EXPRESSION:ce.prove,TargetLoweringKind.C_BUILTIN:cb.prove,TargetLoweringKind.X86_GNU_INLINE_ASM:xa.prove,TargetLoweringKind.X86_ATOMIC:ab.prove_atomic,TargetLoweringKind.X86_BARRIER:ab.prove_barrier,TargetLoweringKind.STRUCTURED_CONTROL_FLOW:cf.prove,TargetLoweringKind.HELPER_CALL:ha.prove,TargetLoweringKind.STACK_ADDRESS_REBINDING:sr.prove,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME:vp.prove,TargetLoweringKind.ABI_WRAPPER_CALL:aw.prove,TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:pr.prove}
+    from . import phase6d_stack_rebinding as sr, phase6d_virtual_private_frame as vp, phase6d_abi_wrapper as aw, phase6d_privileged_runtime as pr, phase6d_privileged_functional as pf
+    dispatch={TargetLoweringKind.C_EXPRESSION:ce.prove,TargetLoweringKind.C_BUILTIN:cb.prove,TargetLoweringKind.X86_GNU_INLINE_ASM:xa.prove,TargetLoweringKind.X86_ATOMIC:ab.prove_atomic,TargetLoweringKind.X86_BARRIER:ab.prove_barrier,TargetLoweringKind.STRUCTURED_CONTROL_FLOW:cf.prove,TargetLoweringKind.HELPER_CALL:ha.prove,TargetLoweringKind.STACK_ADDRESS_REBINDING:sr.prove,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME:vp.prove,TargetLoweringKind.ABI_WRAPPER_CALL:aw.prove,TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:pr.prove,TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:pf.prove}
     fn=dispatch.get(candidate_plan.kind)
     if fn is None:return reject(request,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     try:return fn(request)
