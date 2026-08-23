@@ -21,6 +21,9 @@ from .abi_sidecar import AbiCallSidecar
 from .whole_function_sidecar import WholeFunctionSidecar
 from .whole_function_scheduler import schedule_whole_function_replacements
 from .privileged_functional_contracts import PrivilegedFunctionalFallbackRegistry
+from .privileged_runtime_contracts import PrivilegedRuntimeRegistry
+from .privileged_state_analysis import SourcePrivilegedStateModel
+from .functional_observability import FunctionalObservabilityContract
 from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
     audit_privileged_emitted_text,
@@ -948,6 +951,11 @@ def run(
     abi_call_sidecar: AbiCallSidecar | None = None,
     abi_wrapper_registry: TargetAbiWrapperRegistry | None = None,
     whole_function_sidecar: WholeFunctionSidecar | None = None,
+    privileged_state_facts: Mapping[str, SourcePrivilegedStateModel] | None = None,
+    functional_observability_facts: Mapping[
+        str, FunctionalObservabilityContract
+    ] | None = None,
+    privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> dict:
@@ -1325,6 +1333,15 @@ def run(
             target_environment=environment,
             abi_call_bindings=abi_bindings,
             abi_wrapper_registry=abi_wrapper_registry,
+            privileged_state=(
+                None if privileged_state_facts is None
+                else privileged_state_facts.get(f.fragment.id)
+            ),
+            functional_observability=(
+                None if functional_observability_facts is None
+                else functional_observability_facts.get(f.fragment.id)
+            ),
+            privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,
         )
