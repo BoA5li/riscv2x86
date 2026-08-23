@@ -12,7 +12,7 @@ class FrontendFunctionFacts:
     function_id:str; ast_binding:FunctionAstBinding; fragment_ids:tuple[str,...]
     complete:bool; missing_fact_codes:tuple[str,...]=()
 
-def build_whole_function_translation_facts(*,frontend:FrontendFunctionFacts|None,mixed_cfg:SourceFunctionControlFlowModel|None,frame:FunctionFrameAnalysis|None,declaration:FunctionAbiDeclarationFacts|None,abi_join:FunctionAbiMachineJoin|None,renderer_contract:WholeFunctionRendererContract|None)->WholeFunctionTranslationFacts:
+def build_whole_function_translation_facts(*,frontend:FrontendFunctionFacts|None,mixed_cfg:SourceFunctionControlFlowModel|None,frame:FunctionFrameAnalysis|None,declaration:FunctionAbiDeclarationFacts|None,abi_join:FunctionAbiMachineJoin|None,renderer_contract:WholeFunctionRendererContract|None,privileged_execution=None,privileged_machine_analysis=None)->WholeFunctionTranslationFacts:
     reasons=[]
     if frontend is None: reasons.append("whole-function.frontend-facts-missing")
     if mixed_cfg is None or not mixed_cfg.complete: reasons.append("whole-function.mixed-cfg-incomplete")
@@ -20,6 +20,10 @@ def build_whole_function_translation_facts(*,frontend:FrontendFunctionFacts|None
     if declaration is None or not declaration.complete: reasons.append("whole-function.abi-declaration-incomplete")
     if abi_join is None or not abi_join.complete: reasons.append("whole-function.abi-machine-join-incomplete")
     if renderer_contract is None or not renderer_contract.complete: reasons.append("whole-function.renderer-contract-incomplete")
+    if privileged_execution is not None:
+        if not getattr(privileged_execution,"complete",False): reasons.append("whole-function.privileged-execution-facts-incomplete")
+        if privileged_machine_analysis is None or not getattr(privileged_machine_analysis,"complete",False): reasons.append("whole-function.privileged-machine-analysis-incomplete")
+        if frontend and tuple(sorted(frontend.fragment_ids)) != tuple(getattr(privileged_execution,"member_fragment_ids",())): reasons.append("whole-function.privileged-fragment-membership-mismatch")
     if frontend:
         reasons.extend(frontend.missing_fact_codes)
         if not frontend.complete or not frontend.ast_binding.complete: reasons.append("whole-function.frontend-facts-incomplete")
@@ -32,5 +36,6 @@ def build_whole_function_translation_facts(*,frontend:FrontendFunctionFacts|None
         "sha256:"+sha256(repr(frame).encode()).hexdigest(),
         "sha256:"+sha256(repr(declaration).encode()).hexdigest(),
         "sha256:"+sha256(repr(abi_join).encode()).hexdigest(),
+        privileged_dataflow_identity=(None if privileged_machine_analysis is None else privileged_machine_analysis.analysis_identity),
     )
-    return WholeFunctionTranslationFacts(unit,None if frontend is None else frontend.ast_binding,mixed_cfg,None if frame is None else frame.stack,None if abi_join is None else abi_join.abi,() if frame is None else frame.callee_saved_effects,() if frontend is None else frontend.fragment_ids,renderer_contract,complete,tuple(sorted(set(reasons))),evidence)
+    return WholeFunctionTranslationFacts(unit,None if frontend is None else frontend.ast_binding,mixed_cfg,None if frame is None else frame.stack,None if abi_join is None else abi_join.abi,() if frame is None else frame.callee_saved_effects,() if frontend is None else frontend.fragment_ids,renderer_contract,complete,tuple(sorted(set(reasons))),evidence,privileged_execution,privileged_machine_analysis)
