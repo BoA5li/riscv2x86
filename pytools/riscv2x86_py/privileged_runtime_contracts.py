@@ -14,8 +14,119 @@ from .privileged_state_adapter import SourcePrivilegedSemanticModel
 
 
 PRIVILEGED_RUNTIME_REGISTRY_SCHEMA = (
-    "riscv2x86.privileged-runtime-registry.v1"
+    "riscv2x86.privileged-runtime-registry.v2"
 )
+PRIVILEGED_EFFECT_MAPPING_SCHEMA = "riscv2x86.privileged-effect-mapping.v1"
+
+
+def source_effect_id(kind: str, block_address: int, operation_index: int) -> str:
+    if not isinstance(kind, str) or not kind.strip():
+        raise TypeError("effect kind must be a non-empty string")
+    return f"{kind.strip()}@0x{block_address:x}:{operation_index}"
+
+
+@dataclass(frozen=True)
+class TargetCsrStateMapping:
+    source_effect_id: str
+    source_csr_id: str
+    source_field_ids: tuple[str, ...]
+    target_state_object_id: str
+    target_operation_id: str
+    old_new_state_relation_id: str
+    access_trap_mapping_id: str | None
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetTrapMapping:
+    source_effect_id: str
+    cause_mapping_id: str
+    tval_mapping_id: str
+    handler_mapping_id: str
+    continuation_mapping_id: str
+    target_error_or_result_mapping_id: str
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetInterruptMapping:
+    source_effect_id: str
+    target_event_state_id: str
+    enable_pending_relation_id: str
+    delegation_priority_relation_id: str
+    wait_wakeup_relation_id: str | None
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetAddressTranslationMapping:
+    source_effect_id: str
+    target_address_space_id: str
+    root_mode_relation_id: str
+    scope_relation_id: str
+    synchronization_relation_id: str
+    shootdown_relation_id: str
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetVirtualizationMapping:
+    source_effect_id: str
+    target_virtualization_state_id: str
+    state_relation_id: str
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetDebugMapping:
+    source_effect_id: str
+    target_debug_state_id: str
+    state_relation_id: str
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetObservableEffectMapping:
+    source_observable_id: str
+    target_observable_id: str
+    relation_id: str
+    complete: bool = True
+
+
+@dataclass(frozen=True)
+class TargetPrivilegedShellConstraint:
+    preserves_volatile: bool
+    preserves_memory_clobber: bool
+    preserves_cc_clobber: bool
+    complete: bool
+
+
+@dataclass(frozen=True)
+class TargetPrivilegedMemoryConstraint:
+    preserves_memory_effects: bool
+    preserves_compiler_ordering: bool
+    complete: bool
+
+
+@dataclass(frozen=True)
+class TargetPrivilegedControlFlowConstraint:
+    preserves_traps: bool
+    preserves_control_flow: bool
+    may_return: bool
+    may_unwind: bool
+    complete: bool
+
+
+def _validate_mappings(values: tuple[object, ...], name: str) -> None:
+    ids = tuple(getattr(item, "source_effect_id", None) for item in values)
+    if any(not isinstance(item, str) or not item for item in ids):
+        raise TypeError(f"{name} require source effect identities")
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"{name} contain duplicate source effect mappings")
+    if tuple(sorted(ids)) != ids:
+        raise ValueError(f"{name} must use stable source-effect sorting")
+    if any(getattr(item, "complete", None) is not True for item in values):
+        raise ValueError(f"{name} must be complete")
 
 
 def target_environment_identity(environment: object) -> str:
@@ -50,6 +161,18 @@ class PrivilegedRuntimeContract:
     target_environment_id: str
     runtime_symbol: str
     required_target_capability: str
+    source_execution_profile: str = "riscv_user_process"
+    target_execution_mode: str = "x86_user_process"
+    renderer_contract_id: str = "privileged-runtime-call.v1"
+    runtime_contract_set_id: str = "default-privileged-runtime-set"
+    effect_mapping_schema: str = PRIVILEGED_EFFECT_MAPPING_SCHEMA
+    csr_mappings: tuple[TargetCsrStateMapping, ...] = ()
+    trap_mappings: tuple[TargetTrapMapping, ...] = ()
+    interrupt_mappings: tuple[TargetInterruptMapping, ...] = ()
+    address_translation_mappings: tuple[TargetAddressTranslationMapping, ...] = ()
+    virtualization_mappings: tuple[TargetVirtualizationMapping, ...] = ()
+    debug_mappings: tuple[TargetDebugMapping, ...] = ()
+    observable_effect_mappings: tuple[TargetObservableEffectMapping, ...] = ()
     required_headers: tuple[str, ...] = ()
     required_library: str | None = None
     argument_operand_indexes: tuple[int, ...] = ()
@@ -73,6 +196,8 @@ class PrivilegedRuntimeContract:
             "contract_id", "semantic_version", "source_privileged_identity",
             "target_environment_id", "runtime_symbol",
             "required_target_capability",
+            "source_execution_profile", "target_execution_mode",
+            "renderer_contract_id", "runtime_contract_set_id", "effect_mapping_schema",
         ):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or value != value.strip():
@@ -86,6 +211,12 @@ class PrivilegedRuntimeContract:
                 raise TypeError(f"{name} must contain non-negative integers")
             if len(set(values)) != len(values):
                 raise ValueError(f"{name} must not contain duplicates")
+        for name in (
+            "csr_mappings", "trap_mappings", "interrupt_mappings",
+            "address_translation_mappings", "virtualization_mappings",
+            "debug_mappings",
+        ):
+            _validate_mappings(getattr(self, name), name)
         for name in (
             "preserves_architectural_state", "preserves_shell",
             "preserves_volatile_execution",
@@ -170,6 +301,27 @@ class TargetPrivilegedRuntimeConstraint:
     source_privileged_identity: str
     target_environment_id: str
     registry_version: str
+    contract_id: str
+    contract_version: str
+    source_execution_profile: str
+    target_execution_mode: str
+    csr_mappings: tuple[TargetCsrStateMapping, ...]
+    trap_mappings: tuple[TargetTrapMapping, ...]
+    interrupt_mappings: tuple[TargetInterruptMapping, ...]
+    address_translation_mappings: tuple[TargetAddressTranslationMapping, ...]
+    virtualization_mappings: tuple[TargetVirtualizationMapping, ...]
+    debug_mappings: tuple[TargetDebugMapping, ...]
+    shell_constraint: TargetPrivilegedShellConstraint
+    memory_constraint: TargetPrivilegedMemoryConstraint
+    control_flow_constraint: TargetPrivilegedControlFlowConstraint
+    ignored_source_state: tuple[str, ...]
+    observable_effect_mappings: tuple[TargetObservableEffectMapping, ...]
+    runtime_symbol_or_intrinsic: str
+    required_headers: tuple[str, ...]
+    required_libraries: tuple[str, ...]
+    required_capabilities: tuple[str, ...]
+    functional_fallback: bool
+    complete: bool
     forbids_generic_helper_fallback: bool = True
 
     def __post_init__(self) -> None:
@@ -178,8 +330,22 @@ class TargetPrivilegedRuntimeConstraint:
         for name in (
             "source_privileged_identity", "target_environment_id",
             "registry_version",
+            "contract_id", "contract_version", "source_execution_profile",
+            "target_execution_mode", "runtime_symbol_or_intrinsic",
         ):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise TypeError(f"{name} must be non-empty")
         if self.forbids_generic_helper_fallback is not True:
             raise ValueError("privileged constraint must forbid generic helper fallback")
+        if self.functional_fallback:
+            raise ValueError("strict privileged constraint cannot be a fallback")
+        if not self.complete:
+            raise ValueError("privileged effect mapping constraint must be complete")
+        for name in (
+            "csr_mappings", "trap_mappings", "interrupt_mappings",
+            "address_translation_mappings", "virtualization_mappings",
+            "debug_mappings",
+        ):
+            _validate_mappings(getattr(self, name), name)
+        if self.ignored_source_state:
+            raise ValueError("strict mapping cannot ignore source state")
