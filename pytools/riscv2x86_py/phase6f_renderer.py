@@ -533,12 +533,12 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
             return _failure(request, RenderReasonCode.PRIVILEGED_RECIPE_INCONSISTENT, internal=True)
         semantic = (
             constraint.runtime_contract
-            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if a.plan.kind in _STRICT_PRIVILEGED_KINDS
             else constraint.fallback_contract
         )
         expected_identifier = (
             semantic.runtime_symbol
-            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if a.plan.kind in _STRICT_PRIVILEGED_KINDS
             else semantic.implementation_id
         )
         libraries = (() if semantic.required_library is None else (semantic.required_library,))
@@ -560,7 +560,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         text = f"{results[0]} = {call};" if results else f"{call};"
         rendered_kind = (
             RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
-            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if a.plan.kind in _STRICT_PRIVILEGED_KINDS
             else RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
         )
         if audit_privileged_emitted_text(
