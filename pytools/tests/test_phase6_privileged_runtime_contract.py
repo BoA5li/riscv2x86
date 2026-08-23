@@ -93,7 +93,7 @@ def test_strict_plan_does_not_require_functional_observability():
     assert source.privileged_state.strict_translation_eligible
     assert not source.privileged_state.functional_fallback_eligible
     assert tuple(plan.kind for plan in generate_candidate_plans(source)) == (
-        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
     )
 
 
@@ -102,7 +102,7 @@ def test_privileged_plan_is_exclusive_and_never_generic_helper():
     plans = generate_candidate_plans(source)
 
     assert len(plans) == 1
-    assert plans[0].kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+    assert plans[0].kind is TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
     assert all(plan.kind is not TargetLoweringKind.HELPER_CALL for plan in plans)
 
 
@@ -201,7 +201,7 @@ def test_strict_privileged_runtime_completes_6b_through_6e():
     assert result.kind is FinalSelectionKind.SELECTED
     assert result.selected_plan is not None
     assert result.selected_plan.plan.kind is (
-        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
     )
 
     stale = select_final_target_lowering_plan(replace(
