@@ -1746,9 +1746,8 @@ def _derive_privileged_runtime_0(
     )
     source = source_model.privileged_state
     if (
-        source is None or not source.complete or source.state is None
-        or not source.state.present or source.observability is None
-        or not source.observability.complete
+        source is None or not source.strict_translation_eligible
+        or source.state is None or not source.state.present
         or source.requires_whole_function_lowering
     ):
         return TargetConstraintDerivationResult.failure(
