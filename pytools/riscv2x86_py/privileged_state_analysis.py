@@ -456,6 +456,16 @@ def _typed_csr_effect(block_address, operation_index, meta, facts) -> CsrEffect:
         reasons.append(PrivilegedStateReasonCode.CSR_OPERATION_UNKNOWN)
     if meta.xlen_bits not in {32, 64}:
         reasons.append(PrivilegedStateReasonCode.CSR_XLEN_UNKNOWN)
+    if meta.immediate_mask is not None and (
+        isinstance(meta.immediate_mask, bool)
+        or not isinstance(meta.immediate_mask, int)
+        or meta.immediate_mask < 0
+        or (
+            meta.xlen_bits in {32, 64}
+            and meta.immediate_mask >= (1 << meta.xlen_bits)
+        )
+    ):
+        reasons.append(PrivilegedStateReasonCode.CSR_IMMEDIATE_MASK_INCOMPLETE)
     extension = (meta.required_extension_id or "").strip().lower() or None
     if extension is None or extension not in facts.source_isa_extensions:
         reasons.append(PrivilegedStateReasonCode.CSR_EXTENSION_UNPROVEN)
