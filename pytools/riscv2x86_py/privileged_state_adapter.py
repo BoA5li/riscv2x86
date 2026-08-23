@@ -13,6 +13,7 @@ from .privileged_state_analysis import (
     PrivilegedSemanticClass,
     SourcePrivilegedStateModel,
 )
+from .privileged_policy import PrivilegedPreservationPolicy
 
 
 class PrivilegedAdapterReasonCode:
@@ -20,6 +21,10 @@ class PrivilegedAdapterReasonCode:
     STATE_INCOMPLETE = "phase6a.privileged-state-incomplete"
     OBSERVABILITY_MISSING = "phase6a.privileged-observability-missing"
     OBSERVABILITY_INCOMPLETE = "phase6a.privileged-observability-incomplete"
+    FALLBACK_POLICY_DISABLED = "phase6a.privileged-functional-fallback-policy-disabled"
+    FALLBACK_IGNORED_STATE_AUTHORITY_INCOMPLETE = (
+        "phase6a.privileged-ignored-state-authority-incomplete"
+    )
     FRAGMENT_ID_MISMATCH = "phase6a.privileged-fragment-id-mismatch"
     OUTPUT_SURFACE_MISMATCH = "phase6a.privileged-output-surface-mismatch"
     SHELL_MEMORY_MISMATCH = "phase6a.privileged-shell-memory-mismatch"
@@ -70,28 +75,53 @@ SourceReadOnlyCsrModel = SourceReadOnlyCounterCsrModel
 @dataclass(frozen=True)
 class SourcePrivilegedSemanticModel:
     state: SourcePrivilegedStateModel | None
-    observability: FunctionalObservabilityContract | None
-    read_only_counter: SourceReadOnlyCounterCsrModel | None
-    functional_fallback_possible: bool
+    semantic_classes: tuple[PrivilegedSemanticClass, ...]
+    strict_translation_eligible: bool
+    functional_fallback_eligible: bool
+    functional_observability: FunctionalObservabilityContract | None
+    preservation_policy: PrivilegedPreservationPolicy
     requires_whole_function_lowering: bool
     complete: bool
     reason_codes: tuple[str, ...]
-    semantic_classes: tuple[PrivilegedSemanticClass, ...] = ()
+    read_only_counter: SourceReadOnlyCounterCsrModel | None = None
     classification_complete: bool = False
+    strict_reason_codes: tuple[str, ...] = ()
+    functional_fallback_reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if tuple(sorted(set(self.reason_codes))) != self.reason_codes:
-            raise ValueError("privileged adapter reasons must be unique/sorted")
-        if self.complete and self.reason_codes:
-            raise ValueError("complete privileged adapter cannot have reasons")
+        for values, what in (
+            (self.reason_codes, "privileged adapter reasons"),
+            (self.strict_reason_codes, "strict eligibility reasons"),
+            (self.functional_fallback_reason_codes, "fallback eligibility reasons"),
+        ):
+            if tuple(sorted(set(values))) != values:
+                raise ValueError(f"{what} must be unique/sorted")
         if tuple(sorted(set(self.semantic_classes), key=lambda item: item.value)) != self.semantic_classes:
             raise ValueError("adapter semantic classes must be unique and sorted")
         if self.complete and not self.classification_complete:
             raise ValueError("complete privileged adapter needs classification")
-        if self.functional_fallback_possible and (
-            not self.complete or self.observability is None
+        if self.strict_translation_eligible and not self.complete:
+            raise ValueError("strict eligibility requires complete source state")
+        if self.functional_fallback_eligible and (
+            not self.complete
+            or self.functional_observability is None
+            or not self.functional_observability.complete
+            or not self.preservation_policy.allows_functional_fallback
         ):
-            raise ValueError("functional fallback requires complete observability")
+            raise ValueError(
+                "functional fallback eligibility requires source completeness, "
+                "complete observability authority, and enabled policy"
+            )
+
+    @property
+    def observability(self) -> FunctionalObservabilityContract | None:
+        """Compatibility view for pre-policy Phase-6 consumers."""
+        return self.functional_observability
+
+    @property
+    def functional_fallback_possible(self) -> bool:
+        """Compatibility view; policy-disabled fallbacks are not possible."""
+        return self.functional_fallback_eligible
 
 
 def _ordered(values: Iterable[str]) -> tuple[str, ...]:
@@ -121,6 +151,9 @@ def build_privileged_state_adapter(
     abi_effects: object | None,
     whole_function_route: object | None,
     whole_function_facts: object | None = None,
+    preservation_policy: PrivilegedPreservationPolicy = (
+        PrivilegedPreservationPolicy.STRICT_ARCHITECTURAL
+    ),
 ) -> SourcePrivilegedSemanticModel | None:
     """Cross-check Phase-5 products without reading asm, p-code, or CFG."""
     if (
@@ -140,8 +173,6 @@ def build_privileged_state_adapter(
     privileged_present = bool(
         phase5_state is not None and phase5_state.present
     )
-    if privileged_present and observability is None:
-        reasons.append(PrivilegedAdapterReasonCode.OBSERVABILITY_MISSING)
     if observability is not None:
         if observability.fragment_id != fragment_id:
             reasons.append(PrivilegedAdapterReasonCode.FRAGMENT_ID_MISMATCH)
@@ -267,30 +298,65 @@ def build_privileged_state_adapter(
                         csr_name=read_only_counter_candidate.csr_name,
                     )
 
-    reason_codes = _ordered(reasons)
-    complete = bool(
+    strict_reasons = list(reasons)
+    strict_source_complete = bool(
         phase5_state is not None
         and phase5_state.complete
-        and (not privileged_present or (
-            observability is not None and observability.complete
-        ))
-        and not reason_codes
+        and classification_complete
+        and PrivilegedSemanticClass.UNKNOWN not in semantic_classes
+        and not strict_reasons
     )
-    fallback_possible = bool(
-        complete
-        and observability is not None
+    strict_eligible = bool(
+        strict_source_complete and not requires_whole_function
+    )
+
+    fallback_reasons: list[str] = list(strict_reasons)
+    fallback_contract_possible = bool(
+        observability is not None
+        and observability.complete
         and observability.fallback_possibility is (
             FunctionalFallbackPossibility.POSSIBLE_WITH_EXACT_TARGET_CONTRACT
         )
     )
+    if privileged_present and observability is None:
+        fallback_reasons.append(PrivilegedAdapterReasonCode.OBSERVABILITY_MISSING)
+    elif observability is not None and not observability.complete:
+        fallback_reasons.append(PrivilegedAdapterReasonCode.OBSERVABILITY_INCOMPLETE)
+    if not preservation_policy.allows_functional_fallback:
+        fallback_reasons.append(PrivilegedAdapterReasonCode.FALLBACK_POLICY_DISABLED)
+    if observability is not None and any(
+        not item.complete for item in observability.ignored_states
+    ):
+        fallback_reasons.append(
+            PrivilegedAdapterReasonCode.FALLBACK_IGNORED_STATE_AUTHORITY_INCOMPLETE
+        )
+    if observability is not None and observability.unignored_privileged_state_ids:
+        fallback_reasons.append(
+            PrivilegedAdapterReasonCode.FALLBACK_IGNORED_STATE_AUTHORITY_INCOMPLETE
+        )
+
+    fallback_eligible = bool(
+        strict_source_complete
+        and not requires_whole_function
+        and fallback_contract_possible
+        and preservation_policy.allows_functional_fallback
+        and not _ordered(fallback_reasons)
+    )
+    # complete describes authoritative source state, not optional downgrade
+    # authority. Strict translation never depends on observability sidecars.
+    complete = strict_source_complete
     return SourcePrivilegedSemanticModel(
         state=phase5_state,
-        observability=observability,
-        read_only_counter=counter,
-        functional_fallback_possible=fallback_possible,
+        semantic_classes=semantic_classes,
+        strict_translation_eligible=strict_eligible,
+        functional_fallback_eligible=fallback_eligible,
+        functional_observability=observability,
+        preservation_policy=preservation_policy,
         requires_whole_function_lowering=requires_whole_function,
         complete=complete,
-        reason_codes=reason_codes,
-        semantic_classes=semantic_classes,
+        reason_codes=_ordered(strict_reasons),
+        read_only_counter=counter,
         classification_complete=classification_complete,
+        strict_reason_codes=_ordered(strict_reasons),
+        functional_fallback_reason_codes=_ordered(fallback_reasons),
     )
