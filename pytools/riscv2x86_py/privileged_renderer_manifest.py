@@ -20,6 +20,10 @@ PRIVILEGED_RENDERER_MANIFEST_SCHEMA = (
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PRIVILEGED_KINDS = frozenset({
+    TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
+    TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER,
+    TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER,
+    TargetLoweringKind.MMU_RUNTIME_ADAPTER,
     TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
     TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
 })
