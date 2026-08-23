@@ -15,7 +15,7 @@ from .privileged_state_adapter import SourcePrivilegedSemanticModel
 
 
 PRIVILEGED_OUTPUT_MANIFEST_SCHEMA = (
-    "riscv2x86.privileged-output-manifest.v1"
+    "riscv2x86.privileged-output-manifest.v2"
 )
 
 
@@ -88,7 +88,15 @@ class PrivilegedOutputManifest:
     renderer_manifest_id: str | None
     renderer_manifest_version: str | None
     preservation_conclusion: PrivilegedPreservationConclusion
+    architecture_semantics_preserved: bool
+    shell_semantics_preserved: bool
+    microarchitecture_semantics_preserved: bool
+    observable_effects_proved: tuple[str, ...]
     ignored_state_ids: tuple[str, ...]
+    privileged_effect_proof_ids: tuple[str, ...]
+    privileged_effect_proof_identity: str | None
+    runtime_contract_id: str | None
+    runtime_contract_version: str | None
     proof: PrivilegedProofIdentity | None
     runtime_dependencies: PrivilegedRuntimeDependency
     diagnostics: tuple[PrivilegedOutputDiagnostic, ...]
@@ -100,7 +108,7 @@ class PrivilegedOutputManifest:
             raise ValueError("privileged output manifest requires fragment id")
         if self.schema_version != PRIVILEGED_OUTPUT_MANIFEST_SCHEMA:
             raise ValueError("unsupported privileged output manifest schema")
-        for name in ("source_isa_extensions", "ignored_state_ids"):
+        for name in ("source_isa_extensions", "ignored_state_ids", "observable_effects_proved", "privileged_effect_proof_ids"):
             values = getattr(self, name)
             if tuple(sorted(set(values))) != values:
                 raise ValueError(f"{name} must be unique and sorted")
@@ -128,6 +136,19 @@ class PrivilegedOutputManifest:
             and self.ignored_state_ids
         ):
             raise ValueError("strict manifest cannot ignore source state")
+        if self.preservation_conclusion is PrivilegedPreservationConclusion.FUNCTIONAL_EQUIVALENCE_ONLY and (
+            self.architecture_semantics_preserved
+            or self.microarchitecture_semantics_preserved
+        ):
+            raise ValueError("functional fallback cannot claim architecture or microarchitecture preservation")
+        if self.status is PrivilegedOutputStatus.EMITTED and not self.shell_semantics_preserved:
+            raise ValueError("emitted privileged manifest must preserve shell semantics")
+        if self.status is PrivilegedOutputStatus.EMITTED and (
+            not self.runtime_contract_id or not self.runtime_contract_version
+        ):
+            raise ValueError("emitted privileged manifest requires runtime contract identity")
+        if any(not item.startswith("sha256:") for item in self.privileged_effect_proof_ids):
+            raise ValueError("privileged effect proof IDs must be sha256 identities")
 
     def to_dict(self) -> dict[str, object]:
         proof = None if self.proof is None else {
@@ -145,8 +166,14 @@ class PrivilegedOutputManifest:
             "schemaVersion": self.schema_version,
             "fragmentId": self.fragment_id,
             "status": self.status.value,
+            "proofStatus": (
+                "approved" if self.status is PrivilegedOutputStatus.EMITTED
+                else "not_approved"
+            ),
+            "preservationMode": self.preservation_conclusion.value,
             "sourceExecutionProfile": self.source_execution_profile,
             "targetExecutionProfile": self.target_execution_profile,
+            "targetExecutionMode": self.target_execution_profile,
             "sourcePrivilegeSpecVersion": self.source_privilege_spec_version,
             "sourceIsaExtensions": list(self.source_isa_extensions),
             "semanticContractId": self.semantic_contract_id,
@@ -155,7 +182,16 @@ class PrivilegedOutputManifest:
             "rendererManifestId": self.renderer_manifest_id,
             "rendererManifestVersion": self.renderer_manifest_version,
             "preservationConclusion": self.preservation_conclusion.value,
+            "architectureSemanticsPreserved": self.architecture_semantics_preserved,
+            "shellSemanticsPreserved": self.shell_semantics_preserved,
+            "microarchitectureSemanticsPreserved": self.microarchitecture_semantics_preserved,
+            "observableEffectsProved": list(self.observable_effects_proved),
             "ignoredStateIds": list(self.ignored_state_ids),
+            "ignoredSourceState": list(self.ignored_state_ids),
+            "privilegedEffectProofIds": list(self.privileged_effect_proof_ids),
+            "privilegedEffectProofIdentity": self.privileged_effect_proof_identity,
+            "runtimeContractId": self.runtime_contract_id,
+            "runtimeContractVersion": self.runtime_contract_version,
             "proof": proof,
             "runtimeDependencies": {
                 "callableIdentifier": (
@@ -188,6 +224,11 @@ def _proof_identity(artifact: Mapping[str, object]) -> PrivilegedProofIdentity:
         artifact.get("targetCatalogVersion"),
         artifact.get("selectionPolicyId"),
         artifact.get("selectionPolicyVersion"),
+        tuple(_strings(artifact.get("observableEffectsProved"))),
+        tuple(_strings(artifact.get("ignoredSourceState"))),
+        tuple(_strings(artifact.get("privilegedEffectProofIds"))),
+        artifact.get("runtimeContractId"),
+        artifact.get("runtimeContractVersion"),
     )
     identity = "sha256:" + sha256(repr(fields).encode("utf-8")).hexdigest()
     return PrivilegedProofIdentity(
@@ -340,7 +381,29 @@ def build_privileged_output_manifest(
             artifact.get("privilegedRendererManifestVersion")
         ),
         preservation_conclusion=conclusion,
+        architecture_semantics_preserved=bool(
+            artifact.get("architectureSemanticsPreserved", False)
+        ),
+        shell_semantics_preserved=bool(
+            artifact.get("shellSemanticsPreserved", False)
+        ),
+        microarchitecture_semantics_preserved=bool(
+            artifact.get("microarchitectureSemanticsPreserved", False)
+        ),
+        observable_effects_proved=_strings(
+            artifact.get("observableEffectsProved")
+        ),
         ignored_state_ids=ignored,
+        privileged_effect_proof_ids=_strings(
+            artifact.get("privilegedEffectProofIds")
+        ),
+        privileged_effect_proof_identity=_optional_string(
+            artifact.get("privilegedEffectProofIdentity")
+        ),
+        runtime_contract_id=_optional_string(artifact.get("runtimeContractId")),
+        runtime_contract_version=_optional_string(
+            artifact.get("runtimeContractVersion")
+        ),
         proof=proof,
         runtime_dependencies=dependency,
         diagnostics=diagnostics,
