@@ -17,7 +17,7 @@ from .pcode_ir import (
 )
 from .privileged_execution_sidecar import (
     PrivilegedExecutionFacts, SourceExecutionProfile, SourcePrivilegeMode,
-    UnknownCsrAccessDisposition, default_user_process_execution_facts,
+    TargetExecutionMode, UnknownCsrAccessDisposition, default_user_process_execution_facts,
 )
 
 
@@ -113,6 +113,7 @@ class DebugStateEffect:
 @dataclass(frozen=True)
 class SourcePrivilegedStateModel:
     execution_profile:SourceExecutionProfile
+    target_execution_mode:TargetExecutionMode
     initial_privilege_mode:SourcePrivilegeMode
     source_privilege_spec_version:str|None
     source_isa_extensions:tuple[str,...]
@@ -379,8 +380,8 @@ def analyze_privileged_state(*,fragment_id:str,blocks:Sequence[Block],
     reason_codes=_ordered_reasons(reasons)
     complete=not present or not reason_codes
     return SourcePrivilegedStateModel(
-        facts.source_execution_profile,facts.initial_privilege_mode,
-        facts.source_privilege_spec_version,facts.source_isa_extensions,
+        facts.source_execution_profile,facts.target_execution_mode,
+        facts.initial_privilege_mode,facts.source_privilege_spec_version,facts.source_isa_extensions,
         tuple(sorted(csr,key=_site_key)),tuple(sorted(traps,key=_site_key)),
         tuple(sorted(returns,key=_site_key)),tuple(sorted(interrupts,key=_site_key)),
         tuple(sorted(mmu,key=_site_key)),tuple(sorted(virt,key=_site_key)),
