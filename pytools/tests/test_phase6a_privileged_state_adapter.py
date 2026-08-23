@@ -259,11 +259,18 @@ def test_adapter_cross_checks_shell_memory_abi_and_whole_function_route():
     )
 
     assert adapter is not None and not adapter.complete
+    assert (
+        PrivilegedAdapterReasonCode.MEMORY_EFFECT_MISMATCH
+        in adapter.functional_fallback_reason_codes
+    )
+    assert (
+        PrivilegedAdapterReasonCode.MEMORY_EFFECT_MISMATCH
+        not in adapter.strict_reason_codes
+    )
     for code in (
-        PrivilegedAdapterReasonCode.MEMORY_EFFECT_MISMATCH,
         PrivilegedAdapterReasonCode.CONTROL_FLOW_EFFECT_MISMATCH,
         PrivilegedAdapterReasonCode.ABI_EFFECT_CONFLICT,
         PrivilegedAdapterReasonCode.WHOLE_FUNCTION_ROUTE_MISSING,
         PrivilegedAdapterReasonCode.WHOLE_FUNCTION_FACTS_MISMATCH,
     ):
-        assert code in adapter.reason_codes
+        assert code in adapter.strict_reason_codes
