@@ -98,6 +98,7 @@ class WholeFunctionPhase5Evidence:
     abi_declaration_identity:str
     abi_machine_join_identity:str
     analysis_version:str="phase5-whole-function-evidence.v1"
+    privileged_dataflow_identity:str|None=None
     @property
     def complete(self)->bool:
         return all((self.mixed_cfg_identity,self.frame_dataflow_identity,
@@ -109,6 +110,8 @@ class WholeFunctionTranslationFacts:
     callee_saved_effects:tuple[CalleeSavedRegisterEffect,...]=(); fragment_ids:tuple[str,...]=()
     renderer_contract:WholeFunctionRendererContract|None=None; complete:bool=False; missing_fact_codes:tuple[str,...]=()
     phase5_evidence:WholeFunctionPhase5Evidence|None=None
+    privileged_execution:object|None=None
+    privileged_machine_analysis:object|None=None
     def __post_init__(self):
         if len(set(self.fragment_ids)) != len(self.fragment_ids): raise ValueError("whole-function fragment ids must be unique")
         if self.complete and self.ast_binding is None: raise ValueError("complete whole-function facts need AST binding")
@@ -126,6 +129,8 @@ class WholeFunctionSemanticModel:
     abi:FunctionAbiFacts|None=None; callee_saved_effects:tuple[CalleeSavedRegisterEffect,...]=()
     renderer_contract:WholeFunctionRendererContract|None=None
     phase5_evidence:WholeFunctionPhase5Evidence|None=None
+    privileged_execution:object|None=None
+    privileged_machine_analysis:object|None=None
 @dataclass(frozen=True)
 class WholeFunctionLoweringPlan:
     plan_id:str; kind:WholeFunctionLoweringKind; route_id:str; requirements:frozenset[str]; reason_codes:tuple[str,...]=()
@@ -167,11 +172,18 @@ def build_whole_function_semantic_model(*, unit:FunctionTranslationUnit, route:W
         cfg=facts.control_flow; abi=facts.abi; effects=tuple(sorted(facts.callee_saved_effects,key=lambda x:x.register))
         exits_ok=cfg is not None and bool(cfg.normal_exits) and not cfg.has_exceptional_exit
         callee_ok=all(x.complete and x.restored_on_all_normal_exits for x in effects)
-        complete=bool(facts.complete and facts.ast_binding and facts.ast_binding.complete and cfg and cfg.complete and exits_ok and stack.complete and abi and abi.complete and callee_ok and route.complete)
+        privileged_required=facts.privileged_execution is not None
+        privileged_ok=(not privileged_required or bool(
+            facts.privileged_machine_analysis is not None
+            and getattr(facts.privileged_execution,"complete",False)
+            and getattr(facts.privileged_machine_analysis,"complete",False)
+        ))
+        complete=bool(facts.complete and facts.ast_binding and facts.ast_binding.complete and cfg and cfg.complete and exits_ok and stack.complete and abi and abi.complete and callee_ok and privileged_ok and route.complete)
         missing=list(unit.missing_fact_codes)+list(facts.missing_fact_codes)+([] if route.complete else list(route.reason_codes))
         if not exits_ok:missing.append("whole-function.exit-facts-incomplete")
         if not callee_ok:missing.append("whole-function.callee-saved-facts-incomplete")
-        return WholeFunctionSemanticModel(unit,stack,False,False,bool(cfg and any(x.kind=="call" for x in cfg.nodes)),bool(cfg and cfg.normal_exits),False,tuple(x.register for x in effects),bool(cfg and cfg.has_exceptional_exit),complete,_ordered(missing),facts.ast_binding,cfg,abi,effects,facts.renderer_contract,facts.phase5_evidence)
+        if not privileged_ok:missing.append("whole-function.privileged-dataflow-incomplete")
+        return WholeFunctionSemanticModel(unit,stack,False,False,bool(cfg and any(x.kind=="call" for x in cfg.nodes)),bool(cfg and cfg.normal_exits),False,tuple(x.register for x in effects),bool(cfg and cfg.has_exceptional_exit),complete,_ordered(missing),facts.ast_binding,cfg,abi,effects,facts.renderer_contract,facts.phase5_evidence,facts.privileged_execution,facts.privileged_machine_analysis)
     stack0=getattr(source_model,"stack_frame",None); control=getattr(source_model,"control_flow",None); registers=getattr(source_model,"registers",None)
     if control is None or registers is None: raise TypeError("source_model must expose structured Phase-6A facts")
     stack=SourceFunctionStackModel("none" if stack0 is None else stack0.kind.value,0 if stack0 is None else stack0.net_stack_delta_bytes,False if stack0 is None else stack0.has_dynamic_adjustment,False if stack0 is None else stack0.requires_real_stack_identity,True if stack0 is None else stack0.complete)
@@ -190,7 +202,7 @@ def generate_whole_function_candidate_plans(model:WholeFunctionSemanticModel,rou
     return (WholeFunctionLoweringPlan("whole-function.route-required.v1",kind,route.route_id or "whole-function-abi-lowering.v1",frozenset(),route.reason_codes),)
 def _proof_id(model,plan):
     c=model.renderer_contract
-    return "sha256:"+sha256(repr((model.unit,model.ast_binding,model.control_flow,model.stack,model.abi,model.callee_saved_effects,model.phase5_evidence,plan.plan_id,None if c is None else (c.contract_id,c.version))).encode()).hexdigest()
+    return "sha256:"+sha256(repr((model.unit,model.ast_binding,model.control_flow,model.stack,model.abi,model.callee_saved_effects,model.phase5_evidence,model.privileged_execution,model.privileged_machine_analysis,plan.plan_id,None if c is None else (c.contract_id,c.version))).encode()).hexdigest()
 def prove_whole_function_plan(*,model:WholeFunctionSemanticModel,plan:WholeFunctionLoweringPlan)->WholeFunctionProofResult:
     if plan.kind is not WholeFunctionLoweringKind.STRUCTURED_C_FUNCTION:return WholeFunctionProofResult(False,plan.plan_id,plan.reason_codes or ("whole-function.route-not-implemented",))
     reasons=[]; ast,cfg,abi,contract=model.ast_binding,model.control_flow,model.abi,model.renderer_contract
@@ -211,6 +223,12 @@ def prove_whole_function_plan(*,model:WholeFunctionSemanticModel,plan:WholeFunct
     if abi is None or not abi.complete or not (abi.entry_complete and abi.exits_complete and abi.calls_complete and abi.pic_plt_tls_complete):reasons.append("phase6d.whole_function.entry_or_exit_abi_unproven")
     if abi is not None and (abi.may_unwind is not False or abi.may_trap is not False):reasons.append("phase6d.whole_function.unwind_or_trap_unproven")
     if any(not x.complete or not x.restored_on_all_normal_exits for x in model.callee_saved_effects):reasons.append("phase6d.whole_function.callee_saved_unproven")
+    if model.privileged_execution is not None:
+        analysis=model.privileged_machine_analysis
+        if analysis is None or not getattr(analysis,"complete",False):
+            reasons.append("phase6d.whole_function.privileged-state-dataflow-unproven")
+        elif getattr(analysis,"privilege_returns_present",False):
+            reasons.append("phase6d.whole_function.privileged-state-machine-required")
     if contract is None or not contract.complete or contract.function_id!=model.unit.function_id:reasons.append("phase6d.whole_function.renderer_contract_missing")
     elif not contract.compiler_managed_stack_only or any(x in contract.replacement_text for x in ("%rsp","%rbp","__builtin_frame_address")):reasons.append("phase6d.whole_function.host_stack_mutation")
     if ast is not None and ast.has_vla_or_cleanup_sensitive_scope:reasons.append("phase6d.whole_function.scope_sensitive_ast")
