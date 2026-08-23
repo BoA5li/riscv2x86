@@ -74,6 +74,29 @@ def _registry(source, environment, *, version="privileged-test-registry.v1"):
     )
 
 
+
+def test_strict_plan_does_not_require_functional_observability():
+    fragment, block, cfg, summary, state, _observability, facts = (
+        _counter_inputs()
+    )
+    source = build_source_semantic_model(
+        fragment=fragment,
+        blocks=(block,),
+        cfg=cfg,
+        summary=summary,
+        runtime_facts=facts,
+        xlen=64,
+        privileged_state=state,
+        functional_observability=None,
+    )
+
+    assert source.privileged_state.strict_translation_eligible
+    assert not source.privileged_state.functional_fallback_eligible
+    assert tuple(plan.kind for plan in generate_candidate_plans(source)) == (
+        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+    )
+
+
 def test_privileged_plan_is_exclusive_and_never_generic_helper():
     source = _source_model()
     plans = generate_candidate_plans(source)
