@@ -23,6 +23,9 @@ from riscv2x86_py.privileged_policy import PrivilegedPreservationPolicy
 from riscv2x86_py.privileged_runtime_contracts import (
     PrivilegedRuntimeContract,
     PrivilegedRuntimeRegistry,
+    PrivilegedMappingRegistryKind,
+    PrivilegedMappingRegistrySet,
+    VersionedPrivilegedMappingRegistry,
     TargetCsrStateMapping,
     source_effect_id,
     privileged_source_identity,
@@ -69,10 +72,21 @@ def _registry(source, environment, *, version="privileged-test-registry.v1"):
         ),
         target_environment_id=target_environment_identity(environment),
         runtime_symbol="rv2x86_privileged_counter_time_v1",
+        callable_identifier="rv2x86_privileged_counter_time_v1",
         required_target_capability="privileged-runtime:counter-time:v1",
         required_headers=("riscv2x86_privileged_runtime.h",),
         required_library="riscv2x86_privileged_runtime",
+        required_libraries=("riscv2x86_privileged_runtime",),
+        required_capabilities=("privileged-runtime:counter-time:v1",),
         runtime_contract_set_id="x86-user-counter-v1",
+        runtime_identity="x86-user-counter",
+        privilege_spec_version="1.12",
+        isa_extension_profile_id="extensions:i,zicsr",
+        supported_semantic_classes=("counter_observation",),
+        state_mapping_registry_id="counter-state@1",
+        trap_mapping_registry_id="counter-trap@1",
+        interrupt_mapping_registry_id="counter-interrupt@1",
+        mmu_mapping_registry_id="counter-mmu@1",
         csr_mappings=(TargetCsrStateMapping(
             source_effect_id("csr", effect.block_address, effect.operation_index),
             effect.csr_id,
@@ -81,8 +95,26 @@ def _registry(source, environment, *, version="privileged-test-registry.v1"):
             effect.trap_binding_id,
         ),),
     )
+    mapping_registries = _mapping_registries(contract)
     return contract, PrivilegedRuntimeRegistry(
-        version=version, contracts=(contract,)
+        version=version, contracts=(contract,),
+        mapping_registries=mapping_registries,
+    )
+
+
+def _mapping_registries(contract):
+    def entry(registry_id, kind, mappings):
+        identity, version = registry_id.rsplit("@", 1)
+        return VersionedPrivilegedMappingRegistry(identity, version, kind, mappings)
+    return PrivilegedMappingRegistrySet(
+        version="privileged-test-mappings.v1",
+        registries=(
+            entry(contract.state_mapping_registry_id, PrivilegedMappingRegistryKind.STATE,
+                  tuple((*contract.csr_mappings, *contract.virtualization_mappings, *contract.debug_mappings))),
+            entry(contract.trap_mapping_registry_id, PrivilegedMappingRegistryKind.TRAP, contract.trap_mappings),
+            entry(contract.interrupt_mapping_registry_id, PrivilegedMappingRegistryKind.INTERRUPT, contract.interrupt_mappings),
+            entry(contract.mmu_mapping_registry_id, PrivilegedMappingRegistryKind.MMU, contract.address_translation_mappings),
+        ),
     )
 
 
@@ -139,7 +171,8 @@ def test_missing_or_mismatched_registry_fails_in_phase6c():
         candidate_plan=plan,
         target_environment=environment,
         privileged_runtime_registry=PrivilegedRuntimeRegistry(
-            version="wrong-registry.v1", contracts=(wrong,)
+            version="wrong-registry.v1", contracts=(wrong,),
+            mapping_registries=_mapping_registries(wrong),
         ),
     )
     assert not mismatched.success
@@ -159,6 +192,7 @@ def test_registry_rejects_ambiguous_source_target_contracts():
         PrivilegedRuntimeRegistry(
             version="ambiguous-registry.v1",
             contracts=(contract, duplicate_route),
+            mapping_registries=_mapping_registries(contract),
         )
     except ValueError as exc:
         assert "ambiguous" in str(exc)
@@ -203,6 +237,9 @@ def test_strict_privileged_runtime_completes_6b_through_6e():
     )
     assert proof.approved and proof.evidence is not None
     assert proof.evidence.privileged_registry_version == registry.version
+    assert proof.evidence.privileged_mapping_registry_version == (
+        registry.mapping_registries.version
+    )
     assert len(proof.evidence.privileged_effect_evidence) == 1
     assert proof.evidence.privileged_effect_proof_identity.startswith("sha256:")
     assert proof.evidence.privileged_effect_evidence[0].conclusion == "architecture_equivalent"
@@ -244,28 +281,46 @@ def test_strict_privileged_runtime_completes_6b_through_6e():
 def test_6c_rejects_runtime_contract_without_effect_coverage():
     source = _source_model(); environment = _environment()
     contract, _ = _registry(source, environment)
-    registry = PrivilegedRuntimeRegistry(
-        version="missing-mapping.v1",
-        contracts=(replace(contract, csr_mappings=()),),
-    )
-    result = derive_target_constraints(
-        source_model=source,
-        candidate_plan=generate_candidate_plans(source)[0],
-        target_environment=environment,
-        privileged_runtime_registry=registry,
-    )
-    assert not result.success
-    assert result.reason_codes == (
-        TargetConstraintReasonCode.PRIVILEGED_EFFECT_MAPPING_MISSING,
-    )
+    broken = replace(contract, csr_mappings=())
+    try:
+        PrivilegedRuntimeRegistry(
+            version="missing-mapping.v2", contracts=(broken,),
+            mapping_registries=_mapping_registries(contract),
+        )
+    except ValueError as exc:
+        assert "mapping registry" in str(exc)
+    else:
+        raise AssertionError("registry accepted an unresolved contract mapping")
 
 
-def test_6c_rejects_runtime_profile_mismatch():
+def test_registry_v2_rejects_unresolvable_mapping_registry_id():
     source = _source_model(); environment = _environment()
     contract, _ = _registry(source, environment)
+    unresolved = replace(contract, state_mapping_registry_id="missing-state@9")
+    try:
+        PrivilegedRuntimeRegistry(
+            version="unresolved-mapping-id.v2",
+            contracts=(unresolved,),
+            mapping_registries=_mapping_registries(contract),
+        )
+    except ValueError as exc:
+        assert "mapping registry" in str(exc)
+    else:
+        raise AssertionError("registry accepted an unresolvable mapping registry ID")
+
+
+def test_registry_v2_key_rejects_runtime_profile_mismatch():
+    source = _source_model(); environment = _environment()
+    contract, _ = _registry(source, environment)
+    mismatched_contract = replace(
+        contract,
+        source_execution_profile="riscv_supervisor_kernel",
+        supported_source_profiles=("riscv_supervisor_kernel",),
+    )
     registry = PrivilegedRuntimeRegistry(
         version="profile-mismatch.v1",
-        contracts=(replace(contract, source_execution_profile="riscv_supervisor_kernel"),),
+        contracts=(mismatched_contract,),
+        mapping_registries=_mapping_registries(mismatched_contract),
     )
     result = derive_target_constraints(
         source_model=source,
@@ -275,8 +330,26 @@ def test_6c_rejects_runtime_profile_mismatch():
     )
     assert not result.success
     assert result.reason_codes == (
-        TargetConstraintReasonCode.PRIVILEGED_RUNTIME_PROFILE_MISMATCH,
+        TargetConstraintReasonCode.PRIVILEGED_RUNTIME_CONTRACT_MISSING,
     )
+
+
+def test_registry_v2_full_environment_key_is_fail_closed():
+    source = _source_model(); environment = _environment()
+    contract, _ = _registry(source, environment)
+    mismatches = (
+        replace(contract, source_semantic_version="privileged-effect-model.v9"),
+        replace(contract, privilege_spec_version="9.99"),
+        replace(contract, isa_extension_profile_id="extensions:i"),
+        replace(contract, runtime_identity="different-runtime"),
+        replace(contract, runtime_contract_version="99"),
+    )
+    for mismatched in mismatches:
+        registry = PrivilegedRuntimeRegistry(
+            version="full-key-negative.v2", contracts=(mismatched,),
+            mapping_registries=_mapping_registries(mismatched),
+        )
+        assert registry.resolve(source.privileged_state, environment) is None
 
 
 def test_6d_rejects_unproven_csr_old_new_relation():
@@ -285,22 +358,31 @@ def test_6d_rejects_unproven_csr_old_new_relation():
     broken_mapping = replace(
         contract.csr_mappings[0], old_new_state_relation_id=""
     )
-    broken_contract = replace(contract, csr_mappings=(broken_mapping,))
-    registry = PrivilegedRuntimeRegistry(
-        version="unproven-csr-relation.v1", contracts=(broken_contract,)
-    )
+    _broken_contract = replace(contract, csr_mappings=(broken_mapping,))
+    registry = _registry(source, environment, version="unproven-csr-relation.v1")[1]
     plan = generate_candidate_plans(source)[0]
     derived = derive_target_constraints(
         source_model=source, candidate_plan=plan,
         target_environment=environment, privileged_runtime_registry=registry,
     )
     assert derived.success
+    broken_constraint = replace(
+        derived.constraints.privileged_runtime_constraint,
+        csr_mappings=(broken_mapping,),
+    )
+    derived = replace(
+        derived,
+        constraints=replace(
+            derived.constraints,
+            privileged_runtime_constraint=broken_constraint,
+        ),
+    )
     proof = run_semantic_proof_gate(
         source_model=source, candidate_plan=plan,
         constraints=derived.constraints, target_environment=environment,
         target_semantic_catalog=TargetSemanticCatalog(
             frozenset({plan.kind}),
-            frozenset({broken_contract.semantic_contract_id}), "test.v1"
+            frozenset({contract.semantic_contract_id}), "test.v1"
         ),
         compiler_capabilities=CompilerCapabilityModel(True, False),
         privileged_runtime_registry=registry,
