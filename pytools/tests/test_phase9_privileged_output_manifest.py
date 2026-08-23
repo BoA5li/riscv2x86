@@ -142,15 +142,15 @@ def test_functional_output_manifest_records_downgrade_and_ignored_state():
     assert manifest["complete"] is True
 
 
-def test_unsupported_privileged_output_has_structured_diagnostics():
+def test_unregistered_counter_output_is_structured_needs_route():
     output = translate(
         **_translate_inputs(),
         target_environment=strict_environment(),
     )
     manifest = output.metadata["privilegedOutputManifest"]
 
-    assert output.kind == "unsupported"
-    assert manifest["status"] == "unsupported"
+    assert output.kind == "needs_route"
+    assert manifest["status"] == "needs_route"
     assert manifest["preservationConclusion"] == "not_preserved"
     assert manifest["semanticContractId"] is None
     assert manifest["proof"] is None
@@ -162,7 +162,7 @@ def test_unsupported_privileged_output_has_structured_diagnostics():
     assert manifest["diagnostics"]
     assert any(
         item["reasonCode"]
-        == "phase6c.privileged_runtime_registry_missing"
+        == "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED"
         for item in manifest["diagnostics"]
     )
     assert manifest["complete"] is False
