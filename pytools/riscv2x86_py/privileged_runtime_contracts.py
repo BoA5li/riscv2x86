@@ -28,16 +28,16 @@ def target_environment_identity(environment: object) -> str:
 
 
 def privileged_source_identity(model: SourcePrivilegedSemanticModel) -> str:
-    """Bind a contract to all Phase-5/6A privileged and observability facts."""
+    """Bind a strict contract only to architecture-relevant source facts."""
     if not isinstance(model, SourcePrivilegedSemanticModel):
         raise TypeError("privileged source identity requires the Phase-6A model")
     payload = repr((
         model.state,
-        model.observability,
+        model.semantic_classes,
         model.read_only_counter,
         model.requires_whole_function_lowering,
-        model.complete,
-        model.reason_codes,
+        model.strict_translation_eligible,
+        model.strict_reason_codes,
     ))
     return "sha256:" + sha256(payload.encode("utf-8")).hexdigest()
 
