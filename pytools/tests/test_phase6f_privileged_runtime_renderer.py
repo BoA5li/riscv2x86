@@ -150,7 +150,7 @@ def test_strict_privileged_runtime_renders_registered_c_call_and_manifest():
 
 
 def test_functional_fallback_builtin_recipe_renders_without_arch_claim():
-    source = _source_model()
+    source = _source_model(True)
     environment = functional_environment()
     policy = _policy()
     contract, _ = functional_registry(source, environment)
