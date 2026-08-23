@@ -167,6 +167,12 @@ class TargetConstraintReasonCode(str, Enum):
     PRIVILEGED_RUNTIME_SOURCE_INCOMPLETE = (
         "phase6c.privileged_runtime_source_incomplete"
     )
+    PRIVILEGED_PLAN_CLASS_MISMATCH = (
+        "phase6c.privileged_plan_class_mismatch"
+    )
+    PRIVILEGED_STATE_MACHINE_NEEDS_ROUTE = (
+        "phase6c.privileged_state_machine_needs_route"
+    )
     PRIVILEGED_FUNCTIONAL_POLICY_DISABLED = (
         "phase6c.privileged_functional_policy_disabled"
     )
@@ -1745,6 +1751,42 @@ def _derive_privileged_runtime_0(
         target_environment_identity,
     )
     source = source_model.privileged_state
+    from .privileged_state_analysis import PrivilegedSemanticClass
+    semantic_classes = (
+        frozenset() if source is None
+        else frozenset(source.semantic_classes)
+    )
+    expected_classes = {
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER: frozenset({
+            PrivilegedSemanticClass.COUNTER_OBSERVATION
+        }),
+        TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER: frozenset({
+            PrivilegedSemanticClass.TRAP_SERVICE
+        }),
+        TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER: frozenset({
+            PrivilegedSemanticClass.INTERRUPT_EVENT
+        }),
+    }
+    expected = expected_classes.get(candidate_plan.kind)
+    mmu_classes = frozenset({
+        PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE,
+        PrivilegedSemanticClass.TLB_MAINTENANCE,
+    })
+    class_matches = (
+        semantic_classes == expected if expected is not None
+        else (
+            bool(semantic_classes) and semantic_classes <= mmu_classes
+            if candidate_plan.kind is TargetLoweringKind.MMU_RUNTIME_ADAPTER
+            else candidate_plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        )
+    )
+    if not class_matches:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_PLAN_CLASS_MISMATCH,
+            ),
+        )
     if (
         source is None or not source.strict_translation_eligible
         or source.state is None or not source.state.present
@@ -1965,8 +2007,23 @@ _PLAN_KIND_DISPATCH: Mapping[TargetLoweringKind, _Deriver] = (
                 _derive_virtual_private_frame_0
             ),
             TargetLoweringKind.ABI_WRAPPER_CALL: _adapt_deriver(_derive_abi_wrapper_0),
+            TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER: _adapt_deriver(
+                _derive_privileged_runtime_0
+            ),
+            TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER: _adapt_deriver(
+                _derive_privileged_runtime_0
+            ),
+            TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER: _adapt_deriver(
+                _derive_privileged_runtime_0
+            ),
+            TargetLoweringKind.MMU_RUNTIME_ADAPTER: _adapt_deriver(
+                _derive_privileged_runtime_0
+            ),
             TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER: _adapt_deriver(
                 _derive_privileged_runtime_0
+            ),
+            TargetLoweringKind.PRIVILEGED_STATE_MACHINE: _adapt_deriver(
+                _derive_explicit_unsupported_0
             ),
             TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK: _adapt_deriver(
                 _derive_explicit_unsupported_0
@@ -2289,7 +2346,13 @@ def derive_target_constraints(
     if candidate_plan.kind is TargetLoweringKind.ABI_WRAPPER_CALL:
         result=_derive_abi_wrapper_0(source_model=source_model,candidate_plan=candidate_plan,target_environment=target_environment,abi_wrapper_registry=abi_wrapper_registry)
         return _validate_result_invariants(candidate_plan=candidate_plan,result=result)
-    if candidate_plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
+    if candidate_plan.kind in {
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
+        TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER,
+        TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER,
+        TargetLoweringKind.MMU_RUNTIME_ADAPTER,
+        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+    }:
         result = _derive_privileged_runtime_0(
             source_model=source_model,
             candidate_plan=candidate_plan,
@@ -2298,6 +2361,14 @@ def derive_target_constraints(
         )
         return _validate_result_invariants(
             candidate_plan=candidate_plan, result=result
+        )
+    if candidate_plan.kind is TargetLoweringKind.PRIVILEGED_STATE_MACHINE:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(
+                TargetConstraintReasonCode.PRIVILEGED_STATE_MACHINE_NEEDS_ROUTE,
+            ),
+            details={"route": "whole_function_privileged_state_machine"},
         )
     if candidate_plan.kind is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
         result = _derive_privileged_functional_0(
