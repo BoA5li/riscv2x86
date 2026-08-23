@@ -1,6 +1,7 @@
 """Phase 6D DTOs and common D0-D4 gates; no raw-artifact access."""
 from __future__ import annotations
 from dataclasses import dataclass
+from hashlib import sha256
 from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
@@ -32,12 +33,23 @@ class SemanticProofReasonCode(str, Enum):
     TARGET_FIXED_REGISTER_POLICY_VIOLATION="phase6d.target_fixed_register_policy_violation"
     FUNCTIONAL_FALLBACK_UNPROVEN="phase6d.privileged_functional_fallback_unproven"
     IGNORED_STATE_UNPROVEN="phase6d.privileged_ignored_state_unproven"
+    PRIVILEGED_CSR_MAPPING_UNPROVEN="phase6d.privileged.csr-mapping-unproven"
+    PRIVILEGED_TRAP_MAPPING_UNPROVEN="phase6d.privileged.trap-mapping-unproven"
+    PRIVILEGED_RETURN_CONTINUATION_UNPROVEN="phase6d.privileged.return-continuation-unproven"
+    PRIVILEGED_INTERRUPT_MAPPING_UNPROVEN="phase6d.privileged.interrupt-mapping-unproven"
+    PRIVILEGED_MMU_MAPPING_UNPROVEN="phase6d.privileged.mmu-mapping-unproven"
+    PRIVILEGED_TLB_SCOPE_UNPROVEN="phase6d.privileged.tlb-scope-unproven"
+    PRIVILEGED_VIRTUALIZATION_MAPPING_UNPROVEN="phase6d.privileged.virtualization-mapping-unproven"
+    PRIVILEGED_IGNORED_STATE_ESCAPE="phase6d.privileged.ignored-state-escape"
+    PRIVILEGED_TARGET_SIDE_EFFECT_UNPROVEN="phase6d.privileged.target-side-effect-unproven"
 
 class PreservationConclusion(str, Enum):
     ARCHITECTURE_EQUIVALENT="architecture_equivalent"; SHELL_PRESERVED="shell_preserved"
     FUNCTIONAL_EQUIVALENT="functional_equivalent"
     MICROARCH_INTENT_PRESERVED="microarchitecture_intent_preserved"; MICROARCH_STRENGTHENED="microarchitecture_strengthened"
     BEST_EFFORT="best_effort"; NOT_PRESERVED="not_preserved"
+    ARCHITECTURE_STATE_NOT_PRESERVED="architecture_state_not_preserved"
+    MICROARCHITECTURE_NOT_PRESERVED="microarchitecture_not_preserved"
 
 @dataclass(frozen=True)
 class TargetSemanticCatalog:
@@ -86,6 +98,33 @@ class ProofEvidence:
     privileged_functional_registry_version: str | None
     privileged_functional_policy_identity: str | None
     dimensions: tuple[str,...]; proved_requirements: tuple[str,...]
+    privileged_effect_evidence: tuple["PrivilegedEffectProofEvidence", ...] = ()
+    privileged_effect_proof_identity: str | None = None
+
+
+@dataclass(frozen=True)
+class PrivilegedEffectProofEvidence:
+    source_effect_id: str
+    target_mapping_id: str
+    contract_id: str
+    contract_version: str
+    obligation_ids: tuple[str, ...]
+    conclusion: str
+
+    def __post_init__(self):
+        for name in ("source_effect_id", "target_mapping_id", "contract_id", "contract_version", "conclusion"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise TypeError(f"{name} must be non-empty")
+        if tuple(sorted(set(self.obligation_ids))) != self.obligation_ids:
+            raise ValueError("effect proof obligations must be unique and sorted")
+
+
+def privileged_effect_proof_identity(evidence):
+    values = tuple(evidence)
+    if tuple(sorted(values, key=lambda item: item.source_effect_id)) != values:
+        raise ValueError("privileged effect evidence must use stable sorting")
+    return "sha256:" + sha256(repr(values).encode("utf-8")).hexdigest()
 
 @dataclass(frozen=True)
 class SemanticProofResult:
@@ -139,10 +178,11 @@ def constraint_identity(c):
     )
     return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), c.target_register_policy_version, operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), contract_identity))
 
-def _evidence(request, conclusions, requirements):
+def _evidence(request, conclusions, requirements, privileged_effect_evidence=()):
     e=request.target_environment
     stack=request.source_model.stack_frame
     stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
+    effect_evidence = tuple(sorted(privileged_effect_evidence, key=lambda item: item.source_effect_id))
     return ProofEvidence(
         source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id,repr(request.source_model.abi_effects),repr(request.source_model.privileged_state))),
         preservation_level=request.preservation_decision.level.value,
@@ -164,6 +204,10 @@ def _evidence(request, conclusions, requirements):
         ),
         dimensions=tuple(sorted(x.value for x in conclusions)),
         proved_requirements=tuple(sorted(x.value for x in requirements)),
+        privileged_effect_evidence=effect_evidence,
+        privileged_effect_proof_identity=(
+            None if not effect_evidence else privileged_effect_proof_identity(effect_evidence)
+        ),
     )
 
 def validate_common(request: SemanticProofRequest):
@@ -339,7 +383,7 @@ def _validate_operand_bindings(request):
             return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
     return None
 
-def finalize(request, conclusions):
+def finalize(request, conclusions, privileged_effect_evidence=()):
     required=_validate_requirements(request)
     if required is not None:return required
     bindings=_validate_operand_bindings(request)
@@ -349,7 +393,7 @@ def finalize(request, conclusions):
     if result is not None:return result
     extra=() if not request.source_model.microarch.explicitly_microarch_sensitive else (PreservationConclusion.MICROARCH_INTENT_PRESERVED,)
     final=tuple(conclusions)+extra
-    return SemanticProofResult.passed(request.candidate_plan.plan_id,final,_evidence(request,final,request.candidate_plan.requirements))
+    return SemanticProofResult.passed(request.candidate_plan.plan_id,final,_evidence(request,final,request.candidate_plan.requirements,privileged_effect_evidence))
 
 def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None, privileged_runtime_registry=None, privileged_functional_registry=None, privileged_functional_policy=None):
     """D0-D4 then exactly one plan-specific proof; unknowns reject."""
