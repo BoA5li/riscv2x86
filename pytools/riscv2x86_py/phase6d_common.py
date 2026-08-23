@@ -120,6 +120,13 @@ class PrivilegedEffectProofEvidence:
         if tuple(sorted(set(self.obligation_ids))) != self.obligation_ids:
             raise ValueError("effect proof obligations must be unique and sorted")
 
+    @property
+    def proof_id(self) -> str:
+        return "sha256:" + sha256(repr((
+            self.source_effect_id, self.target_mapping_id, self.contract_id,
+            self.contract_version, self.obligation_ids, self.conclusion,
+        )).encode("utf-8")).hexdigest()
+
 
 def privileged_effect_proof_identity(evidence):
     values = tuple(evidence)
