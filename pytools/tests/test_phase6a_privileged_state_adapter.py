@@ -188,7 +188,8 @@ def test_phase6a_nests_validated_counter_under_privileged_state():
 
     assert model.privileged_state is not None
     assert model.privileged_state.complete
-    assert model.privileged_state.functional_fallback_possible
+    assert model.privileged_state.strict_translation_eligible
+    assert not model.privileged_state.functional_fallback_eligible
     assert isinstance(model.read_only_csr, SourceReadOnlyCounterCsrModel)
     assert isinstance(model.read_only_csr, SourcePrivilegedAccessModel)
     assert model.read_only_csr.complete
