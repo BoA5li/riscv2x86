@@ -346,3 +346,47 @@ def build_privileged_output_manifest(
         diagnostics=diagnostics,
         complete=bool(emitted and privileged.complete),
     )
+
+
+def finalize_privileged_output_manifest(
+    manifest: Mapping[str, object],
+    *,
+    verification_status: str,
+    verification_detail: str,
+    accepted: bool,
+    stage: str = "phase8",
+) -> dict[str, object]:
+    """Attach final pipeline validation without discarding Phase-6 proof."""
+    if manifest.get("schemaVersion") != PRIVILEGED_OUTPUT_MANIFEST_SCHEMA:
+        raise ValueError("cannot finalize an unknown privileged manifest")
+    if not verification_status:
+        raise ValueError("privileged manifest finalization requires status")
+    result = dict(manifest)
+    result["verification"] = {
+        "status": verification_status,
+        "detail": verification_detail,
+    }
+    if accepted:
+        return result
+    result["status"] = PrivilegedOutputStatus.UNSUPPORTED.value
+    result["complete"] = False
+    diagnostics = [
+        dict(item) for item in result.get("diagnostics", ())
+        if isinstance(item, Mapping)
+    ]
+    diagnostics.append({
+        "reasonCode": "privileged-output.validation-rejected",
+        "stage": stage,
+        "planId": None,
+        "detail": verification_detail,
+    })
+    result["diagnostics"] = sorted(
+        diagnostics,
+        key=lambda item: (
+            str(item.get("stage") or ""),
+            str(item.get("planId") or ""),
+            str(item.get("reasonCode") or ""),
+            str(item.get("detail") or ""),
+        ),
+    )
+    return result
