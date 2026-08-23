@@ -11,6 +11,7 @@ from riscv2x86_py.functional_observability import (
 )
 from riscv2x86_py.pcode_ir import (
     Block,
+    CanonicalCsrFieldEffect,
     CanonicalCsrOperationKind,
     CanonicalInsn,
     CanonicalPrivilegedOperation,
@@ -153,10 +154,43 @@ def _analyze(operation, *, widths=None, ignored=(), summary=None, shell=None):
 
 
 def _csr(operation):
+    reads = operation in {
+        CanonicalCsrOperationKind.READ,
+        CanonicalCsrOperationKind.READ_WRITE,
+        CanonicalCsrOperationKind.SET_BITS,
+        CanonicalCsrOperationKind.CLEAR_BITS,
+    }
+    writes = operation in {
+        CanonicalCsrOperationKind.WRITE,
+        CanonicalCsrOperationKind.READ_WRITE,
+        CanonicalCsrOperationKind.SET_BITS,
+        CanonicalCsrOperationKind.CLEAR_BITS,
+    }
     return CanonicalPrivilegedOperation(
         kind=CanonicalPrivilegedOperationKind.CSR_ACCESS,
         csr_id="riscv.csr.mstatus",
+        csr_semantic_class="privileged_status",
         csr_operation=operation,
+        read_value_node_id="node:mstatus-old" if reads else None,
+        write_value_node_id="node:mstatus-new" if writes else None,
+        read_modify_write=operation in {
+            CanonicalCsrOperationKind.READ_WRITE,
+            CanonicalCsrOperationKind.SET_BITS,
+            CanonicalCsrOperationKind.CLEAR_BITS,
+        },
+        affected_csr_fields=(CanonicalCsrFieldEffect(
+            field_id="riscv.csr.mstatus.mie",
+            old_value_node_id="node:mie-old",
+            new_value_node_id="node:mie-new",
+            writable_mask=0x8,
+            warl_or_wlrl_policy_id="riscv.mstatus.mie.warl.v1",
+            side_effect_ids=("interrupt-enable-change",),
+            complete=True,
+        ),) if writes else (),
+        xlen_bits=64,
+        required_extension_id="zicsr",
+        access_gate_ids=("privilege-mode:m",),
+        access_gate_evaluation_complete=True,
         required_privilege_mode="m",
         may_trap=False,
         state_complete=True,
@@ -236,6 +270,11 @@ def test_privilege_return_cannot_be_downgraded_to_local_functional_fallback():
     operation = CanonicalPrivilegedOperation(
         kind=CanonicalPrivilegedOperationKind.PRIVILEGE_RETURN,
         return_kind="mret",
+        restored_privilege_mode="m",
+        restored_interrupt_state="mstatus.mpie-to-mie",
+        return_pc_node_id="node:mepc",
+        status_field_effect_ids=("mstatus.mie", "mstatus.mpp"),
+        continuation_identity="continuation:test",
         state_complete=True,
     )
     contract = _analyze(operation, summary=_summary(has_return=True))
@@ -252,6 +291,15 @@ def test_trap_remains_an_observable_target_obligation():
     operation = CanonicalPrivilegedOperation(
         kind=CanonicalPrivilegedOperationKind.TRAP,
         trap_kind="environment_call",
+        trap_cause="environment-call-from-m",
+        tval_node_id="node:tval",
+        trap_target_privilege_mode="m",
+        handler_binding_id="test-trap-v2",
+        saved_pc_node_id="node:mepc",
+        saved_status_effect_ids=("mstatus.mpie", "mstatus.mpp"),
+        delegation_path=("machine",),
+        continuation_identity="handler:test",
+        externally_observable=True,
         state_complete=True,
     )
     contract = _analyze(operation)
@@ -267,6 +315,15 @@ def test_trap_cannot_be_suppressed_by_ignored_state_declaration():
     operation = CanonicalPrivilegedOperation(
         kind=CanonicalPrivilegedOperationKind.TRAP,
         trap_kind="environment_call",
+        trap_cause="environment-call-from-m",
+        tval_node_id="node:tval",
+        trap_target_privilege_mode="m",
+        handler_binding_id="test-trap-v2",
+        saved_pc_node_id="node:mepc",
+        saved_status_effect_ids=("mstatus.mpie", "mstatus.mpp"),
+        delegation_path=("machine",),
+        continuation_identity="handler:test",
+        externally_observable=True,
         state_complete=True,
     )
     declaration = IgnoredStateDeclaration(
