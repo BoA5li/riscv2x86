@@ -13,6 +13,11 @@ class PrivilegedPreservationPolicy(str, Enum):
     FUNCTIONAL_FALLBACK_ALLOWED = "functional_fallback_allowed"
 
     @property
+    def enabled(self) -> bool:
+        """Compatibility spelling used by pipeline selection plumbing."""
+        return self.allows_functional_fallback
+
+    @property
     def allows_functional_fallback(self) -> bool:
         return self is self.FUNCTIONAL_FALLBACK_ALLOWED
 
