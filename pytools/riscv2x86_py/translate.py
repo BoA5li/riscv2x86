@@ -3699,7 +3699,46 @@ def _translate_phase6_proof_pipeline(
             if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
             else constraint.fallback_contract
         )
+        is_fallback = (
+            rendered.kind is RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
+        )
+        conclusion_values = frozenset(item.value for item in proof.conclusions)
+        architecture_preserved = (
+            not is_fallback and "architecture_equivalent" in conclusion_values
+        )
+        shell_preserved = "shell_preserved" in conclusion_values
+        microarchitecture_preserved = (
+            not is_fallback
+            and "microarchitecture_intent_preserved" in conclusion_values
+        )
+        observable_effects = []
+        for operand in source_model.operands.operands:
+            if operand.access.value in {"output", "read_write"}:
+                observable_effects.append(f"output:{operand.source_operand_index}")
+        if source_model.memory.reads_memory and source_model.memory.writes_memory:
+            observable_effects.append("memory:read_write")
+        elif source_model.memory.reads_memory:
+            observable_effects.append("memory:read")
+        elif source_model.memory.writes_memory:
+            observable_effects.append("memory:write")
+        else:
+            observable_effects.append("memory:none")
+        observable_effects.append(
+            "termination:normal"
+            if not source_model.control_flow.has_unknown_target
+            and not source_model.control_flow.has_external_control_flow
+            else "termination:contract"
+        )
+        observable_effects.extend(
+            item.source_effect_id.removeprefix("observable:")
+            for item in evidence.privileged_effect_evidence
+            if item.source_effect_id.startswith("observable:")
+        )
+        ignored_source_state = (
+            [] if not is_fallback else list(semantic.ignored_state_ids)
+        )
         artifact.update({
+            "artifactVersion": "phase6-approval-v2",
             "privilegedRendererManifestId": rendered.runtime_manifest_id,
             "privilegedRendererManifestVersion": rendered.runtime_manifest_version,
             "privilegedRecipeKind": recipe.recipe_kind.value,
@@ -3709,15 +3748,29 @@ def _translate_phase6_proof_pipeline(
             "privilegedEmittedTextAuditVersion": PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
             "preservationMode": (
                 "architecture_equivalent"
-                if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+                if not is_fallback
                 else "functional_equivalence_only"
             ),
+            "architectureSemanticsPreserved": architecture_preserved,
+            "shellSemanticsPreserved": shell_preserved,
+            "microarchitectureSemanticsPreserved": microarchitecture_preserved,
+            "observableEffectsProved": sorted(set(observable_effects)),
+            "ignoredSourceState": sorted(set(ignored_source_state)),
+            "privilegedEffectProofIds": sorted(
+                item.proof_id for item in evidence.privileged_effect_evidence
+            ),
+            "privilegedEffectProofIdentity": evidence.privileged_effect_proof_identity,
+            "runtimeContractId": semantic.contract_id,
+            "runtimeContractVersion": semantic.semantic_version,
             "functionalFallbackEnabled": (
-                rendered.kind is RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
+                is_fallback
             ),
             "privilegedSemanticContractVersion": semantic.semantic_version,
             "sourceExecutionProfile": (
                 source_model.privileged_state.state.execution_profile.value
+            ),
+            "targetExecutionMode": (
+                source_model.privileged_state.state.target_execution_mode.value
             ),
             "targetExecutionProfile": (
                 source_model.privileged_state.state.target_execution_mode.value
@@ -3730,7 +3783,7 @@ def _translate_phase6_proof_pipeline(
             ),
             "ignoredStateIds": (
                 []
-                if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+                if not is_fallback
                 else list(semantic.ignored_state_ids)
             ),
         })
