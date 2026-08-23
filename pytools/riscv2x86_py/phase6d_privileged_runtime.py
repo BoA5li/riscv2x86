@@ -1,4 +1,6 @@
-"""Strict Phase-6D proof for one registered privileged runtime adapter."""
+"""Shared strict Phase-6D proof for registered privileged adapters."""
+from .plan_types import TargetLoweringKind
+from .privileged_state_analysis import PrivilegedSemanticClass
 from .phase6d_common import (
     PreservationConclusion,
     SemanticProofReasonCode,
@@ -23,6 +25,31 @@ def prove(request):
         or registry is None
     ):
         return reject(request, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+    semantic_classes = frozenset(source.semantic_classes)
+    exact_classes = {
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER: frozenset({
+            PrivilegedSemanticClass.COUNTER_OBSERVATION
+        }),
+        TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER: frozenset({
+            PrivilegedSemanticClass.TRAP_SERVICE
+        }),
+        TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER: frozenset({
+            PrivilegedSemanticClass.INTERRUPT_EVENT
+        }),
+    }
+    expected = exact_classes.get(request.candidate_plan.kind)
+    mmu_classes = frozenset({
+        PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE,
+        PrivilegedSemanticClass.TLB_MAINTENANCE,
+    })
+    if (
+        (expected is not None and semantic_classes != expected)
+        or (
+            request.candidate_plan.kind is TargetLoweringKind.MMU_RUNTIME_ADAPTER
+            and (not semantic_classes or not semantic_classes <= mmu_classes)
+        )
+    ):
+        return reject(request, SemanticProofReasonCode.PLAN_CONSTRAINT_MISMATCH)
     contract = constraint.runtime_contract
     registered = registry.resolve(source, request.target_environment)
     if not isinstance(contract, PrivilegedRuntimeContract) or registered != contract:
