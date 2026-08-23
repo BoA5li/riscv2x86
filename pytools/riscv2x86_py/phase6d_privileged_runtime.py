@@ -17,9 +17,9 @@ def prove(request):
     constraint = request.constraints.privileged_runtime_constraint
     registry = request.privileged_runtime_registry
     if (
-        source is None or not source.complete or source.state is None
-        or not source.state.present or source.observability is None
-        or not source.observability.complete or constraint is None
+        source is None or not source.strict_translation_eligible
+        or source.state is None or not source.state.present
+        or constraint is None
         or registry is None
     ):
         return reject(request, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
