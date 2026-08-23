@@ -118,7 +118,7 @@ def _tier(c):
     if k is TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:return SelectionTier.FUNCTIONAL_FALLBACK
     if PreservationConclusion.MICROARCH_STRENGTHENED in x:return SelectionTier.STRENGTHENED
     if k in {TargetLoweringKind.C_EXPRESSION,TargetLoweringKind.C_BUILTIN}:return SelectionTier.PUBLIC_PORTABLE
-    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,TargetLoweringKind.ABI_WRAPPER_CALL,TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER}:return SelectionTier.STRUCTURED_C
+    if k in {TargetLoweringKind.C_STRUCTURED,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME,TargetLoweringKind.ABI_WRAPPER_CALL,TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER,TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER,TargetLoweringKind.MMU_RUNTIME_ADAPTER,TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER}:return SelectionTier.STRUCTURED_C
     return SelectionTier.X86_INLINE_ASM
 def _key(c): return (int(_tier(c)),c.plan.sort_key,c.plan.kind.value)
 
