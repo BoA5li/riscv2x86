@@ -80,6 +80,15 @@ def test_strict_output_manifest_contains_contract_proof_and_dependencies():
     assert manifest["sourceRegistryVersion"] == registry.version
     assert manifest["rendererManifestId"] == renderer_manifest.manifest_id
     assert manifest["preservationConclusion"] == "architecture_equivalent"
+    assert manifest["architectureSemanticsPreserved"] is True
+    assert manifest["shellSemanticsPreserved"] is True
+    assert manifest["microarchitectureSemanticsPreserved"] is False
+    assert "memory:none" in manifest["observableEffectsProved"]
+    assert "termination:normal" in manifest["observableEffectsProved"]
+    assert manifest["privilegedEffectProofIds"]
+    assert all(item.startswith("sha256:") for item in manifest["privilegedEffectProofIds"])
+    assert manifest["runtimeContractId"] == contract.contract_id
+    assert manifest["runtimeContractVersion"] == contract.semantic_version
     assert manifest["ignoredStateIds"] == []
     assert manifest["proof"]["identity"].startswith("sha256:")
     assert manifest["proof"]["constraintsId"]
@@ -133,6 +142,12 @@ def test_functional_output_manifest_records_downgrade_and_ignored_state():
     assert manifest["preservationConclusion"] == (
         "functional_equivalence_only"
     )
+    assert manifest["architectureSemanticsPreserved"] is False
+    assert manifest["shellSemanticsPreserved"] is True
+    assert manifest["microarchitectureSemanticsPreserved"] is False
+    assert manifest["observableEffectsProved"]
+    assert manifest["privilegedEffectProofIds"]
+    assert manifest["ignoredSourceState"] == list(contract.ignored_state_ids)
     assert manifest["ignoredStateIds"] == list(contract.ignored_state_ids)
     assert manifest["semanticContractId"] == contract.semantic_contract_id
     assert manifest["runtimeDependencies"]["requiredLibraries"] == [
