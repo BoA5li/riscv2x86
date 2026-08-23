@@ -59,7 +59,7 @@ def test_strict_output_manifest_contains_contract_proof_and_dependencies():
     renderer_manifest, renderer_registry = _renderer_registry(
         contract,
         registry,
-        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
     )
 
     output = translate(
