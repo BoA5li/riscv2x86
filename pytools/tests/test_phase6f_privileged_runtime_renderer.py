@@ -108,7 +108,7 @@ def _renderer_registry(contract, registry, plan_kind):
             recipe_kind=PrivilegedRecipeKind.RUNTIME_CALL,
             callable_identifier=(
                 contract.runtime_symbol
-                if plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+                if plan_kind is TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
                 else contract.implementation_id
             ),
             argument_operand_indexes=contract.argument_operand_indexes,
@@ -131,7 +131,7 @@ def _renderer_registry(contract, registry, plan_kind):
 def test_strict_privileged_runtime_renders_registered_c_call_and_manifest():
     _source, environment, contract, registry, approved = _approved_strict()
     manifest, renderer_registry = _renderer_registry(
-        contract, registry, TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        contract, registry, TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
     )
     renderer_contract = renderer_registry.resolve(approved)
     assert renderer_contract is not None
@@ -222,7 +222,7 @@ def test_functional_fallback_builtin_recipe_renders_without_arch_claim():
 def test_manifest_mismatch_and_instruction_guessing_fail_closed():
     _source, _environment, contract, registry, approved = _approved_strict()
     manifest, renderer_registry = _renderer_registry(
-        contract, registry, TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        contract, registry, TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
     )
     bad_entry = replace(
         manifest.entries[0], source_registry_version="stale-registry.v0"
@@ -286,7 +286,7 @@ def test_translate_emits_privileged_dependency_and_audit_manifest():
     from riscv2x86_py.translate import translate
     _source, environment, contract, registry, _approved = _approved_strict()
     manifest, renderer_registry = _renderer_registry(
-        contract, registry, TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        contract, registry, TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
     )
     fragment, block, cfg, summary, state, observability, facts = _counter_inputs()
     output = translate(
