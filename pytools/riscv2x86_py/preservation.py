@@ -81,6 +81,12 @@ _D_FEATURES = frozenset(
         SemanticFeature.DEBUG_STATE,
         SemanticFeature.PRIVILEGED_STATE_INCOMPLETE,
         SemanticFeature.FUNCTIONAL_OBSERVABILITY_INCOMPLETE,
+        SemanticFeature.COUNTER_OBSERVATION,
+        SemanticFeature.FPU_ARCHITECTURAL_STATE,
+        SemanticFeature.PRIVILEGED_CSR_STATE,
+        SemanticFeature.TLB_MAINTENANCE,
+        SemanticFeature.TRAP_SERVICE,
+        SemanticFeature.PMP_STATE,
 
         # -------------------------------------------------------------------
         # Analysis or semantic-summary incompleteness that prevents safe
@@ -202,6 +208,9 @@ _PLAN_GATING_FEATURES = frozenset(
         SemanticFeature.INCOMPLETE_OPERAND_WIDTH,
         SemanticFeature.FUNCTIONAL_PRIVILEGED_FALLBACK_POSSIBLE,
         SemanticFeature.IGNORED_PRIVILEGED_STATE,
+        SemanticFeature.FUNCTIONAL_FALLBACK_REQUESTED,
+        SemanticFeature.FUNCTIONAL_ARCHITECTURE_STATE_NOT_PRESERVED,
+        SemanticFeature.FUNCTIONAL_MICROARCHITECTURE_NOT_PRESERVED,
     }
 )
 
