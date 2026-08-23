@@ -33,6 +33,7 @@ from tests.test_phase6_privileged_functional_fallback import (
 from tests.test_phase6_privileged_runtime_contract import (
     _environment as strict_environment,
     _registry as strict_registry,
+    _mapping_registries,
     _source_model,
 )
 
@@ -107,6 +108,7 @@ def test_strict_constraint_requires_exact_versioned_registry():
         privileged_runtime_registry=PrivilegedRuntimeRegistry(
             version="phase8.stale-strict.v0",
             contracts=(stale,),
+            mapping_registries=_mapping_registries(stale),
         ),
     )
 
