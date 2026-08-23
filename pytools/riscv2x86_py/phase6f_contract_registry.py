@@ -306,18 +306,18 @@ def _privileged_renderer_entry(
             return None
         semantic = (
             constraint.runtime_contract
-            if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if registration.plan_kind in _STRICT_PRIVILEGED_KINDS
             else constraint.fallback_contract
         )
         expected_identifier = (
             semantic.runtime_symbol
-            if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if registration.plan_kind in _STRICT_PRIVILEGED_KINDS
             else semantic.implementation_id
         )
         libraries = (() if semantic.required_library is None else (semantic.required_library,))
         evidence_registry = (
             evidence.privileged_registry_version
-            if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if registration.plan_kind in _STRICT_PRIVILEGED_KINDS
             else evidence.privileged_functional_registry_version
         )
         if (
