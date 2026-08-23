@@ -18,8 +18,14 @@ from riscv2x86_py.pcode_ir import (
     IRSummary,
 )
 from riscv2x86_py.privileged_execution_sidecar import (
+    AddressSpaceIdentityFacts,
     CsrAccessPolicyFacts,
+    DelegationModelFacts,
+    InterruptModelFacts,
+    PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
     PrivilegedExecutionFacts,
+    TrapHandlerBindingFacts,
+    VirtualMemoryModelFacts,
     SourceExecutionProfile,
     SourcePrivilegeMode,
     TargetExecutionMode,
@@ -49,6 +55,27 @@ def _facts():
         complete=True,
         missing_fact_codes=(),
         provenance="unit-test",
+        delegation_model=DelegationModelFacts(
+            "test-delegation-v2", True, True, (), (), True
+        ),
+        interrupt_model=InterruptModelFacts(
+            "test-interrupt-v2", True, True, "test-priority-v1", True, True
+        ),
+        virtual_memory_model=VirtualMemoryModelFacts(
+            "test-vm-v2", True, "test", 4096, 16, None, True
+        ),
+        trap_handler_binding=TrapHandlerBindingFacts(
+            "test-trap-v2", "test-handler", "test-trap-abi-v1",
+            "test-continuation-v1", True
+        ),
+        address_space=AddressSpaceIdentityFacts(
+            "test-address-space", "test-process", "test-lifetime-v1",
+            False, True
+        ),
+        os_or_runtime_identity="test-runtime",
+        kernel_or_vmm_version="test-version",
+        target_cpu_feature_profile_id="test-target-profile-v1",
+        schema_version=PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
     )
 
 
