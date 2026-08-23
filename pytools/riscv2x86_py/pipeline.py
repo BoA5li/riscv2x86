@@ -1318,7 +1318,13 @@ def run(
         translation_notes = list(getattr(tr, "notes", None) or [])
 
         f.translationKind = translation_kind
-        f.approvalArtifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        translation_metadata = dict(getattr(tr, "metadata", {}) or {})
+        f.approvalArtifact = dict(
+            translation_metadata.get("approvalArtifact", {}) or {}
+        )
+        f.privilegedOutputManifest = dict(
+            translation_metadata.get("privilegedOutputManifest", {}) or {}
+        )
         if f.approvalArtifact:
             f.approvalArtifact["sourceSliceDigest"] = _approval_digest(f.rawSourceText)
         f.notes.extend(translation_notes)
