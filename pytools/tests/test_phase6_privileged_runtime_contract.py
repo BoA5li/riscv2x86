@@ -22,6 +22,8 @@ from riscv2x86_py.privileged_policy import PrivilegedPreservationPolicy
 from riscv2x86_py.privileged_runtime_contracts import (
     PrivilegedRuntimeContract,
     PrivilegedRuntimeRegistry,
+    TargetCsrStateMapping,
+    source_effect_id,
     privileged_source_identity,
     target_environment_identity,
 )
@@ -57,6 +59,7 @@ def _environment():
 
 
 def _registry(source, environment, *, version="privileged-test-registry.v1"):
+    effect = source.privileged_state.state.csr_effects[0]
     contract = PrivilegedRuntimeContract(
         contract_id="counter-time",
         semantic_version="1",
@@ -68,6 +71,14 @@ def _registry(source, environment, *, version="privileged-test-registry.v1"):
         required_target_capability="privileged-runtime:counter-time:v1",
         required_headers=("riscv2x86_privileged_runtime.h",),
         required_library="riscv2x86_privileged_runtime",
+        runtime_contract_set_id="x86-user-counter-v1",
+        csr_mappings=(TargetCsrStateMapping(
+            source_effect_id("csr", effect.block_address, effect.operation_index),
+            effect.csr_id,
+            tuple(field.field_id for field in effect.affected_fields),
+            "runtime.counter.time", "read", "counter-observation.v1",
+            effect.trap_binding_id,
+        ),),
     )
     return contract, PrivilegedRuntimeRegistry(
         version=version, contracts=(contract,)
@@ -168,6 +179,12 @@ def test_strict_privileged_runtime_completes_6b_through_6e():
     assert derived.success and derived.constraints is not None
     assert derived.constraints.helper_abi_contract is None
     assert derived.constraints.privileged_runtime_constraint is not None
+    effect_constraint = derived.constraints.privileged_runtime_constraint
+    assert effect_constraint.complete
+    assert len(effect_constraint.csr_mappings) == 1
+    assert effect_constraint.source_execution_profile == "riscv_user_process"
+    assert effect_constraint.target_execution_mode == "x86_user_process"
+    assert effect_constraint.runtime_symbol_or_intrinsic == contract.runtime_symbol
     catalog = TargetSemanticCatalog(
         supported_plan_kinds=frozenset({plan.kind}),
         semantic_contract_ids=frozenset({contract.semantic_contract_id}),
@@ -218,6 +235,44 @@ def test_strict_privileged_runtime_completes_6b_through_6e():
         privileged_registry_version="stale-registry.v0",
     ))
     assert stale.kind is FinalSelectionKind.INVARIANT_VIOLATION
+
+
+def test_6c_rejects_runtime_contract_without_effect_coverage():
+    source = _source_model(); environment = _environment()
+    contract, _ = _registry(source, environment)
+    registry = PrivilegedRuntimeRegistry(
+        version="missing-mapping.v1",
+        contracts=(replace(contract, csr_mappings=()),),
+    )
+    result = derive_target_constraints(
+        source_model=source,
+        candidate_plan=generate_candidate_plans(source)[0],
+        target_environment=environment,
+        privileged_runtime_registry=registry,
+    )
+    assert not result.success
+    assert result.reason_codes == (
+        TargetConstraintReasonCode.PRIVILEGED_EFFECT_MAPPING_MISSING,
+    )
+
+
+def test_6c_rejects_runtime_profile_mismatch():
+    source = _source_model(); environment = _environment()
+    contract, _ = _registry(source, environment)
+    registry = PrivilegedRuntimeRegistry(
+        version="profile-mismatch.v1",
+        contracts=(replace(contract, source_execution_profile="riscv_supervisor_kernel"),),
+    )
+    result = derive_target_constraints(
+        source_model=source,
+        candidate_plan=generate_candidate_plans(source)[0],
+        target_environment=environment,
+        privileged_runtime_registry=registry,
+    )
+    assert not result.success
+    assert result.reason_codes == (
+        TargetConstraintReasonCode.PRIVILEGED_RUNTIME_PROFILE_MISMATCH,
+    )
 
 
 def test_incomplete_privileged_adapter_has_no_lowering_candidate():
