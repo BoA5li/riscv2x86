@@ -12,11 +12,7 @@ from riscv2x86_py.plan_types import (
     TargetLoweringKind,
 )
 from riscv2x86_py.privileged_state_analysis import PrivilegedSemanticClass
-from tests.test_phase6_privileged_runtime_contract import (
-    _environment,
-    _registry,
-    _source_model,
-)
+from tests.test_phase6_privileged_runtime_contract import _source_model
 
 
 def _with_classes(*classes, whole_function=False):
