@@ -57,11 +57,13 @@ def prove(request):
         return reject(request, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     if (
         constraint.registry_version != registry.version
+        or constraint.mapping_registry_version != registry.mapping_registries.version
         or constraint.source_privileged_identity != privileged_source_identity(source)
         or contract.target_environment_id
         != target_environment_identity(request.target_environment)
-        or contract.required_target_capability
-        not in request.target_environment.helper_contract_capabilities
+        or not set(contract.required_capabilities).issubset(
+            request.target_environment.helper_contract_capabilities
+        )
     ):
         return reject(request, SemanticProofReasonCode.TARGET_CAPABILITY_MISSING)
     if source.requires_whole_function_lowering:
