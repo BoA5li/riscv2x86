@@ -25,6 +25,28 @@ from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
     audit_privileged_emitted_text,
 )
+from .privileged_output_manifest import (
+    finalize_privileged_output_manifest,
+)
+
+def _finalize_finding_privileged_manifest(
+    finding: Finding,
+    *,
+    status: str,
+    detail: str,
+    accepted: bool,
+    stage: str,
+) -> None:
+    if not finding.privilegedOutputManifest:
+        return
+    finding.privilegedOutputManifest = finalize_privileged_output_manifest(
+        finding.privilegedOutputManifest,
+        verification_status=status,
+        verification_detail=detail,
+        accepted=accepted,
+        stage=stage,
+    )
+
 
 def _approval_digest(value: str) -> str:
     state = 14695981039346656037
@@ -1363,6 +1385,10 @@ def run(
                 "fragment remains routed for further lowering"
             )
 
+            _finalize_finding_privileged_manifest(
+                f, status="needs_route",
+                detail=f.verificationDetail, accepted=True, stage="phase6e",
+            )
             stats["needs_route"] += 1
             continue
 
@@ -1402,6 +1428,10 @@ def run(
                 else "no translation strategy matched"
             )
 
+            _finalize_finding_privileged_manifest(
+                f, status="unsupported",
+                detail=f.verificationDetail, accepted=True, stage="phase6e",
+            )
             stats["unsupported"] += 1
             continue
 
@@ -1416,10 +1446,14 @@ def run(
                 "phase6 decided to keep original inline asm unchanged"
             )
 
+            _finalize_finding_privileged_manifest(
+                f, status="kept",
+                detail=f.verificationDetail, accepted=True, stage="phase7",
+            )
             stats["verified"] += 1
             continue
 
-        # Phase 7: inline-asm 外壳语义检查。
+        # Phase 7: inline-asm 外壳语义检查.
         #
         # 只对真正会生成 replacement 的 c/x86 路径运行。
         # needs_route / keep / unsupported 不应被这个 gate 误判。
@@ -1434,6 +1468,10 @@ def run(
             for reason in shell_blockers:
                 f.notes.append(f"phase7-shell: {reason}")
 
+            _finalize_finding_privileged_manifest(
+                f, status="unsupported",
+                detail=f.verificationDetail, accepted=False, stage="phase7",
+            )
             stats["unsupported"] += 1
             stats["shell_semantics_blocked"] += 1
             continue       
@@ -1462,6 +1500,10 @@ def run(
                 "translate: empty replacement for actionable phase6 result"
             )
 
+            _finalize_finding_privileged_manifest(
+                f, status="failed",
+                detail=f.verificationDetail, accepted=False, stage="phase7",
+            )
             stats["failed"] += 1
             continue
 
@@ -1503,6 +1545,10 @@ def run(
                 "phase8: verification skipped by explicit caller request"
             )
 
+            _finalize_finding_privileged_manifest(
+                f, status="not_verified",
+                detail=f.verificationDetail, accepted=True, stage="phase8",
+            )
             stats["translated_unverified"] += 1
             continue
 
@@ -1533,6 +1579,14 @@ def run(
                 f"verify returned unexpected status: {vr.status!r}"
             )
             stats["failed"] += 1
+
+        _finalize_finding_privileged_manifest(
+            f,
+            status=f.verificationStatus,
+            detail=f.verificationDetail,
+            accepted=f.verificationStatus in {"verified", "build_only"},
+            stage="phase8",
+        )
 
     whole_function_findings = schedule_whole_function_replacements(
         findings, whole_function_sidecar
