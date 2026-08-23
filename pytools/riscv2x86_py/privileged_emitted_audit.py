@@ -11,6 +11,13 @@ PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION = (
 # Runtime/builtin routes must be C calls.  These tokens are denied even if a
 # malicious or malformed recipe somehow bypasses structured identifier checks.
 _FORBIDDEN_ASM = re.compile(r"\b(?:__asm__|asm)\b", re.IGNORECASE)
+_HOST_STACK_OR_FRAME = re.compile(
+    r"%(?:r?sp|r?bp)\b|\b__builtin_frame_address\s*\(",
+    re.IGNORECASE,
+)
+_HOST_CONTROL_REGISTER = re.compile(
+    r"%(?:cr|dr)[0-9]+\b|\b(?:cr|dr)[0-9]+\b", re.IGNORECASE
+)
 _X86_PRIVILEGED = re.compile(
     r"\b(?:cli|sti|hlt|lgdt|lidt|lldt|ltr|rdmsr|wrmsr|invlpg|invpcid|"
     r"vmcall|vmlaunch|vmresume|vmxoff|swapgs|sysret|iretq?|rsm|wbinvd|"
@@ -18,7 +25,8 @@ _X86_PRIVILEGED = re.compile(
     re.IGNORECASE,
 )
 _RISCV_PRIVILEGED = re.compile(
-    r"\b(?:csrrw|csrrs|csrrc|csrrwi|csrrsi|csrrci|mret|sret|uret|wfi|sfence\.vma)\b",
+    r"\b(?:csrrw|csrrs|csrrc|csrrwi|csrrsi|csrrci|ecall|ebreak|"
+    r"mret|sret|uret|dret|wfi|sfence\.vma|hfence\.(?:gvma|vvma))\b",
     re.IGNORECASE,
 )
 
@@ -33,6 +41,10 @@ def audit_privileged_emitted_text(
         return ("privileged-renderer.emitted-text-invalid",)
     if _FORBIDDEN_ASM.search(emitted_text):
         reasons.append("privileged-renderer.inline-asm-forbidden")
+    if _HOST_STACK_OR_FRAME.search(emitted_text):
+        reasons.append("privileged-renderer.host-stack-frame-register-forbidden")
+    if _HOST_CONTROL_REGISTER.search(emitted_text):
+        reasons.append("privileged-renderer.host-control-register-forbidden")
     if _X86_PRIVILEGED.search(emitted_text):
         reasons.append("privileged-renderer.x86-privileged-instruction-forbidden")
     if _RISCV_PRIVILEGED.search(emitted_text):
