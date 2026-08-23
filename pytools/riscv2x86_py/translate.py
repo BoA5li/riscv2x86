@@ -96,6 +96,7 @@ from .privileged_functional_contracts import (
     PrivilegedFunctionalFallbackRegistry,
 )
 from .privileged_emitted_audit import PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION
+from .privileged_output_manifest import build_privileged_output_manifest
 from .whole_function import (
     FunctionReplacementArtifact,
     WholeFunctionRouteDecision,
@@ -820,6 +821,30 @@ def _output(
 
     if metadata:
         output_metadata.update(metadata)
+
+    privileged = (
+        None if context.sourceModel is None
+        else context.sourceModel.privileged_state
+    )
+    if (
+        privileged is not None
+        and privileged.state is not None
+        and privileged.state.present
+    ):
+        approval = output_metadata.get("approvalArtifact")
+        manifest = build_privileged_output_manifest(
+            fragment_id=context.fragment.id,
+            privileged=privileged,
+            output_kind=kind,
+            route=route,
+            approval_artifact=(
+                approval if isinstance(approval, Mapping) else None
+            ),
+            reason_codes=merged_reason_codes,
+            attempts=output_metadata.get("attempts", ()),
+            notes=merged_notes,
+        )
+        output_metadata["privilegedOutputManifest"] = manifest.to_dict()
 
     return TranslationOutput(
         kind=kind,
@@ -3631,6 +3656,24 @@ def _translate_phase6_proof_pipeline(
             ),
             "functionalFallbackEnabled": (
                 rendered.kind is RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
+            ),
+            "privilegedSemanticContractVersion": semantic.semantic_version,
+            "sourceExecutionProfile": (
+                source_model.privileged_state.state.execution_profile.value
+            ),
+            "targetExecutionProfile": (
+                source_model.privileged_state.state.target_execution_mode.value
+            ),
+            "sourcePrivilegeSpecVersion": (
+                source_model.privileged_state.state.source_privilege_spec_version
+            ),
+            "sourceIsaExtensions": list(
+                source_model.privileged_state.state.source_isa_extensions
+            ),
+            "ignoredStateIds": (
+                []
+                if rendered.kind is RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER
+                else list(semantic.ignored_state_ids)
             ),
         })
     if rendered.kind is RenderedReplacementKind.HELPER_CALL:
