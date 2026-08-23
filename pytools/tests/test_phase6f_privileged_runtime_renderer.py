@@ -49,6 +49,7 @@ from tests.test_phase6_privileged_runtime_contract import (
     _environment as strict_environment,
     _registry as strict_registry,
     _source_model,
+    _mapping_registries,
 )
 from tests.test_phase6a_privileged_state_adapter import _counter_inputs
 from tests.test_phase6_rv64_add_contract import _IngressLift
@@ -65,7 +66,8 @@ def _approved_strict():
         result_operand_indexes=(0,),
     )
     registry = PrivilegedRuntimeRegistry(
-        version="strict-render-registry.v1", contracts=(contract,)
+        version="strict-render-registry.v1", contracts=(contract,),
+        mapping_registries=_mapping_registries(contract),
     )
     plan = generate_candidate_plans(source)[0]
     derived = derive_target_constraints(
@@ -254,7 +256,7 @@ def test_phase7_requires_privileged_manifest_artifact_and_audits_text():
         gotoLabels=[], outputs=[], inputs=[], clobbers=[], isVolatile=True,
     )
     base = {
-        "artifactVersion": "phase6-approval-v1",
+        "artifactVersion": "phase6-approval-v2",
         "proofStatus": "approved",
         "replacementKind": "privileged_runtime_adapter",
         "preservationMode": "architecture_equivalent",
@@ -266,6 +268,17 @@ def test_phase7_requires_privileged_manifest_artifact_and_audits_text():
         "requiredLibraries": ["runtime"],
         "privilegedCallableIdentifier": "runtime_counter",
         "privilegedEmittedTextAuditVersion": PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
+        "architectureSemanticsPreserved": True,
+        "shellSemanticsPreserved": True,
+        "microarchitectureSemanticsPreserved": False,
+        "observableEffectsProved": ["memory:none", "termination:normal"],
+        "ignoredSourceState": [],
+        "ignoredStateIds": [],
+        "privilegedEffectProofIds": ["sha256:" + "1" * 64],
+        "runtimeContractId": "counter",
+        "runtimeContractVersion": "1",
+        "sourceExecutionProfile": "riscv_user_process",
+        "targetExecutionMode": "x86_user_process",
     }
     good = SimpleNamespace(
         kind="privileged_runtime", replacement="runtime_counter();",
@@ -280,6 +293,31 @@ def test_phase7_requires_privileged_manifest_artifact_and_audits_text():
     reasons = phase7_gate_inline_asm(fragment, bad)
     assert "privileged-renderer.inline-asm-forbidden" in reasons
     assert "privileged-renderer.x86-privileged-instruction-forbidden" in reasons
+    fallback_artifact = dict(base)
+    fallback_artifact.update({
+        "replacementKind": "privileged_functional_fallback",
+        "preservationMode": "functional_equivalence_only",
+        "architectureSemanticsPreserved": False,
+    })
+    fallback = SimpleNamespace(
+        kind="functional_c", replacement="runtime_counter();",
+        metadata={"approvalArtifact": fallback_artifact},
+    )
+    assert phase7_gate_inline_asm(fragment, fallback) == []
+    elevated = dict(fallback_artifact, architectureSemanticsPreserved=True)
+    rejected = SimpleNamespace(
+        kind="functional_c", replacement="runtime_counter();",
+        metadata={"approvalArtifact": elevated},
+    )
+    assert phase7_gate_inline_asm(fragment, rejected)
+    elevated_microarch = dict(
+        fallback_artifact, microarchitectureSemanticsPreserved=True
+    )
+    rejected_microarch = SimpleNamespace(
+        kind="functional_c", replacement="runtime_counter();",
+        metadata={"approvalArtifact": elevated_microarch},
+    )
+    assert phase7_gate_inline_asm(fragment, rejected_microarch)
 
 
 def test_translate_emits_privileged_dependency_and_audit_manifest():
