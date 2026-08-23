@@ -22,8 +22,19 @@ from .whole_function_sidecar import WholeFunctionSidecar
 from .whole_function_scheduler import schedule_whole_function_replacements
 from .privileged_functional_contracts import PrivilegedFunctionalFallbackRegistry
 from .privileged_runtime_contracts import PrivilegedRuntimeRegistry
-from .privileged_state_analysis import SourcePrivilegedStateModel
-from .functional_observability import FunctionalObservabilityContract
+from .privileged_state_analysis import (
+    SourcePrivilegedStateModel,
+    analyze_privileged_state,
+)
+from .functional_observability import (
+    FunctionalObservabilityContract,
+    analyze_functional_observability,
+)
+from .privileged_execution_sidecar import (
+    default_user_process_execution_facts,
+)
+from .privileged_pipeline_inputs import PrivilegedPipelineInputs
+from .shell_model import SourceShellModel
 from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
     audit_privileged_emitted_text,
@@ -957,9 +968,39 @@ def run(
     ] | None = None,
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
+    privileged_pipeline_inputs: PrivilegedPipelineInputs | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
+
+    # The normal CLI path supplies Phase-4 authority inputs, never prebuilt
+    # Phase-5 semantic models.  Direct model mappings remain a compatibility
+    # hook for unit tests and embedders, but mixing both paths is ambiguous.
+    if privileged_pipeline_inputs is not None:
+        if privileged_state_facts is not None or functional_observability_facts is not None:
+            raise ValueError(
+                "privileged pipeline inputs cannot be combined with prebuilt "
+                "privileged semantic-model mappings"
+            )
+        policy_enabled = privileged_pipeline_inputs.preservation_policy.enabled
+        if allow_functional_fallbacks not in (False, policy_enabled):
+            raise ValueError(
+                "CLI fallback flag conflicts with privileged preservation policy"
+            )
+        allow_functional_fallbacks = policy_enabled
+        privileged_runtime_registry = privileged_pipeline_inputs.runtime_registry
+        privileged_functional_registry = (
+            privileged_pipeline_inputs.functional_registry
+        )
+        membership_reasons = (
+            privileged_pipeline_inputs.validate_fragment_membership(
+                finding.fragment.id
+                for finding in findings
+                if finding.fragment is not None
+            )
+        )
+        if membership_reasons:
+            raise ValueError("; ".join(membership_reasons))
     default_features = {"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id}
     default_builtins = {"c_builtin:atomic", "c_builtin:compiler_barrier"}
     if allow_functional_fallbacks:
@@ -1308,6 +1349,96 @@ def run(
         )
 
         environment = public_environment
+
+        # Phase 4 privileged authority -> Phase 5 canonical semantic models.
+        # No raw asm, mnemonic, or rendered p-code text is consulted here.
+        privileged_state = (
+            None if privileged_state_facts is None
+            else privileged_state_facts.get(f.fragment.id)
+        )
+        functional_observability = (
+            None if functional_observability_facts is None
+            else functional_observability_facts.get(f.fragment.id)
+        )
+        if privileged_pipeline_inputs is not None:
+            execution_sidecar = privileged_pipeline_inputs.execution_sidecar
+            execution_facts = (
+                None if execution_sidecar is None
+                else execution_sidecar.facts_for(f.fragment.id)
+            )
+            if execution_sidecar is not None and execution_facts is None:
+                detail = (
+                    "privileged-ingress.execution-fragment-id-mismatch:"
+                    + f.fragment.id
+                )
+                f.category = "Unsupported"
+                f.ruleName = "phase4.privileged_sidecar_fragment_mismatch"
+                f.suggestedReplacement = ""
+                f.verificationStatus = "unsupported"
+                f.verificationDetail = detail
+                f.notes.append("phase4-privileged-ingress: " + detail)
+                stats["unsupported"] += 1
+                continue
+            if execution_facts is None:
+                execution_facts = default_user_process_execution_facts(
+                    f.fragment.id
+                )
+
+            privileged_state = analyze_privileged_state(
+                fragment_id=f.fragment.id,
+                blocks=blocks,
+                cfg=cfg,
+                execution_facts=execution_facts,
+            )
+            ignored_sidecar = (
+                privileged_pipeline_inputs.ignored_state_declarations
+            )
+            ignored_declarations = (
+                () if ignored_sidecar is None
+                else ignored_sidecar.declarations_for(f.fragment.id)
+            )
+            functional_observability = analyze_functional_observability(
+                fragment_id=f.fragment.id,
+                shell=SourceShellModel.from_fragment(f.fragment),
+                summary=summary,
+                cfg=cfg,
+                privileged_state=privileged_state,
+                operand_width_bits=operand_width_bits,
+                ignored_state_declarations=ignored_declarations,
+            )
+
+            observability_sidecar = (
+                privileged_pipeline_inputs.observability_sidecar
+            )
+            declaration = (
+                None if observability_sidecar is None
+                else observability_sidecar.declaration_for(f.fragment.id)
+            )
+            if declaration is not None:
+                ignored_ids = tuple(
+                    item.state_id
+                    for item in functional_observability.ignored_states
+                )
+                declaration_mismatch = (
+                    not declaration.complete
+                    or declaration.source_execution_profile
+                    is not privileged_state.execution_profile
+                    or declaration.declared_ignored_state_ids != ignored_ids
+                )
+                if declaration_mismatch:
+                    detail = (
+                        "privileged-ingress.observability-declaration-mismatch:"
+                        + f.fragment.id
+                    )
+                    f.category = "Unsupported"
+                    f.ruleName = "phase4.privileged_observability_mismatch"
+                    f.suggestedReplacement = ""
+                    f.verificationStatus = "unsupported"
+                    f.verificationDetail = detail
+                    f.notes.append("phase4-privileged-ingress: " + detail)
+                    stats["unsupported"] += 1
+                    continue
+
         abi_facts = (
             None if abi_call_sidecar is None
             else abi_call_sidecar.facts_for(f.fragment.id)
@@ -1333,14 +1464,8 @@ def run(
             target_environment=environment,
             abi_call_bindings=abi_bindings,
             abi_wrapper_registry=abi_wrapper_registry,
-            privileged_state=(
-                None if privileged_state_facts is None
-                else privileged_state_facts.get(f.fragment.id)
-            ),
-            functional_observability=(
-                None if functional_observability_facts is None
-                else functional_observability_facts.get(f.fragment.id)
-            ),
+            privileged_state=privileged_state,
+            functional_observability=functional_observability,
             privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,
