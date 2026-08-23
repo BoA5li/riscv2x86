@@ -14,6 +14,7 @@ from .privileged_runtime_contracts import (
     privileged_source_identity,
     target_environment_identity,
 )
+from .privileged_effect_proof import prove_fallback_effects
 
 
 def prove(request):
@@ -90,7 +91,12 @@ def prove(request):
     # microarchitecture-preservation claim.
     if request.source_model.microarch.explicitly_microarch_sensitive:
         return reject(request, SemanticProofReasonCode.MICROARCH_UNPRESERVED)
+    effect_evidence, reason, effect_id = prove_fallback_effects(source, constraint)
+    if reason is not None:
+        return reject(request, reason, {"source_effect_id": effect_id})
     return finalize(request, (
         PreservationConclusion.FUNCTIONAL_EQUIVALENT,
         PreservationConclusion.SHELL_PRESERVED,
-    ))
+        PreservationConclusion.ARCHITECTURE_STATE_NOT_PRESERVED,
+        PreservationConclusion.MICROARCHITECTURE_NOT_PRESERVED,
+    ), effect_evidence)
