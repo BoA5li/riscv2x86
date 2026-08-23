@@ -151,6 +151,13 @@ class PrivilegedRuntimeRegistry:
             for contract in self._contracts.values()
         )
 
+    @property
+    def required_target_capabilities(self) -> frozenset[str]:
+        return frozenset(
+            contract.required_target_capability
+            for contract in self._contracts.values()
+        )
+
 
 EMPTY_PRIVILEGED_RUNTIME_REGISTRY = PrivilegedRuntimeRegistry(
     version="privileged-runtime-registry.empty.v1"
