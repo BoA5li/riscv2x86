@@ -89,7 +89,7 @@ def test_policy_disabled_does_not_generate_functional_candidate():
 
 
 def test_enabled_policy_still_requires_exact_registry_contract():
-    source = _source_model()
+    source = _source_model(True)
     environment = _environment()
     policy = _policy()
     plan = _fallback_plan(source, policy)
@@ -106,7 +106,7 @@ def test_enabled_policy_still_requires_exact_registry_contract():
 
 
 def test_exact_functional_contract_completes_6c_6d_and_6e():
-    source = _source_model()
+    source = _source_model(True)
     environment = _environment()
     policy = _policy()
     contract, registry = _registry(source, environment)
@@ -170,7 +170,7 @@ def test_exact_functional_contract_completes_6c_6d_and_6e():
 
 
 def test_unknown_privileged_state_never_generates_functional_candidate():
-    source = _source_model()
+    source = _source_model(True)
     incomplete = replace(
         source,
         privileged_state=replace(
@@ -188,7 +188,7 @@ def test_unknown_privileged_state_never_generates_functional_candidate():
 
 
 def test_contract_observability_identity_mismatch_fails_closed():
-    source = _source_model()
+    source = _source_model(True)
     environment = _environment()
     policy = _policy()
     contract, _ = _registry(source, environment)
