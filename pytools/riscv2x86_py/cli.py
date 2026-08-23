@@ -12,6 +12,7 @@ from .ghidra_pythonrun_bridge import (
 from .pipeline import run
 from .abi_sidecar import load_abi_call_sidecar, load_target_abi_wrapper_registry
 from .whole_function_sidecar import load_whole_function_sidecar
+from .privileged_pipeline_inputs import load_privileged_pipeline_inputs
 
 
 def main() -> int:
@@ -88,6 +89,31 @@ def main() -> int:
         default=None,
         help="Versioned frontend whole-function facts and registered renderer contracts.",
     )
+    ap.add_argument(
+        "--privileged-execution-sidecar",
+        default=None,
+        help="Versioned Phase-4 privileged execution facts keyed by fragmentId.",
+    )
+    ap.add_argument(
+        "--privileged-runtime-registry",
+        default=None,
+        help="Versioned strict privileged runtime-contract registry.",
+    )
+    ap.add_argument(
+        "--privileged-functional-registry",
+        default=None,
+        help="Versioned privileged functional-fallback contract registry.",
+    )
+    ap.add_argument(
+        "--privileged-observability-sidecar",
+        default=None,
+        help="Versioned functional-observability authority declarations.",
+    )
+    ap.add_argument(
+        "--privileged-ignored-state-declarations",
+        default=None,
+        help="Versioned explicit ignored privileged-state declarations.",
+    )
 
     args = ap.parse_args()
 
@@ -131,6 +157,16 @@ def main() -> int:
             None if args.whole_function_sidecar is None
             else load_whole_function_sidecar(args.whole_function_sidecar)
         )
+        privileged_pipeline_inputs = load_privileged_pipeline_inputs(
+            execution_sidecar_path=args.privileged_execution_sidecar,
+            runtime_registry_path=args.privileged_runtime_registry,
+            functional_registry_path=args.privileged_functional_registry,
+            observability_sidecar_path=args.privileged_observability_sidecar,
+            ignored_state_declarations_path=(
+                args.privileged_ignored_state_declarations
+            ),
+            allow_functional_fallbacks=args.allow_functional_fallbacks,
+        )
         stats = run(
             args.inp,
             args.out,
@@ -141,6 +177,7 @@ def main() -> int:
             abi_call_sidecar=abi_call_sidecar,
             abi_wrapper_registry=abi_wrapper_registry,
             whole_function_sidecar=whole_function_sidecar,
+            privileged_pipeline_inputs=privileged_pipeline_inputs,
             allow_functional_fallbacks=args.allow_functional_fallbacks,
         )
     except Exception as exc:
