@@ -1926,6 +1926,7 @@ def _derive_privileged_runtime_0(
         source_privileged_identity=privileged_source_identity(source),
         target_environment_id=target_environment_identity(target_environment),
         registry_version=privileged_runtime_registry.version,
+        mapping_registry_version=privileged_runtime_registry.mapping_registries.version,
         contract_id=contract.contract_id,
         contract_version=contract.semantic_version,
         source_execution_profile=contract.source_execution_profile,
@@ -1953,8 +1954,8 @@ def _derive_privileged_runtime_0(
         observable_effect_mappings=contract.observable_effect_mappings,
         runtime_symbol_or_intrinsic=contract.runtime_symbol,
         required_headers=contract.required_headers,
-        required_libraries=(() if contract.required_library is None else (contract.required_library,)),
-        required_capabilities=(contract.required_target_capability,),
+        required_libraries=contract.required_libraries,
+        required_capabilities=contract.required_capabilities,
         functional_fallback=False,
         complete=True,
     )
