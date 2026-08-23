@@ -9,6 +9,7 @@ from riscv2x86_py.phase6c_constraints import (
 from riscv2x86_py.phase6d_common import (
     CompilerCapabilityModel,
     PreservationConclusion,
+    SemanticProofReasonCode,
     TargetSemanticCatalog,
     run_semantic_proof_gate,
 )
@@ -27,6 +28,7 @@ from riscv2x86_py.privileged_functional_contracts import (
     functional_observability_identity,
 )
 from riscv2x86_py.privileged_runtime_contracts import (
+    TargetObservableEffectMapping,
     privileged_source_identity,
     target_environment_identity,
 )
@@ -61,6 +63,14 @@ def _registry(source, environment):
         ),
         required_value_source_ids=(
             observability.required_privileged_value_sources
+        ),
+        observable_effect_mappings=tuple(
+            TargetObservableEffectMapping(item, "target:" + item, "functional-relation.v1")
+            for item in sorted({
+                *(output.output_id for output in observability.outputs),
+                "memory", "error-status", "termination", "trap-to-result",
+                *("privileged-value:" + value for value in observability.required_privileged_value_sources),
+            })
         ),
     )
     return contract, PrivilegedFunctionalFallbackRegistry(
@@ -137,6 +147,9 @@ def test_exact_functional_contract_completes_6c_6d_and_6e():
     )
     assert proof.approved
     assert PreservationConclusion.FUNCTIONAL_EQUIVALENT in proof.conclusions
+    assert PreservationConclusion.ARCHITECTURE_STATE_NOT_PRESERVED in proof.conclusions
+    assert PreservationConclusion.MICROARCHITECTURE_NOT_PRESERVED in proof.conclusions
+    assert proof.evidence.privileged_effect_proof_identity.startswith("sha256:")
     assert PreservationConclusion.ARCHITECTURE_EQUIVALENT not in proof.conclusions
     catalog_id = catalog.version + ":" + ",".join(
         sorted(catalog.semantic_contract_ids)
@@ -208,4 +221,45 @@ def test_contract_observability_identity_mismatch_fails_closed():
     assert not result.success
     assert result.reason_codes == (
         TargetConstraintReasonCode.PRIVILEGED_FUNCTIONAL_CONTRACT_MISSING,
+    )
+
+
+def test_6d_rejects_missing_observable_effect_mapping():
+    source = _source_model(True)
+    environment = _environment()
+    policy = _policy()
+    contract, _ = _registry(source, environment)
+    broken = replace(
+        contract,
+        observable_effect_mappings=contract.observable_effect_mappings[1:],
+    )
+    registry = PrivilegedFunctionalFallbackRegistry(
+        version="missing-observable.v1", contracts=(broken,)
+    )
+    plan = _fallback_plan(source, policy)
+    derived = derive_target_constraints(
+        source_model=source,
+        candidate_plan=plan,
+        target_environment=environment,
+        privileged_functional_registry=registry,
+        privileged_functional_policy=policy,
+    )
+    assert derived.success
+    proof = run_semantic_proof_gate(
+        source_model=source,
+        candidate_plan=plan,
+        constraints=derived.constraints,
+        target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            frozenset({plan.kind}),
+            frozenset({broken.semantic_contract_id}),
+            "missing-observable-catalog.v1",
+        ),
+        compiler_capabilities=CompilerCapabilityModel(True, False),
+        privileged_functional_registry=registry,
+        privileged_functional_policy=policy,
+    )
+    assert not proof.approved
+    assert proof.reason_codes == (
+        SemanticProofReasonCode.PRIVILEGED_TARGET_SIDE_EFFECT_UNPROVEN,
     )
