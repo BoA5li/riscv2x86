@@ -1255,10 +1255,27 @@ def generate_candidate_plans(
                            "architectural-state route.",),
             )])
         if privileged.requires_whole_function_lowering:
-            return _stable_sort_and_freeze([_unsupported_candidate(
-                reason_code="privileged-whole-function-lowering-required",
-                rationale=("Privilege return/function-boundary state cannot "
-                           "be replaced by a fragment runtime adapter.",),
+            return _stable_sort_and_freeze([_plan(
+                plan_id="privileged-state-machine.needs-route.v1",
+                kind=TargetLoweringKind.PRIVILEGED_STATE_MACHINE,
+                family=TargetLoweringFamily.PRIVILEGED_STATE_MACHINE,
+                priority_tier=PlanPriorityTier.PRIVILEGED_STATE_MACHINE,
+                deterministic_rank=10,
+                requirements=frozenset({
+                    PlanRequirement.PROVE_PRIVILEGED_STATE_COMPLETE,
+                    PlanRequirement.PRESERVE_PRIVILEGED_CONTROL_FLOW,
+                    PlanRequirement.PROVE_NO_GENERIC_HELPER_FALLBACK,
+                }),
+                metadata={
+                    "strategy": "whole_function_privileged_state_machine",
+                    "local_fragment_replacement_forbidden": True,
+                    "privileged_semantic_classes": tuple(sorted(
+                        item.value for item in semantic_classes
+                    )),
+                },
+                rationale=("Privilege return/function-boundary state requires "
+                           "whole-function or machine-state lowering.",),
+                reason_codes=("privileged-state-machine-needs-route",),
             )])
         if (
             not privileged.complete
@@ -1296,45 +1313,63 @@ def generate_candidate_plans(
             PrivilegedSemanticClass.COUNTER_OBSERVATION
         }):
             strict_plan_id = "counter-observation.strict-adapter.v1"
+            strict_kind = TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
+            strict_family = TargetLoweringFamily.COUNTER_OBSERVATION
+            strict_priority = PlanPriorityTier.COUNTER_OBSERVATION
             strict_strategy = "counter_observation_exact_adapter"
         elif semantic_classes & frozenset({
             PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE,
             PrivilegedSemanticClass.TLB_MAINTENANCE,
         }):
             strict_plan_id = "privileged-runtime.mmu-tlb.v1"
+            strict_kind = TargetLoweringKind.MMU_RUNTIME_ADAPTER
+            strict_family = TargetLoweringFamily.PRIVILEGED_MMU
+            strict_priority = PlanPriorityTier.PRIVILEGED_MMU
             strict_strategy = "exact_mmu_tlb_runtime"
         elif PrivilegedSemanticClass.TRAP_SERVICE in semantic_classes:
             strict_plan_id = "privileged-runtime.trap-service.v1"
+            strict_kind = TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER
+            strict_family = TargetLoweringFamily.PRIVILEGED_SERVICE_ABI
+            strict_priority = PlanPriorityTier.PRIVILEGED_SERVICE_ABI
             strict_strategy = "exact_trap_service_abi"
         elif PrivilegedSemanticClass.INTERRUPT_EVENT in semantic_classes:
             strict_plan_id = "privileged-runtime.interrupt-event.v1"
+            strict_kind = TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER
+            strict_family = TargetLoweringFamily.PRIVILEGED_EVENT
+            strict_priority = PlanPriorityTier.PRIVILEGED_EVENT
             strict_strategy = "exact_interrupt_event_runtime"
-        elif semantic_classes & frozenset({
-            PrivilegedSemanticClass.PMP_STATE,
-            PrivilegedSemanticClass.DEBUG_STATE,
-            PrivilegedSemanticClass.VIRTUALIZATION_STATE,
-        }):
-            strict_plan_id = "privileged-runtime.emulator-vmm-state.v1"
-            strict_strategy = "exact_emulator_vmm_state"
-        elif semantic_classes == frozenset({
-            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE
-        }):
-            strict_plan_id = "privileged-runtime.csr-state.v1"
-            strict_strategy = "exact_privileged_csr_runtime"
         else:
-            strict_plan_id = "privileged-runtime.compound-state.v1"
-            strict_strategy = "exact_compound_privileged_runtime"
+            strict_plan_id = (
+                "privileged-runtime.csr-state.v1"
+                if semantic_classes == frozenset({
+                    PrivilegedSemanticClass.PRIVILEGED_CSR_STATE
+                })
+                else "privileged-runtime.compound-state.v1"
+            )
+            strict_kind = TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            strict_family = TargetLoweringFamily.PRIVILEGED_RUNTIME
+            strict_priority = PlanPriorityTier.PRIVILEGED_RUNTIME
+            strict_strategy = (
+                "exact_privileged_csr_runtime"
+                if semantic_classes == frozenset({
+                    PrivilegedSemanticClass.PRIVILEGED_CSR_STATE
+                })
+                else "exact_compound_privileged_runtime"
+            )
 
         candidates = [_plan(
             plan_id=strict_plan_id,
-            kind=TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
-            family=TargetLoweringFamily.PRIVILEGED_RUNTIME,
-            priority_tier=PlanPriorityTier.PRIVILEGED_RUNTIME,
+            kind=strict_kind,
+            family=strict_family,
+            priority_tier=strict_priority,
             deterministic_rank=10,
             required_features=frozenset({"target:x86"}),
             requirements=frozenset(requirements),
             metadata={
                 "strategy": strict_strategy,
+                "exact_registry_lookup_required": True,
+                "source_symbol_or_service_number_inference_forbidden": True,
+                "direct_host_privileged_instruction_forbidden": True,
                 "privileged_semantic_classes": tuple(sorted(
                     item.value for item in semantic_classes
                 )),
