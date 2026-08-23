@@ -74,6 +74,21 @@ class CsrSemanticClass(str, Enum):
     UNKNOWN = "unknown"
 
 
+class PrivilegedSemanticClass(str, Enum):
+    COUNTER_OBSERVATION = "counter_observation"
+    FPU_ARCHITECTURAL_STATE = "fpu_architectural_state"
+    PRIVILEGED_CSR_STATE = "privileged_csr_state"
+    ADDRESS_TRANSLATION_STATE = "address_translation_state"
+    TLB_MAINTENANCE = "tlb_maintenance"
+    TRAP_SERVICE = "trap_service"
+    PRIVILEGE_RETURN = "privilege_return"
+    INTERRUPT_EVENT = "interrupt_event"
+    PMP_STATE = "pmp_state"
+    DEBUG_STATE = "debug_state"
+    VIRTUALIZATION_STATE = "virtualization_state"
+    UNKNOWN = "unknown"
+
+
 class CsrEffectOperation(str, Enum):
     READ = "read"; WRITE = "write"; READ_WRITE = "read_write"
     SET_BITS = "set_bits"; CLEAR_BITS = "clear_bits"; UNKNOWN = "unknown"
@@ -256,6 +271,8 @@ class SourcePrivilegedStateModel:
     address_space_identity: str | None = None
     target_runtime_contract_set_id: str | None = None
     execution_environment_complete: bool = False
+    semantic_classes: tuple[PrivilegedSemanticClass, ...] = ()
+    classification_complete: bool = True
 
     def __post_init__(self) -> None:
         for values in (
@@ -273,6 +290,10 @@ class SourcePrivilegedStateModel:
             raise ValueError("incomplete privileged state requires reasons")
         if self.present and self.complete and not self.execution_environment_complete:
             raise ValueError("complete privileged model needs complete environment")
+        if tuple(sorted(set(self.semantic_classes), key=lambda item: item.value)) != self.semantic_classes:
+            raise ValueError("privileged semantic classes must be unique and sorted")
+        if self.present and self.complete and not self.classification_complete:
+            raise ValueError("complete privileged model needs complete classification")
         if self.complete and any(
             not item.complete
             for values in (
@@ -707,6 +728,104 @@ def _mmu_effect(block_address, operation_index, meta, facts):
     )
 
 
+_COUNTER_CSR_NAMES = frozenset({"cycle", "time", "instret"})
+_FPU_CSR_NAMES = frozenset({"fcsr", "frm", "fflags"})
+_ADDRESS_TRANSLATION_CSR_NAMES = frozenset({"satp", "vsatp", "hgatp"})
+_DEBUG_CSR_NAMES = frozenset({"dcsr", "dpc", "dscratch0", "dscratch1"})
+
+
+def _csr_identity_class(csr_id: str) -> PrivilegedSemanticClass | None:
+    name = csr_id.strip().lower().rsplit(".", 1)[-1]
+    if name in _COUNTER_CSR_NAMES:
+        return PrivilegedSemanticClass.COUNTER_OBSERVATION
+    if name in _FPU_CSR_NAMES:
+        return PrivilegedSemanticClass.FPU_ARCHITECTURAL_STATE
+    if name in _ADDRESS_TRANSLATION_CSR_NAMES:
+        return PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE
+    if name.startswith("pmpcfg") or name.startswith("pmpaddr"):
+        return PrivilegedSemanticClass.PMP_STATE
+    if name in _DEBUG_CSR_NAMES or name.startswith("tdata") or name.startswith("tselect"):
+        return PrivilegedSemanticClass.DEBUG_STATE
+    return None
+
+
+def _declared_csr_class(value: CsrSemanticClass) -> PrivilegedSemanticClass:
+    return {
+        CsrSemanticClass.USER_COUNTER_OBSERVATION:
+            PrivilegedSemanticClass.COUNTER_OBSERVATION,
+        CsrSemanticClass.FPU_STATE:
+            PrivilegedSemanticClass.FPU_ARCHITECTURAL_STATE,
+        CsrSemanticClass.PRIVILEGED_STATUS:
+            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE,
+        CsrSemanticClass.COUNTER_CONTROL:
+            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE,
+        CsrSemanticClass.STATE_ENABLE:
+            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE,
+        CsrSemanticClass.ADDRESS_TRANSLATION:
+            PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE,
+        CsrSemanticClass.INTERRUPT_STATE:
+            PrivilegedSemanticClass.INTERRUPT_EVENT,
+        CsrSemanticClass.PMP_STATE:
+            PrivilegedSemanticClass.PMP_STATE,
+        CsrSemanticClass.DEBUG_STATE:
+            PrivilegedSemanticClass.DEBUG_STATE,
+        CsrSemanticClass.VIRTUALIZATION_STATE:
+            PrivilegedSemanticClass.VIRTUALIZATION_STATE,
+        CsrSemanticClass.OTHER:
+            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE,
+        CsrSemanticClass.UNKNOWN:
+            PrivilegedSemanticClass.UNKNOWN,
+    }[value]
+
+
+def _effect_semantic_classes(
+    *,
+    csr_effects: Sequence[CsrEffect],
+    traps: Sequence[TrapEffect],
+    returns: Sequence[PrivilegeReturnEffect],
+    interrupts: Sequence[InterruptEffect],
+    mmu: Sequence[AddressTranslationEffect],
+    virtualization: Sequence[VirtualizationEffect],
+    debug: Sequence[DebugStateEffect],
+) -> tuple[tuple[PrivilegedSemanticClass, ...], bool, tuple[str, ...]]:
+    classes: set[PrivilegedSemanticClass] = set()
+    reasons: list[str] = []
+    for effect in csr_effects:
+        identity_class = _csr_identity_class(effect.csr_id)
+        declared_class = _declared_csr_class(effect.csr_class)
+        if (
+            identity_class is not None
+            and declared_class is not PrivilegedSemanticClass.UNKNOWN
+            and identity_class is not declared_class
+        ):
+            classes.add(PrivilegedSemanticClass.UNKNOWN)
+            reasons.append(
+                "privileged-state.semantic-classification-identity-mismatch"
+            )
+        else:
+            classes.add(identity_class or declared_class)
+    if traps:
+        classes.add(PrivilegedSemanticClass.TRAP_SERVICE)
+    if returns:
+        classes.add(PrivilegedSemanticClass.PRIVILEGE_RETURN)
+    if interrupts:
+        classes.add(PrivilegedSemanticClass.INTERRUPT_EVENT)
+    for effect in mmu:
+        classes.add(
+            PrivilegedSemanticClass.TLB_MAINTENANCE
+            if effect.kind is AddressTranslationEffectKind.TLB_INVALIDATION
+            else PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE
+        )
+    if virtualization:
+        classes.add(PrivilegedSemanticClass.VIRTUALIZATION_STATE)
+    if debug:
+        classes.add(PrivilegedSemanticClass.DEBUG_STATE)
+    if PrivilegedSemanticClass.UNKNOWN in classes:
+        reasons.append("privileged-state.semantic-classification-unknown")
+    ordered = tuple(sorted(classes, key=lambda item: item.value))
+    return ordered, PrivilegedSemanticClass.UNKNOWN not in classes, _ordered(reasons)
+
+
 def analyze_privileged_state(
     *, fragment_id: str, blocks: Sequence[Block],
     cfg: CFGResult | None,
@@ -835,6 +954,18 @@ def analyze_privileged_state(
     control_complete = all(
         item.complete for item in (*traps, *returns)
     )
+    semantic_classes, classification_complete, classification_reasons = (
+        _effect_semantic_classes(
+            csr_effects=csr,
+            traps=traps,
+            returns=returns,
+            interrupts=interrupts,
+            mmu=mmu,
+            virtualization=virt,
+            debug=debug,
+        )
+    )
+    reasons.extend(classification_reasons)
     reason_codes = _ordered(reasons)
     complete = not present or not reason_codes
     return SourcePrivilegedStateModel(
@@ -862,4 +993,6 @@ def analyze_privileged_state(
         address_space_identity=facts.address_space_identity,
         target_runtime_contract_set_id=facts.target_runtime_contract_set_id,
         execution_environment_complete=facts.complete,
+        semantic_classes=semantic_classes,
+        classification_complete=classification_complete,
     )
