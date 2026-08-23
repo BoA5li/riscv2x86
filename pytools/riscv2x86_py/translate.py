@@ -88,7 +88,10 @@ from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
 from .abi_effects import SourceAbiCallBinding
 from .abi_effects import TargetAbiWrapperRegistry
-from .privileged_state_analysis import SourcePrivilegedStateModel
+from .privileged_state_analysis import (
+    PrivilegedSemanticClass,
+    SourcePrivilegedStateModel,
+)
 from .functional_observability import FunctionalObservabilityContract
 from .privileged_runtime_contracts import PrivilegedRuntimeRegistry
 from .privileged_functional_contracts import (
@@ -3327,6 +3330,55 @@ def translate(
 
     context.sourceModel = source_model
     context.decision = source_model.preservation
+
+    privileged_adapter = source_model.privileged_state
+    privileged_classes = (
+        frozenset()
+        if privileged_adapter is None
+        else frozenset(privileged_adapter.semantic_classes)
+    )
+    if PrivilegedSemanticClass.UNKNOWN in privileged_classes:
+        return _unsupported(
+            context,
+            reason=(
+                "privileged semantic classification is unknown; no runtime "
+                "family may be selected"
+            ),
+            reason_code="TR_PRIVILEGED_SEMANTIC_CLASS_UNKNOWN",
+        )
+    if (
+        PrivilegedSemanticClass.FPU_ARCHITECTURAL_STATE
+        in privileged_classes
+    ):
+        return _needs_route(
+            context,
+            route="fpu_architectural_state",
+            reason=(
+                "FPU CSR state requires the independent FPU architectural "
+                "state translation route"
+            ),
+            reason_code="TR_PRIVILEGED_NEEDS_ROUTE_FPU_STATE",
+            metadata={
+                "privilegedSemanticClasses": tuple(sorted(
+                    item.value for item in privileged_classes
+                )),
+            },
+        )
+    if PrivilegedSemanticClass.PRIVILEGE_RETURN in privileged_classes:
+        return _needs_route(
+            context,
+            route="whole_function_privileged_state_machine",
+            reason=(
+                "privilege return changes the containing function/state-"
+                "machine boundary and cannot be replaced locally"
+            ),
+            reason_code="TR_PRIVILEGED_RETURN_WHOLE_FUNCTION_REQUIRED",
+            metadata={
+                "privilegedSemanticClasses": tuple(sorted(
+                    item.value for item in privileged_classes
+                )),
+            },
+        )
 
     # A RISC-V counter CSR is an environment-defined architectural source,
     # not an unbound integer register and not a portable x86 timer synonym.
