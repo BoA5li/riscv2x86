@@ -644,7 +644,7 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
                 else "functional_equivalence_only"
             )
             required = (
-                artifact.get("artifactVersion") == "phase6-approval-v1"
+                artifact.get("artifactVersion") == "phase6-approval-v2"
                 and artifact.get("proofStatus") == "approved"
                 and artifact.get("preservationMode") == expected_mode
                 and isinstance(artifact.get("privilegedSemanticContractId"), str)
@@ -653,6 +653,25 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
                 and isinstance(artifact.get("rendererContractId"), str)
                 and isinstance(artifact.get("requiredHeaders"), list)
                 and isinstance(artifact.get("requiredLibraries"), list)
+                and artifact.get("architectureSemanticsPreserved")
+                    is (kind == "privileged_runtime")
+                and artifact.get("shellSemanticsPreserved") is True
+                and isinstance(artifact.get("microarchitectureSemanticsPreserved"), bool)
+                and (kind != "functional_c"
+                     or artifact.get("microarchitectureSemanticsPreserved") is False)
+                and isinstance(artifact.get("observableEffectsProved"), list)
+                and all(isinstance(item, str) and item
+                        for item in artifact.get("observableEffectsProved", ()))
+                and isinstance(artifact.get("ignoredSourceState"), list)
+                and (kind != "functional_c"
+                     or artifact.get("ignoredSourceState") == artifact.get("ignoredStateIds"))
+                and isinstance(artifact.get("privilegedEffectProofIds"), list)
+                and all(isinstance(item, str) and item.startswith("sha256:")
+                        for item in artifact.get("privilegedEffectProofIds", ()))
+                and isinstance(artifact.get("runtimeContractId"), str)
+                and isinstance(artifact.get("runtimeContractVersion"), str)
+                and isinstance(artifact.get("sourceExecutionProfile"), str)
+                and isinstance(artifact.get("targetExecutionMode"), str)
                 and all(isinstance(item, str) and item
                         for item in artifact.get("requiredHeaders", ()))
                 and all(isinstance(item, str) and item
