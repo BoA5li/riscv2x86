@@ -28,6 +28,7 @@ from .privileged_functional_contracts import (
     PrivilegedFunctionalFallbackPolicy,
     PrivilegedFunctionalFallbackRegistry,
 )
+from .privileged_policy import PrivilegedPreservationPolicy
 from .privileged_runtime_contracts import (
     PRIVILEGED_RUNTIME_REGISTRY_SCHEMA,
     PrivilegedRuntimeContract,
@@ -180,11 +181,11 @@ class PrivilegedPipelineInputs:
     functional_registry: PrivilegedFunctionalFallbackRegistry | None
     observability_sidecar: PrivilegedObservabilitySidecar | None
     ignored_state_declarations: PrivilegedIgnoredStateSidecar | None
-    preservation_policy: PrivilegedFunctionalFallbackPolicy
+    preservation_policy: PrivilegedPreservationPolicy
 
     def __post_init__(self) -> None:
         if not isinstance(
-            self.preservation_policy, PrivilegedFunctionalFallbackPolicy
+            self.preservation_policy, PrivilegedPreservationPolicy
         ):
             raise TypeError("privileged preservation policy must be typed")
         if self.preservation_policy.enabled and self.functional_registry is None:
@@ -499,7 +500,9 @@ def load_privileged_pipeline_inputs(
                 ignored_state_declarations_path
             )
         ),
-        preservation_policy=PrivilegedFunctionalFallbackPolicy(
-            enabled=allow_functional_fallbacks
+        preservation_policy=(
+            PrivilegedPreservationPolicy.from_allow_functional_fallbacks(
+                allow_functional_fallbacks
+            )
         ),
     )
