@@ -18,6 +18,7 @@ from riscv2x86_py.phase6e_selection import (
     select_final_target_lowering_plan,
 )
 from riscv2x86_py.plan_types import TargetLoweringKind
+from riscv2x86_py.privileged_policy import PrivilegedPreservationPolicy
 from riscv2x86_py.privileged_runtime_contracts import (
     PrivilegedRuntimeContract,
     PrivilegedRuntimeRegistry,
@@ -28,7 +29,7 @@ from riscv2x86_py.source_model import build_source_semantic_model
 from tests.test_phase6a_privileged_state_adapter import _counter_inputs
 
 
-def _source_model():
+def _source_model(allow_functional_fallbacks=False):
     fragment, block, cfg, summary, state, observability, facts = (
         _counter_inputs()
     )
@@ -41,6 +42,11 @@ def _source_model():
         xlen=64,
         privileged_state=state,
         functional_observability=observability,
+        privileged_preservation_policy=(
+            PrivilegedPreservationPolicy.from_allow_functional_fallbacks(
+                allow_functional_fallbacks
+            )
+        ),
     )
 
 
@@ -198,7 +204,8 @@ def test_incomplete_privileged_adapter_has_no_lowering_candidate():
         privileged_state=replace(
             source.privileged_state,
             complete=False,
-            functional_fallback_possible=False,
+            strict_translation_eligible=False,
+            functional_fallback_eligible=False,
             reason_codes=("phase6a.test-incomplete",),
         ),
     )
