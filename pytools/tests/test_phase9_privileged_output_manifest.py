@@ -8,6 +8,7 @@ from riscv2x86_py.privileged_functional_contracts import (
 )
 from riscv2x86_py.privileged_output_manifest import (
     PRIVILEGED_OUTPUT_MANIFEST_SCHEMA,
+    finalize_privileged_output_manifest,
 )
 from riscv2x86_py.privileged_runtime_contracts import (
     PrivilegedRuntimeRegistry,
@@ -184,3 +185,30 @@ def test_manifest_survives_finding_report_serialization():
         output.metadata["privilegedOutputManifest"]
     )
     assert serialized["privilegedOutputManifest"]["diagnostics"]
+
+
+def test_phase8_rejection_finalizes_manifest_as_structured_unsupported():
+    output = translate(
+        **_translate_inputs(),
+        target_environment=strict_environment(),
+    )
+    original = output.metadata["privilegedOutputManifest"]
+
+    finalized = finalize_privileged_output_manifest(
+        original,
+        verification_status="failed",
+        verification_detail="target build failed",
+        accepted=False,
+    )
+
+    assert finalized["status"] == "unsupported"
+    assert finalized["complete"] is False
+    assert finalized["verification"] == {
+        "status": "failed",
+        "detail": "target build failed",
+    }
+    assert any(
+        item["reasonCode"] == "privileged-output.validation-rejected"
+        and item["stage"] == "phase8"
+        for item in finalized["diagnostics"]
+    )
