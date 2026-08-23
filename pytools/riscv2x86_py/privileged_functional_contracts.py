@@ -16,6 +16,7 @@ from typing import Iterable, Mapping
 
 from .functional_observability import FunctionalObservabilityContract
 from .privileged_runtime_contracts import (
+    TargetObservableEffectMapping,
     privileged_source_identity,
     target_environment_identity,
 )
@@ -67,6 +68,10 @@ class PrivilegedFunctionalFallbackContract:
     target_environment_id: str
     implementation_id: str
     required_target_capability: str
+    source_execution_profile: str = "riscv_user_process"
+    target_execution_mode: str = "x86_user_process"
+    renderer_contract_id: str = "privileged-functional-call.v1"
+    observable_effect_mappings: tuple[TargetObservableEffectMapping, ...] = ()
     required_headers: tuple[str, ...] = ()
     required_library: str | None = None
     argument_operand_indexes: tuple[int, ...] = ()
@@ -92,6 +97,8 @@ class PrivilegedFunctionalFallbackContract:
             "contract_id", "semantic_version", "source_privileged_identity",
             "source_observability_identity", "target_environment_id",
             "implementation_id", "required_target_capability",
+            "source_execution_profile", "target_execution_mode",
+            "renderer_contract_id",
         ):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or value != value.strip():
@@ -196,6 +203,16 @@ class TargetPrivilegedFunctionalFallbackConstraint:
     target_environment_id: str
     registry_version: str
     policy_identity: str
+    source_execution_profile: str
+    target_execution_mode: str
+    ignored_source_state: tuple[str, ...]
+    observable_effect_mappings: tuple[TargetObservableEffectMapping, ...]
+    runtime_symbol_or_intrinsic: str
+    required_headers: tuple[str, ...]
+    required_libraries: tuple[str, ...]
+    required_capabilities: tuple[str, ...]
+    functional_fallback: bool
+    complete: bool
     forbids_generic_helper_fallback: bool = True
 
     def __post_init__(self) -> None:
@@ -204,8 +221,12 @@ class TargetPrivilegedFunctionalFallbackConstraint:
         for name in (
             "source_privileged_identity", "source_observability_identity",
             "target_environment_id", "registry_version", "policy_identity",
+            "source_execution_profile", "target_execution_mode",
+            "runtime_symbol_or_intrinsic",
         ):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise TypeError(f"{name} must be non-empty")
         if self.forbids_generic_helper_fallback is not True:
             raise ValueError("privileged functional route must forbid generic helper fallback")
+        if not self.functional_fallback or not self.complete:
+            raise ValueError("functional mapping constraint must be complete fallback")
