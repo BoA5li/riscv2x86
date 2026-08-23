@@ -6,11 +6,15 @@ groups inline asm by textual proximity or guesses a containing function.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from dataclasses import replace
 import json
 from pathlib import Path
 from .whole_function import *
+from .function_privileged_analysis import *
+from .privileged_execution_sidecar import SourcePrivilegeMode
 
-WHOLE_FUNCTION_SIDECAR_SCHEMA="riscv2x86.whole-function-sidecar.v1"
+WHOLE_FUNCTION_SIDECAR_SCHEMA_V1="riscv2x86.whole-function-sidecar.v1"
+WHOLE_FUNCTION_SIDECAR_SCHEMA="riscv2x86.whole-function-sidecar.v2"
 
 @dataclass(frozen=True)
 class WholeFunctionSidecar:
@@ -27,6 +31,44 @@ def _d(v,what):
     return v
 def _rng(v):
     x=_d(v,"definitionRange"); return SourceTextRange(x["start"],x["end"])
+def _priv_state(v):
+    x=_d(v,"privileged machine state")
+    mode=x.get("privilegeMode")
+    return FunctionPrivilegedMachineState(
+        None if mode is None else SourcePrivilegeMode(mode),x.get("interruptState"),
+        x.get("delegationState"),x.get("addressSpaceState"),
+        x.get("trapContinuationState"),x.get("savedStatusState"))
+def _privileged(x,cfg,fragment_ids,provenance):
+    if "privilegedExecution" not in x:return None,None,()
+    p=_d(x["privilegedExecution"],"privilegedExecution")
+    def exits(name):
+        return tuple(sorted((FunctionPrivilegeExitMode(e["exitId"],SourcePrivilegeMode(e["privilegeMode"]),bool(e.get("complete",False))) for e in _t(p.get(name,[]),name)),key=lambda q:q.exit_id))
+    handlers=tuple(sorted((FunctionTrapHandlerBinding(e["bindingId"],e["entryNodeId"],SourcePrivilegeMode(e["entryPrivilegeMode"]),bool(e.get("complete",False))) for e in _t(p.get("trapHandlerBindings",[]),"trapHandlerBindings")),key=lambda q:q.binding_id))
+    regions=tuple(sorted((FunctionInterruptibilityRegion(e["regionId"],e["entryNodeId"],e["exitNodeId"],e["entryInterruptState"],e["exitInterruptState"],bool(e.get("complete",False))) for e in _t(p.get("interruptibilityRegions",[]),"interruptibilityRegions")),key=lambda q:q.region_id))
+    facts=FunctionPrivilegedExecutionFacts(
+        p["functionId"],SourcePrivilegeMode(p["entryPrivilegeMode"]),
+        exits("normalExitPrivilegeModes"),exits("exceptionalExitModes"),handlers,regions,
+        p.get("addressSpaceIdentity"),tuple(sorted(p.get("memberFragmentIds",fragment_ids))),
+        bool(p.get("complete",False)),p.get("provenance",provenance),
+        tuple(sorted(set(p.get("missingFactCodes",())))),p.get("hasNonlocalTransfer"),
+        p.get("hasUnwind"),p.get("hasSignalSensitiveState"),p.get("hasSetjmpLongjmp"))
+    if facts.member_fragment_ids != tuple(sorted(fragment_ids)):
+        facts=replace(
+            facts,complete=False,
+            missing_fact_codes=tuple(sorted(set((*facts.missing_fact_codes,
+                "whole-function.privileged-fragment-membership-mismatch"))))
+        )
+    transfers=tuple(sorted((FunctionPrivilegedBlockTransfer(
+        e["nodeId"],FunctionPrivilegedTransferKind(e["kind"]),_priv_state(e["outputState"]),
+        e.get("handlerBindingId"),e.get("continuationIdentity"),e.get("privilegeReturnKind"),bool(e.get("complete",False)))
+        for e in _t(x.get("privilegedTransfers",[]),"privilegedTransfers")),key=lambda q:q.node_id))
+    analysis=analyze_function_privileged_state(
+        cfg=cfg,facts=facts,transfers=transfers,
+        initial_interrupt_state=p.get("initialInterruptState","unknown"),
+        initial_delegation_state=p.get("initialDelegationState","unknown"),
+        initial_trap_continuation_state=p.get("initialTrapContinuationState","entry-continuation"),
+        initial_saved_status_state=p.get("initialSavedStatusState","entry-status"))
+    return facts,analysis,analysis.missing_fact_codes
 def _facts(v,provenance):
     x=_d(v,"whole-function facts"); u=_d(x["unit"],"unit"); a=_d(x["astBinding"],"astBinding")
     unit=FunctionTranslationUnit(u["functionId"],u.get("cAstFunctionBindingId"),u["sourceAbiProfile"],bool(u.get("complete",False)),tuple(u.get("missingFactCodes",())))
@@ -46,13 +88,20 @@ def _facts(v,provenance):
     if "phase5Evidence" in x:
         e=_d(x["phase5Evidence"],"phase5Evidence")
         evidence=WholeFunctionPhase5Evidence(e["mixedCfgIdentity"],e["frameDataflowIdentity"],e["abiDeclarationIdentity"],e["abiMachineJoinIdentity"],e.get("analysisVersion","phase5-whole-function-evidence.v1"))
-    return WholeFunctionTranslationFacts(unit,ast,cfg,stack,abi,effects,tuple(x.get("fragmentIds",())),recipe,bool(x.get("complete",False)),tuple(x.get("missingFactCodes",())),evidence)
+    fragments=tuple(x.get("fragmentIds",()))
+    privileged,privileged_analysis,privileged_reasons=_privileged(x,cfg,fragments,provenance)
+    if evidence is not None and privileged_analysis is not None:
+        evidence=WholeFunctionPhase5Evidence(evidence.mixed_cfg_identity,evidence.frame_dataflow_identity,evidence.abi_declaration_identity,evidence.abi_machine_join_identity,evidence.analysis_version,privileged_analysis.analysis_identity)
+    missing=tuple(sorted(set((*x.get("missingFactCodes",()),*privileged_reasons))))
+    complete=bool(x.get("complete",False)) and (privileged_analysis is None or privileged_analysis.complete)
+    return WholeFunctionTranslationFacts(unit,ast,cfg,stack,abi,effects,fragments,recipe,complete,missing,evidence,privileged,privileged_analysis)
 
 def whole_function_sidecar_from_dict(value)->WholeFunctionSidecar:
     x=_d(value,"whole-function sidecar")
-    if x.get("schemaVersion")!=WHOLE_FUNCTION_SIDECAR_SCHEMA: raise ValueError("unsupported whole-function sidecar schemaVersion")
+    schema=x.get("schemaVersion")
+    if schema not in {WHOLE_FUNCTION_SIDECAR_SCHEMA_V1,WHOLE_FUNCTION_SIDECAR_SCHEMA}: raise ValueError("unsupported whole-function sidecar schemaVersion")
     provenance=x.get("provenance")
     if not isinstance(provenance,str) or not provenance: raise ValueError("whole-function sidecar requires provenance")
-    return WholeFunctionSidecar(WHOLE_FUNCTION_SIDECAR_SCHEMA,tuple(_facts(v,provenance) for v in _t(x.get("functions"),"functions")),provenance)
+    return WholeFunctionSidecar(schema,tuple(_facts(v,provenance) for v in _t(x.get("functions"),"functions")),provenance)
 def load_whole_function_sidecar(path:str|Path)->WholeFunctionSidecar:
     return whole_function_sidecar_from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
