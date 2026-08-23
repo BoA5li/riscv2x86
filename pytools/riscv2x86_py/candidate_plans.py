@@ -1317,7 +1317,7 @@ def generate_candidate_plans(
             strict_family = TargetLoweringFamily.COUNTER_OBSERVATION
             strict_priority = PlanPriorityTier.COUNTER_OBSERVATION
             strict_strategy = "counter_observation_exact_adapter"
-        elif semantic_classes & frozenset({
+        elif semantic_classes and semantic_classes <= frozenset({
             PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE,
             PrivilegedSemanticClass.TLB_MAINTENANCE,
         }):
@@ -1326,13 +1326,17 @@ def generate_candidate_plans(
             strict_family = TargetLoweringFamily.PRIVILEGED_MMU
             strict_priority = PlanPriorityTier.PRIVILEGED_MMU
             strict_strategy = "exact_mmu_tlb_runtime"
-        elif PrivilegedSemanticClass.TRAP_SERVICE in semantic_classes:
+        elif semantic_classes == frozenset({
+            PrivilegedSemanticClass.TRAP_SERVICE
+        }):
             strict_plan_id = "privileged-runtime.trap-service.v1"
             strict_kind = TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER
             strict_family = TargetLoweringFamily.PRIVILEGED_SERVICE_ABI
             strict_priority = PlanPriorityTier.PRIVILEGED_SERVICE_ABI
             strict_strategy = "exact_trap_service_abi"
-        elif PrivilegedSemanticClass.INTERRUPT_EVENT in semantic_classes:
+        elif semantic_classes == frozenset({
+            PrivilegedSemanticClass.INTERRUPT_EVENT
+        }):
             strict_plan_id = "privileged-runtime.interrupt-event.v1"
             strict_kind = TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER
             strict_family = TargetLoweringFamily.PRIVILEGED_EVENT
