@@ -164,6 +164,7 @@ def build_privileged_state_adapter(
         return None
 
     reasons: list[str] = []
+    observability_reasons: list[str] = []
     if phase5_state is None:
         reasons.append(PrivilegedAdapterReasonCode.STATE_MISSING)
     elif not phase5_state.complete:
@@ -175,29 +176,29 @@ def build_privileged_state_adapter(
     )
     if observability is not None:
         if observability.fragment_id != fragment_id:
-            reasons.append(PrivilegedAdapterReasonCode.FRAGMENT_ID_MISMATCH)
+            observability_reasons.append(PrivilegedAdapterReasonCode.FRAGMENT_ID_MISMATCH)
         if not observability.complete:
-            reasons.append(PrivilegedAdapterReasonCode.OBSERVABILITY_INCOMPLETE)
-            reasons.extend(observability.missing_fact_codes)
+            observability_reasons.append(PrivilegedAdapterReasonCode.OBSERVABILITY_INCOMPLETE)
+            observability_reasons.extend(observability.missing_fact_codes)
         if len(observability.outputs) != int(getattr(shell, "output_count", -1)):
-            reasons.append(PrivilegedAdapterReasonCode.OUTPUT_SURFACE_MISMATCH)
+            observability_reasons.append(PrivilegedAdapterReasonCode.OUTPUT_SURFACE_MISMATCH)
         if (
             observability.memory.compiler_memory_order_observable
             != bool(getattr(shell, "has_memory_clobber", False))
         ):
-            reasons.append(PrivilegedAdapterReasonCode.SHELL_MEMORY_MISMATCH)
+            observability_reasons.append(PrivilegedAdapterReasonCode.SHELL_MEMORY_MISMATCH)
         if (
             observability.memory.volatile_execution_observable
             != bool(getattr(shell, "is_volatile", False))
         ):
-            reasons.append(PrivilegedAdapterReasonCode.SHELL_VOLATILE_MISMATCH)
+            observability_reasons.append(PrivilegedAdapterReasonCode.SHELL_VOLATILE_MISMATCH)
         if (
             observability.memory.reads_memory
             != bool(getattr(memory, "reads_memory", False))
             or observability.memory.writes_memory
             != bool(getattr(memory, "writes_memory", False))
         ):
-            reasons.append(PrivilegedAdapterReasonCode.MEMORY_EFFECT_MISMATCH)
+            observability_reasons.append(PrivilegedAdapterReasonCode.MEMORY_EFFECT_MISMATCH)
         trap_present = bool(
             phase5_state is not None
             and (
@@ -207,7 +208,7 @@ def build_privileged_state_adapter(
             )
         )
         if observability.trap.present is not trap_present:
-            reasons.append(PrivilegedAdapterReasonCode.TRAP_EFFECT_MISMATCH)
+            observability_reasons.append(PrivilegedAdapterReasonCode.TRAP_EFFECT_MISMATCH)
 
     semantic_classes = (
         () if phase5_state is None else phase5_state.semantic_classes
@@ -279,15 +280,15 @@ def build_privileged_state_adapter(
                     reasons.append(
                         PrivilegedAdapterReasonCode.COUNTER_ACCESS_UNPROVEN
                     )
-                elif (
-                    observability is None
-                    or effect_id not in
-                    observability.required_privileged_value_sources
-                ):
-                    reasons.append(
-                        PrivilegedAdapterReasonCode.COUNTER_VALUE_SOURCE_MISMATCH
-                    )
                 else:
+                    if (
+                        observability is not None
+                        and effect_id not in
+                        observability.required_privileged_value_sources
+                    ):
+                        observability_reasons.append(
+                            PrivilegedAdapterReasonCode.COUNTER_VALUE_SOURCE_MISMATCH
+                        )
                     counter = SourceReadOnlyCounterCsrModel(
                         effect_id=effect_id,
                         result_operand_index=(
@@ -310,7 +311,7 @@ def build_privileged_state_adapter(
         strict_source_complete and not requires_whole_function
     )
 
-    fallback_reasons: list[str] = list(strict_reasons)
+    fallback_reasons: list[str] = list(strict_reasons) + observability_reasons
     fallback_contract_possible = bool(
         observability is not None
         and observability.complete
