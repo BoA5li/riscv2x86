@@ -37,8 +37,11 @@ from riscv2x86_py.phase6f_renderer import (
 )
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
 from riscv2x86_py.privileged_execution_sidecar import (
-    CsrAccessPolicyFacts, PrivilegedExecutionFacts, SourceExecutionProfile,
-    SourcePrivilegeMode, TargetExecutionMode, UnknownCsrAccessDisposition,
+    AddressSpaceIdentityFacts, CsrAccessPolicyFacts, DelegationModelFacts,
+    InterruptModelFacts, PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
+    PrivilegedExecutionFacts, SourceExecutionProfile, SourcePrivilegeMode,
+    TargetExecutionMode, TrapHandlerBindingFacts,
+    UnknownCsrAccessDisposition, VirtualMemoryModelFacts,
 )
 from riscv2x86_py.privileged_state_analysis import analyze_privileged_state
 from riscv2x86_py.helper_runtime_manifest import INSTRUCTION_STREAM_SYNC_LOCAL
@@ -334,6 +337,27 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
         ),
         target_runtime_contract_set_id="x86-counter-v1", complete=True,
         missing_fact_codes=(), provenance="compiler-plugin:test",
+        delegation_model=DelegationModelFacts(
+            "test-delegation-v2", True, True, (), (), True
+        ),
+        interrupt_model=InterruptModelFacts(
+            "test-interrupt-v2", True, True, "test-priority-v1", True, True
+        ),
+        virtual_memory_model=VirtualMemoryModelFacts(
+            "test-vm-v2", True, "test", 4096, 16, None, True
+        ),
+        trap_handler_binding=TrapHandlerBindingFacts(
+            "test-trap-v2", "test-handler", "test-trap-abi-v1",
+            "test-continuation-v1", True
+        ),
+        address_space=AddressSpaceIdentityFacts(
+            "test-address-space", "test-process", "test-lifetime-v1",
+            False, True
+        ),
+        os_or_runtime_identity="test-runtime",
+        kernel_or_vmm_version="test-version",
+        target_cpu_feature_profile_id="test-target-profile-v1",
+        schema_version=PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
     )
     privileged_state = analyze_privileged_state(
         fragment_id="counter-frag", blocks=blocks, cfg=cfg,
