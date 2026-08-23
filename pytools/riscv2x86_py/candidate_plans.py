@@ -1261,10 +1261,9 @@ def generate_candidate_plans(
                            "be replaced by a fragment runtime adapter.",),
             )])
         if (
-            not privileged.complete or privileged.state is None
+            not privileged.strict_translation_eligible
+            or privileged.state is None
             or not privileged.state.present
-            or privileged.observability is None
-            or not privileged.observability.complete
             or not facts.model_is_consistent
             or facts.has_opaque_semantics
             or facts.has_unmodelled_semantics
@@ -1354,7 +1353,7 @@ def generate_candidate_plans(
             and bool(getattr(
                 privileged_functional_policy, "enabled", False
             ))
-            and privileged.functional_fallback_possible
+            and privileged.functional_fallback_eligible
         ):
             candidates.append(_plan(
                 plan_id="counter-observation.functional-contract.v1",
