@@ -363,3 +363,66 @@ def test_raw_mnemonic_is_not_privileged_evidence_and_typed_metadata_survives_can
     )
     assert malformed_model.present and not malformed_model.complete
     assert PrivilegedStateReasonCode.CANONICAL_METADATA_INCOMPLETE.value in malformed_model.missing_fact_codes
+
+
+def test_csr_v2_requires_xlen_extension_gates_and_field_warl_policy():
+    metadata = CanonicalPrivilegedOperation(
+        kind=CanonicalPrivilegedOperationKind.CSR_ACCESS,
+        csr_id="riscv.csr.mstatus",
+        csr_semantic_class="privileged_status",
+        csr_operation=CanonicalCsrOperationKind.WRITE,
+        write_value_node_id="node:mstatus-new",
+        read_modify_write=False,
+        affected_csr_fields=(CanonicalCsrFieldEffect(
+            field_id="riscv.csr.mstatus.mie",
+            new_value_node_id="node:mie-new",
+            writable_mask=0x8,
+            warl_or_wlrl_policy_id=None,
+            complete=False,
+        ),),
+        required_privilege_mode="m",
+        may_trap=False,
+        state_complete=True,
+    )
+    block = Block(
+        0x3000,
+        instructions=[CanonicalInsn(
+            0x3000, 4, privileged_operations=(metadata,)
+        )],
+    )
+    model = _model(block)
+
+    assert not model.complete
+    for reason in (
+        PrivilegedStateReasonCode.CSR_XLEN_UNKNOWN,
+        PrivilegedStateReasonCode.CSR_EXTENSION_UNPROVEN,
+        PrivilegedStateReasonCode.CSR_ACCESS_GATE_INCOMPLETE,
+        PrivilegedStateReasonCode.CSR_WARL_WLRL_POLICY_INCOMPLETE,
+    ):
+        assert reason.value in model.missing_fact_codes
+
+
+def test_tlb_invalidation_requires_va_asid_vmid_address_space_and_sync_scope():
+    metadata = CanonicalPrivilegedOperation(
+        kind=CanonicalPrivilegedOperationKind.ADDRESS_TRANSLATION,
+        address_translation_kind="tlb_invalidation",
+        translation_mode="sv39",
+        state_complete=True,
+    )
+    block = Block(
+        0x4000,
+        instructions=[CanonicalInsn(
+            0x4000, 4, privileged_operations=(metadata,)
+        )],
+    )
+    model = _model(block)
+
+    assert not model.complete
+    assert PrivilegedStateReasonCode.MMU_SCOPE_INCOMPLETE.value in (
+        model.missing_fact_codes
+    )
+    effect = model.address_translation_effects[0]
+    assert effect.virtual_address_scope is None
+    assert effect.asid is None and effect.vmid is None
+    assert effect.synchronization_scope is None
+    assert not effect.complete
