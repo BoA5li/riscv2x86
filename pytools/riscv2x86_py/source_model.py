@@ -13,7 +13,9 @@ try:
     from .stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
     from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from .whole_function import WholeFunctionRouteDecision, classify_whole_function_route
-    from .privileged_state_analysis import SourcePrivilegedStateModel
+    from .privileged_state_analysis import (
+        PrivilegedSemanticClass, SourcePrivilegedStateModel,
+    )
     from .privileged_policy import PrivilegedPreservationPolicy
     from .functional_observability import FunctionalObservabilityContract
     from .privileged_state_adapter import (
@@ -29,7 +31,9 @@ except ImportError:  # pragma: no cover - direct-module compatibility
     from stack_rebinding import StackAddressRebindingFacts, SourceStackRebindingAccess
     from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from whole_function import WholeFunctionRouteDecision, classify_whole_function_route
-    from privileged_state_analysis import SourcePrivilegedStateModel
+    from privileged_state_analysis import (
+        PrivilegedSemanticClass, SourcePrivilegedStateModel,
+    )
     from privileged_policy import PrivilegedPreservationPolicy
     from functional_observability import FunctionalObservabilityContract
     from privileged_state_adapter import (
@@ -2102,6 +2106,57 @@ def _collect_source_semantic_evidence(
                     "source fragment affects privileged debug state",
                     "SM_DEBUG_STATE",
                 )
+        class_feature_map = {
+            PrivilegedSemanticClass.COUNTER_OBSERVATION: (
+                "COUNTER_OBSERVATION", "counter observation", "SM_COUNTER_OBSERVATION"
+            ),
+            PrivilegedSemanticClass.FPU_ARCHITECTURAL_STATE: (
+                "FPU_ARCHITECTURAL_STATE", "FPU architectural state", "SM_FPU_ARCHITECTURAL_STATE"
+            ),
+            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE: (
+                "PRIVILEGED_CSR_STATE", "privileged CSR state", "SM_PRIVILEGED_CSR_STATE"
+            ),
+            PrivilegedSemanticClass.TLB_MAINTENANCE: (
+                "TLB_MAINTENANCE", "TLB maintenance state", "SM_TLB_MAINTENANCE"
+            ),
+            PrivilegedSemanticClass.TRAP_SERVICE: (
+                "TRAP_SERVICE", "trap/service transfer", "SM_TRAP_SERVICE"
+            ),
+            PrivilegedSemanticClass.PMP_STATE: (
+                "PMP_STATE", "physical memory protection state", "SM_PMP_STATE"
+            ),
+        }
+        for semantic_class in privileged.semantic_classes:
+            feature_fact = class_feature_map.get(semantic_class)
+            if feature_fact is not None:
+                feature_name, description, reason_code = feature_fact
+                add(
+                    _semantic_feature(feature_name),
+                    "source fragment has typed " + description,
+                    reason_code,
+                )
+        if privileged.preservation_policy.allows_functional_fallback:
+            add(
+                _semantic_feature("FUNCTIONAL_FALLBACK_REQUESTED"),
+                "functional privileged fallback policy was explicitly enabled",
+                "SM_FUNCTIONAL_FALLBACK_REQUESTED",
+            )
+        if privileged.functional_fallback_eligible:
+            add(
+                _semantic_feature(
+                    "FUNCTIONAL_ARCHITECTURE_STATE_NOT_PRESERVED"
+                ),
+                "functional fallback explicitly does not preserve all architecture state",
+                "SM_FUNCTIONAL_ARCHITECTURE_STATE_NOT_PRESERVED",
+            )
+            add(
+                _semantic_feature(
+                    "FUNCTIONAL_MICROARCHITECTURE_NOT_PRESERVED"
+                ),
+                "functional fallback does not claim microarchitecture preservation",
+                "SM_FUNCTIONAL_MICROARCHITECTURE_NOT_PRESERVED",
+            )
+
         if privileged.read_only_counter is not None:
             add(
                 _semantic_feature("READ_ONLY_COUNTER_CSR"),
