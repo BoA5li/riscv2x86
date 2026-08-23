@@ -79,7 +79,7 @@ def _fallback_plan(source, policy):
 
 
 def test_policy_disabled_does_not_generate_functional_candidate():
-    source = _source_model()
+    source = _source_model(True)
     plans = generate_candidate_plans(
         source, privileged_functional_policy=_policy(False)
     )
@@ -176,7 +176,8 @@ def test_unknown_privileged_state_never_generates_functional_candidate():
         privileged_state=replace(
             source.privileged_state,
             complete=False,
-            functional_fallback_possible=False,
+            strict_translation_eligible=False,
+            functional_fallback_eligible=False,
             reason_codes=("phase6a.unknown-privileged-state",),
         ),
     )
