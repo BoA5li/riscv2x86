@@ -276,17 +276,77 @@ class CanonicalCsrOperationKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class CanonicalCsrFieldEffect:
+    """Decoder-owned field-level CSR semantics; no textual inference."""
+
+    field_id: str
+    old_value_node_id: str | None = None
+    new_value_node_id: str | None = None
+    writable_mask: int | None = None
+    warl_or_wlrl_policy_id: str | None = None
+    side_effect_ids: tuple[str, ...] = ()
+    complete: bool = False
+
+
+@dataclass(frozen=True)
 class CanonicalPrivilegedOperation:
-    """Typed decoder/lifter evidence for one privileged machine effect."""
+    """Typed decoder/lifter evidence for one privileged machine effect.
+
+    V2 fields are optional at the canonical boundary so older lifters remain
+    readable.  Phase 5 treats a missing field as unknown and fails closed.
+    """
 
     kind: CanonicalPrivilegedOperationKind
     csr_id: str | None = None
+    csr_semantic_class: str | None = None
     csr_operation: CanonicalCsrOperationKind | None = None
+    read_value_node_id: str | None = None
+    write_value_node_id: str | None = None
+    immediate_mask: int | None = None
+    read_modify_write: bool | None = None
+    affected_csr_fields: tuple[CanonicalCsrFieldEffect, ...] = ()
+    xlen_bits: int | None = None
+    required_extension_id: str | None = None
+    access_gate_ids: tuple[str, ...] = ()
+    access_gate_evaluation_complete: bool = False
     required_privilege_mode: str | None = None
+
     trap_kind: str | None = None
+    trap_cause: str | None = None
+    tval_node_id: str | None = None
+    trap_target_privilege_mode: str | None = None
+    handler_binding_id: str | None = None
+    saved_pc_node_id: str | None = None
+    saved_status_effect_ids: tuple[str, ...] = ()
+    delegation_path: tuple[str, ...] = ()
+    continuation_identity: str | None = None
+    externally_observable: bool | None = None
+
     return_kind: str | None = None
+    restored_privilege_mode: str | None = None
+    restored_interrupt_state: str | None = None
+    return_pc_node_id: str | None = None
+    status_field_effect_ids: tuple[str, ...] = ()
+
     interrupt_kind: str | None = None
+    interrupt_enable_state: str | None = None
+    interrupt_pending_state: str | None = None
+    interrupt_delegation_path: tuple[str, ...] = ()
+    interrupt_priority: int | None = None
+    interruptibility: bool | None = None
+    event_source_id: str | None = None
+    wait_wakeup_relation_id: str | None = None
+
     address_translation_kind: str | None = None
+    translation_root_node_id: str | None = None
+    translation_mode: str | None = None
+    asid: int | None = None
+    vmid: int | None = None
+    virtual_address_scope: str | None = None
+    address_space_identity: str | None = None
+    synchronization_scope: str | None = None
+    shootdown_required: bool | None = None
+
     virtualization_kind: str | None = None
     debug_kind: str | None = None
     may_trap: bool | None = None
