@@ -48,7 +48,7 @@ def test_default_policy_never_silently_uses_functional_fallback():
 
 
 def test_explicit_fallback_policy_keeps_routes_typed_and_excludes_helper():
-    source = _source_model()
+    source = _source_model(True)
 
     plans = generate_candidate_plans(
         source,
@@ -67,14 +67,15 @@ def test_explicit_fallback_policy_keeps_routes_typed_and_excludes_helper():
     "field",
     (
         "complete",
-        "functional_fallback_possible",
+        "functional_fallback_eligible",
     ),
 )
 def test_incomplete_or_unapproved_privileged_state_fails_closed(field):
     source = _source_model()
     changes = {
         "complete": False,
-        "functional_fallback_possible": False,
+        "strict_translation_eligible": False,
+        "functional_fallback_eligible": False,
         "reason_codes": ("phase8.validation-incomplete",),
     }
     changes[field] = False
@@ -116,7 +117,7 @@ def test_strict_constraint_requires_exact_versioned_registry():
 
 
 def test_functional_constraint_requires_exact_observability_identity():
-    source = _source_model()
+    source = _source_model(True)
     environment = functional_environment()
     policy = _policy()
     contract, _ = functional_registry(source, environment)
@@ -172,7 +173,7 @@ def test_emitted_text_audit_rejects_privileged_or_host_stack_escape(
 
 
 def test_functional_fallback_cannot_be_derived_when_policy_is_disabled():
-    source = _source_model()
+    source = _source_model(True)
     environment = functional_environment()
     enabled_policy = _policy()
     plan = _fallback_plan(source, enabled_policy)
