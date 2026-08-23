@@ -84,7 +84,7 @@ def test_policy_disabled_does_not_generate_functional_candidate():
         source, privileged_functional_policy=_policy(False)
     )
     assert tuple(plan.kind for plan in plans) == (
-        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
     )
 
 
