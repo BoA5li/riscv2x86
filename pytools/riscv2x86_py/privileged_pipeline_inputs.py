@@ -33,6 +33,9 @@ from .privileged_runtime_contracts import (
     PRIVILEGED_RUNTIME_REGISTRY_SCHEMA,
     PrivilegedRuntimeContract,
     PrivilegedRuntimeRegistry,
+    TargetCsrStateMapping, TargetTrapMapping, TargetInterruptMapping,
+    TargetAddressTranslationMapping, TargetVirtualizationMapping,
+    TargetDebugMapping, TargetObservableEffectMapping,
 )
 
 
@@ -314,6 +317,26 @@ def privileged_ignored_state_sidecar_from_dict(
 
 def _runtime_contract(value: object) -> PrivilegedRuntimeContract:
     item = _object(value, "privileged runtime contract")
+    def mappings(json_name, constructor, fields):
+        raw = item.get(json_name, [])
+        if not isinstance(raw, list):
+            raise ValueError(f"{json_name} must be an array")
+        result = []
+        for entry in raw:
+            obj = _object(entry, json_name)
+            kwargs = {}
+            for py_name, js_name, optional, sequence in fields:
+                value = obj.get(js_name)
+                if sequence:
+                    kwargs[py_name] = _strings(value or [], js_name)
+                elif optional:
+                    kwargs[py_name] = _optional_text(value, js_name)
+                else:
+                    kwargs[py_name] = _text(value, js_name)
+            kwargs["complete"] = _boolean(obj.get("complete"), "complete", True)
+            result.append(constructor(**kwargs))
+        return tuple(sorted(result, key=lambda x: x.source_effect_id))
+    common = (("source_effect_id", "sourceEffectId", False, False),)
     return PrivilegedRuntimeContract(
         contract_id=_text(item.get("contractId"), "contractId"),
         semantic_version=_text(item.get("semanticVersion"), "semanticVersion"),
@@ -327,6 +350,38 @@ def _runtime_contract(value: object) -> PrivilegedRuntimeContract:
         required_target_capability=_text(
             item.get("requiredTargetCapability"), "requiredTargetCapability"
         ),
+        source_execution_profile=_text(item.get("sourceExecutionProfile", "riscv_user_process"), "sourceExecutionProfile"),
+        target_execution_mode=_text(item.get("targetExecutionMode", "x86_user_process"), "targetExecutionMode"),
+        renderer_contract_id=_text(item.get("rendererContractId", "privileged-runtime-call.v1"), "rendererContractId"),
+        runtime_contract_set_id=_text(item.get("runtimeContractSetId", "default-privileged-runtime-set"), "runtimeContractSetId"),
+        csr_mappings=mappings("csrMappings", TargetCsrStateMapping, common + (
+            ("source_csr_id", "sourceCsrId", False, False),
+            ("source_field_ids", "sourceFieldIds", False, True),
+            ("target_state_object_id", "targetStateObjectId", False, False),
+            ("target_operation_id", "targetOperationId", False, False),
+            ("old_new_state_relation_id", "oldNewStateRelationId", False, False),
+            ("access_trap_mapping_id", "accessTrapMappingId", True, False),)),
+        trap_mappings=mappings("trapMappings", TargetTrapMapping, common + tuple(
+            (name, js, False, False) for name, js in (
+                ("cause_mapping_id", "causeMappingId"), ("tval_mapping_id", "tvalMappingId"),
+                ("handler_mapping_id", "handlerMappingId"), ("continuation_mapping_id", "continuationMappingId"),
+                ("target_error_or_result_mapping_id", "targetErrorOrResultMappingId")))),
+        interrupt_mappings=mappings("interruptMappings", TargetInterruptMapping, common + (
+            ("target_event_state_id", "targetEventStateId", False, False),
+            ("enable_pending_relation_id", "enablePendingRelationId", False, False),
+            ("delegation_priority_relation_id", "delegationPriorityRelationId", False, False),
+            ("wait_wakeup_relation_id", "waitWakeupRelationId", True, False),)),
+        address_translation_mappings=mappings("addressTranslationMappings", TargetAddressTranslationMapping, common + tuple(
+            (name, js, False, False) for name, js in (
+                ("target_address_space_id", "targetAddressSpaceId"), ("root_mode_relation_id", "rootModeRelationId"),
+                ("scope_relation_id", "scopeRelationId"), ("synchronization_relation_id", "synchronizationRelationId"),
+                ("shootdown_relation_id", "shootdownRelationId")))),
+        virtualization_mappings=mappings("virtualizationMappings", TargetVirtualizationMapping, common + (
+            ("target_virtualization_state_id", "targetVirtualizationStateId", False, False),
+            ("state_relation_id", "stateRelationId", False, False),)),
+        debug_mappings=mappings("debugMappings", TargetDebugMapping, common + (
+            ("target_debug_state_id", "targetDebugStateId", False, False),
+            ("state_relation_id", "stateRelationId", False, False),)),
         required_headers=_strings(item.get("requiredHeaders", []), "requiredHeaders"),
         required_library=_optional_text(
             item.get("requiredLibrary"), "requiredLibrary"
