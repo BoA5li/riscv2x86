@@ -35,6 +35,15 @@ RecipeFactory = Callable[[ApprovedTargetLoweringPlan], object | None]
 
 
 @dataclass(frozen=True)
+_STRICT_PRIVILEGED_KINDS = frozenset({
+    TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
+    TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER,
+    TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER,
+    TargetLoweringKind.MMU_RUNTIME_ADAPTER,
+    TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+})
+
+
 class RegisteredRendererContract:
     semantic_contract_id: str
     plan_kind: TargetLoweringKind
@@ -103,7 +112,7 @@ class RendererContractRegistry:
         if semantic_id is None and approved.plan.kind is TargetLoweringKind.STRUCTURED_CONTROL_FLOW:
             flow = approved.constraints.structured_control_flow_contract
             semantic_id = None if flow is None else flow.semantic_contract_id
-        if semantic_id is None and approved.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
+        if semantic_id is None and approved.plan.kind in _STRICT_PRIVILEGED_KINDS:
             constraint = approved.constraints.privileged_runtime_constraint
             semantic_id = (None if constraint is None else
                            constraint.runtime_contract.semantic_contract_id)
@@ -286,7 +295,7 @@ def _privileged_renderer_entry(
 ) -> RegisteredRendererContract:
     constraint_field = (
         "privileged_runtime_constraint"
-        if registration.plan_kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+        if registration.plan_kind in _STRICT_PRIVILEGED_KINDS
         else "privileged_functional_constraint"
     )
 
