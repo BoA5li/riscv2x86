@@ -1261,7 +1261,8 @@ def generate_candidate_plans(
                            "be replaced by a fragment runtime adapter.",),
             )])
         if (
-            not privileged.strict_translation_eligible
+            not privileged.complete
+            or not privileged.strict_translation_eligible
             or privileged.state is None
             or not privileged.state.present
             or not facts.model_is_consistent
