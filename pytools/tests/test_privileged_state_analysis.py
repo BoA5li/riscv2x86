@@ -33,6 +33,7 @@ from riscv2x86_py.privileged_state_analysis import (
     CsrEffectOperation,
     InterruptEffectKind,
     PrivilegeReturnKind,
+    PrivilegedSemanticClass,
     PrivilegedStateReasonCode,
     TrapEffectKind,
     VirtualizationEffectKind,
@@ -142,6 +143,10 @@ def test_typed_csr_effect_joins_policy_and_privilege_mode():
     model = _model(block)
 
     assert model.present and model.complete
+    assert model.semantic_classes == (
+        PrivilegedSemanticClass.PRIVILEGED_CSR_STATE,
+    )
+    assert model.classification_complete
     assert model.access_permissions_complete
     assert model.csr_effects[0].operation is CsrEffectOperation.READ_WRITE
     assert model.csr_effects[0].required_privilege_mode is SourcePrivilegeMode.M
@@ -254,6 +259,13 @@ def test_trap_return_interrupt_mmu_and_virtualization_are_separate_effects():
     model = _model(block)
 
     assert model.complete
+    assert set(model.semantic_classes) == {
+        PrivilegedSemanticClass.TRAP_SERVICE,
+        PrivilegedSemanticClass.PRIVILEGE_RETURN,
+        PrivilegedSemanticClass.INTERRUPT_EVENT,
+        PrivilegedSemanticClass.TLB_MAINTENANCE,
+        PrivilegedSemanticClass.VIRTUALIZATION_STATE,
+    }
     assert model.trap_effects[0].kind is TrapEffectKind.ENVIRONMENT_CALL
     assert model.return_effects[0].kind is PrivilegeReturnKind.MRET
     assert model.interrupt_effects[0].kind is InterruptEffectKind.WAIT
@@ -426,3 +438,64 @@ def test_tlb_invalidation_requires_va_asid_vmid_address_space_and_sync_scope():
     assert effect.asid is None and effect.vmid is None
     assert effect.synchronization_scope is None
     assert not effect.complete
+
+
+def _classified_csr_read(csr_id, csr_class):
+    metadata = CanonicalPrivilegedOperation(
+        kind=CanonicalPrivilegedOperationKind.CSR_ACCESS,
+        csr_id=csr_id,
+        csr_semantic_class=csr_class,
+        csr_operation=CanonicalCsrOperationKind.READ,
+        read_value_node_id="node:value",
+        read_modify_write=False,
+        xlen_bits=64,
+        required_extension_id="zicsr",
+        access_gate_ids=("privilege-mode:m",),
+        access_gate_evaluation_complete=True,
+        required_privilege_mode="m",
+        may_trap=False,
+        state_complete=True,
+    )
+    block = Block(
+        0x5000,
+        instructions=[CanonicalInsn(
+            0x5000, 4, privileged_operations=(metadata,)
+        )],
+    )
+    facts = _facts(readable=(csr_id,), writable=())
+    return _model(block, facts)
+
+
+def test_canonical_csr_identity_and_typed_class_define_route_boundaries():
+    cases = (
+        ("riscv.csr.cycle", "user_counter_observation",
+         PrivilegedSemanticClass.COUNTER_OBSERVATION),
+        ("riscv.csr.fcsr", "fpu_state",
+         PrivilegedSemanticClass.FPU_ARCHITECTURAL_STATE),
+        ("riscv.csr.satp", "address_translation",
+         PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE),
+        ("riscv.csr.pmpcfg0", "pmp_state",
+         PrivilegedSemanticClass.PMP_STATE),
+        ("riscv.csr.dcsr", "debug_state",
+         PrivilegedSemanticClass.DEBUG_STATE),
+        ("riscv.csr.hstatus", "virtualization_state",
+         PrivilegedSemanticClass.VIRTUALIZATION_STATE),
+    )
+    for csr_id, declared, expected in cases:
+        model = _classified_csr_read(csr_id, declared)
+        assert model.complete
+        assert model.semantic_classes == (expected,)
+        assert model.classification_complete
+
+
+def test_csr_identity_and_typed_class_mismatch_is_unknown_and_fail_closed():
+    model = _classified_csr_read(
+        "riscv.csr.fcsr", "privileged_status"
+    )
+    assert not model.complete
+    assert model.semantic_classes == (PrivilegedSemanticClass.UNKNOWN,)
+    assert not model.classification_complete
+    assert (
+        "privileged-state.semantic-classification-identity-mismatch"
+        in model.missing_fact_codes
+    )
