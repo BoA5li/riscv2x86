@@ -94,6 +94,7 @@ from .privileged_state_analysis import (
 )
 from .functional_observability import FunctionalObservabilityContract
 from .privileged_runtime_contracts import PrivilegedRuntimeRegistry
+from .privileged_policy import PrivilegedPreservationPolicy
 from .privileged_functional_contracts import (
     PrivilegedFunctionalFallbackPolicy,
     PrivilegedFunctionalFallbackRegistry,
@@ -3319,6 +3320,11 @@ def translate(
             abi_call_bindings=context.abiCallBindings,
             privileged_state=context.privilegedStateFacts,
             functional_observability=context.functionalObservability,
+            privileged_preservation_policy=(
+                PrivilegedPreservationPolicy.from_allow_functional_fallbacks(
+                    allow_functional_fallbacks
+                )
+            ),
             whole_function_facts=context.wholeFunctionFacts,
         )
     except ValueError as exc:
