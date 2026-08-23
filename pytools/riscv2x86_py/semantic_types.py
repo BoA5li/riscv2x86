@@ -156,6 +156,19 @@ class SemanticFeature(str, Enum):
         "functional_privileged_fallback_possible"
     )
     IGNORED_PRIVILEGED_STATE = "ignored_privileged_state"
+    COUNTER_OBSERVATION = "counter_observation"
+    FPU_ARCHITECTURAL_STATE = "fpu_architectural_state"
+    PRIVILEGED_CSR_STATE = "privileged_csr_state"
+    TLB_MAINTENANCE = "tlb_maintenance"
+    TRAP_SERVICE = "trap_service"
+    PMP_STATE = "pmp_state"
+    FUNCTIONAL_FALLBACK_REQUESTED = "functional_fallback_requested"
+    FUNCTIONAL_ARCHITECTURE_STATE_NOT_PRESERVED = (
+        "functional_architecture_state_not_preserved"
+    )
+    FUNCTIONAL_MICROARCHITECTURE_NOT_PRESERVED = (
+        "functional_microarchitecture_not_preserved"
+    )
 
     # ------------------------------------------------------------------
     # Stack / ABI / register-role semantics.
