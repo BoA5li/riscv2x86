@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Tuple
 from .source_model import SourceSemanticModel
+from .privileged_state_analysis import PrivilegedSemanticClass
 
 from .plan_types import (
     PlanPriorityTier,
@@ -1241,6 +1242,18 @@ def generate_candidate_plans(
     # compete with generic HELPER_CALL, register-only, or pure-C lowering.
     privileged = getattr(source_model, "privileged_state", None)
     if privileged is not None:
+        semantic_classes = frozenset(privileged.semantic_classes)
+        if (
+            not privileged.classification_complete
+            or PrivilegedSemanticClass.UNKNOWN in semantic_classes
+        ):
+            return ()
+        if PrivilegedSemanticClass.FPU_ARCHITECTURAL_STATE in semantic_classes:
+            return _stable_sort_and_freeze([_unsupported_candidate(
+                reason_code="privileged-needs-route-fpu-state",
+                rationale=("FPU CSR state requires the independent FPU "
+                           "architectural-state route.",),
+            )])
         if privileged.requires_whole_function_lowering:
             return _stable_sort_and_freeze([_unsupported_candidate(
                 reason_code="privileged-whole-function-lowering-required",
@@ -1279,15 +1292,53 @@ def generate_candidate_plans(
         }
         if source_model.microarch.explicitly_microarch_sensitive:
             requirements.add(PlanRequirement.PRESERVE_MICROARCH_INTENT)
+        if semantic_classes == frozenset({
+            PrivilegedSemanticClass.COUNTER_OBSERVATION
+        }):
+            strict_plan_id = "counter-observation.strict-adapter.v1"
+            strict_strategy = "counter_observation_exact_adapter"
+        elif semantic_classes & frozenset({
+            PrivilegedSemanticClass.ADDRESS_TRANSLATION_STATE,
+            PrivilegedSemanticClass.TLB_MAINTENANCE,
+        }):
+            strict_plan_id = "privileged-runtime.mmu-tlb.v1"
+            strict_strategy = "exact_mmu_tlb_runtime"
+        elif PrivilegedSemanticClass.TRAP_SERVICE in semantic_classes:
+            strict_plan_id = "privileged-runtime.trap-service.v1"
+            strict_strategy = "exact_trap_service_abi"
+        elif PrivilegedSemanticClass.INTERRUPT_EVENT in semantic_classes:
+            strict_plan_id = "privileged-runtime.interrupt-event.v1"
+            strict_strategy = "exact_interrupt_event_runtime"
+        elif semantic_classes & frozenset({
+            PrivilegedSemanticClass.PMP_STATE,
+            PrivilegedSemanticClass.DEBUG_STATE,
+            PrivilegedSemanticClass.VIRTUALIZATION_STATE,
+        }):
+            strict_plan_id = "privileged-runtime.emulator-vmm-state.v1"
+            strict_strategy = "exact_emulator_vmm_state"
+        elif semantic_classes == frozenset({
+            PrivilegedSemanticClass.PRIVILEGED_CSR_STATE
+        }):
+            strict_plan_id = "privileged-runtime.csr-state.v1"
+            strict_strategy = "exact_privileged_csr_runtime"
+        else:
+            strict_plan_id = "privileged-runtime.compound-state.v1"
+            strict_strategy = "exact_compound_privileged_runtime"
+
         candidates = [_plan(
-            plan_id="privileged-runtime.strict-adapter.v1",
+            plan_id=strict_plan_id,
             kind=TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
             family=TargetLoweringFamily.PRIVILEGED_RUNTIME,
             priority_tier=PlanPriorityTier.PRIVILEGED_RUNTIME,
             deterministic_rank=10,
             required_features=frozenset({"target:x86"}),
             requirements=frozenset(requirements),
-            metadata={"strategy": "strict_privileged_runtime_adapter"},
+            metadata={
+                "strategy": strict_strategy,
+                "privileged_semantic_classes": tuple(sorted(
+                    item.value for item in semantic_classes
+                )),
+            },
             rationale=("Complete privileged effects require one exact, "
                        "versioned target runtime contract.",),
             reason_codes=("privileged-runtime-contract-required",),
@@ -1296,11 +1347,17 @@ def generate_candidate_plans(
         # requires an exact source/observability/target registry match and
         # Phase 6D proves every functional observable.  Incomplete/unknown
         # privileged state returned above and can never reach this branch.
-        if bool(getattr(privileged_functional_policy, "enabled", False)) and (
-            privileged.functional_fallback_possible
+        if (
+            semantic_classes == frozenset({
+                PrivilegedSemanticClass.COUNTER_OBSERVATION
+            })
+            and bool(getattr(
+                privileged_functional_policy, "enabled", False
+            ))
+            and privileged.functional_fallback_possible
         ):
             candidates.append(_plan(
-                plan_id="privileged-functional.exact-contract.v1",
+                plan_id="counter-observation.functional-contract.v1",
                 kind=TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
                 family=TargetLoweringFamily.PRIVILEGED_FUNCTIONAL,
                 priority_tier=PlanPriorityTier.PRIVILEGED_FUNCTIONAL,
@@ -1325,7 +1382,12 @@ def generate_candidate_plans(
                     PlanRequirement.PRESERVE_MEMORY_CLOBBER,
                     PlanRequirement.PRESERVE_CC_CLOBBER,
                 }),
-                metadata={"strategy": "exact_privileged_functional_fallback"},
+                metadata={
+                    "strategy": "counter_observation_functional_fallback",
+                    "privileged_semantic_classes": (
+                        PrivilegedSemanticClass.COUNTER_OBSERVATION.value,
+                    ),
+                },
                 rationale=("Explicit policy permits a registered functional-only "
                            "fallback without claiming architecture equivalence.",),
                 reason_codes=("privileged-functional-contract-required",),
