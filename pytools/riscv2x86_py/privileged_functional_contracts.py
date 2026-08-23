@@ -173,6 +173,13 @@ class PrivilegedFunctionalFallbackRegistry:
     def semantic_contract_ids(self) -> frozenset[str]:
         return frozenset(item.semantic_contract_id for item in self._contracts.values())
 
+    @property
+    def required_target_capabilities(self) -> frozenset[str]:
+        return frozenset(
+            item.required_target_capability
+            for item in self._contracts.values()
+        )
+
 
 EMPTY_PRIVILEGED_FUNCTIONAL_FALLBACK_REGISTRY = (
     PrivilegedFunctionalFallbackRegistry(
