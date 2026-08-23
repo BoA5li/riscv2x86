@@ -10,6 +10,7 @@ from .functional_observability import (
 )
 from .privileged_state_analysis import (
     CsrEffectOperation,
+    PrivilegedSemanticClass,
     SourcePrivilegedStateModel,
 )
 
@@ -72,12 +73,18 @@ class SourcePrivilegedSemanticModel:
     requires_whole_function_lowering: bool
     complete: bool
     reason_codes: tuple[str, ...]
+    semantic_classes: tuple[PrivilegedSemanticClass, ...] = ()
+    classification_complete: bool = False
 
     def __post_init__(self) -> None:
         if tuple(sorted(set(self.reason_codes))) != self.reason_codes:
             raise ValueError("privileged adapter reasons must be unique/sorted")
         if self.complete and self.reason_codes:
             raise ValueError("complete privileged adapter cannot have reasons")
+        if tuple(sorted(set(self.semantic_classes), key=lambda item: item.value)) != self.semantic_classes:
+            raise ValueError("adapter semantic classes must be unique and sorted")
+        if self.complete and not self.classification_complete:
+            raise ValueError("complete privileged adapter needs classification")
         if self.functional_fallback_possible and (
             not self.complete or self.observability is None
         ):
@@ -168,8 +175,14 @@ def build_privileged_state_adapter(
         if observability.trap.present is not trap_present:
             reasons.append(PrivilegedAdapterReasonCode.TRAP_EFFECT_MISMATCH)
 
-    requires_whole_function = bool(
-        phase5_state is not None and phase5_state.return_effects
+    semantic_classes = (
+        () if phase5_state is None else phase5_state.semantic_classes
+    )
+    classification_complete = bool(
+        phase5_state is not None and phase5_state.classification_complete
+    )
+    requires_whole_function = (
+        PrivilegedSemanticClass.PRIVILEGE_RETURN in semantic_classes
     )
     if requires_whole_function and getattr(control_flow, "has_return", None) is not True:
         reasons.append(
@@ -269,4 +282,6 @@ def build_privileged_state_adapter(
         requires_whole_function_lowering=requires_whole_function,
         complete=complete,
         reason_codes=reason_codes,
+        semantic_classes=semantic_classes,
+        classification_complete=classification_complete,
     )
