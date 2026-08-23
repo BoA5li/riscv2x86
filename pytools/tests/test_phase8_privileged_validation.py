@@ -43,7 +43,7 @@ def test_default_policy_never_silently_uses_functional_fallback():
     plans = generate_candidate_plans(source)
 
     assert tuple(plan.kind for plan in plans) == (
-        TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
     )
 
 
@@ -58,7 +58,7 @@ def test_explicit_fallback_policy_keeps_routes_typed_and_excludes_helper():
     )
     kinds = tuple(plan.kind for plan in plans)
 
-    assert TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER in kinds
+    assert TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER in kinds
     assert TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK in kinds
     assert TargetLoweringKind.HELPER_CALL not in kinds
 
