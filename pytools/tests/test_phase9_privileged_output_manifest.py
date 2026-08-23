@@ -2,6 +2,7 @@
 from dataclasses import replace
 
 from riscv2x86_py.plan_types import TargetLoweringKind
+from riscv2x86_py.schema import Finding
 from riscv2x86_py.privileged_functional_contracts import (
     PrivilegedFunctionalFallbackRegistry,
 )
@@ -164,3 +165,22 @@ def test_unsupported_privileged_output_has_structured_diagnostics():
         for item in manifest["diagnostics"]
     )
     assert manifest["complete"] is False
+
+
+def test_manifest_survives_finding_report_serialization():
+    output = translate(
+        **_translate_inputs(),
+        target_environment=strict_environment(),
+    )
+    finding = Finding(
+        privilegedOutputManifest=output.metadata[
+            "privilegedOutputManifest"
+        ],
+    )
+
+    serialized = finding.to_dict()
+
+    assert serialized["privilegedOutputManifest"] == (
+        output.metadata["privilegedOutputManifest"]
+    )
+    assert serialized["privilegedOutputManifest"]["diagnostics"]
