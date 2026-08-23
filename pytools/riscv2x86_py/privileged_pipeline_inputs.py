@@ -36,6 +36,8 @@ from .privileged_runtime_contracts import (
     TargetCsrStateMapping, TargetTrapMapping, TargetInterruptMapping,
     TargetAddressTranslationMapping, TargetVirtualizationMapping,
     TargetDebugMapping, TargetObservableEffectMapping,
+    PrivilegedMappingRegistryKind, PrivilegedMappingRegistrySet,
+    VersionedPrivilegedMappingRegistry,
 )
 
 
@@ -354,6 +356,24 @@ def _runtime_contract(value: object) -> PrivilegedRuntimeContract:
         target_execution_mode=_text(item.get("targetExecutionMode", "x86_user_process"), "targetExecutionMode"),
         renderer_contract_id=_text(item.get("rendererContractId", "privileged-runtime-call.v1"), "rendererContractId"),
         runtime_contract_set_id=_text(item.get("runtimeContractSetId", "default-privileged-runtime-set"), "runtimeContractSetId"),
+        supported_source_profiles=_strings(item.get("supportedSourceProfiles", [item.get("sourceExecutionProfile", "riscv_user_process")]), "supportedSourceProfiles"),
+        supported_target_modes=_strings(item.get("supportedTargetModes", [item.get("targetExecutionMode", "x86_user_process")]), "supportedTargetModes"),
+        supported_semantic_classes=_strings(item.get("supportedSemanticClasses", ["counter_observation"]), "supportedSemanticClasses"),
+        source_semantic_contract_id=_text(item.get("sourceSemanticContractId", "riscv2x86.source-privileged-state"), "sourceSemanticContractId"),
+        source_semantic_version=_text(item.get("sourceSemanticVersion", "privileged-effect-model.v2"), "sourceSemanticVersion"),
+        privilege_spec_version=_text(item.get("privilegeSpecVersion", "unknown"), "privilegeSpecVersion"),
+        isa_extension_profile_id=_text(item.get("isaExtensionProfileId", "extensions:"), "isaExtensionProfileId"),
+        runtime_identity=_text(item.get("runtimeIdentity", "default-privileged-runtime-set"), "runtimeIdentity"),
+        runtime_contract_version=_text(item.get("runtimeContractVersion", "1"), "runtimeContractVersion"),
+        state_mapping_registry_id=_text(item.get("stateMappingRegistryId", "state.empty@1"), "stateMappingRegistryId"),
+        trap_mapping_registry_id=_text(item.get("trapMappingRegistryId", "trap.empty@1"), "trapMappingRegistryId"),
+        interrupt_mapping_registry_id=_text(item.get("interruptMappingRegistryId", "interrupt.empty@1"), "interruptMappingRegistryId"),
+        mmu_mapping_registry_id=_text(item.get("mmuMappingRegistryId", "mmu.empty@1"), "mmuMappingRegistryId"),
+        callable_identifier=_text(item.get("callableIdentifier", item.get("runtimeSymbol")), "callableIdentifier"),
+        abi_contract_id=_text(item.get("abiContractId", "c-abi.v1"), "abiContractId"),
+        memory_effect_contract_id=_text(item.get("memoryEffectContractId", "memory-effect.exact.v1"), "memoryEffectContractId"),
+        control_flow_effect_contract_id=_text(item.get("controlFlowEffectContractId", "control-flow.exact.v1"), "controlFlowEffectContractId"),
+        unwind_policy_id=_text(item.get("unwindPolicyId", "nounwind.v1"), "unwindPolicyId"),
         csr_mappings=mappings("csrMappings", TargetCsrStateMapping, common + (
             ("source_csr_id", "sourceCsrId", False, False),
             ("source_field_ids", "sourceFieldIds", False, True),
@@ -386,6 +406,8 @@ def _runtime_contract(value: object) -> PrivilegedRuntimeContract:
         required_library=_optional_text(
             item.get("requiredLibrary"), "requiredLibrary"
         ),
+        required_libraries=_strings(item.get("requiredLibraries", ([] if item.get("requiredLibrary") is None else [item.get("requiredLibrary")])), "requiredLibraries"),
+        required_capabilities=_strings(item.get("requiredCapabilities", [item.get("requiredTargetCapability")]), "requiredCapabilities"),
         argument_operand_indexes=_indexes(
             item.get("argumentOperandIndexes", []), "argumentOperandIndexes"
         ),
@@ -423,8 +445,46 @@ def privileged_runtime_registry_from_dict(
     raw = data.get("contracts")
     if not isinstance(raw, list):
         raise ValueError("privileged runtime contracts must be an array")
+    contracts = tuple(_runtime_contract(item) for item in raw)
+    raw_registries = data.get("mappingRegistries")
+    if not isinstance(raw_registries, list):
+        raise ValueError("privileged mappingRegistries must be an array")
+    registries = []
+    by_versioned_id = {
+        value: (contract, kind) for contract in contracts for value, kind in (
+            (contract.state_mapping_registry_id, PrivilegedMappingRegistryKind.STATE),
+            (contract.trap_mapping_registry_id, PrivilegedMappingRegistryKind.TRAP),
+            (contract.interrupt_mapping_registry_id, PrivilegedMappingRegistryKind.INTERRUPT),
+            (contract.mmu_mapping_registry_id, PrivilegedMappingRegistryKind.MMU),
+        )
+    }
+    for raw_registry in raw_registries:
+        entry = _object(raw_registry, "privileged mapping registry")
+        registry_id = _text(entry.get("registryId"), "registryId")
+        semantic_version = _text(entry.get("semanticVersion"), "semanticVersion")
+        versioned_id = f"{registry_id}@{semantic_version}"
+        if versioned_id not in by_versioned_id:
+            raise ValueError("unreferenced privileged mapping registry")
+        contract, expected_kind = by_versioned_id[versioned_id]
+        kind = PrivilegedMappingRegistryKind(entry.get("kind"))
+        if kind is not expected_kind:
+            raise ValueError("privileged mapping registry kind mismatch")
+        mappings = {
+            PrivilegedMappingRegistryKind.STATE: tuple((*contract.csr_mappings, *contract.virtualization_mappings, *contract.debug_mappings)),
+            PrivilegedMappingRegistryKind.TRAP: contract.trap_mappings,
+            PrivilegedMappingRegistryKind.INTERRUPT: contract.interrupt_mappings,
+            PrivilegedMappingRegistryKind.MMU: contract.address_translation_mappings,
+        }[kind]
+        registries.append(VersionedPrivilegedMappingRegistry(
+            registry_id, semantic_version, kind, mappings,
+            _boolean(entry.get("complete"), "mappingRegistry.complete", True),
+        ))
+    mapping_set = PrivilegedMappingRegistrySet(
+        version=_text(data.get("mappingRegistryVersion"), "mappingRegistryVersion"),
+        registries=tuple(registries),
+    )
     return PrivilegedRuntimeRegistry(
-        version=version, contracts=tuple(_runtime_contract(item) for item in raw)
+        version=version, contracts=contracts, mapping_registries=mapping_set
     )
 
 
