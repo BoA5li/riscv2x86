@@ -34,7 +34,6 @@ from .privileged_renderer_manifest import (
 RecipeFactory = Callable[[ApprovedTargetLoweringPlan], object | None]
 
 
-@dataclass(frozen=True)
 _STRICT_PRIVILEGED_KINDS = frozenset({
     TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
     TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER,
@@ -44,6 +43,7 @@ _STRICT_PRIVILEGED_KINDS = frozenset({
 })
 
 
+@dataclass(frozen=True)
 class RegisteredRendererContract:
     semantic_contract_id: str
     plan_kind: TargetLoweringKind
