@@ -70,12 +70,16 @@ def prove_strict_effects(source, constraint):
                         mapping.continuation_mapping_id))
             or effect.cause is None or effect.handler_binding_id is None
             or effect.continuation is None
+            or effect.source_privilege is None
+            or effect.target_privilege is None
+            or effect.saved_pc_binding is None
         ):
             return None, SemanticProofReasonCode.PRIVILEGED_TRAP_MAPPING_UNPROVEN, effect_id
         evidence.append(PrivilegedEffectProofEvidence(
             effect_id, _mapping_id(mapping), contract.contract_id,
             contract.semantic_version,
             tuple(sorted(("execution.profile", "trap.cause-tval-handler",
+                          "trap.privilege-transition-and-saved-state",
                           "trap.continuation", "shell"))),
             "architecture_equivalent",
         ))
