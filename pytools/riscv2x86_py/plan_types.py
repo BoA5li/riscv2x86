@@ -46,6 +46,11 @@ class TargetLoweringKind(str, Enum):
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER_CALL = "abi_wrapper_call"
+    COUNTER_OBSERVATION_ADAPTER = "counter_observation_adapter"
+    SYSCALL_OR_SERVICE_ABI_ADAPTER = "syscall_or_service_abi_adapter"
+    PRIVILEGED_EVENT_ADAPTER = "privileged_event_adapter"
+    MMU_RUNTIME_ADAPTER = "mmu_runtime_adapter"
+    PRIVILEGED_STATE_MACHINE = "privileged_state_machine"
     PRIVILEGED_RUNTIME_ADAPTER = "privileged_runtime_adapter"
     PRIVILEGED_FUNCTIONAL_FALLBACK = "privileged_functional_fallback"
 
@@ -68,6 +73,11 @@ class TargetLoweringFamily(str, Enum):
     STACK_ADDRESS_REBINDING = "stack_address_rebinding"
     VIRTUAL_PRIVATE_FRAME = "virtual_private_frame"
     ABI_WRAPPER = "abi_wrapper"
+    COUNTER_OBSERVATION = "counter_observation"
+    PRIVILEGED_SERVICE_ABI = "privileged_service_abi"
+    PRIVILEGED_EVENT = "privileged_event"
+    PRIVILEGED_MMU = "privileged_mmu"
+    PRIVILEGED_STATE_MACHINE = "privileged_state_machine"
     PRIVILEGED_RUNTIME = "privileged_runtime"
     PRIVILEGED_FUNCTIONAL = "privileged_functional"
     UNSUPPORTED = "unsupported"
@@ -97,7 +107,12 @@ class PlanPriorityTier(int, Enum):
     STACK_ADDRESS_REBINDING = 25
     VIRTUAL_PRIVATE_FRAME = 20
     ABI_WRAPPER = 50
+    COUNTER_OBSERVATION = 51
+    PRIVILEGED_SERVICE_ABI = 52
+    PRIVILEGED_EVENT = 53
+    PRIVILEGED_MMU = 54
     PRIVILEGED_RUNTIME = 55
+    PRIVILEGED_STATE_MACHINE = 950
     # Functional equivalence is a deliberate fidelity downgrade and must
     # always sort after every architecture-equivalent route.
     PRIVILEGED_FUNCTIONAL = 900
@@ -213,6 +228,16 @@ _KIND_TO_FAMILY: Mapping[
             TargetLoweringFamily.VIRTUAL_PRIVATE_FRAME,
         TargetLoweringKind.ABI_WRAPPER_CALL:
             TargetLoweringFamily.ABI_WRAPPER,
+        TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER:
+            TargetLoweringFamily.COUNTER_OBSERVATION,
+        TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER:
+            TargetLoweringFamily.PRIVILEGED_SERVICE_ABI,
+        TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER:
+            TargetLoweringFamily.PRIVILEGED_EVENT,
+        TargetLoweringKind.MMU_RUNTIME_ADAPTER:
+            TargetLoweringFamily.PRIVILEGED_MMU,
+        TargetLoweringKind.PRIVILEGED_STATE_MACHINE:
+            TargetLoweringFamily.PRIVILEGED_STATE_MACHINE,
         TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER:
             TargetLoweringFamily.PRIVILEGED_RUNTIME,
         TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK:
@@ -247,6 +272,16 @@ _FAMILY_TO_PRIORITY_TIER: Mapping[
             PlanPriorityTier.VIRTUAL_PRIVATE_FRAME,
         TargetLoweringFamily.ABI_WRAPPER:
             PlanPriorityTier.ABI_WRAPPER,
+        TargetLoweringFamily.COUNTER_OBSERVATION:
+            PlanPriorityTier.COUNTER_OBSERVATION,
+        TargetLoweringFamily.PRIVILEGED_SERVICE_ABI:
+            PlanPriorityTier.PRIVILEGED_SERVICE_ABI,
+        TargetLoweringFamily.PRIVILEGED_EVENT:
+            PlanPriorityTier.PRIVILEGED_EVENT,
+        TargetLoweringFamily.PRIVILEGED_MMU:
+            PlanPriorityTier.PRIVILEGED_MMU,
+        TargetLoweringFamily.PRIVILEGED_STATE_MACHINE:
+            PlanPriorityTier.PRIVILEGED_STATE_MACHINE,
         TargetLoweringFamily.PRIVILEGED_RUNTIME:
             PlanPriorityTier.PRIVILEGED_RUNTIME,
         TargetLoweringFamily.PRIVILEGED_FUNCTIONAL:
