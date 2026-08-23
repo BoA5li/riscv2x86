@@ -36,6 +36,9 @@ class PrivilegedAdapterReasonCode:
     WHOLE_FUNCTION_FACTS_MISMATCH = (
         "phase6a.privileged-whole-function-facts-mismatch"
     )
+    SEMANTIC_CLASS_MISMATCH = (
+        "phase6a.privileged-semantic-class-mismatch"
+    )
     COUNTER_EFFECT_MISSING = "phase6a.privileged-counter-effect-missing"
     COUNTER_EFFECT_AMBIGUOUS = "phase6a.privileged-counter-effect-ambiguous"
     COUNTER_ACCESS_UNPROVEN = "phase6a.privileged-counter-access-unproven"
@@ -181,9 +184,15 @@ def build_privileged_state_adapter(
     classification_complete = bool(
         phase5_state is not None and phase5_state.classification_complete
     )
-    requires_whole_function = (
+    has_return_effect = bool(
+        phase5_state is not None and phase5_state.return_effects
+    )
+    has_return_class = (
         PrivilegedSemanticClass.PRIVILEGE_RETURN in semantic_classes
     )
+    if has_return_effect != has_return_class:
+        reasons.append(PrivilegedAdapterReasonCode.SEMANTIC_CLASS_MISMATCH)
+    requires_whole_function = has_return_effect or has_return_class
     if requires_whole_function and getattr(control_flow, "has_return", None) is not True:
         reasons.append(
             PrivilegedAdapterReasonCode.CONTROL_FLOW_EFFECT_MISMATCH
