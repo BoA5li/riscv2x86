@@ -95,6 +95,7 @@ class ProofEvidence:
     target_catalog_version: str; compiler_capability_id: str
     helper_registry_version: str | None
     privileged_registry_version: str | None
+    privileged_mapping_registry_version: str | None
     privileged_functional_registry_version: str | None
     privileged_functional_policy_identity: str | None
     dimensions: tuple[str,...]; proved_requirements: tuple[str,...]
@@ -194,6 +195,10 @@ def _evidence(request, conclusions, requirements, privileged_effect_evidence=())
         helper_registry_version=None if request.helper_contract_registry is None else request.helper_contract_registry.version,
         privileged_registry_version=(None if request.privileged_runtime_registry is None
                                      else getattr(request.privileged_runtime_registry,"version",None)),
+        privileged_mapping_registry_version=(
+            None if request.privileged_runtime_registry is None
+            else getattr(getattr(request.privileged_runtime_registry, "mapping_registries", None), "version", None)
+        ),
         privileged_functional_registry_version=(
             None if request.privileged_functional_registry is None
             else getattr(request.privileged_functional_registry, "version", None)
