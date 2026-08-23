@@ -41,6 +41,14 @@ class RendererContractKind(str, Enum):
     UNSUPPORTED_DIAGNOSTIC = "unsupported_diagnostic"
 
 
+_STRICT_PRIVILEGED_KINDS = frozenset({
+    TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER,
+    TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER,
+    TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER,
+    TargetLoweringKind.MMU_RUNTIME_ADAPTER,
+    TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+})
+
 class RenderedReplacementKind(str, Enum):
     C_EXPRESSION = "c_expression"
     C_BUILTIN = "c_builtin"
@@ -431,7 +439,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
         RendererContractKind.VIRTUAL_PRIVATE_FRAME: {TargetLoweringKind.VIRTUAL_PRIVATE_FRAME},
         RendererContractKind.ABI_WRAPPER_CALL: {TargetLoweringKind.ABI_WRAPPER_CALL},
         RendererContractKind.PRIVILEGED_RUNTIME: {
-            TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER,
+            *_STRICT_PRIVILEGED_KINDS,
             TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
         },
     }
@@ -518,7 +526,7 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
     if kind is RendererContractKind.PRIVILEGED_RUNTIME and isinstance(p, PrivilegedRuntimeRecipe):
         constraint = (
             a.constraints.privileged_runtime_constraint
-            if a.plan.kind is TargetLoweringKind.PRIVILEGED_RUNTIME_ADAPTER
+            if a.plan.kind in _STRICT_PRIVILEGED_KINDS
             else a.constraints.privileged_functional_constraint
         )
         if constraint is None:
