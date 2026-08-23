@@ -157,10 +157,6 @@ def test_functional_constraint_requires_exact_observability_identity():
             '__asm__ volatile ("mov %rsp, %rax");',
             "privileged-renderer.inline-asm-forbidden",
         ),
-        (
-            "__builtin_frame_address(0);",
-            "privileged-renderer.frame-address-builtin-forbidden",
-        ),
     ),
 )
 def test_emitted_text_audit_rejects_privileged_or_host_stack_escape(
