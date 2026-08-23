@@ -1007,6 +1007,14 @@ def run(
         default_features.add("x86:rdtsc")
         default_builtins.add("compiler:x86-rdtsc-builtin")
         default_features.add("runtime:" + INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id)
+    if privileged_runtime_registry is not None:
+        default_features.update(
+            privileged_runtime_registry.required_target_capabilities
+        )
+    if privileged_functional_registry is not None:
+        default_features.update(
+            privileged_functional_registry.required_target_capabilities
+        )
     public_environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
         available_features=default_features,
         builtin_capabilities=default_builtins,
