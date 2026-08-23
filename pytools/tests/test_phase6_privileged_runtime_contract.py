@@ -8,6 +8,7 @@ from riscv2x86_py.phase6c_constraints import (
 )
 from riscv2x86_py.phase6d_common import (
     CompilerCapabilityModel,
+    SemanticProofReasonCode,
     TargetSemanticCatalog,
     run_semantic_proof_gate,
 )
@@ -202,6 +203,9 @@ def test_strict_privileged_runtime_completes_6b_through_6e():
     )
     assert proof.approved and proof.evidence is not None
     assert proof.evidence.privileged_registry_version == registry.version
+    assert len(proof.evidence.privileged_effect_evidence) == 1
+    assert proof.evidence.privileged_effect_proof_identity.startswith("sha256:")
+    assert proof.evidence.privileged_effect_evidence[0].conclusion == "architecture_equivalent"
     catalog_id = catalog.version + ":" + ",".join(
         sorted(catalog.semantic_contract_ids)
     )
@@ -272,6 +276,38 @@ def test_6c_rejects_runtime_profile_mismatch():
     assert not result.success
     assert result.reason_codes == (
         TargetConstraintReasonCode.PRIVILEGED_RUNTIME_PROFILE_MISMATCH,
+    )
+
+
+def test_6d_rejects_unproven_csr_old_new_relation():
+    source = _source_model(); environment = _environment()
+    contract, _ = _registry(source, environment)
+    broken_mapping = replace(
+        contract.csr_mappings[0], old_new_state_relation_id=""
+    )
+    broken_contract = replace(contract, csr_mappings=(broken_mapping,))
+    registry = PrivilegedRuntimeRegistry(
+        version="unproven-csr-relation.v1", contracts=(broken_contract,)
+    )
+    plan = generate_candidate_plans(source)[0]
+    derived = derive_target_constraints(
+        source_model=source, candidate_plan=plan,
+        target_environment=environment, privileged_runtime_registry=registry,
+    )
+    assert derived.success
+    proof = run_semantic_proof_gate(
+        source_model=source, candidate_plan=plan,
+        constraints=derived.constraints, target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            frozenset({plan.kind}),
+            frozenset({broken_contract.semantic_contract_id}), "test.v1"
+        ),
+        compiler_capabilities=CompilerCapabilityModel(True, False),
+        privileged_runtime_registry=registry,
+    )
+    assert not proof.approved
+    assert proof.reason_codes == (
+        SemanticProofReasonCode.PRIVILEGED_CSR_MAPPING_UNPROVEN,
     )
 
 
