@@ -159,7 +159,8 @@ def test_csr_effect_can_be_derived_from_canonical_varnodes_but_fails_closed_with
     assert model.present and not model.complete
     assert model.csr_effects[0].operation is CsrEffectOperation.READ
     assert model.csr_effects[0].csr_id == "riscv.csr.mstatus"
-    assert PrivilegedStateReasonCode.CSR_ACCESS_POLICY_INCOMPLETE.value in model.missing_fact_codes
+    assert PrivilegedStateReasonCode.CANONICAL_METADATA_INCOMPLETE.value in model.missing_fact_codes
+    assert PrivilegedStateReasonCode.CSR_VALUE_FLOW_INCOMPLETE.value in model.missing_fact_codes
 
 
 def test_denied_csr_access_requires_a_canonical_trap_effect():
