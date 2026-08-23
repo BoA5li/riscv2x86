@@ -164,6 +164,14 @@ class TargetConstraintReasonCode(str, Enum):
     PRIVILEGED_RUNTIME_CONTRACT_MISSING = (
         "phase6c.privileged_runtime_contract_missing"
     )
+    PRIVILEGED_EFFECT_MAPPING_MISSING = "phase6c.privileged_effect_mapping_missing"
+    PRIVILEGED_EFFECT_MAPPING_AMBIGUOUS = "phase6c.privileged_effect_mapping_ambiguous"
+    PRIVILEGED_RUNTIME_PROFILE_MISMATCH = "phase6c.privileged_runtime_profile_mismatch"
+    PRIVILEGED_RUNTIME_VERSION_MISMATCH = "phase6c.privileged_runtime_version_mismatch"
+    PRIVILEGED_MMU_SCOPE_INCOMPLETE = "phase6c.privileged_mmu_scope_incomplete"
+    PRIVILEGED_RENDERER_CONTRACT_INCOMPLETE = "phase6c.privileged_renderer_contract_incomplete"
+    PRIVILEGED_SHELL_UNSUPPORTED = "phase6c.privileged_shell_unsupported"
+    PRIVILEGED_IGNORED_STATE_MISMATCH = "phase6c.privileged_ignored_state_mismatch"
     PRIVILEGED_RUNTIME_SOURCE_INCOMPLETE = (
         "phase6c.privileged_runtime_source_incomplete"
     )
@@ -1740,6 +1748,58 @@ def _derive_abi_wrapper_0(*, source_model, candidate_plan, target_environment, a
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,environment=target_environment,abi_wrapper_constraint=c,memory_constraint=TargetMemoryConstraint(),control_flow_constraint=TargetControlFlowConstraint()))
 
 
+def _privileged_effect_inventory(state):
+    from .privileged_runtime_contracts import source_effect_id
+    return {
+        "csr": tuple(source_effect_id("csr", x.block_address, x.operation_index) for x in state.csr_effects),
+        "trap": tuple(source_effect_id("trap", x.block_address, x.operation_index) for x in state.trap_effects),
+        "interrupt": tuple(source_effect_id("interrupt", x.block_address, x.operation_index) for x in state.interrupt_effects),
+        "address_translation": tuple(source_effect_id("address-translation", x.block_address, x.operation_index) for x in state.address_translation_effects),
+        "virtualization": tuple(source_effect_id("virtualization", x.block_address, x.operation_index) for x in state.virtualization_effects),
+        "debug": tuple(source_effect_id("debug", x.block_address, x.operation_index) for x in state.debug_effects),
+    }
+
+
+def _mapping_coverage_failure(state, contract):
+    inventory = _privileged_effect_inventory(state)
+    mapping_names = {
+        "csr": "csr_mappings", "trap": "trap_mappings",
+        "interrupt": "interrupt_mappings",
+        "address_translation": "address_translation_mappings",
+        "virtualization": "virtualization_mappings", "debug": "debug_mappings",
+    }
+    missing = []
+    ambiguous = []
+    for kind, expected_ids in inventory.items():
+        actual = tuple(getattr(x, "source_effect_id", None) for x in getattr(contract, mapping_names[kind]))
+        for effect_id in expected_ids:
+            count = actual.count(effect_id)
+            if count == 0: missing.append(effect_id)
+            elif count != 1: ambiguous.append(effect_id)
+        if any(effect_id not in expected_ids for effect_id in actual):
+            ambiguous.extend(effect_id for effect_id in actual if effect_id not in expected_ids)
+    if missing:
+        return TargetConstraintReasonCode.PRIVILEGED_EFFECT_MAPPING_MISSING, tuple(sorted(set(missing)))
+    if ambiguous:
+        return TargetConstraintReasonCode.PRIVILEGED_EFFECT_MAPPING_AMBIGUOUS, tuple(sorted(set(ambiguous)))
+    return None
+
+
+def _mmu_scope_complete(state):
+    from .privileged_state_analysis import AddressTranslationEffectKind
+    for effect in state.address_translation_effects:
+        if not effect.complete:
+            return False
+        if effect.kind is AddressTranslationEffectKind.TLB_INVALIDATION and (
+            effect.virtual_address_scope is None
+            or effect.address_space_identity is None
+            or effect.synchronization_scope is None
+            or effect.shootdown_required is None
+        ):
+            return False
+    return True
+
+
 def _derive_privileged_runtime_0(
     *, source_model, candidate_plan, target_environment,
     privileged_runtime_registry=None,
@@ -1747,6 +1807,9 @@ def _derive_privileged_runtime_0(
     from .privileged_runtime_contracts import (
         PrivilegedRuntimeRegistry,
         TargetPrivilegedRuntimeConstraint,
+        TargetPrivilegedShellConstraint,
+        TargetPrivilegedMemoryConstraint,
+        TargetPrivilegedControlFlowConstraint,
         privileged_source_identity,
         target_environment_identity,
     )
@@ -1813,13 +1876,88 @@ def _derive_privileged_runtime_0(
                 TargetConstraintReasonCode.PRIVILEGED_RUNTIME_CONTRACT_MISSING,
             ),
         )
+    state = source.state
+    if (
+        contract.source_execution_profile != state.execution_profile.value
+        or contract.target_execution_mode != state.target_execution_mode.value
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_RUNTIME_PROFILE_MISMATCH,),
+        )
+    if (
+        state.target_runtime_contract_set_id is not None
+        and state.target_runtime_contract_set_id != contract.runtime_contract_set_id
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_RUNTIME_VERSION_MISMATCH,),
+        )
+    coverage = _mapping_coverage_failure(state, contract)
+    if coverage is not None:
+        reason, effect_ids = coverage
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id, reason_codes=(reason,),
+            details={"effect_ids": ",".join(effect_ids)},
+        )
+    if not _mmu_scope_complete(state):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_MMU_SCOPE_INCOMPLETE,),
+        )
+    if not contract.runtime_symbol.strip() or not contract.renderer_contract_id.strip():
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_RENDERER_CONTRACT_INCOMPLETE,),
+        )
+    shell = source_model.shell
+    if (
+        (shell.is_volatile and not contract.preserves_volatile_execution)
+        or (shell.has_memory_clobber and not contract.preserves_compiler_memory_ordering)
+        or (shell.has_cc_clobber and not contract.preserves_cc_clobber)
+        or not contract.preserves_shell
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_SHELL_UNSUPPORTED,),
+        )
     constraint = TargetPrivilegedRuntimeConstraint(
         runtime_contract=contract,
         source_privileged_identity=privileged_source_identity(source),
         target_environment_id=target_environment_identity(target_environment),
         registry_version=privileged_runtime_registry.version,
+        contract_id=contract.contract_id,
+        contract_version=contract.semantic_version,
+        source_execution_profile=contract.source_execution_profile,
+        target_execution_mode=contract.target_execution_mode,
+        csr_mappings=contract.csr_mappings,
+        trap_mappings=contract.trap_mappings,
+        interrupt_mappings=contract.interrupt_mappings,
+        address_translation_mappings=contract.address_translation_mappings,
+        virtualization_mappings=contract.virtualization_mappings,
+        debug_mappings=contract.debug_mappings,
+        shell_constraint=TargetPrivilegedShellConstraint(
+            contract.preserves_volatile_execution,
+            contract.preserves_compiler_memory_ordering,
+            contract.preserves_cc_clobber, True,
+        ),
+        memory_constraint=TargetPrivilegedMemoryConstraint(
+            contract.preserves_memory_effects,
+            contract.preserves_compiler_memory_ordering, True,
+        ),
+        control_flow_constraint=TargetPrivilegedControlFlowConstraint(
+            contract.preserves_trap_behavior, contract.preserves_control_flow,
+            contract.may_return, contract.may_unwind, True,
+        ),
+        ignored_source_state=(),
+        observable_effect_mappings=contract.observable_effect_mappings,
+        runtime_symbol_or_intrinsic=contract.runtime_symbol,
+        required_headers=contract.required_headers,
+        required_libraries=(() if contract.required_library is None else (contract.required_library,)),
+        required_capabilities=(contract.required_target_capability,),
+        functional_fallback=False,
+        complete=True,
     )
-    shell = source_model.shell
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(
         plan_id=candidate_plan.plan_id,
         environment=target_environment,
@@ -1909,6 +2047,37 @@ def _derive_privileged_functional_0(
                 TargetConstraintReasonCode.PRIVILEGED_FUNCTIONAL_CONTRACT_MISSING,
             ),
         )
+    state = source.state
+    if (
+        contract.source_execution_profile != state.execution_profile.value
+        or contract.target_execution_mode != state.target_execution_mode.value
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_RUNTIME_PROFILE_MISMATCH,),
+        )
+    declared_ignored = tuple(sorted(item.state_id for item in source.observability.ignored_states))
+    if contract.ignored_state_ids != declared_ignored:
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_IGNORED_STATE_MISMATCH,),
+        )
+    if not contract.implementation_id.strip() or not contract.renderer_contract_id.strip():
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_RENDERER_CONTRACT_INCOMPLETE,),
+        )
+    shell = source_model.shell
+    if (
+        (shell.is_volatile and not contract.preserves_volatile_execution)
+        or (shell.has_memory_clobber and not contract.preserves_compiler_memory_ordering)
+        or (shell.has_cc_clobber and not contract.preserves_cc_clobber)
+        or not contract.preserves_shell
+    ):
+        return TargetConstraintDerivationResult.failure(
+            plan_id=candidate_plan.plan_id,
+            reason_codes=(TargetConstraintReasonCode.PRIVILEGED_SHELL_UNSUPPORTED,),
+        )
     constraint = TargetPrivilegedFunctionalFallbackConstraint(
         fallback_contract=contract,
         source_privileged_identity=privileged_source_identity(source),
@@ -1918,8 +2087,17 @@ def _derive_privileged_functional_0(
         target_environment_id=target_environment_identity(target_environment),
         registry_version=privileged_functional_registry.version,
         policy_identity=privileged_functional_policy.identity,
+        source_execution_profile=contract.source_execution_profile,
+        target_execution_mode=contract.target_execution_mode,
+        ignored_source_state=contract.ignored_state_ids,
+        observable_effect_mappings=contract.observable_effect_mappings,
+        runtime_symbol_or_intrinsic=contract.implementation_id,
+        required_headers=contract.required_headers,
+        required_libraries=(() if contract.required_library is None else (contract.required_library,)),
+        required_capabilities=(contract.required_target_capability,),
+        functional_fallback=True,
+        complete=True,
     )
-    shell = source_model.shell
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(
         plan_id=candidate_plan.plan_id,
         environment=target_environment,
