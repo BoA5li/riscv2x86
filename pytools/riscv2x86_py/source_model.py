@@ -14,6 +14,7 @@ try:
     from .abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from .whole_function import WholeFunctionRouteDecision, classify_whole_function_route
     from .privileged_state_analysis import SourcePrivilegedStateModel
+    from .privileged_policy import PrivilegedPreservationPolicy
     from .functional_observability import FunctionalObservabilityContract
     from .privileged_state_adapter import (
         SourcePrivilegedAccessModel, SourcePrivilegedSemanticModel,
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover - direct-module compatibility
     from abi_effects import SourceAbiCallBinding, SourceAbiEffectModel, build_abi_effects, collect_canonical_call_sites
     from whole_function import WholeFunctionRouteDecision, classify_whole_function_route
     from privileged_state_analysis import SourcePrivilegedStateModel
+    from privileged_policy import PrivilegedPreservationPolicy
     from functional_observability import FunctionalObservabilityContract
     from privileged_state_adapter import (
         SourcePrivilegedAccessModel, SourcePrivilegedSemanticModel,
@@ -775,6 +777,9 @@ def build_source_semantic_model(
     abi_call_bindings: tuple[SourceAbiCallBinding, ...] = (),
     privileged_state: SourcePrivilegedStateModel | None = None,
     functional_observability: FunctionalObservabilityContract | None = None,
+    privileged_preservation_policy: PrivilegedPreservationPolicy = (
+        PrivilegedPreservationPolicy.STRICT_ARCHITECTURAL
+    ),
     whole_function_facts: object | None = None,
 ) -> SourceSemanticModel:
     """
@@ -979,6 +984,7 @@ def build_source_semantic_model(
         abi_effects=abi_effects,
         whole_function_route=whole_function_route,
         whole_function_facts=whole_function_facts,
+        preservation_policy=privileged_preservation_policy,
     )
 
     features, reasons, reason_codes = _collect_source_semantic_evidence(
