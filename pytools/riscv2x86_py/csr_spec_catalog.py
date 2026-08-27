@@ -127,6 +127,14 @@ _V1_12_ENTRIES = (
            gates=("riscv.counteren.time",), aliases=("time",)),
     _entry("instret", 0xC02, "user_counter_observation", "u", write=CsrWritePolicy.READ_ONLY,
            gates=("riscv.counteren.instret",), aliases=("instret",)),
+    # RV32 high-half counter views.  They are distinct architectural CSR
+    # addresses and therefore must not be inferred from a mnemonic suffix.
+    _entry("cycleh", 0xC80, "user_counter_observation", "u", xlen=(32,),
+           write=CsrWritePolicy.READ_ONLY, gates=("riscv.counteren.cycle",), aliases=("cycleh",)),
+    _entry("timeh", 0xC81, "user_counter_observation", "u", xlen=(32,),
+           write=CsrWritePolicy.READ_ONLY, gates=("riscv.counteren.time",), aliases=("timeh",)),
+    _entry("instreth", 0xC82, "user_counter_observation", "u", xlen=(32,),
+           write=CsrWritePolicy.READ_ONLY, gates=("riscv.counteren.instret",), aliases=("instreth",)),
     _entry("fflags", 0x001, "fpu_state", "u", extensions=("f",),
            fields=(_f("fflags", 0, 5, CsrFieldBehavior.RW),), aliases=("fflags",)),
     _entry("frm", 0x002, "fpu_state", "u", extensions=("f",),
