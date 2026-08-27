@@ -34,6 +34,7 @@ from .privileged_execution_sidecar import (
     default_user_process_execution_facts,
 )
 from .privileged_pipeline_inputs import PrivilegedPipelineInputs
+from .csr_metadata_ingress import profile_from_execution_facts
 from .shell_model import SourceShellModel
 from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
@@ -1248,6 +1249,14 @@ def run(
         if ar.relocations:
             f.notes.append(f"assemble: extracted {len(ar.relocations)} relocations")
 
+        # Phase-4 CSR ingress receives only the selected execution sidecar profile.
+        # Without one, the lifter emits no catalog-approved CSR fact.
+        csr_execution_facts = None
+        if privileged_pipeline_inputs is not None:
+            csr_sidecar = privileged_pipeline_inputs.execution_sidecar
+            csr_execution_facts = (None if csr_sidecar is None else csr_sidecar.facts_for(f.fragment.id))
+        csr_decoder_profile = (None if csr_execution_facts is None else profile_from_execution_facts(csr_execution_facts, xlen_bits=xlen))
+
         # Phase 5
         #lr = lift(ar.machine_code, xlen=xlen, relocations=ar.relocations)
         lr = lift(
@@ -1256,6 +1265,7 @@ def run(
             relocations=ar.relocations,
             language=language,
             register_name_resolver=register_name_resolver,
+            csr_decoder_profile=csr_decoder_profile,
 
             # Phase 5 之后会进入 canonical IR / CFG / lowerer。
             #
