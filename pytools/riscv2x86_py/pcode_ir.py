@@ -298,11 +298,17 @@ class CanonicalPrivilegedOperation:
 
     kind: CanonicalPrivilegedOperationKind
     csr_id: str | None = None
+    # Phase-4 decoder identity.  These are facts from instruction bits, not
+    # a later reconstruction from mnemonic/body text.
+    csr_numeric_address: int | None = None
+    decoder_opcode_kind: str | None = None
     csr_semantic_class: str | None = None
     csr_operation: CanonicalCsrOperationKind | None = None
     read_value_node_id: str | None = None
     write_value_node_id: str | None = None
     immediate_mask: int | None = None
+    read_result_suppressed: bool | None = None
+    write_value_suppressed: bool | None = None
     read_modify_write: bool | None = None
     affected_csr_fields: tuple[CanonicalCsrFieldEffect, ...] = ()
     xlen_bits: int | None = None
