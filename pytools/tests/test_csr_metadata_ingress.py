@@ -1,32 +1,61 @@
-from riscv2x86_py.csr_metadata_ingress import CsrDecoderProfile, decode_csr_privileged_operations
-from riscv2x86_py.pcode_ir import CanonicalCsrOperationKind
+from types import SimpleNamespace
 
-P = CsrDecoderProfile("1.12", 64, ("f", "zicsr"))
+from riscv2x86_py.csr_metadata_ingress import (
+    CsrDecoderProfile,
+    DecodedCsrOpcodeKind,
+    decode_csr_instruction,
+    decode_csr_privileged_operations,
+)
+from riscv2x86_py.pcode_ir import CanonicalCsrOperationKind, canonicalize_lifted_instruction
 
-def _one(mnem, body, xlen=64):
-    return decode_csr_privileged_operations(addr=0x1000, decoder_mnemonic=mnem, decoder_operands=body, xlen_bits=xlen, profile=P)[0]
 
-def test_csr_forms_and_zero_suppression_are_normalized():
-    assert _one("csrrw", "x0, mstatus, a0").csr_operation is CanonicalCsrOperationKind.WRITE
-    assert _one("csrrs", "a0, mstatus, x0").csr_operation is CanonicalCsrOperationKind.READ
-    assert _one("csrrci", "a0, mstatus, 3").csr_operation is CanonicalCsrOperationKind.CLEAR_BITS
-    assert _one("csrrsi", "a0, mstatus, 0").csr_operation is CanonicalCsrOperationKind.READ
+P64 = CsrDecoderProfile("1.12", 64, ("f", "zicsr"))
+P32 = CsrDecoderProfile("1.12", 32, ("zicsr",))
 
-def test_counter_pseudos_and_profile_fail_closed():
-    assert _one("rdcycle", "a0").csr_id == "riscv.csr.cycle"
-    assert not _one("rdcycleh", "a0", 64).state_complete
-    rv32 = CsrDecoderProfile("1.12", 32, ("zicsr",))
-    assert decode_csr_privileged_operations(addr=1, decoder_mnemonic="rdcycleh", decoder_operands="a0", xlen_bits=32, profile=rv32)[0].state_complete
-    assert not _one("csrrwi", "a0, 0xfff, 32").state_complete
 
-def test_unknown_address_and_extension_mismatch_remain_typed_incomplete():
-    assert not _one("csrrs", "a0, 0xfff, x0").state_complete
+def _encoded(funct3, csr, rd=10, source=0):
+    return ((csr << 20) | (source << 15) | (funct3 << 12) | (rd << 7) | 0x73).to_bytes(4, "little")
+
+
+def _one(funct3, csr, rd=10, source=0, xlen=64, profile=P64):
+    return decode_csr_privileged_operations(
+        addr=0x1000, machine_bytes=_encoded(funct3, csr, rd, source),
+        xlen_bits=xlen, profile=profile,
+    )[0]
+
+
+def test_decoded_fields_drive_all_csr_forms_and_suppression():
+    decoded = decode_csr_instruction(_encoded(0b001, 0x300, rd=0, source=10))
+    assert decoded is not None
+    assert decoded.opcode_kind is DecodedCsrOpcodeKind.CSRRW
+    assert decoded.csr_numeric_address == 0x300
+    assert decoded.rd_register_id == "x0" and decoded.rs1_register_id == "x10"
+    assert _one(0b001, 0x300, rd=0, source=10).csr_operation is CanonicalCsrOperationKind.WRITE
+    assert _one(0b010, 0x300, rd=10, source=0).csr_operation is CanonicalCsrOperationKind.READ
+    assert _one(0b011, 0x300, rd=10, source=11).csr_operation is CanonicalCsrOperationKind.CLEAR_BITS
+    assert _one(0b101, 0x300, rd=10, source=31).immediate_mask == 31
+    assert _one(0b110, 0x300, rd=10, source=0).csr_operation is CanonicalCsrOperationKind.READ
+    assert _one(0b111, 0x300, rd=10, source=3).csr_operation is CanonicalCsrOperationKind.CLEAR_BITS
+
+
+def test_counter_pseudos_are_normalized_from_encoding_and_rv32_high_halves():
+    assert _one(0b010, 0xC00, source=0).csr_id == "riscv.csr.cycle"
+    assert not _one(0b010, 0xC80, source=0).state_complete
+    high = _one(0b010, 0xC80, source=0, xlen=32, profile=P32)
+    assert high.csr_id == "riscv.csr.cycleh" and high.state_complete
+
+
+def test_illegal_address_and_profile_mismatch_stay_typed_and_incomplete():
+    illegal = _one(0b010, 0xFFF, source=0)
+    assert illegal.csr_numeric_address == 0xFFF and not illegal.state_complete
     no_f = CsrDecoderProfile("1.12", 64, ("zicsr",))
-    op = decode_csr_privileged_operations(addr=1, decoder_mnemonic="csrrs", decoder_operands="a0, fcsr, x0", xlen_bits=64, profile=no_f)[0]
-    assert not op.state_complete and op.csr_id == ""
+    mismatch = _one(0b010, 0x003, source=0, profile=no_f)
+    assert mismatch.csr_semantic_class == "unknown" and not mismatch.state_complete
+    no_zicsr = CsrDecoderProfile("1.12", 64, ())
+    assert not _one(0b010, 0x300, source=0, profile=no_zicsr).state_complete
 
-def test_lift_attaches_decoder_metadata_before_canonicalization(monkeypatch):
-    from types import SimpleNamespace
+
+def test_lift_and_canonicalization_receive_byte_decoded_metadata(monkeypatch):
     from riscv2x86_py import lift as lift_module
 
     class Context:
@@ -34,11 +63,23 @@ def test_lift_attaches_decoder_metadata_before_canonicalization(monkeypatch):
         def translate(self, *_args, **_kwargs):
             return SimpleNamespace(ops=[SimpleNamespace(opcode="IMARK", inputs=[], output=None)], length=4)
         def disassemble(self, *_args, **_kwargs):
-            return SimpleNamespace(instructions=[SimpleNamespace(mnem="csrrs", body="a0, mstatus, x0", length=4)])
+            # Deliberately misleading text: semantic metadata must still be
+            # decoded from the actual bytes below.
+            return SimpleNamespace(instructions=[SimpleNamespace(mnem="addi", body="a0, a0, 1", length=4)])
 
     monkeypatch.setattr(lift_module.pypcode, "Context", Context)
-    result = lift_module.lift(b"\\x73\\x25\\x00\\x30", xlen=64, csr_decoder_profile=P)
+    result = lift_module.lift(_encoded(0b010, 0x300, rd=10, source=0), xlen=64, csr_decoder_profile=P64)
     assert result.ok
-    op = result.insns[0].privileged_operations[0]
-    assert op.csr_id == "riscv.csr.mstatus"
-    assert op.csr_operation is CanonicalCsrOperationKind.READ
+    insn = result.insns[0]
+    assert insn.decoded_csr_instruction is not None
+    assert insn.privileged_operations[0].csr_id == "riscv.csr.mstatus"
+    canonical = canonicalize_lifted_instruction(insn)
+    assert canonical.privileged_operations[0].csr_operation is CanonicalCsrOperationKind.READ
+
+
+def test_unsupported_csr_encoding_is_never_an_integer_instruction():
+    # funct3=100 is reserved in SYSTEM/CSR space.  It remains an explicit,
+    # incomplete typed CSR operation rather than returning an empty result.
+    op = _one(0b100, 0x300, source=0)
+    assert op.csr_operation is CanonicalCsrOperationKind.UNKNOWN
+    assert not op.state_complete
