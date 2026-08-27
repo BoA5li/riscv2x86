@@ -1251,10 +1251,11 @@ def run(
 
         # Phase-4 CSR ingress receives only the selected execution sidecar profile.
         # Without one, the lifter emits no catalog-approved CSR fact.
-        csr_execution_facts = None
+        csr_execution_facts = default_user_process_execution_facts(f.fragment.id)
         if privileged_pipeline_inputs is not None:
             csr_sidecar = privileged_pipeline_inputs.execution_sidecar
-            csr_execution_facts = (None if csr_sidecar is None else csr_sidecar.facts_for(f.fragment.id))
+            if csr_sidecar is not None:
+                csr_execution_facts = csr_sidecar.facts_for(f.fragment.id)
         csr_decoder_profile = (None if csr_execution_facts is None else profile_from_execution_facts(csr_execution_facts, xlen_bits=xlen))
 
         # Phase 5
