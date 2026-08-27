@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Protocol, Tuple
 
 import pypcode
 
+from .csr_metadata_ingress import CsrDecoderProfile, decode_csr_privileged_operations
+
 
 if TYPE_CHECKING:
     from .pcode_ir import IRSummary
@@ -126,6 +128,9 @@ class LiftedInsn:
 
     # 保存 AdaptedPcodeOp，而不是原始 pypcode PcodeOp。
     raw_ops: List[AdaptedPcodeOp] = field(default_factory=list)
+
+    # Phase-4 decoder/catalog ingress; Phase 5+ consumes this typed fact only.
+    privileged_operations: tuple[Any, ...] = ()
 
     sym_ref: Optional[Tuple[int, str]] = None
     summary: Optional["IRSummary"] = None
@@ -896,6 +901,7 @@ def lift(
     strict_disassembly: bool = False,
     register_name_resolver: Optional[RegisterNameResolver] = None,
     language: Any = None,
+    csr_decoder_profile: Optional[CsrDecoderProfile] = None,
 
     # pipeline / canonical IR 入口必须启用。
     #
@@ -1110,6 +1116,14 @@ def lift(
                 error_code="pcode_adaptation_failed",
             )
 
+        privileged_operations = decode_csr_privileged_operations(
+            addr=cur_addr,
+            decoder_mnemonic=mnem,
+            decoder_operands=body,
+            xlen_bits=xlen,
+            profile=csr_decoder_profile,
+        )
+
         insns.append(
             LiftedInsn(
                 addr=cur_addr,
@@ -1118,6 +1132,7 @@ def lift(
                 asm_body=body,
                 pcode_ops=text_ops,
                 raw_ops=adapted_ops,
+                privileged_operations=privileged_operations,
                 sym_ref=None,
                 summary=None,
             )
