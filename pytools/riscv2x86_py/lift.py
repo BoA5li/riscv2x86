@@ -5,7 +5,12 @@ from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Protocol, Tuple
 
 import pypcode
 
-from .csr_metadata_ingress import CsrDecoderProfile, decode_csr_privileged_operations
+from .csr_metadata_ingress import (
+    CsrDecoderProfile,
+    DecodedCsrInstruction,
+    decode_csr_instruction,
+    decode_csr_privileged_operations,
+)
 
 
 if TYPE_CHECKING:
@@ -131,6 +136,10 @@ class LiftedInsn:
 
     # Phase-4 decoder/catalog ingress; Phase 5+ consumes this typed fact only.
     privileged_operations: tuple[Any, ...] = ()
+
+    # Retained decoder evidence for diagnostics/provenance.  Canonical IR
+    # consumes only privileged_operations, never asm text nor this DTO.
+    decoded_csr_instruction: DecodedCsrInstruction | None = None
 
     sym_ref: Optional[Tuple[int, str]] = None
     summary: Optional["IRSummary"] = None
@@ -1116,10 +1125,11 @@ def lift(
                 error_code="pcode_adaptation_failed",
             )
 
+        instruction_bytes = machine_code[offset:offset + length]
+        decoded_csr_instruction = decode_csr_instruction(instruction_bytes)
         privileged_operations = decode_csr_privileged_operations(
             addr=cur_addr,
-            decoder_mnemonic=mnem,
-            decoder_operands=body,
+            machine_bytes=instruction_bytes,
             xlen_bits=xlen,
             profile=csr_decoder_profile,
         )
@@ -1133,6 +1143,7 @@ def lift(
                 pcode_ops=text_ops,
                 raw_ops=adapted_ops,
                 privileged_operations=privileged_operations,
+                decoded_csr_instruction=decoded_csr_instruction,
                 sym_ref=None,
                 summary=None,
             )
