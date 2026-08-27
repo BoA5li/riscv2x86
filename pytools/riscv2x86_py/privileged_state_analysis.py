@@ -273,6 +273,8 @@ class SourcePrivilegedStateModel:
     execution_environment_complete: bool = False
     semantic_classes: tuple[PrivilegedSemanticClass, ...] = ()
     classification_complete: bool = True
+    # Phase-5 CSR value-flow facts; renderer paths consume this exact join.
+    csr_operand_bindings: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         for values in (
