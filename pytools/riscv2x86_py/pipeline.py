@@ -38,6 +38,7 @@ from .privileged_execution_sidecar import (
 from .privileged_pipeline_inputs import PrivilegedPipelineInputs
 from .csr_metadata_ingress import profile_from_execution_facts
 from .csr_value_flow import authority_from_phase4_facts, join_csr_operand_bindings
+from .csr_state_dataflow import analyze_csr_state_dataflow
 from .shell_model import SourceShellModel
 from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
@@ -1439,6 +1440,10 @@ def run(
                 csr_operand_bindings=join_csr_operand_bindings(
                     lifted_insns=lr.insns, authority=csr_authority,
                     fragment_shell=f.fragment,
+                ),
+                csr_state_dataflow=analyze_csr_state_dataflow(
+                    blocks=blocks, cfg=cfg,
+                    initial_privilege_mode=execution_facts.initial_privilege_mode.value,
                 ),
             )
             ignored_sidecar = (
