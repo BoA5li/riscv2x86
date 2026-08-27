@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import re
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -35,6 +37,7 @@ from .privileged_execution_sidecar import (
 )
 from .privileged_pipeline_inputs import PrivilegedPipelineInputs
 from .csr_metadata_ingress import profile_from_execution_facts
+from .csr_value_flow import authority_from_phase4_facts, join_csr_operand_bindings
 from .shell_model import SourceShellModel
 from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
@@ -1427,6 +1430,16 @@ def run(
                 blocks=blocks,
                 cfg=cfg,
                 execution_facts=execution_facts,
+            )
+            csr_authority = authority_from_phase4_facts(
+                lifted_insns=lr.insns, runtime_facts=f.translationRuntimeFacts,
+            )
+            privileged_state = replace(
+                privileged_state,
+                csr_operand_bindings=join_csr_operand_bindings(
+                    lifted_insns=lr.insns, authority=csr_authority,
+                    fragment_shell=f.fragment,
+                ),
             )
             ignored_sidecar = (
                 privileged_pipeline_inputs.ignored_state_declarations
