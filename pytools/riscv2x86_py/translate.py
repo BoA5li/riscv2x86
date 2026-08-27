@@ -99,6 +99,13 @@ from .privileged_functional_contracts import (
     PrivilegedFunctionalFallbackPolicy,
     PrivilegedFunctionalFallbackRegistry,
 )
+from .source_csr_semantic_model import adapt_source_csr_semantic_model
+from .csr_translation_pipeline import (
+    CsrRendererRegistry,
+    CsrRuntimeRegistry,
+    CsrTranslationFallbackPolicy,
+    run_csr_translation_pipeline,
+)
 from .privileged_emitted_audit import PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION
 from .privileged_output_manifest import build_privileged_output_manifest
 from .whole_function import (
@@ -3107,6 +3114,8 @@ def translate(
     functional_observability: FunctionalObservabilityContract | None = None,
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
+    csr_runtime_registry: CsrRuntimeRegistry | None = None,
+    csr_renderer_registry: CsrRendererRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
@@ -3336,6 +3345,88 @@ def translate(
 
     context.sourceModel = source_model
     context.decision = source_model.preservation
+
+    # CSR effects have one production path only.  Do not permit the legacy
+    # privileged classifier, plan selector, or renderer to synthesize a CSR
+    # replacement independently of the 6A -> 6F CSR pipeline.  The adapter
+    # consumes the already-built Phase-5 state model and does not rescan asm,
+    # p-code, decoder output, or register names.
+    if (
+        context.privilegedStateFacts is not None
+        and context.privilegedStateFacts.csr_effects
+    ):
+        csr_source_model = adapt_source_csr_semantic_model(
+            context.privilegedStateFacts
+        )
+        csr_result = run_csr_translation_pipeline(
+            source_csr_model=csr_source_model,
+            target_environment=target_environment,
+            privileged_execution_facts=context.privilegedStateFacts,
+            runtime_registry=csr_runtime_registry,
+            renderer_registry=csr_renderer_registry,
+            fallback_policy=CsrTranslationFallbackPolicy(
+                allow_functional_fallbacks=allow_functional_fallbacks,
+                shell_preserved=not context.shell.prevents_generic_pure_c,
+            ),
+        )
+        if csr_result.status == "approved":
+            # The text is created solely by a 6F approved recipe after an
+            # invoked, approved 6D field proof.  Keeping this assertion at
+            # the public entry makes accidental future bypasses fail closed.
+            if not (
+                csr_result.proof_invoked
+                and csr_result.proof is not None
+                and csr_result.proof.approved
+                and csr_result.render is not None
+                and csr_result.suggested_replacement is not None
+            ):
+                return _unsupported(
+                    context,
+                    reason="CSR replacement bypassed required 6D/6F approval",
+                    reason_code="TR_CSR_PIPELINE_APPROVAL_BYPASS",
+                )
+            return _output(
+                kind="privileged_runtime",
+                replacement=csr_result.suggested_replacement,
+                context=context,
+                route="csr_production_pipeline",
+                notes=["CSR replacement emitted by approved Phase-6F recipe"],
+                reason_codes=["TR_CSR_PIPELINE_APPROVED"],
+                build_family="csr_runtime",
+                requires_build_check=True,
+                metadata={
+                    "csrPipeline": {
+                        "route": csr_result.route,
+                        "proofInvoked": csr_result.proof_invoked,
+                        "proofEvidenceCount": len(csr_result.proof.evidence),
+                        "rendererHeaders": csr_result.render.required_headers,
+                        "rendererLibraries": csr_result.render.required_libraries,
+                    },
+                },
+            )
+        return _needs_route(
+            context,
+            route=csr_result.route,
+            reason=(
+                "CSR translation did not receive an approved 6A-to-6F "
+                "production recipe; no replacement was emitted"
+            ),
+            # Preserve the established external diagnostic for the mature
+            # counter-adapter route, while the decision itself still came
+            # from the mandatory CSR pipeline above.
+            reason_code=(
+                "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED"
+                if source_model.read_only_csr is not None
+                else "TR_CSR_PIPELINE_NEEDS_ROUTE"
+            ),
+            metadata={
+                "csrPipelineReasonCodes": csr_result.reason_codes,
+                "csrProofInvoked": csr_result.proof_invoked,
+                "csrPlanCandidates": tuple(
+                    candidate.family.value for candidate in csr_result.plan_candidates
+                ),
+            },
+        )
 
     privileged_adapter = source_model.privileged_state
     privileged_classes = (
