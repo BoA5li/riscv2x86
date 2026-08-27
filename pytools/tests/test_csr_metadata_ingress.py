@@ -24,3 +24,21 @@ def test_unknown_address_and_extension_mismatch_remain_typed_incomplete():
     no_f = CsrDecoderProfile("1.12", 64, ("zicsr",))
     op = decode_csr_privileged_operations(addr=1, decoder_mnemonic="csrrs", decoder_operands="a0, fcsr, x0", xlen_bits=64, profile=no_f)[0]
     assert not op.state_complete and op.csr_id == ""
+
+def test_lift_attaches_decoder_metadata_before_canonicalization(monkeypatch):
+    from types import SimpleNamespace
+    from riscv2x86_py import lift as lift_module
+
+    class Context:
+        def __init__(self, _language_id): pass
+        def translate(self, *_args, **_kwargs):
+            return SimpleNamespace(ops=[SimpleNamespace(opcode="IMARK", inputs=[], output=None)], length=4)
+        def disassemble(self, *_args, **_kwargs):
+            return SimpleNamespace(instructions=[SimpleNamespace(mnem="csrrs", body="a0, mstatus, x0", length=4)])
+
+    monkeypatch.setattr(lift_module.pypcode, "Context", Context)
+    result = lift_module.lift(b"\\x73\\x25\\x00\\x30", xlen=64, csr_decoder_profile=P)
+    assert result.ok
+    op = result.insns[0].privileged_operations[0]
+    assert op.csr_id == "riscv.csr.mstatus"
+    assert op.csr_operation is CanonicalCsrOperationKind.READ
