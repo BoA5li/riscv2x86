@@ -1,0 +1,46 @@
+"""Phase-6B CSR plan-family derivation from the 6A source model only."""
+from __future__ import annotations
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
+class CsrPlanFamily(str,Enum):
+    CSR_COUNTER_OBSERVATION_ADAPTER="csr_counter_observation_adapter"
+    CSR_FPU_STATE_ADAPTER="csr_fpu_state_adapter"
+    CSR_VECTOR_STATE_ADAPTER="csr_vector_state_adapter"
+    CSR_IDENTITY_PROFILE_ADAPTER="csr_identity_profile_adapter"
+    CSR_PRIVILEGED_STATE_RUNTIME="csr_privileged_state_runtime"
+    CSR_INTERRUPT_STATE_RUNTIME="csr_interrupt_state_runtime"
+    CSR_MMU_STATE_RUNTIME="csr_mmu_state_runtime"
+    CSR_FUNCTIONAL_FALLBACK="csr_functional_fallback"
+    CSR_STATE_MACHINE="csr_state_machine"
+
+@dataclass(frozen=True)
+class CsrPlanCandidate:
+    family:CsrPlanFamily
+    source_effect_ids:tuple[str,...]
+    requires_whole_function:bool
+    strict:bool
+    complete:bool
+    reason_codes:tuple[str,...]=()
+
+def derive_csr_plan_candidates(model:Any,*,allow_functional_fallbacks:bool=False)->tuple[CsrPlanCandidate,...]:
+    """Classify, never lower.  Incomplete 6A facts produce no candidate."""
+    if model is None or not getattr(model,"complete",False): return ()
+    effects=tuple(getattr(model,"effects",()) or ()); classes=set(getattr(model,"semantic_classes",()) or ())
+    ids=tuple(getattr(x,"csr_id","") or "" for x in effects)
+    whole=bool(getattr(model,"requires_whole_function",False))
+    if not effects: return ()
+    if len(effects)>1 and (whole or len(classes)>1): family=CsrPlanFamily.CSR_STATE_MACHINE
+    elif classes <= {"user_counter_observation"}: family=CsrPlanFamily.CSR_COUNTER_OBSERVATION_ADAPTER
+    elif "fpu_state" in classes: family=CsrPlanFamily.CSR_FPU_STATE_ADAPTER
+    elif "vector_state" in classes: family=CsrPlanFamily.CSR_VECTOR_STATE_ADAPTER
+    elif classes <= {"identity_profile"}: family=CsrPlanFamily.CSR_IDENTITY_PROFILE_ADAPTER
+    elif "address_translation" in classes or any(x.endswith((".satp",".hgatp",".vsatp")) for x in ids): family=CsrPlanFamily.CSR_MMU_STATE_RUNTIME
+    elif "interrupt_state" in classes: family=CsrPlanFamily.CSR_INTERRUPT_STATE_RUNTIME
+    else: family=CsrPlanFamily.CSR_PRIVILEGED_STATE_RUNTIME
+    strict=bool(getattr(model,"strict_eligible",False)) and not whole
+    candidates=[CsrPlanCandidate(family,ids,whole,strict,True)]
+    if allow_functional_fallbacks and getattr(model,"fallback_eligible",False) and family in {CsrPlanFamily.CSR_COUNTER_OBSERVATION_ADAPTER,CsrPlanFamily.CSR_IDENTITY_PROFILE_ADAPTER}:
+        candidates.append(CsrPlanCandidate(CsrPlanFamily.CSR_FUNCTIONAL_FALLBACK,ids,False,False,True))
+    return tuple(candidates)
