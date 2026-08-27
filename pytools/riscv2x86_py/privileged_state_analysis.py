@@ -275,6 +275,7 @@ class SourcePrivilegedStateModel:
     classification_complete: bool = True
     # Phase-5 CSR value-flow facts; renderer paths consume this exact join.
     csr_operand_bindings: tuple[object, ...] = ()
+    csr_state_dataflow: object | None = None
 
     def __post_init__(self) -> None:
         for values in (
