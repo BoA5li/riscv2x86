@@ -47,7 +47,7 @@ add_executable(riscv2x86 ${R2X_SOURCES})
 
 # Versioned Phase-6 helper runtime.  Translation output may reference a
 # helper only when its manifest/capability/proof contract is approved.
-add_library(riscv2x86_runtime STATIC runtime/riscv2x86_runtime_helpers.c)
+add_library(riscv2x86_runtime STATIC\n  runtime/riscv2x86_runtime_helpers.c\n  runtime/riscv2x86_csr_runtime.c\n)
 target_include_directories(riscv2x86_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
 )
