@@ -30,3 +30,9 @@ def render_csr_recipe(recipe:CsrRuntimeRecipe,*,approved_recipe_ids:Mapping[str,
     call=f"{recipe.callable_identifier}({', '.join(args)})"
     text=f"{recipe.output_expression} = {call};" if recipe.output_expression else f"(void){call};"
     return CsrRenderResult(text,(recipe.required_header,),(recipe.required_library,))
+
+def render_approved_csr_recipe(recipe:CsrRuntimeRecipe,*,approved_recipe_ids:Mapping[str,str],expected_runtime_version:str,proof_approved:bool,proof_identity:str)->CsrRenderResult:
+    """6F hard gate: a recipe is unusable without a concrete 6D approval."""
+    if not proof_approved or not proof_identity:
+        return CsrRenderResult(None,(),(),("csr-6f.approved-proof-required",))
+    return render_csr_recipe(recipe,approved_recipe_ids=approved_recipe_ids,expected_runtime_version=expected_runtime_version)
