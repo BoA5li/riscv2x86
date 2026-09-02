@@ -1,101 +1,73 @@
-"""Phase-5 authoritative CSR effect <-> GNU operand join.
-
-The join is deliberately one-way: Phase 4 creates decoder value-node ids and
-assembler/frontend facts bind those ids to GNU operands.  Renderers receive
-only ``SourceCsrOperandBinding`` and may not recover a binding from registers,
-instruction text, or operand order.
-"""
+"""Phase-5 CSR/GNU operand join using only frontend authority facts."""
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
-from .runtime_facts import canonicalize_riscv_register_name
 
 @dataclass(frozen=True)
 class SourceCsrOperandBinding:
-    source_effect_id: str
-    read_result_operand_index: int | None
-    write_value_operand_index: int | None
-    immediate_value: int | None
-    source_value_width_bits: int | None
-    source_signedness: str | None
-    complete: bool
-    reason_codes: tuple[str, ...] = ()
+    source_effect_id:str; read_result_operand_index:int|None; write_value_operand_index:int|None
+    immediate_value:int|None; source_value_width_bits:int|None; source_signedness:str|None
+    complete:bool; reason_codes:tuple[str,...]=()
 
 @dataclass(frozen=True)
-class CsrOperandAuthority:
-    value_node_to_operand_index: Mapping[str, int]
-    operand_width_bits: Mapping[int, int]
-    operand_signedness: Mapping[int, str]
-    output_escapes: Mapping[int, bool]
-    tied_operand_pairs: tuple[tuple[int, int], ...] = ()
-    early_clobber_outputs: tuple[int, ...] = ()
-    volatile_preserved: bool | None = None
-    memory_clobber_preserved: bool | None = None
-    cc_clobber_preserved: bool | None = None
-    fixed_register_operands: Mapping[int, str] = None
+class CsrOperandAuthorityFacts:
+    fragment_id:str
+    value_node_to_operand_index:Mapping[str,int]
+    operand_width_bits:Mapping[int,int]
+    operand_signedness:Mapping[int,str]
+    operand_access:Mapping[int,str]
+    tied_operand_pairs:tuple[tuple[int,int],...]
+    early_clobber_outputs:tuple[int,...]
+    fixed_register_constraints:Mapping[int,str|None]
+    output_escape_facts:Mapping[int,bool]
+    shell_facts:Mapping[str,bool]
+    complete:bool
 
-def authority_from_phase4_facts(*, lifted_insns: tuple[Any, ...] | list[Any], runtime_facts: Any) -> CsrOperandAuthority:
-    """Adapt Phase-4 materialization facts; never inspect asm text or p-code."""
-    registers = getattr(runtime_facts, "rv_to_operand_index", {}) or {}
-    node_map={}
+# Compatibility alias for callers migrated incrementally; no adapter from
+# runtime facts exists because deriving authority from registers is forbidden.
+CsrOperandAuthority=CsrOperandAuthorityFacts
+
+def _effect_id(addr:int, ordinal:int, op:Any)->str:
+    return f"csr-effect:{addr:#x}:{ordinal}:{getattr(op,'csr_id',None) or 'unknown'}"
+def _index(m:Mapping[str,int], node:object)->int|None:
+    v=m.get(node) if isinstance(node,str) else None
+    return v if isinstance(v,int) and not isinstance(v,bool) and v>=0 else None
+def _suppressed(op:Any, name:str)->bool:
+    return getattr(op,name,None) is True
+
+def join_csr_operand_bindings(*, lifted_insns:tuple[Any,...]|list[Any], authority:CsrOperandAuthorityFacts,
+                              fragment_shell:Any=None)->tuple[SourceCsrOperandBinding,...]:
+    """Join typed decoder nodes to frontend sidecar facts without inference."""
+    out=[]; ordinal=0
     for insn in lifted_insns:
-        for op in tuple(getattr(insn, "privileged_operations", ()) or ()):
-            for node in (getattr(op,"read_value_node_id",None),getattr(op,"write_value_node_id",None)):
-                if not isinstance(node,str) or not node.startswith("decoder-csr:"): continue
-                register=canonicalize_riscv_register_name(node.rsplit(":",1)[-1])
-                if register and register in registers: node_map[node]=registers[register]
-    # Signedness/escape remain explicitly unknown until the frontend supplies
-    # them; the join will therefore reject approval rather than invent facts.
-    return CsrOperandAuthority(node_map,getattr(runtime_facts,"operand_width_bits",{}) or {},{}, {},fixed_register_operands={})
-
-def _effect_id(addr: int, ordinal: int, op: Any) -> str:
-    return f"csr-effect:{addr:#x}:{ordinal}:{getattr(op, 'csr_id', '') or 'unknown'}"
-
-def _as_index(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-def _joined_index(node_id: str | None, authority: CsrOperandAuthority) -> int | None:
-    if not isinstance(node_id, str) or not node_id:
-        return None
-    return _as_index(authority.value_node_to_operand_index.get(node_id))
-
-def join_csr_operand_bindings(*, lifted_insns: tuple[Any, ...] | list[Any], authority: CsrOperandAuthority,
-                              fragment_shell: Any) -> tuple[SourceCsrOperandBinding, ...]:
-    """Join every typed CSR operation using already-materialized node facts."""
-    result=[]
-    ordinal=0
-    volatile=bool(getattr(fragment_shell, "isVolatile", False))
-    clobbers={str(x).strip('"').lower() for x in getattr(fragment_shell, "clobbers", ())}
-    for insn in lifted_insns:
-        for op in tuple(getattr(insn, "privileged_operations", ()) or ()):
-            if getattr(getattr(op, "kind", None), "value", None) != "csr_access":
-                continue
-            ordinal += 1; reasons=[]
-            effect_id=_effect_id(getattr(insn,"addr",0), ordinal, op)
-            read=_joined_index(getattr(op,"read_value_node_id",None), authority)
-            write=_joined_index(getattr(op,"write_value_node_id",None), authority)
-            immediate=getattr(op,"immediate_mask",None)
-            reads=getattr(op,"read_value_node_id",None) is not None
-            writes=getattr(op,"write_value_node_id",None) is not None or immediate is not None
-            if reads and read is None: reasons.append("csr-join.read-result-binding-missing")
-            if writes and immediate is None and write is None: reasons.append("csr-join.write-value-binding-missing")
-            if immediate is not None and (not isinstance(immediate,int) or isinstance(immediate,bool) or not 0 <= immediate < 32): reasons.append("csr-join.zimm-invalid")
-            if not reads and read is not None: reasons.append("csr-join.read-suppression-violated")
-            if not writes and (write is not None or immediate is not None): reasons.append("csr-join.write-suppression-violated")
-            used=tuple(i for i in (read,write) if i is not None)
-            widths={authority.operand_width_bits.get(i) for i in used}
-            signed={authority.operand_signedness.get(i) for i in used}
-            if used and (None in widths or any(not isinstance(v,int) or v <= 0 for v in widths)): reasons.append("csr-join.c-type-width-missing")
-            if used and (None in signed or any(v not in {"signed","unsigned"} for v in signed)): reasons.append("csr-join.c-type-signedness-missing")
-            if read is not None and authority.output_escapes.get(read) is not False: reasons.append("csr-join.output-escape-unproven")
-            if read is not None and write is not None and read == write and (read,write) not in authority.tied_operand_pairs: reasons.append("csr-join.tied-operand-unproven")
-            if read is not None and read in authority.early_clobber_outputs: reasons.append("csr-join.early-clobber-requires-contract")
-            if volatile and authority.volatile_preserved is not True: reasons.append("csr-join.volatile-shell-unproven")
-            if "memory" in clobbers and authority.memory_clobber_preserved is not True: reasons.append("csr-join.memory-shell-unproven")
-            if "cc" in clobbers and authority.cc_clobber_preserved is not True: reasons.append("csr-join.cc-shell-unproven")
-            for index in used:
-                if index in (authority.fixed_register_operands or {}) and not (authority.fixed_register_operands or {}).get(index): reasons.append("csr-join.fixed-register-contract-missing")
-            result.append(SourceCsrOperandBinding(effect_id,read,write,immediate,
-                next(iter(widths)) if len(widths)==1 else None,
-                next(iter(signed)) if len(signed)==1 else None,not reasons,tuple(sorted(set(reasons)))))
-    return tuple(result)
+      for op in tuple(getattr(insn,"privileged_operations",()) or ()):
+        if getattr(getattr(op,"kind",None),"value",None)!="csr_access": continue
+        ordinal+=1; reasons=[]; eid=_effect_id(getattr(insn,"addr",0),ordinal,op)
+        read_node=getattr(op,"read_value_node_id",None); write_node=getattr(op,"write_value_node_id",None)
+        immediate=getattr(op,"immediate_mask",None)
+        read_required=read_node is not None and not _suppressed(op,"read_result_suppressed")
+        write_required=write_node is not None and immediate is None and not _suppressed(op,"write_value_suppressed")
+        read=_index(authority.value_node_to_operand_index,read_node); write=_index(authority.value_node_to_operand_index,write_node)
+        if not authority.complete: reasons.append("csr-join.frontend-authority-incomplete")
+        if read_required and read is None: reasons.append("csr-join.read-result-binding-missing")
+        if write_required and write is None: reasons.append("csr-join.write-value-binding-missing")
+        if immediate is not None and (not isinstance(immediate,int) or isinstance(immediate,bool) or not 0<=immediate<=31): reasons.append("csr-join.zimm-invalid")
+        used=tuple(x for x in (read if read_required else None,write if write_required else None) if x is not None)
+        widths={authority.operand_width_bits.get(x) for x in used}; signed={authority.operand_signedness.get(x) for x in used}
+        if used and (None in widths or any(not isinstance(x,int) or x<=0 for x in widths)): reasons.append("csr-join.c-type-width-missing")
+        if used and (None in signed or any(x not in {"signed","unsigned"} for x in signed)): reasons.append("csr-join.c-type-signedness-missing")
+        if len(widths)!=1 and len(used)>1: reasons.append("csr-join.operand-width-mismatch")
+        if len(signed)!=1 and len(used)>1: reasons.append("csr-join.operand-signedness-mismatch")
+        if read_required:
+          if authority.operand_access.get(read) not in {"output","read_write"}: reasons.append("csr-join.read-output-access-missing")
+          if authority.output_escape_facts.get(read) is not False: reasons.append("csr-join.output-escape-unproven")
+        if write_required and authority.operand_access.get(write) not in {"input","read_write"}: reasons.append("csr-join.write-input-access-missing")
+        if read_required and write_required and read==write and (read,write) not in authority.tied_operand_pairs: reasons.append("csr-join.tied-operand-unproven")
+        for x in used:
+          if x not in authority.fixed_register_constraints: reasons.append("csr-join.fixed-register-fact-missing")
+          elif authority.fixed_register_constraints[x] is None: reasons.append("csr-join.fixed-register-constraint-incomplete")
+        if read_required and read in authority.early_clobber_outputs: reasons.append("csr-join.early-clobber-requires-contract")
+        if any(k not in authority.shell_facts or not isinstance(authority.shell_facts[k],bool) for k in ("volatile","memory","cc")): reasons.append("csr-join.shell-facts-incomplete")
+        out.append(SourceCsrOperandBinding(eid,read if read_required else None,write if write_required else None,immediate,
+          next(iter(widths)) if len(widths)==1 else None,next(iter(signed)) if len(signed)==1 else None,not reasons,tuple(sorted(set(reasons)))))
+    return tuple(out)
