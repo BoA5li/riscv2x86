@@ -14,4 +14,4 @@ def test_dataflow_rejects_incomplete_effect_and_unmodelled_trap():
     op=_op(CanonicalCsrOperationKind.WRITE); op=op.__class__(**{**op.__dict__,"state_complete":False,"may_trap":True})
     b=SimpleNamespace(addr=1,successors=[],instructions=[SimpleNamespace(privileged_operations=(op,))])
     r=analyze_csr_state_dataflow(blocks=(b,),cfg=SimpleNamespace(entry=1))
-    assert not r.complete and "csr-dataflow.trap-edge-unmodelled" in r.reason_codes
+    assert not r.complete and "csr-dataflow.trap-edge-requires-route" in r.reason_codes
