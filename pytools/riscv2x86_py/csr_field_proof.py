@@ -11,11 +11,11 @@ class CsrFieldProofEvidence:
 
 @dataclass(frozen=True)
 class CsrFieldProofResult:
-    approved:bool; evidence:tuple[CsrFieldProofEvidence,...]; reason_codes:tuple[str,...]
+    approved:bool; evidence:tuple[CsrFieldProofEvidence,...]; reason_codes:tuple[str,...]; proof_identity:str=""
 
 def _id(*parts:str)->str: return "csr-field-proof:"+sha256("|".join(parts).encode()).hexdigest()
 
-def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_profile:str,shell_preserved:bool,external_state_complete:bool)->CsrFieldProofResult:
+def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_profile:str,shell_preserved:bool,external_state_complete:bool,registry_identity:str="",target_environment_id:str="",shell_facts:tuple[str,...]=())->CsrFieldProofResult:
     """Prove every declared source field; no raw asm, IR, or renderer input."""
     reasons=set(); evidence=[]; by_effect={getattr(x,"source_effect_id",""):x for x in constraints}
     bindings={getattr(x,"source_effect_id",""):x for x in getattr(source_model,"operand_bindings",())}
@@ -43,4 +43,5 @@ def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_pro
             target=getattr(c,"target_operation_id",None) or ""
             evidence.append(CsrFieldProofEvidence(eid,getattr(effect,"csr_id","") or "",fid,target,relation,"field_equivalent",_id(eid,fid,target,relation,execution_profile)))
     approved=bool(evidence) and not reasons
-    return CsrFieldProofResult(approved,tuple(evidence),tuple(sorted(reasons)))
+    identity=_id(getattr(source_model,"model_identity",repr(source_model)),repr(constraints),registry_identity,target_environment_id,repr(tuple(sorted(shell_facts))),repr(getattr(source_model,"exit_state_relation",())),execution_profile)
+    return CsrFieldProofResult(approved,tuple(evidence),tuple(sorted(reasons)),identity)
