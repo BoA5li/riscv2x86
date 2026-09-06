@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .validation_status import PreservationMode, ValidationStatus
+from .validation_observation import ExecutionObservation
 
 
 VALIDATION_PLAN_SCHEMA = "riscv2x86.validation-plan.v1"
@@ -176,6 +177,9 @@ def _result(
     layers: tuple[ValidationLayerResult, ...] = (), reasons: tuple[str, ...] = (),
     translation_artifact: TranslationArtifact, source_program_artifact: ProgramArtifact,
     target_program_artifact: ProgramArtifact, target_environment: Mapping[str, object],
+    source_observation: ExecutionObservation | None = None,
+    target_observation: ExecutionObservation | None = None,
+    comparison_policy: str = "riscv2x86.comparison-policy.none.v1",
 ) -> TranslationValidationResult:
     payload = {
         "version": TRANSLATION_VALIDATION_VERSION,
@@ -184,6 +188,9 @@ def _result(
         "source": _artifact_payload(source_program_artifact),
         "target": _artifact_payload(target_program_artifact),
         "environment": dict(target_environment),
+        "comparisonPolicy": comparison_policy,
+        "sourceObservation": None if source_observation is None else source_observation.to_dict(),
+        "targetObservation": None if target_observation is None else target_observation.to_dict(),
         "layers": [dict(item.__dict__) for item in layers],
         "reasons": list(reasons),
     }
@@ -211,6 +218,10 @@ def run_translation_validation(
     validation_plan: ValidationPlan,
     target_environment: Mapping[str, object],
     runtime_registry: ValidationRuntimeRegistry,
+    *,
+    source_observation: ExecutionObservation | None = None,
+    target_observation: ExecutionObservation | None = None,
+    comparison_policy: str = "riscv2x86.comparison-policy.none.v1",
 ) -> TranslationValidationResult:
     """Run registered validation layers in mandatory L0 → L3 order.
 
@@ -218,11 +229,17 @@ def run_translation_validation(
     failed, or inconclusive.  A missing validator is inconclusive; it cannot be
     replaced by a build-only success or by a later layer.
     """
+    def finish(**kwargs: object) -> TranslationValidationResult:
+        return _result(
+            **kwargs, source_observation=source_observation,
+            target_observation=target_observation, comparison_policy=comparison_policy,
+        )
+
     reason = _validate_profile(translation_artifact, validation_plan)
     if runtime_registry.version != validation_plan.runtime_registry_version:
         reason = reason or "validation.runtime-registry-version-mismatch"
     if reason:
-        return _result(
+        return finish(
             status=ValidationStatus.FAILED, plan=validation_plan,
             reasons=(reason,), translation_artifact=translation_artifact,
             source_program_artifact=source_program_artifact,
@@ -238,7 +255,7 @@ def run_translation_validation(
                 level, ValidationStatus.INCONCLUSIVE,
                 detail="no registered validation layer runner",
             ))
-            return _result(
+            return finish(
                 status=ValidationStatus.INCONCLUSIVE, plan=validation_plan,
                 layers=tuple(layers), reasons=("validation.layer-runner-missing:" + level.value,),
                 translation_artifact=translation_artifact,
@@ -255,7 +272,7 @@ def run_translation_validation(
         )
         if not isinstance(layer, ValidationLayerResult) or layer.level is not level:
             layers.append(ValidationLayerResult(level, ValidationStatus.FAILED, detail="invalid layer runner result"))
-            return _result(
+            return finish(
                 status=ValidationStatus.FAILED, plan=validation_plan, layers=tuple(layers),
                 reasons=("validation.layer-runner-protocol-error:" + level.value,),
                 translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
@@ -263,13 +280,13 @@ def run_translation_validation(
             )
         layers.append(layer)
         if layer.status is not ValidationStatus.VERIFIED:
-            return _result(
+            return finish(
                 status=layer.status, plan=validation_plan, layers=tuple(layers),
                 reasons=("validation.layer-not-verified:" + level.value,),
                 translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
                 target_program_artifact=target_program_artifact, target_environment=target_environment,
             )
-    return _result(
+    return finish(
         status=ValidationStatus.VERIFIED, plan=validation_plan, layers=tuple(layers),
         translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
         target_program_artifact=target_program_artifact, target_environment=target_environment,

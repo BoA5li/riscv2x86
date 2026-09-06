@@ -15,6 +15,7 @@ from .translation_validation import (
     run_translation_validation,
 )
 from .validation_status import PreservationMode
+from .validation_observation import ExecutionObservation
 
 
 def _load_json(path: str) -> dict[str, object]:
@@ -68,6 +69,12 @@ def main() -> int:
     parser.add_argument("--target-runner", choices=("native", "logical-csr-runtime", "custom"))
     parser.add_argument("--verification-seed", type=int)
     parser.add_argument("--verification-timeout", type=int)
+    parser.add_argument("--source-observation")
+    parser.add_argument("--target-observation")
+    parser.add_argument(
+        "--comparison-policy",
+        default="riscv2x86.comparison-policy.none.v1",
+    )
     args = parser.parse_args()
 
     plan = load_validation_plan(args.validation_plan)
@@ -95,6 +102,15 @@ def main() -> int:
         _program_artifact(_load_json(args.source_program_artifact)),
         _program_artifact(_load_json(args.target_program_artifact)),
         plan, _load_json(args.target_environment), registry,
+        source_observation=(
+            ExecutionObservation.from_dict(_load_json(args.source_observation))
+            if args.source_observation else None
+        ),
+        target_observation=(
+            ExecutionObservation.from_dict(_load_json(args.target_observation))
+            if args.target_observation else None
+        ),
+        comparison_policy=args.comparison_policy,
     )
     Path(args.verification_output).write_text(
         json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8",
