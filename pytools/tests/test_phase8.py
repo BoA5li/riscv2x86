@@ -276,7 +276,7 @@ def test_build_tool_unavailable_returns_build_only(
 
     result = run_verify(phase8_env)
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
     assert phase8_env.calls == [
         "admission",
         "build",
@@ -291,7 +291,7 @@ def test_lift_unavailable_never_returns_verified(
 
     result = run_verify(phase8_env)
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
     assert "z3" not in phase8_env.calls
     assert "engineering" not in phase8_env.calls
 
@@ -364,7 +364,7 @@ def test_z3_unavailable_cannot_be_promoted_to_verified(
 
     result = run_verify(phase8_env)
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
     assert "angr" not in phase8_env.calls
     assert "engineering" not in phase8_env.calls
 
@@ -412,7 +412,7 @@ def test_required_angr_unavailable_returns_build_only(
 
     result = run_verify(phase8_env)
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
     assert "engineering" not in phase8_env.calls
 
 
@@ -481,7 +481,7 @@ def test_missing_engineering_suite_cannot_return_verified(
 
     result = run_verify(phase8_env)
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
     assert "microarch" not in phase8_env.calls
 
 
@@ -504,7 +504,7 @@ def test_required_microarch_suite_unavailable_is_build_only(
 
     result = run_verify(phase8_env)
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_microarch_mismatch_returns_failed(
@@ -573,7 +573,7 @@ def test_checker_internal_type_error_is_not_retried():
     )
 
     assert len(calls) == 1
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
     assert "TypeError" in result.detail
 
 

@@ -48,6 +48,11 @@ from .privileged_emitted_audit import (
 from .privileged_output_manifest import (
     finalize_privileged_output_manifest,
 )
+from .validation_status import (
+    ValidationStatus,
+    admit_writeback,
+    normalize_validation_status,
+)
 
 def _finalize_finding_privileged_manifest(
     finding: Finding,
@@ -1058,7 +1063,7 @@ def run(
         "already_rule": 0,
         "unsupported": 0,
         "verified": 0,
-        "build_only": 0,
+        "inconclusive": 0,
         "failed": 0,
         "needs_route": 0,
         "no_fragment": 0,
@@ -1646,16 +1651,17 @@ def run(
             f.category = "ReplaceableByRule"
             f.ruleName = "phase6.keep"
             f.suggestedReplacement = ""
-            f.verificationStatus = "verified"
+            f.verificationStatus = ValidationStatus.KEEP.value
             f.verificationDetail = (
                 "phase6 decided to keep original inline asm unchanged"
             )
 
             _finalize_finding_privileged_manifest(
-                f, status="kept",
+                f, status=ValidationStatus.KEEP.value,
                 detail=f.verificationDetail, accepted=True, stage="phase7",
             )
-            stats["verified"] += 1
+            # Keeping source asm is a deliberate non-replacement conclusion,
+            # not evidence that a generated target lowering was verified.
             continue
 
         # Phase 7: inline-asm 外壳语义检查.
@@ -1749,25 +1755,38 @@ def run(
             f.notes.append(
                 "phase8: verification skipped by explicit caller request"
             )
+            f.category = "NeedsAsmTranslation"
+            f.suggestedReplacement = ""
+            f.ruleName = ""
 
             _finalize_finding_privileged_manifest(
                 f, status="not_verified",
-                detail=f.verificationDetail, accepted=True, stage="phase8",
+                detail=f.verificationDetail, accepted=False, stage="phase8",
             )
             stats["translated_unverified"] += 1
             continue
 
         vr = verify(f.fragment, lr, summary, tr)
-        f.verificationStatus = vr.status
+        f.verificationStatus = normalize_validation_status(vr.status).value
         f.verificationDetail = vr.detail
+        admission = admit_writeback(
+            f.verificationStatus,
+            approval_artifact=f.approvalArtifact,
+        )
 
-        if vr.status == "verified":
+        if admission.allowed:
             stats["verified"] += 1
 
-        elif vr.status == "build_only":
-            stats["build_only"] += 1
+        elif f.verificationStatus == ValidationStatus.INCONCLUSIVE.value:
+            # Missing runner/proof/build facts are neither a semantic pass nor
+            # a translation failure.  Leave the source fragment routed.
+            f.category = "NeedsAsmTranslation"
+            f.suggestedReplacement = ""
+            f.ruleName = ""
+            f.notes.append("phase8: replacement withheld: " + admission.reason_code)
+            stats["inconclusive"] += 1
 
-        elif vr.status == "failed":
+        elif f.verificationStatus == ValidationStatus.FAILED.value:
             # verify 失败时不允许下游将 replacement 当作可安全回填的结果。
             f.category = "NeedsAsmTranslation"
             f.suggestedReplacement = ""
@@ -1775,21 +1794,24 @@ def run(
             stats["failed"] += 1
 
         else:
-            # 防御式处理未知 verify 状态，避免一个未知状态被误当成成功。
+            # Unsupported, needs_route, invalid manifests, and every future
+            # non-verified conclusion must not retain an actionable rewrite.
             f.category = "NeedsAsmTranslation"
             f.suggestedReplacement = ""
             f.ruleName = ""
-            f.verificationStatus = "failed"
-            f.verificationDetail = (
-                f"verify returned unexpected status: {vr.status!r}"
-            )
-            stats["failed"] += 1
+            f.notes.append("phase8: replacement withheld: " + admission.reason_code)
+            if f.verificationStatus == ValidationStatus.UNSUPPORTED.value:
+                stats["unsupported"] += 1
+            elif f.verificationStatus == ValidationStatus.NEEDS_ROUTE.value:
+                stats["needs_route"] += 1
+            else:
+                stats["failed"] += 1
 
         _finalize_finding_privileged_manifest(
             f,
             status=f.verificationStatus,
             detail=f.verificationDetail,
-            accepted=f.verificationStatus in {"verified", "build_only"},
+            accepted=admission.allowed,
             stage="phase8",
         )
 

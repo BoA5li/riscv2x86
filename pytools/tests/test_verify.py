@@ -38,4 +38,4 @@ def test_verify_fence_weak():
     frag = AsmFragment(rawAsmText="fence r,w")
     vr, _ = _all(frag)
     # 我们故意把弱屏障升格为 SEQ_CST，这是保守翻译，Phase 8 标 build_only
-    assert vr.status == "build_only"
+    assert vr.status == "inconclusive"

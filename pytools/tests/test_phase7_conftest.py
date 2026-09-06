@@ -110,4 +110,4 @@ def test_verify_x86_inline_asm_output():
     )
 
     res = verify_translation(tr, frag=None)
-    assert res["status"] in ("verified", "build_only")
+    assert res["status"] in ("verified", "inconclusive")

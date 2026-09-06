@@ -71,5 +71,5 @@ def test_result_status_values_are_available():
     assert statuses == {
         "verified",
         "failed",
-        "build_only",
+        "inconclusive",
     }

@@ -46,7 +46,7 @@ def test_required_path_validation_without_artifact_is_not_verified():
     )
 
     assert result.status in {
-        "build_only",
+        "inconclusive",
         "unsupported",
         "failed",
     }

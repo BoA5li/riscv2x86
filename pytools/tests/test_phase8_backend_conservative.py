@@ -21,7 +21,7 @@ def test_angr_backend_without_artifacts_is_build_only():
         requirements=[],
     )
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_engineering_backend_without_suite_is_build_only():
@@ -38,7 +38,7 @@ def test_engineering_backend_without_suite_is_build_only():
         ],
     )
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_microarch_backend_without_suite_is_build_only():
@@ -55,7 +55,7 @@ def test_microarch_backend_without_suite_is_build_only():
         ],
     )
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_engineering_missing_required_check_is_build_only():
@@ -81,7 +81,7 @@ def test_engineering_missing_required_check_is_build_only():
         contract=contract,
     )
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_engineering_all_required_checks_pass():
@@ -165,7 +165,7 @@ def test_engineering_timeout_is_build_only():
         contract=contract,
     )
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_level_d_without_pmc_command_is_build_only():
@@ -192,7 +192,7 @@ def test_level_d_without_pmc_command_is_build_only():
         contract=contract,
     )
 
-    assert result.status == "build_only"
+    assert result.status == "inconclusive"
 
 
 def test_all_microarch_checks_pass():

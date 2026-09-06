@@ -31,7 +31,7 @@ def test_verify_fence_weak_build_only(monkeypatch):
     lift = SimpleNamespace(insns=[SimpleNamespace(asm_mnem="fence")])
     tr = SimpleNamespace(kind="pure_c", replacement="__atomic_thread_fence(__ATOMIC_SEQ_CST)", notes=[])
     out = verify_mod.verify(frag, lift, None, tr)
-    assert out.status == "build_only"
+    assert out.status == "inconclusive"
 
 
 def test_verify_cas_verified(monkeypatch):

@@ -28,6 +28,7 @@ from types import SimpleNamespace
 import z3
 
 from .schema import AsmFragment
+from .validation_status import ValidationStatus, normalize_validation_status
 from .lift import LiftResult
 from .pcode_ir import IRSummary, Block, from_lifted
 from .translate import TranslationOutput
@@ -35,10 +36,15 @@ from .translate import TranslationOutput
 
 @dataclass
 class VerifyResult:
-    status: str                    # verified / build_only / failed / unsupported
+    # Public Phase-8 conclusion.  In particular, an unavailable checker is
+    # ``inconclusive`` rather than a successful build-only verification.
+    status: str                    # ValidationStatus value
     reason_code: str = ""
     detail: str = ""
     notes: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.status = normalize_validation_status(self.status).value
 
     def with_note(self, s: str) -> "VerifyResult":
         if s and s not in self.notes:
@@ -65,11 +71,11 @@ def _verify_paths_angr(
       2. 确认原始和翻译后的二进制产物存在；
       3. 使用 angr 加载两个真实产物；
       4. 调用配置的路径等价验证命令；
-      5. 根据实际执行结果返回 verified/failed/build_only。
+      5. 根据实际执行结果返回 verified/failed/inconclusive。
 
     注意：
       仅成功加载二进制不能证明路径等价，因此没有配置
-      semantic validator command 时必须返回 build_only。
+      semantic validator command 时必须返回 inconclusive。
     """
     try:
         import angr
@@ -236,7 +242,7 @@ def _verify_paths_angr(
             result.detail,
         )
 
-    if result.status == "build_only":
+    if result.status == "inconclusive":
         return _vr_build_only(
             "phase8.path_validation_inconclusive",
             result.detail,
@@ -260,8 +266,9 @@ def _vr_build_only(
     detail: str = "",
     notes: Optional[Iterable[str]] = None,
 ) -> VerifyResult:
+    """Legacy helper retained for callers; it now emits ``inconclusive``."""
     return VerifyResult(
-        status="build_only",
+        status=ValidationStatus.INCONCLUSIVE.value,
         reason_code=reason_code,
         detail=detail,
         notes=list(notes or []),
@@ -2182,7 +2189,7 @@ def _coerce_build_check_result(obj: Any) -> VerifyResult:
             "skipped",
             "unavailable",
             "unknown",
-            "build_only",
+            "inconclusive",
             "timeout",
         }:
             return _vr_build_only(
@@ -2330,7 +2337,7 @@ def _coerce_legacy_semantic_result(
         s = obj.strip().lower()
         if s in {"ok", "verified", "pass", "passed"}:
             return _vr_verified(obj)
-        if s in {"skipped", "unavailable", "build_only"}:
+        if s in {"skipped", "unavailable", "inconclusive"}:
             return _vr_build_only(unavailable_reason, obj)
         if s in {"failed", "mismatch", "error"}:
             return _vr_failed(RC_SEMANTIC_PROOF_FAILED, obj)
@@ -2341,7 +2348,7 @@ def _coerce_legacy_semantic_result(
         detail = str(obj.get("detail", "") or "")
         if status in {"ok", "verified", "pass", "passed"}:
             return _vr_verified(detail or "semantic check passed")
-        if status in {"skipped", "unavailable", "build_only"}:
+        if status in {"skipped", "unavailable", "inconclusive"}:
             return _vr_build_only(unavailable_reason, detail or status)
         if status in {"failed", "mismatch", "error"}:
             return _vr_failed(RC_SEMANTIC_PROOF_FAILED, detail or status)
@@ -2572,8 +2579,8 @@ def _close_semantic_gap_with_block_proofs(
 def _run_build_gate(replacement: str, frag: Optional[AsmFragment]) -> Optional[VerifyResult]:
     """
     顶层 build gate：
-      - clang 不可用：对外仍返回 build_only（避免破坏 pipeline 统计）
-      - build 失败：failed / build_only（取决于底层 build check 结果）
+      - clang 不可用：对外返回 inconclusive
+      - build 失败：failed / inconclusive（取决于底层 build check 结果）
       - build 通过：None（继续后续验证）
     """
     if not _build_tool_available():
@@ -2872,7 +2879,7 @@ def _apply_path_obligation(
 
     return _clone_vr(
         vr,
-        status="build_only",
+        status="inconclusive",
         reason_code=vr.reason_code or globals().get("RC_PATH_VALIDATOR_UNPROVEN", ""),
         detail=_merge_details(vr.detail, extra),
     )
@@ -2941,7 +2948,7 @@ def _with_microarch_plan(
     # 旧调用链没有真正运行 validator 时，禁止保持 verified。
     return _clone_vr(
         vr,
-        status="build_only",
+        status="inconclusive",
         reason_code=RC_MICROARCH_VALIDATOR_UNAVAILABLE,
         detail=_merge_details(vr.detail, extra),
     )
@@ -3716,9 +3723,9 @@ def _validate_block_obligation(
     )
 
     if reasons:
-        return _vr("build_only", _merge_details(base, *reasons))
+        return _vr("inconclusive", _merge_details(base, *reasons))
 
-    return _vr("build_only", base)
+    return _vr("inconclusive", base)
 
 # ---------- 一般输出形状验证（build 已通过后的保底验证） ----------
 
@@ -3744,7 +3751,7 @@ def _verify_x86_inline_asm_output(tr, frag=None):
         )
         if not has_atomic:
             return _vr(
-                "build_only",
+                "inconclusive",
                 "D-level x86 output builds, but lacks recognizable experiment-preserving opcode template",
             )
         return _vr("verified", "D-level x86 output passed build + shape sanity")
@@ -3753,7 +3760,7 @@ def _verify_x86_inline_asm_output(tr, frag=None):
         has_cf = _replacement_has_callret_shape(text)
         if not has_cf:
             return _vr(
-                "build_only",
+                "inconclusive",
                 "C-level x86 output builds, but call/ret contour is not obvious in emitted template",
             )
         return _vr("verified", "C-level x86 output passed build + control-shape sanity")
@@ -3779,18 +3786,18 @@ def _verify_pure_c_output(tr, frag=None) -> VerifyResult:
 
     if level in {"C", "D"}:
         return _vr(
-            "build_only",
+            "inconclusive",
             f"pure C output passed build sanity, but preservation level={level} exceeds current generic proof envelope",
         )
 
     if route and route not in {"canonical_public_c", ""}:
         return _vr(
-            "build_only",
+            "inconclusive",
             f"pure C output passed build sanity, but route={route} has no dedicated validator",
         )
 
     return _vr(
-        "build_only",
+        "inconclusive",
         "pure C output passed build sanity only; no generic block proof installed",
     )
 
@@ -3824,7 +3831,7 @@ def _verify_family_shape_only(tr, frag=None) -> Optional[VerifyResult]:
         if level == "D":
             if not re.search(r"cmpxchg|xadd|mfence|lfence|rdtsc|pause|lock\b", text):
                 return _vr(
-                    "build_only",
+                    "inconclusive",
                     "D-level x86 output passed build, but experiment-preserving opcode contour is weak",
                 )
             return _vr("verified", "x86 inline asm output passed shape sanity")
@@ -3832,7 +3839,7 @@ def _verify_family_shape_only(tr, frag=None) -> Optional[VerifyResult]:
         if level == "C":
             if not _replacement_has_callret_shape(text):
                 return _vr(
-                    "build_only",
+                    "inconclusive",
                     "C-level x86 output passed build, but call/ret contour is weak",
                 )
             return _vr("verified", "x86 inline asm output passed control-shape sanity")
@@ -3957,14 +3964,14 @@ def verify_translation(tr, frag=None, lift=None, summary=None):
         if err is not None:
             return _vr("failed", f"build check failed: {err}")
         return _vr(
-            "build_only",
+            "inconclusive",
             f"build passed for translation kind '{kind}'; semantic/path validation requires lift+summary",
         )
 
     if lift is None:
         # 有 summary 但没 lift 时，仍无法统一到 phase8
         return _vr(
-            "build_only",
+            "inconclusive",
             f"translation kind '{kind}' has summary but no lift; phase8 semantic/path validation requires lift",
         )
 
@@ -4222,8 +4229,8 @@ def _coerce_phase8_checker_result(
     约定：
       True             -> verified
       False            -> failed
-      None             -> build_only/checker unavailable
-      status=unknown   -> build_only
+      None             -> inconclusive/checker unavailable
+      status=unknown   -> inconclusive
     """
     if isinstance(obj, VerifyResult):
         return obj
@@ -4276,7 +4283,7 @@ def _coerce_phase8_checker_result(
             "unavailable",
             "unknown",
             "timeout",
-            "build_only",
+            "inconclusive",
         }:
             return _vr_build_only(
                 unavailable_reason,
@@ -4334,7 +4341,7 @@ def _coerce_phase8_checker_result(
             "unavailable",
             "unknown",
             "timeout",
-            "build_only",
+            "inconclusive",
         }:
             vr = _vr_build_only(
                 unavailable_reason,
@@ -4416,7 +4423,7 @@ def _run_phase8_engineering_suite(
             result.detail,
         )
 
-    if result.status == "build_only":
+    if result.status == "inconclusive":
         return _vr_build_only(
             "phase8.engineering_validator_unavailable",
             result.detail,
@@ -4490,7 +4497,7 @@ def _run_phase8_microarch_suite(
             result.detail,
         )
 
-    if result.status == "build_only":
+    if result.status == "inconclusive":
         return _vr_build_only(
             "phase8.microarch_validator_unavailable",
             result.detail,
@@ -4564,7 +4571,7 @@ def verify_translation_phase8(
       8. microarchitectural E2E validation when required
 
     状态原则：
-      - checker 不存在、超时或 unknown：build_only
+      - checker 不存在、超时或 unknown：inconclusive
       - checker 找到反例或行为不一致：failed
       - 所有必需层均通过：verified
     """

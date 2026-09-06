@@ -21,7 +21,7 @@ def test_add_two_regs():
     tr, vr = _all(f)
     assert tr.kind == "pure_c"
     assert "single-block integer lowering" in " ".join(tr.notes)
-    assert vr.status in ("build_only","verified")
+    assert vr.status in ("inconclusive","verified")
 
 def test_addw_sign_extends():
     f = AsmFragment(
