@@ -16,6 +16,8 @@ from .translation_validation import (
 )
 from .validation_status import PreservationMode
 from .validation_observation import ExecutionObservation
+from .translation_validation import ValidationLevel
+from .l0_build_matrix import build_l0_validator, load_l0_build_matrix
 
 
 def _load_json(path: str) -> dict[str, object]:
@@ -94,9 +96,13 @@ def main() -> int:
         plan = replace(plan, **overrides)
 
     registry_json = _load_json(args.runtime_registry)
-    registry = ValidationRuntimeRegistry(
-        version=str(registry_json.get("version", "")), layer_validators={},
-    )
+    validators = {}
+    l0_matrix = registry_json.get("l0BuildMatrix")
+    if l0_matrix is not None:
+        if not isinstance(l0_matrix, dict):
+            raise ValueError("runtime registry l0BuildMatrix must be an object")
+        validators[ValidationLevel.L0] = build_l0_validator(load_l0_build_matrix(l0_matrix))
+    registry = ValidationRuntimeRegistry(version=str(registry_json.get("version", "")), layer_validators=validators)
     result = run_translation_validation(
         _translation_artifact(_load_json(args.translation_artifact)),
         _program_artifact(_load_json(args.source_program_artifact)),
