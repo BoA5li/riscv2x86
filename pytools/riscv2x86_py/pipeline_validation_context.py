@@ -17,9 +17,22 @@ from .translation_validation import (
 from .validation_observation import ExecutionObservation
 from .validation_runtime_registry import validation_runtime_registry_from_dict
 from .validation_status import WRITEBACK_VALIDATION_EVIDENCE_VERSION
+from .l0_artifact_manifest import L0ArtifactManifest, load_l0_artifact_manifest
 
 
 PIPELINE_VALIDATION_CONTEXT_SCHEMA = "riscv2x86.pipeline-validation-context.v1"
+
+
+@dataclass(frozen=True)
+class WritebackValidationInput:
+    """Typed, indivisible authority passed from validation to writeback."""
+
+    validation_result: TranslationValidationResult
+    artifact_manifest: L0ArtifactManifest
+    manifest_digest: str
+    translation_artifact: TranslationArtifact
+    source_program_artifact: ProgramArtifact
+    target_program_artifact: ProgramArtifact
 
 
 @dataclass(frozen=True)
@@ -70,12 +83,20 @@ class PipelineValidationContext:
                     raise ValueError(label + " observation artifact binding mismatch")
                 observation.validate_translation_artifact(self.translation_artifacts[fragment_id])
 
-    def __call__(self, *, finding: object, **_kwargs: object) -> TranslationValidationResult:
+    def __call__(self, *, finding: object, **_kwargs: object) -> WritebackValidationInput:
         fragment = getattr(finding, "fragment", None)
         fragment_id = str(getattr(fragment, "id", ""))
         if fragment_id not in self.translation_artifacts:
             raise ValueError("pipeline validation has no artifact for fragment")
         translation = self.translation_artifacts[fragment_id]
+        l0_validator = self.runtime_registry.validator_for(ValidationLevel.L0)
+        l0_matrix = getattr(l0_validator, "l0_matrix", None)
+        if l0_matrix is None:
+            raise ValueError("pipeline validation has no manifest-bound L0 validator")
+        manifest = load_l0_artifact_manifest(
+            l0_matrix.translation_manifest_path,
+            l0_matrix.translation_manifest_digest,
+        )
         result = run_translation_validation(
             translation, self.source_program_artifact, self.target_program_artifact,
             self.plan, self.target_environment, self.runtime_registry,
@@ -84,7 +105,10 @@ class PipelineValidationContext:
             comparison_policy=self.comparison_policy,
         )
         self._bind_writeback_evidence(finding, translation, result)
-        return result
+        return WritebackValidationInput(
+            result, manifest, self.translation_manifest_digest, translation,
+            self.source_program_artifact, self.target_program_artifact,
+        )
 
     def _bind_writeback_evidence(
         self, finding: object, translation: TranslationArtifact,
