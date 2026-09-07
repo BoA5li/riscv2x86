@@ -1,12 +1,20 @@
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 
 from riscv2x86_py.validation_status import (
     WRITEBACK_VALIDATION_EVIDENCE_VERSION,
     PreservationMode,
     ValidationStatus,
-    admit_writeback,
+    admit_writeback as _typed_admit_writeback,
     normalize_validation_status,
+)
+from riscv2x86_py.l0_artifact_manifest import (
+    ExpectedArtifact, ExpectedElf, L0ArtifactManifest,
+)
+from riscv2x86_py.translation_validation import (
+    ProgramArtifact, TranslationArtifact, TranslationValidationResult,
+    ValidationLayerResult, ValidationLevel, ValidationProfile,
 )
 
 
@@ -92,6 +100,80 @@ def _set_profile(artifact, profile: str) -> None:
     artifact["validationEvidence"]["validationProfile"] = profile
 
 
+def _typed_inputs(artifact, status="verified"):
+    mode_value = artifact.get("preservationMode", "architecture_equivalent")
+    mode = mode_value if isinstance(mode_value, PreservationMode) else PreservationMode(mode_value)
+    translation = TranslationArtifact(
+        "fragment-1", "source-model-1", "plan-1", "constraint-1",
+        artifact.get("proofIdentity", "proof-1"), mode,
+        artifact.get("shellFactsIdentity", "shell-facts-1"),
+        artifact.get("runtimeContractId", "runtime-1"),
+        artifact.get("runtimeContractVersion", "v1"), "recipe-1",
+        tuple(artifact.get("ignoredSourceState", ())), "integer", "c",
+    )
+    source_digest = artifact.get("sourceArtifactDigest", _digest("source"))
+    target_digest = artifact.get("targetArtifactDigest", _digest("target"))
+    source = ProgramArtifact("source", "/tmp/source.o", "object", source_digest)
+    target = ProgramArtifact("target", "/tmp/target", "executable", target_digest)
+    elf = ExpectedElf(
+        "ELF64", "little", "REL", "RISC-V", "UNIX - System V", "0",
+        "", "", (), (), "", (), (),
+    )
+    target_elf = ExpectedElf(
+        "ELF64", "little", "EXEC", "Advanced Micro Devices X86-64",
+        "UNIX - System V", "0", "", "", (), (), "", (), (),
+    )
+    source_expected = ExpectedArtifact(
+        source_digest, source_digest, "object", "riscv64-linux-gnu-gcc",
+        "riscv64-linux-gnu", (), (), elf, elf,
+    )
+    target_expected = ExpectedArtifact(
+        target_digest, _digest("target-object"), "executable", "gcc",
+        "x86_64-linux-gnu", (), (), target_elf, elf,
+    )
+    manifest = L0ArtifactManifest(
+        translation.identity, translation.translation_plan_id,
+        translation.proof_identity, translation.runtime_contract_id,
+        translation.runtime_contract_version, translation.recipe_id,
+        (), (), (), (), source_expected,
+        {"gcc-O0-none": target_expected},
+    )
+    evidence = artifact.get("validationEvidence", {})
+    profile = ValidationProfile(evidence.get("validationProfile", "architectural"))
+    layers = tuple(
+        ValidationLayerResult(
+            ValidationLevel(name), ValidationStatus(item["status"]),
+            item.get("evidenceIdentity", ""),
+        )
+        for name, item in evidence.get("levels", {}).items()
+    )
+    validation_status = normalize_validation_status(status)
+    completed = tuple(item.level for item in layers if item.status is ValidationStatus.VERIFIED)
+    result = TranslationValidationResult(
+        validation_status, profile, completed, layers, (),
+        evidence.get("validationIdentity", _digest("validation")),
+    )
+    return result, manifest, translation, source, target
+
+
+def admit_writeback(status, *, approval_artifact=None):
+    artifact = approval_artifact or {}
+    result, manifest, translation, source, target = _typed_inputs(artifact, status)
+    return _typed_admit_writeback(
+        result, manifest, manifest_digest=_digest("manifest"),
+        translation_artifact=translation, source_program_artifact=source,
+        target_program_artifact=target, approval_artifact=artifact,
+    )
+
+
+def _admit_typed(artifact, result, manifest, translation, source, target):
+    return _typed_admit_writeback(
+        result, manifest, manifest_digest=_digest("manifest"),
+        translation_artifact=translation, source_program_artifact=source,
+        target_program_artifact=target, approval_artifact=artifact,
+    )
+
+
 def test_status_normalization_accepts_strings_and_declared_enum_type():
     assert normalize_validation_status("verified") is ValidationStatus.VERIFIED
     assert normalize_validation_status(ValidationStatus.VERIFIED) is ValidationStatus.VERIFIED
@@ -103,6 +185,54 @@ def test_legacy_build_only_is_inconclusive_and_cannot_write_back():
     result = admit_writeback("build_only")
     assert not result.allowed
     assert result.status is ValidationStatus.INCONCLUSIVE
+
+
+def test_public_gate_rejects_the_old_status_only_call_contract():
+    try:
+        _typed_admit_writeback("verified")
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("status-only writeback API must not remain callable")
+
+
+def test_gate_rejects_result_that_does_not_match_bound_evidence():
+    artifact = _artifact(
+        "architecture_equivalent", "architectural", ("L0", "L1", "L2"),
+    )
+    result, manifest, translation, source, target = _typed_inputs(artifact)
+    spoofed = replace(result, validation_identity=_digest("other-validation"))
+    admission = _admit_typed(
+        artifact, spoofed, manifest, translation, source, target,
+    )
+    assert not admission.allowed
+    assert admission.reason_code == "validation.writeback-result-evidence-mismatch"
+
+
+def test_gate_rejects_parsed_manifest_from_another_translation():
+    artifact = _artifact(
+        "architecture_equivalent", "architectural", ("L0", "L1", "L2"),
+    )
+    result, manifest, translation, source, target = _typed_inputs(artifact)
+    stale = replace(manifest, translation_identity=_digest("other-translation"))
+    admission = _admit_typed(
+        artifact, result, stale, translation, source, target,
+    )
+    assert not admission.allowed
+    assert admission.reason_code == "validation.writeback-typed-manifest-binding-mismatch"
+
+
+def test_gate_rejects_program_artifact_not_bound_to_manifest():
+    artifact = _artifact(
+        "architecture_equivalent", "architectural", ("L0", "L1", "L2"),
+    )
+    result, manifest, translation, source, target = _typed_inputs(artifact)
+    stale_target = replace(target, artifact_digest=_digest("stale-target"))
+    admission = _admit_typed(
+        artifact, result, manifest, translation, source, stale_target,
+    )
+    assert not admission.allowed
+    assert admission.reason_code == "validation.writeback-typed-manifest-binding-mismatch"
 
 
 def test_non_verified_status_never_writes_back():
@@ -125,9 +255,9 @@ def test_architecture_writeback_requires_complete_bound_l0_l1_l2_evidence():
         (lambda item: item.update(validationIdentity=_digest("other-validation")),
          "validation.writeback-manifest-evidence-mismatch"),
         (lambda item: _set_profile(item, "functional"),
-         "validation.writeback-profile-insufficient"),
+         "validation.writeback-result-levels-invalid"),
         (lambda item: item["validationEvidence"]["levels"].pop("L2"),
-         "validation.writeback-level-evidence-incomplete"),
+         "validation.writeback-result-levels-invalid"),
         (lambda item: item.update(proofIdentity="different-proof"),
          "validation.writeback-proof-identity-mismatch"),
         (lambda item: item.update(shellSemanticsPreserved=False),
