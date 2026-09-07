@@ -263,6 +263,9 @@ class Finding:
     # Phase 6E/6F approved replacement provenance, consumed by C++ --apply.
     approvalArtifact: Dict[str, Any] = field(default_factory=dict)
 
+    # Phase 9 unified output/writeback contract for every translation route.
+    outputManifest: Dict[str, Any] = field(default_factory=dict)
+
     # Phase 9 privileged audit/output contract.  This survives report
     # serialization independently of the apply-time approval artifact.
     privilegedOutputManifest: Dict[str, Any] = field(default_factory=dict)

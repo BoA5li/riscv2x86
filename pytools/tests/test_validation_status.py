@@ -13,13 +13,18 @@ from riscv2x86_py.l0_artifact_manifest import (
     ExpectedArtifact, ExpectedElf, L0ArtifactManifest,
 )
 from riscv2x86_py.translation_validation import (
-    ProgramArtifact, TranslationArtifact, TranslationValidationResult,
-    ValidationLayerResult, ValidationLevel, ValidationProfile,
+    ProgramArtifact, TargetEnvironment, TranslationArtifact, TranslationValidationResult,
+    ValidationLayerResult, ValidationLevel, ValidationPlan, ValidationProfile,
 )
+from riscv2x86_py.output_manifest import build_output_manifest, output_manifest_from_dict
 
 
 def _digest(value: str) -> str:
     return "sha256:" + sha256(value.encode()).hexdigest()
+
+
+PROOF = _digest("proof-1")
+SHELL = _digest("shell-facts-1")
 
 
 def _evidence(profile: str, levels: tuple[str, ...], ignored=()):
@@ -38,9 +43,10 @@ def _evidence(profile: str, levels: tuple[str, ...], ignored=()):
             }
             for level in levels
         },
-        "proofIdentity": "proof-1",
+        "proofIdentity": PROOF,
         "shellSemanticsPreserved": True,
-        "shellFactsIdentity": "shell-facts-1",
+        "shellFactsIdentity": SHELL,
+        "runtimeRegistryVersion": "registry-v1",
         "translationManifestDigest": manifest,
         "sourceArtifactDigest": source,
         "targetArtifactDigest": target,
@@ -69,8 +75,8 @@ def _artifact(mode: str, profile: str, levels: tuple[str, ...], ignored=()):
     artifact = {
         "preservationMode": mode,
         "proofStatus": "functional_approved" if functional else "approved",
-        "proofIdentity": "proof-1",
-        "shellFactsIdentity": "shell-facts-1",
+        "proofIdentity": PROOF,
+        "shellFactsIdentity": SHELL,
         "shellSemanticsPreserved": True,
         "runtimeContractId": "runtime-1",
         "runtimeContractVersion": "v1",
@@ -105,8 +111,8 @@ def _typed_inputs(artifact, status="verified"):
     mode = mode_value if isinstance(mode_value, PreservationMode) else PreservationMode(mode_value)
     translation = TranslationArtifact(
         "fragment-1", "source-model-1", "plan-1", "constraint-1",
-        artifact.get("proofIdentity", "proof-1"), mode,
-        artifact.get("shellFactsIdentity", "shell-facts-1"),
+        artifact.get("proofIdentity", PROOF), mode,
+        artifact.get("shellFactsIdentity", SHELL),
         artifact.get("runtimeContractId", "runtime-1"),
         artifact.get("runtimeContractVersion", "v1"), "recipe-1",
         tuple(artifact.get("ignoredSourceState", ())), "integer", "c",
@@ -153,24 +159,41 @@ def _typed_inputs(artifact, status="verified"):
         validation_status, profile, completed, layers, (),
         evidence.get("validationIdentity", _digest("validation")),
     )
-    return result, manifest, translation, source, target
+    environment = TargetEnvironment(
+        "env-1", "rv64gc", "lp64d", "x86_64", "sysv_amd64",
+        ("qemu",), ("native",), ("none",), "runtime-env-v1", "loader-v1",
+    )
+    plan = ValidationPlan(
+        "validation-plan-1", profile, "qemu", "native", 1, 30, "registry-v1",
+        "spin-wait.v1" if profile is ValidationProfile.MICROARCH else "",
+    )
+    output = build_output_manifest(
+        result=result, plan=plan, translation=translation, source=source, target=target,
+        environment=environment, artifact_manifest_digest=_digest("manifest"),
+        approval_artifact=artifact,
+        ignored_state_escapes=bool(evidence.get("ignoredStateEscapes", False)),
+        l3_required=profile is ValidationProfile.MICROARCH,
+    )
+    return result, manifest, translation, source, target, environment, output
 
 
 def admit_writeback(status, *, approval_artifact=None):
     artifact = approval_artifact or {}
-    result, manifest, translation, source, target = _typed_inputs(artifact, status)
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact, status)
     return _typed_admit_writeback(
         result, manifest, manifest_digest=_digest("manifest"),
         translation_artifact=translation, source_program_artifact=source,
-        target_program_artifact=target, approval_artifact=artifact,
+        target_program_artifact=target, target_environment=environment,
+        output_manifest=output, approval_artifact=artifact,
     )
 
 
-def _admit_typed(artifact, result, manifest, translation, source, target):
+def _admit_typed(artifact, result, manifest, translation, source, target, environment, output):
     return _typed_admit_writeback(
         result, manifest, manifest_digest=_digest("manifest"),
         translation_artifact=translation, source_program_artifact=source,
-        target_program_artifact=target, approval_artifact=artifact,
+        target_program_artifact=target, target_environment=environment,
+        output_manifest=output, approval_artifact=artifact,
     )
 
 
@@ -200,10 +223,10 @@ def test_gate_rejects_result_that_does_not_match_bound_evidence():
     artifact = _artifact(
         "architecture_equivalent", "architectural", ("L0", "L1", "L2"),
     )
-    result, manifest, translation, source, target = _typed_inputs(artifact)
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact)
     spoofed = replace(result, validation_identity=_digest("other-validation"))
     admission = _admit_typed(
-        artifact, spoofed, manifest, translation, source, target,
+        artifact, spoofed, manifest, translation, source, target, environment, output,
     )
     assert not admission.allowed
     assert admission.reason_code == "validation.writeback-result-evidence-mismatch"
@@ -213,10 +236,10 @@ def test_gate_rejects_parsed_manifest_from_another_translation():
     artifact = _artifact(
         "architecture_equivalent", "architectural", ("L0", "L1", "L2"),
     )
-    result, manifest, translation, source, target = _typed_inputs(artifact)
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact)
     stale = replace(manifest, translation_identity=_digest("other-translation"))
     admission = _admit_typed(
-        artifact, result, stale, translation, source, target,
+        artifact, result, stale, translation, source, target, environment, output,
     )
     assert not admission.allowed
     assert admission.reason_code == "validation.writeback-typed-manifest-binding-mismatch"
@@ -226,10 +249,10 @@ def test_gate_rejects_program_artifact_not_bound_to_manifest():
     artifact = _artifact(
         "architecture_equivalent", "architectural", ("L0", "L1", "L2"),
     )
-    result, manifest, translation, source, target = _typed_inputs(artifact)
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact)
     stale_target = replace(target, artifact_digest=_digest("stale-target"))
     admission = _admit_typed(
-        artifact, result, manifest, translation, source, stale_target,
+        artifact, result, manifest, translation, source, stale_target, environment, output,
     )
     assert not admission.allowed
     assert admission.reason_code == "validation.writeback-typed-manifest-binding-mismatch"
@@ -343,3 +366,51 @@ def test_preservation_mode_parser_accepts_declared_enum_type():
     )
     artifact["preservationMode"] = PreservationMode.ARCHITECTURE_EQUIVALENT
     assert admit_writeback("verified", approval_artifact=artifact).allowed
+
+
+def test_output_manifest_v3_round_trip_and_identity_are_stable():
+    artifact = _artifact("architecture_equivalent", "architectural", ("L0", "L1", "L2"))
+    _, _, _, _, _, _, output = _typed_inputs(artifact)
+    parsed = output_manifest_from_dict(output.to_dict())
+    assert parsed == output
+    assert parsed.identity == output.identity
+    assert parsed.schema_version == "riscv2x86.output-manifest.v3"
+
+
+def test_gate_rejects_output_manifest_validation_or_environment_spoofing():
+    artifact = _artifact("architecture_equivalent", "architectural", ("L0", "L1", "L2"))
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact)
+    stale = replace(output, validation_identity=_digest("stale-validation"))
+    admission = _admit_typed(
+        artifact, result, manifest, translation, source, target, environment, stale,
+    )
+    assert admission.reason_code == "validation.output-manifest-validation-binding-mismatch"
+
+    wrong_environment = replace(
+        output, required_environment=replace(output.required_environment, target_mode="x86_64-kernel"),
+    )
+    admission = _admit_typed(
+        artifact, result, manifest, translation, source, target, environment, wrong_environment,
+    )
+    assert admission.reason_code == "validation.output-manifest-environment-mismatch"
+
+
+def test_functional_output_manifest_requires_declared_non_escaping_ignored_state():
+    artifact = _artifact("functional_equivalence_only", "functional", ("L0", "L1"),
+                         ignored=("csr:cycle-rate",))
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact)
+    undeclared = replace(output, ignored_source_state=())
+    admission = _admit_typed(
+        artifact, result, manifest, translation, source, target, environment, undeclared,
+    )
+    assert admission.reason_code == "validation.output-manifest-ignored-state-invalid"
+
+
+def test_l3_required_output_cannot_use_architectural_profile_without_contract():
+    artifact = _artifact("architecture_equivalent", "architectural", ("L0", "L1", "L2"))
+    result, manifest, translation, source, target, environment, output = _typed_inputs(artifact)
+    l3_required = replace(output, l3_required=True)
+    admission = _admit_typed(
+        artifact, result, manifest, translation, source, target, environment, l3_required,
+    )
+    assert admission.reason_code == "validation.output-manifest-l3-contract-missing"

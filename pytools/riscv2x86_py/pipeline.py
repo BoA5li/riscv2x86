@@ -53,6 +53,7 @@ from .validation_status import (
     admit_writeback,
 )
 from .pipeline_validation_context import WritebackValidationInput
+from .output_manifest import OutputManifest
 from .translation_validation import TranslationValidationResult
 
 
@@ -77,6 +78,7 @@ def _run_unified_phase8_validation(
     if (
         not isinstance(result, WritebackValidationInput)
         or not isinstance(result.validation_result, TranslationValidationResult)
+        or not isinstance(result.output_manifest, OutputManifest)
     ):
         return None, ValidationStatus.FAILED, (
             "unified translation validation runner returned an invalid result"
@@ -1812,6 +1814,8 @@ def run(
                 translation_artifact=phase8_input.translation_artifact,
                 source_program_artifact=phase8_input.source_program_artifact,
                 target_program_artifact=phase8_input.target_program_artifact,
+                target_environment=phase8_input.target_environment,
+                output_manifest=phase8_input.output_manifest,
                 approval_artifact=f.approvalArtifact,
             )
         )

@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING, Mapping
 if TYPE_CHECKING:
     from .l0_artifact_manifest import L0ArtifactManifest
     from .translation_validation import (
-        ProgramArtifact, TranslationArtifact, TranslationValidationResult,
+        ProgramArtifact, TargetEnvironment, TranslationArtifact, TranslationValidationResult,
     )
+    from .output_manifest import OutputManifest
 
 
 VALIDATION_STATUS_VERSION = "riscv2x86.validation-status.v1"
@@ -337,6 +338,91 @@ def _typed_writeback_binding_reason(
     return ""
 
 
+def _output_manifest_reason(
+    output: "OutputManifest", result: "TranslationValidationResult",
+    translation: "TranslationArtifact", source: "ProgramArtifact", target: "ProgramArtifact",
+    environment: "TargetEnvironment", artifact_manifest_digest: str,
+    artifact: Mapping[str, object],
+) -> str:
+    """Validate the final v3 declaration independently of mutable approval fields."""
+    from .output_manifest import OUTPUT_MANIFEST_SCHEMA, is_sha256_identity
+
+    if output.schema_version != OUTPUT_MANIFEST_SCHEMA or not output.complete:
+        return "validation.output-manifest-incomplete"
+    if output.validation_status is not ValidationStatus.VERIFIED or output.validation_status is not result.status:
+        return "validation.output-manifest-status-mismatch"
+    if (not is_sha256_identity(output.validation_identity)
+            or output.validation_identity != result.validation_identity
+            or output.validation_profile != result.profile.value):
+        return "validation.output-manifest-validation-binding-mismatch"
+    expected_levels = tuple(item.level.value for item in result.layer_results)
+    if output.validation_levels != expected_levels:
+        return "validation.output-manifest-level-binding-mismatch"
+    if (output.translation_id != translation.identity or output.fragment_id != translation.fragment_id
+            or output.preservation_mode is not translation.preservation_mode):
+        return "validation.output-manifest-translation-binding-mismatch"
+    if (not is_sha256_identity(output.proof_identity) or output.proof_identity != translation.proof_identity):
+        return "validation.output-manifest-proof-binding-mismatch"
+    if (not is_sha256_identity(output.shell_facts_identity)
+            or output.shell_facts_identity != translation.shell_facts_identity
+            or not output.shell_semantics_preserved):
+        return "validation.output-manifest-shell-facts-incomplete"
+    expected_runtime = (
+        translation.runtime_contract_id + "@" + translation.runtime_contract_version,
+    )
+    if (not translation.runtime_contract_id or not translation.runtime_contract_version
+            or output.runtime_contracts != expected_runtime
+            or output.runtime_registry_version != artifact.get("validationEvidence", {}).get("runtimeRegistryVersion")):
+        return "validation.output-manifest-runtime-version-mismatch"
+    required_environment = output.required_environment
+    if (required_environment.source_profile != environment.source_isa + "-user"
+            or required_environment.target_mode != environment.target_isa + "-user"
+            or required_environment.environment_id != environment.environment_id
+            or required_environment.runtime_identity != environment.runtime_identity
+            or required_environment.loader_identity != environment.loader_identity):
+        return "validation.output-manifest-environment-mismatch"
+    if (output.artifact_manifest_digest != artifact_manifest_digest
+            or output.source_artifact_digest != source.artifact_digest
+            or output.target_artifact_digest != target.artifact_digest):
+        return "validation.output-manifest-artifact-binding-mismatch"
+    if output.ignored_source_state != translation.ignored_source_state or output.ignored_state_escapes:
+        return "validation.output-manifest-ignored-state-invalid"
+
+    required_profile = _required_profile(output.preservation_mode)
+    if not _profile_satisfies(output.validation_profile, required_profile):
+        return "validation.output-manifest-profile-insufficient"
+    if output.preservation_mode is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY:
+        if (output.architecture_semantics_preserved or output.microarchitecture_semantics_preserved
+                or output.microarchitecture_preservation != "not_preserved"
+                or not output.ignored_source_state):
+            return "validation.output-manifest-functional-claim-invalid"
+    elif output.preservation_mode is PreservationMode.ARCHITECTURE_EQUIVALENT:
+        if not output.architecture_semantics_preserved or output.ignored_source_state:
+            return "validation.output-manifest-architecture-claim-invalid"
+    else:
+        if (not output.architecture_semantics_preserved
+                or not output.microarchitecture_semantics_preserved
+                or output.microarchitecture_preservation not in {"intent_preserved", "strengthened"}):
+            return "validation.output-manifest-microarchitecture-claim-invalid"
+
+    if output.microarchitecture_semantics_preserved != (
+            output.microarchitecture_preservation in {"intent_preserved", "strengthened"}):
+        return "validation.output-manifest-microarchitecture-claim-invalid"
+
+    if output.l3_required:
+        levels = {item.level.value: item for item in result.layer_results}
+        l3 = levels.get("L3")
+        if (not output.experiment_contract_id or output.validation_profile != "microarch"
+                or l3 is None or l3.status is not ValidationStatus.VERIFIED
+                or not _sha256_identity(l3.evidence_identity)
+                or artifact.get("validationEvidence", {}).get("microarchitectureExperimentContractId")
+                    != output.experiment_contract_id):
+            return "validation.output-manifest-l3-contract-missing"
+    elif output.experiment_contract_id and output.validation_profile != "microarch":
+        return "validation.output-manifest-experiment-profile-mismatch"
+    return ""
+
+
 def admit_writeback(
     validation_result: "TranslationValidationResult",
     artifact_manifest: "L0ArtifactManifest",
@@ -345,13 +431,16 @@ def admit_writeback(
     translation_artifact: "TranslationArtifact",
     source_program_artifact: "ProgramArtifact",
     target_program_artifact: "ProgramArtifact",
+    target_environment: "TargetEnvironment",
+    output_manifest: "OutputManifest",
     approval_artifact: Mapping[str, object] | None = None,
 ) -> WritebackAdmission:
     """Authorize only one complete, typed and manifest-bound transaction."""
     from .l0_artifact_manifest import L0ArtifactManifest
     from .translation_validation import (
-        ProgramArtifact, TranslationArtifact, TranslationValidationResult,
+        ProgramArtifact, TargetEnvironment, TranslationArtifact, TranslationValidationResult,
     )
+    from .output_manifest import OutputManifest
 
     if not (
         isinstance(validation_result, TranslationValidationResult)
@@ -359,6 +448,8 @@ def admit_writeback(
         and isinstance(translation_artifact, TranslationArtifact)
         and isinstance(source_program_artifact, ProgramArtifact)
         and isinstance(target_program_artifact, ProgramArtifact)
+        and isinstance(target_environment, TargetEnvironment)
+        and isinstance(output_manifest, OutputManifest)
     ):
         return WritebackAdmission(
             False, ValidationStatus.FAILED,
@@ -382,6 +473,13 @@ def admit_writeback(
     if reason:
         return WritebackAdmission(False, normalized, reason)
     reason = _validation_evidence_reason(artifact, mode)
+    if reason:
+        return WritebackAdmission(False, normalized, reason)
+    reason = _output_manifest_reason(
+        output_manifest, validation_result, translation_artifact,
+        source_program_artifact, target_program_artifact, target_environment,
+        manifest_digest, artifact,
+    )
     if reason:
         return WritebackAdmission(False, normalized, reason)
     return WritebackAdmission(True, normalized)

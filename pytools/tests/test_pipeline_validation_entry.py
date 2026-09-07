@@ -4,6 +4,7 @@ from riscv2x86_py.translation_validation import (
     TranslationValidationResult, ValidationLevel, ValidationProfile,
 )
 from riscv2x86_py.validation_status import ValidationStatus
+from riscv2x86_py.output_manifest import OutputManifest
 
 
 def _invoke(runner):
@@ -39,7 +40,7 @@ def test_pipeline_accepts_only_structured_unified_validation_result():
         )
         return WritebackValidationInput(
             validation, object(), "sha256:" + "2" * 64,
-            object(), object(), object(),
+            object(), object(), object(), object(), object.__new__(OutputManifest),
         )
 
     writeback_input, status, detail = _invoke(runner)

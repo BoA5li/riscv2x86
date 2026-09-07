@@ -14,6 +14,7 @@ on:
       - phase8-l2-privileged-real-runner
       - phase8-l2-concurrency-memory-model
       - phase8-l3-experiment-contracts
+      - phase9-validation-writeback-gate
   pull_request:
 
 jobs:

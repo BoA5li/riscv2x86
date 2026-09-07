@@ -18,6 +18,7 @@ from .validation_observation import ExecutionObservation
 from .validation_runtime_registry import validation_runtime_registry_from_dict
 from .validation_status import WRITEBACK_VALIDATION_EVIDENCE_VERSION
 from .l0_artifact_manifest import L0ArtifactManifest, load_l0_artifact_manifest
+from .output_manifest import OutputManifest, build_output_manifest
 
 
 PIPELINE_VALIDATION_CONTEXT_SCHEMA = "riscv2x86.pipeline-validation-context.v1"
@@ -33,6 +34,8 @@ class WritebackValidationInput:
     translation_artifact: TranslationArtifact
     source_program_artifact: ProgramArtifact
     target_program_artifact: ProgramArtifact
+    target_environment: TargetEnvironment
+    output_manifest: OutputManifest
 
 
 @dataclass(frozen=True)
@@ -105,9 +108,34 @@ class PipelineValidationContext:
             comparison_policy=self.comparison_policy,
         )
         self._bind_writeback_evidence(finding, translation, result)
+        fragment = getattr(finding, "fragment", None)
+        microarch = getattr(fragment, "microArch", None)
+        l3_required = bool(
+            getattr(fragment, "microarchSensitive", False)
+            or getattr(microarch, "preserveExperiment", False)
+            or getattr(microarch, "preserveBranchPredictorShape", False)
+            or getattr(microarch, "preserveCacheFootprint", False)
+            or getattr(microarch, "preserveAtomicRetryShape", False)
+            or getattr(microarch, "preserveFenceShape", False)
+            or getattr(microarch, "preserveTimingSource", False)
+            or translation.preservation_mode.value == "microarchitecture_intent_preserved"
+        )
+        approval = getattr(finding, "approvalArtifact", {})
+        output_manifest = build_output_manifest(
+            result=result, plan=self.plan, translation=translation,
+            source=self.source_program_artifact, target=self.target_program_artifact,
+            environment=self.target_environment,
+            artifact_manifest_digest=self.translation_manifest_digest,
+            approval_artifact=approval,
+            ignored_state_escapes=self.ignored_state_escapes[fragment_id],
+            l3_required=l3_required,
+        )
+        setattr(finding, "outputManifest", output_manifest.to_dict())
         return WritebackValidationInput(
             result, manifest, self.translation_manifest_digest, translation,
             self.source_program_artifact, self.target_program_artifact,
+            self.target_environment,
+            output_manifest,
         )
 
     def _bind_writeback_evidence(
@@ -131,6 +159,7 @@ class PipelineValidationContext:
             "validationStatus": result.status.value,
             "validationIdentity": result.validation_identity,
             "validationProfile": result.profile.value,
+            "runtimeRegistryVersion": self.plan.runtime_registry_version,
             "levels": levels,
             "proofStatus": artifact.get("proofStatus"),
             "proofIdentity": translation.proof_identity,
