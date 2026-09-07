@@ -6,6 +6,7 @@ on:
       - fix-phase8-observation-schema-v2
       - fix-phase8-l0-runtime-manifest
       - fix-phase8-typed-writeback-gate
+      - fix-phase8-elf-abi-hard-constraints
   pull_request:
 
 jobs:
@@ -41,10 +42,13 @@ jobs:
           riscv64-linux-gnu-gcc -march=rv64gc -mabi=lp64d -Werror -c "$work/source.c" -o "$work/source.o"
           readelf -hW "$work/source.o" | grep -q 'Class:.*ELF64'
           readelf -hW "$work/source.o" | grep -q 'Machine:.*RISC-V'
+          readelf -hW "$work/source.o" | grep -q 'Flags:.*double-float ABI'
           printf '#include <stdlib.h>\nint main(void){return 0;}\n' > "$work/target.c"
           for cc in gcc clang; do
             for opt in O0 O2 O3; do
               "$cc" "-$opt" -Wall -Werror "$work/target.c" -o "$work/${cc}-${opt}"
+              readelf -hW "$work/${cc}-${opt}" | grep -q 'Class:.*ELF64'
+              readelf -hW "$work/${cc}-${opt}" | grep -q 'Machine:.*X86-64'
               env LD_BIND_NOW=1 "$work/${cc}-${opt}"
               "$cc" "-$opt" -Wall -Werror -fsanitize=address "$work/target.c" -o "$work/${cc}-${opt}-asan"
               "$work/${cc}-${opt}-asan"
