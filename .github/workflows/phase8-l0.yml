@@ -13,6 +13,7 @@ on:
       - phase8-l2-effect-trace-differential
       - phase8-l2-privileged-real-runner
       - phase8-l2-concurrency-memory-model
+      - phase8-l3-experiment-contracts
   pull_request:
 
 jobs:
@@ -45,6 +46,7 @@ jobs:
           pytools/tests/test_l2_privileged_runner.py
           pytools/tests/test_phase8_privileged_differential_validation.py
           pytools/tests/test_l2_concurrency_runner.py
+          pytools/tests/test_l3_experiment_runner.py
       - name: Run production L0 matrix with real executable toolchains
         env:
           PYTHONPATH: pytools

@@ -47,6 +47,11 @@ def _l2_concurrency_memory_model_factory(config: Mapping[str, object]) -> LayerV
     return build_l2_concurrency_validator(load_l2_concurrency_runner_config(config))
 
 
+def _l3_experiment_contract_factory(config: Mapping[str, object]) -> LayerValidator:
+    from .l3_experiment_runner import build_l3_experiment_validator, load_l3_experiment_runner_config
+    return build_l3_experiment_validator(load_l3_experiment_runner_config(config))
+
+
 _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l0-build-matrix": _l0_build_matrix_factory,
     "l1-functional-differential": _l1_differential_factory,
@@ -54,6 +59,7 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l2-effect-trace-differential": _l2_effect_trace_differential_factory,
     "l2-privileged-real-runner": _l2_privileged_real_runner_factory,
     "l2-concurrency-memory-model": _l2_concurrency_memory_model_factory,
+    "l3-experiment-contract": _l3_experiment_contract_factory,
 }
 
 
