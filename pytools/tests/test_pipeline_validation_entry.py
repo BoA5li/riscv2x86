@@ -1,4 +1,5 @@
 from riscv2x86_py.pipeline import _run_unified_phase8_validation
+from riscv2x86_py.pipeline_validation_context import WritebackValidationInput
 from riscv2x86_py.translation_validation import (
     TranslationValidationResult, ValidationLevel, ValidationProfile,
 )
@@ -13,13 +14,15 @@ def _invoke(runner):
 
 
 def test_pipeline_has_no_legacy_verifier_fallback():
-    status, detail = _invoke(None)
+    writeback_input, status, detail = _invoke(None)
+    assert writeback_input is None
     assert status is ValidationStatus.INCONCLUSIVE
     assert "legacy verify() cannot authorize writeback" in detail
 
 
 def test_pipeline_rejects_non_protocol_validation_result():
-    status, detail = _invoke(lambda **_kwargs: "verified")
+    writeback_input, status, detail = _invoke(lambda **_kwargs: "verified")
+    assert writeback_input is None
     assert status is ValidationStatus.FAILED
     assert "invalid result" in detail
 
@@ -29,13 +32,18 @@ def test_pipeline_accepts_only_structured_unified_validation_result():
 
     def runner(**kwargs):
         calls.append(set(kwargs))
-        return TranslationValidationResult(
+        validation = TranslationValidationResult(
             ValidationStatus.VERIFIED, ValidationProfile.ARCHITECTURAL,
             (ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2), (),
             (), "sha256:" + "1" * 64,
         )
+        return WritebackValidationInput(
+            validation, object(), "sha256:" + "2" * 64,
+            object(), object(), object(),
+        )
 
-    status, detail = _invoke(runner)
+    writeback_input, status, detail = _invoke(runner)
+    assert isinstance(writeback_input, WritebackValidationInput)
     assert status is ValidationStatus.VERIFIED
     assert detail == ""
     assert calls == [{
