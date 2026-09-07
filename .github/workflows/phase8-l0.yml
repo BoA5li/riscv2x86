@@ -7,6 +7,7 @@ on:
       - fix-phase8-l0-runtime-manifest
       - fix-phase8-typed-writeback-gate
       - fix-phase8-elf-abi-hard-constraints
+      - fix-phase8-real-l0-matrix-ci
   pull_request:
 
 jobs:
@@ -32,32 +33,20 @@ jobs:
           pytools/tests/test_translation_validation.py
           pytools/tests/test_validation_observation.py
           pytools/tests/test_validation_status.py
-      - name: Exercise real RV64, GCC, Clang, ASan and UBSan builds
+      - name: Run production L0 matrix with real executable toolchains
+        env:
+          PYTHONPATH: pytools
+        run: python pytools/tests/run_real_l0_matrix.py --link-kind executable
+      - name: Run production L0 matrix with real shared-library toolchains
+        env:
+          PYTHONPATH: pytools
+        run: python pytools/tests/run_real_l0_matrix.py --link-kind shared_library
+      - name: Exercise real ASan and UBSan negative findings
         shell: bash
         run: |
           set -euo pipefail
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
-          printf 'int rv64_object(int x){return x+1;}\n' > "$work/source.c"
-          riscv64-linux-gnu-gcc -march=rv64gc -mabi=lp64d -Werror -c "$work/source.c" -o "$work/source.o"
-          readelf -hW "$work/source.o" | grep -q 'Class:.*ELF64'
-          readelf -hW "$work/source.o" | grep -q 'Machine:.*RISC-V'
-          readelf -hW "$work/source.o" | grep -q 'Flags:.*double-float ABI'
-          printf '#include <stdlib.h>\nint main(void){return 0;}\n' > "$work/target.c"
-          for cc in gcc clang; do
-            for opt in O0 O2 O3; do
-              "$cc" "-$opt" -Wall -Werror "$work/target.c" -o "$work/${cc}-${opt}"
-              readelf -hW "$work/${cc}-${opt}" | grep -q 'Class:.*ELF64'
-              readelf -hW "$work/${cc}-${opt}" | grep -q 'Machine:.*X86-64'
-              env LD_BIND_NOW=1 "$work/${cc}-${opt}"
-              "$cc" "-$opt" -Wall -Werror -fsanitize=address "$work/target.c" -o "$work/${cc}-${opt}-asan"
-              "$work/${cc}-${opt}-asan"
-              "$cc" "-$opt" -Wall -Werror -fsanitize=undefined "$work/target.c" -o "$work/${cc}-${opt}-ubsan"
-              "$work/${cc}-${opt}-ubsan"
-              "$cc" "-$opt" -Wall -Werror -fPIC -shared "$work/source.c" -o "$work/${cc}-${opt}.so"
-              python -c 'import ctypes,os,sys; ctypes.CDLL(sys.argv[1], mode=os.RTLD_NOW)' "$work/${cc}-${opt}.so"
-            done
-          done
           printf '#include <stdlib.h>\nint main(void){volatile int i=1;int*p=malloc(sizeof(int));p[i]=1;free(p);return 0;}\n' > "$work/asan-bad.c"
           gcc -O0 -fsanitize=address "$work/asan-bad.c" -o "$work/asan-bad"
           if ASAN_OPTIONS=halt_on_error=1 "$work/asan-bad"; then exit 1; fi
