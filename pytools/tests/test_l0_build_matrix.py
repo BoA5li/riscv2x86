@@ -8,6 +8,7 @@ import pytest
 from riscv2x86_py.l0_artifact_manifest import L0_ARTIFACT_MANIFEST_SCHEMA
 from riscv2x86_py.l0_build_matrix import (
     CommandResult, L0BuildMatrix, L0_BUILD_MATRIX_SCHEMA,
+    L0_ELF_ABI_POLICY_VERSION,
     load_l0_build_matrix, run_l0_build_matrix,
 )
 from riscv2x86_py.translation_validation import ProgramArtifact, TranslationArtifact
@@ -30,7 +31,8 @@ def _translation():
 
 def _elf(machine, kind, *, dynamic=False):
     return {"class": "ELF64", "endian": "little", "type": kind, "machine": machine,
-            "osAbi": "UNIX - System V", "abiVersion": "0", "abiFlags": "0x0",
+            "osAbi": "UNIX - System V", "abiVersion": "0",
+            "abiFlags": "0x5, RVC, double-float ABI" if machine == "RISC-V" else "0x0",
             "interpreter": "/lib64/ld-linux-x86-64.so.2" if dynamic else "",
             "needed": ["libc.so.6"] if dynamic else [], "runpath": [], "soname": "",
             "undefinedSymbols": ["puts"] if machine == "Advanced Micro Devices X86-64" else [],
@@ -98,7 +100,8 @@ def _readelf(argv):
     machine = "RISC-V" if source else "Advanced Micro Devices X86-64"
     kind = "REL" if obj else "DYN" if path.endswith(".so") else "EXEC"
     if option == "-hW":
-        return CommandResult(0, f"Class: ELF64\nData: 2's complement, little endian\nType: {kind}\nMachine: {machine}\nOS/ABI: UNIX - System V\nABI Version: 0\nFlags: 0x0\n")
+        flags = "0x5, RVC, double-float ABI" if source else "0x0"
+        return CommandResult(0, f"Class: ELF64\nData: 2's complement, little endian\nType: {kind}\nMachine: {machine}\nOS/ABI: UNIX - System V\nABI Version: 0\nFlags: {flags}\n")
     if option == "-lW":
         return CommandResult(0, "[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]\n" if not obj and not path.endswith(".so") else "")
     if option == "-dW":
@@ -115,10 +118,22 @@ def _fake_runner(commands, *, fault=None):
             result = _readelf(argv)
             if fault == "abi" and argv[1] == "-hW" and not argv[-1].endswith("source.o"):
                 return CommandResult(0, result.stdout.replace("ELF64", "ELF32"))
+            if fault == "target-elf32-consistent" and argv[1] == "-hW" and not argv[-1].endswith("source.o"):
+                return CommandResult(0, result.stdout.replace("ELF64", "ELF32"))
+            if fault == "target-machine-riscv-consistent" and argv[1] == "-hW" and not argv[-1].endswith("source.o"):
+                return CommandResult(0, result.stdout.replace(
+                    "Advanced Micro Devices X86-64", "RISC-V",
+                ))
+            if fault == "source-soft-float" and argv[1] == "-hW" and argv[-1].endswith("source.o"):
+                return CommandResult(0, result.stdout.replace(
+                    "0x5, RVC, double-float ABI", "0x1, RVC, soft-float ABI",
+                ))
             if fault == "dependency" and argv[1] == "-dW" and "libc.so.6" in result.stdout:
                 return CommandResult(0, result.stdout.replace("libc.so.6", "libstale.so"))
             return result
         if len(argv) > 1 and argv[1] == "-dumpmachine":
+            if fault == "target-triple-aarch64" and not argv[0].startswith("riscv64"):
+                return CommandResult(0, "aarch64-linux-gnu\n")
             return CommandResult(0, "riscv64-linux-gnu\n" if argv[0].startswith("riscv64") else "x86_64-linux-gnu\n")
         if fault == "ubsan-unavailable" and "-fsanitize=undefined" in argv:
             return CommandResult(1, stderr="ld: cannot find -lubsan")
@@ -141,7 +156,8 @@ def _fake_runner(commands, *, fault=None):
     return run
 
 
-def _run(tmp_path, *, fault=None, shared=False, manifest_mutation=None):
+def _run(tmp_path, *, fault=None, shared=False, manifest_mutation=None,
+         target_environment=None):
     matrix, translation, programs, manifest = _setup(tmp_path, shared=shared)
     if manifest_mutation:
         manifest_mutation(manifest)
@@ -149,6 +165,7 @@ def _run(tmp_path, *, fault=None, shared=False, manifest_mutation=None):
         matrix = L0BuildMatrix(**{**matrix.__dict__, "translation_manifest_digest": _digest(Path(matrix.translation_manifest_path))})
     commands = []
     result = run_l0_build_matrix(matrix, translation, *programs,
+                                 target_environment=target_environment,
                                  command_runner=_fake_runner(commands, fault=fault), tool_available=lambda _: True)
     return result, commands
 
@@ -158,6 +175,7 @@ def test_all_18_cells_build_inspect_and_really_execute(tmp_path):
     assert result.status is ValidationStatus.VERIFIED
     assert len([x for x in commands if x and x[0] == "env"]) == 18
     assert len([x for x in commands if x and x[0] == "readelf" and x[1] == "-rW"]) == 37
+    assert L0_ELF_ABI_POLICY_VERSION == "riscv2x86.l0-elf-abi-policy.v1"
 
 
 def test_shared_library_uses_pic_and_dlopen_now_harness(tmp_path):
@@ -187,6 +205,70 @@ def test_manifest_requires_every_cell_digest_and_translation_identity(tmp_path):
     assert commands
     result, commands = _run(tmp_path / "second", manifest_mutation=lambda m: m.update(translationIdentity=_digest_bytes(b"wrong")))
     assert result.status is ValidationStatus.FAILED
+    assert commands == []
+
+
+def test_manifest_cannot_authorize_consistently_wrong_target_elf_class(tmp_path):
+    def declare_elf32(manifest):
+        for cell in manifest["targets"].values():
+            cell["elf"]["class"] = "ELF32"
+            cell["objectElf"]["class"] = "ELF32"
+
+    result, _ = _run(
+        tmp_path, fault="target-elf32-consistent",
+        manifest_mutation=declare_elf32,
+    )
+    assert result.status is ValidationStatus.FAILED
+    assert "ELF class must be ELF64" in result.detail
+
+
+def test_manifest_cannot_authorize_consistently_wrong_target_machine(tmp_path):
+    def declare_riscv_target(manifest):
+        for cell in manifest["targets"].values():
+            cell["elf"]["machine"] = "RISC-V"
+            cell["objectElf"]["machine"] = "RISC-V"
+
+    result, _ = _run(
+        tmp_path, fault="target-machine-riscv-consistent",
+        manifest_mutation=declare_riscv_target,
+    )
+    assert result.status is ValidationStatus.FAILED
+    assert "target artifact must use the x86-64 ELF machine" in result.detail
+
+
+def test_manifest_cannot_authorize_wrong_rv64_float_abi(tmp_path):
+    def declare_soft_float(manifest):
+        manifest["source"]["elf"]["abiFlags"] = "0x1, RVC, soft-float ABI"
+        manifest["source"]["objectElf"]["abiFlags"] = "0x1, RVC, soft-float ABI"
+
+    result, _ = _run(
+        tmp_path, fault="source-soft-float",
+        manifest_mutation=declare_soft_float,
+    )
+    assert result.status is ValidationStatus.FAILED
+    assert "LP64D double-float ABI" in result.detail
+
+
+def test_manifest_cannot_authorize_non_x86_64_compiler_triple(tmp_path):
+    def declare_aarch64(manifest):
+        for cell in manifest["targets"].values():
+            cell["compilerTriple"] = "aarch64-linux-gnu"
+
+    result, _ = _run(
+        tmp_path, fault="target-triple-aarch64",
+        manifest_mutation=declare_aarch64,
+    )
+    assert result.status is ValidationStatus.FAILED
+    assert "target compiler triple is not x86-64" in result.detail
+
+
+def test_environment_cannot_override_fixed_l0_isa_abi_policy(tmp_path):
+    result, commands = _run(tmp_path, target_environment={
+        "sourceIsa": "rv32gc", "sourceAbi": "ilp32d",
+        "targetIsa": "x86_64", "targetAbi": "sysv_amd64",
+    })
+    assert result.status is ValidationStatus.FAILED
+    assert "fixed RV64GC/LP64D to x86-64/SysV ABI policy" in result.detail
     assert commands == []
 
 
