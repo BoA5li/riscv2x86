@@ -143,6 +143,10 @@ class TranslationArtifact:
         if tuple(sorted(set(self.ignored_source_state))) != self.ignored_source_state:
             raise ValueError("ignored source state must be unique and sorted")
 
+    @property
+    def identity(self) -> str:
+        return _canonical_identity(_artifact_payload(self))
+
 
 @dataclass(frozen=True)
 class ProgramArtifact:
@@ -281,6 +285,48 @@ def _validate_profile(artifact: TranslationArtifact, plan: ValidationPlan) -> st
     return None
 
 
+def _validate_observation_bindings(
+    artifact: TranslationArtifact, source_program: ProgramArtifact,
+    target_program: ProgramArtifact, plan: ValidationPlan,
+    environment: TargetEnvironment, source: ExecutionObservation | None,
+    target: ExecutionObservation | None, comparison_policy: str,
+) -> str | None:
+    for observation, program, runner, label in (
+        (source, source_program, plan.source_runner, "source"),
+        (target, target_program, plan.target_runner, "target"),
+    ):
+        if observation is None:
+            continue
+        try:
+            observation.validate_translation_artifact(artifact)
+        except ValueError:
+            return "validation." + label + "-observation-artifact-mismatch"
+        if observation.provenance.translation_artifact_identity != artifact.identity:
+            return "validation." + label + "-observation-translation-identity-mismatch"
+        if observation.provenance.artifact_digest != program.artifact_digest:
+            return "validation." + label + "-observation-program-digest-mismatch"
+        if observation.runner.tool_id != runner:
+            return "validation." + label + "-observation-runner-mismatch"
+        if observation.provenance.comparison_policy != comparison_policy:
+            return "validation." + label + "-observation-policy-mismatch"
+    if target is not None:
+        if target.runtime.tool_id != environment.runtime_identity:
+            return "validation.target-observation-runtime-mismatch"
+        if target.loader.tool_id != environment.loader_identity:
+            return "validation.target-observation-loader-mismatch"
+    if source is not None and target is not None:
+        if (source.test_id != target.test_id or
+                source.initial_state_identity != target.initial_state_identity or
+                source.provenance.generated_inputs_identity != target.provenance.generated_inputs_identity or
+                source.provenance.translation_manifest_digest != target.provenance.translation_manifest_digest):
+            return "validation.cross-observation-binding-mismatch"
+        try:
+            target.validate_effect_relations(source)
+        except ValueError:
+            return "validation.effect-relation-binding-mismatch"
+    return None
+
+
 def run_translation_validation(
     translation_artifact: TranslationArtifact,
     source_program_artifact: ProgramArtifact,
@@ -308,6 +354,11 @@ def run_translation_validation(
     environment_payload = target_environment.to_dict()
 
     reason = _validate_profile(translation_artifact, validation_plan)
+    reason = reason or _validate_observation_bindings(
+        translation_artifact, source_program_artifact, target_program_artifact,
+        validation_plan, target_environment, source_observation,
+        target_observation, comparison_policy,
+    )
     if runtime_registry.version != validation_plan.runtime_registry_version:
         reason = reason or "validation.runtime-registry-version-mismatch"
     if reason:

@@ -1,8 +1,6 @@
-"""Canonical cross-ISA execution observation schema.
+"""Versioned L1 summaries and L2 ordered cross-ISA semantic traces.
 
-Runners are evidence producers, not schema designers.  This module is the
-single JSON contract consumed by L1/L2/L3 comparators and deliberately records
-logical objects rather than ABI registers, host addresses, or raw PCs.
+Parsing is deliberately non-repairing: producers must emit canonical v2 data.
 """
 from __future__ import annotations
 
@@ -14,29 +12,65 @@ from typing import Mapping
 
 from .validation_status import PreservationMode
 
-
-VALIDATION_OBSERVATION_SCHEMA = "riscv2x86.validation-observation.v1"
+VALIDATION_OBSERVATION_SCHEMA = "riscv2x86.validation-observation.v2"
+RUNNER_COMMAND_PROFILE_SCHEMA = "riscv2x86.runner-command-profile.v1"
+OBSERVATION_CANONICALIZER_VERSION = "riscv2x86.observation-canonicalizer.v1"
 _HEX = re.compile(r"^0x[0-9a-f]+$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FLOAT_WIDTHS = {"f16": 16, "f32": 32, "f64": 64, "f128": 128}
+_EVENT_KINDS = {"read_operand", "write_operand", "read_memory", "write_memory",
+                "branch", "call", "return", "trap", "fence", "atomic",
+                "external", "privileged_state"}
+_MEMORY_ORDERS = {"not_applicable", "relaxed", "consume", "acquire", "release",
+                  "acq_rel", "seq_cst", "compiler", "hardware"}
+_ATOMICITIES = {"none", "atomic", "lr_sc", "amo", "lock_prefixed"}
 
 
 def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _sha256_text(value: str) -> str:
-    return "sha256:" + sha256(value.encode("utf-8")).hexdigest()
+def _digest(value: str) -> str:
+    return "sha256:" + sha256(value.encode()).hexdigest()
 
 
-def _require_sha256(value: str, field_name: str) -> None:
-    if not _SHA256.fullmatch(value):
-        raise ValueError(field_name + " must be a sha256 identity")
+def _require_digest(value: str, label: str) -> None:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise ValueError(label + " must be a sha256 identity")
+
+
+def _fields(value: Mapping[str, object], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise ValueError(label + " fields are incomplete or unknown")
+
+
+def _str(value: Mapping[str, object], name: str, label: str, empty: bool = False) -> str:
+    item = value.get(name)
+    if not isinstance(item, str) or (not empty and not item):
+        raise ValueError(f"{label}.{name} must be a string")
+    return item
+
+
+def _int(value: Mapping[str, object], name: str, label: str) -> int:
+    item = value.get(name)
+    if isinstance(item, bool) or not isinstance(item, int):
+        raise ValueError(f"{label}.{name} must be an integer")
+    return item
+
+
+def _strs(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
+        raise ValueError(label + " must be a string array")
+    return tuple(value)
+
+
+def _canonical_set(value: tuple[str, ...], label: str) -> None:
+    if tuple(sorted(set(value))) != value:
+        raise ValueError(label + " must already be unique and canonically sorted")
 
 
 @dataclass(frozen=True)
 class CanonicalValue:
-    """A scalar integer, IEEE floating-point value, or logical pointer."""
     type_name: str
     bits: str = ""
     width_bits: int = 0
@@ -47,81 +81,93 @@ class CanonicalValue:
     pointee_value: "CanonicalValue | None" = None
 
     def __post_init__(self) -> None:
-        if not self.type_name:
-            raise ValueError("canonical value type is required")
-        is_pointer = self.type_name == "ptr"
-        is_float = self.type_name in _FLOAT_WIDTHS
-        if is_pointer:
+        if self.type_name == "ptr":
             if not self.object_id or self.offset is None or self.bits or self.width_bits:
                 raise ValueError("pointer values use objectId and offset only")
             return
-        expected_width = _FLOAT_WIDTHS.get(self.type_name, self.width_bits)
-        if expected_width <= 0 or not _HEX.fullmatch(self.bits):
-            raise ValueError("scalar values require explicit hexadecimal bits and width")
-        if self.width_bits and self.width_bits != expected_width:
-            raise ValueError("scalar width does not match its declared type")
-        if int(self.bits, 16) >= (1 << expected_width):
-            raise ValueError("scalar bits exceed declared width")
-        if len(self.bits) != 2 + ((expected_width + 3) // 4):
-            raise ValueError("scalar bits must be zero-padded to declared width")
-        if is_float:
-            allowed_nan = {"", "finite", "quiet_nan", "signaling_nan", "infinity", "zero", "subnormal"}
-            if self.nan_class not in allowed_nan:
-                raise ValueError("floating-point nanClass is invalid")
+        width = _FLOAT_WIDTHS.get(self.type_name, self.width_bits)
+        if not self.type_name or width <= 0 or not _HEX.fullmatch(self.bits):
+            raise ValueError("scalar value requires a type, width and hexadecimal bits")
+        if self.width_bits != width or int(self.bits, 16) >= 1 << width:
+            raise ValueError("scalar value exceeds its declared width")
+        if len(self.bits) != 2 + ((width + 3) // 4):
+            raise ValueError("scalar bits must be zero-padded")
+        if self.type_name in _FLOAT_WIDTHS:
+            if self.nan_class not in {"finite", "quiet_nan", "signaling_nan", "infinity", "zero", "subnormal"}:
+                raise ValueError("floating-point class is invalid")
+            _canonical_set(self.exception_flags, "floating-point flags")
         elif self.nan_class or self.exception_flags:
-            raise ValueError("integer values cannot carry floating-point metadata")
-        if tuple(sorted(set(self.exception_flags))) != self.exception_flags:
-            raise ValueError("floating-point exception flags must be unique and sorted")
+            raise ValueError("integer values cannot carry float metadata")
 
     def to_dict(self) -> dict[str, object]:
         if self.type_name == "ptr":
-            value: dict[str, object] = {"type": "ptr", "objectId": self.object_id, "offset": self.offset}
-            if self.pointee_value is not None:
-                value["pointeeValue"] = self.pointee_value.to_dict()
-            return value
-        value = {"type": self.type_name, "bits": self.bits}
+            result: dict[str, object] = {"type": "ptr", "objectId": self.object_id, "offset": self.offset}
+            if self.pointee_value is not None: result["pointeeValue"] = self.pointee_value.to_dict()
+            return result
+        result = {"type": self.type_name, "bits": self.bits, "widthBits": self.width_bits}
         if self.type_name in _FLOAT_WIDTHS:
-            value["nanClass"] = self.nan_class or "finite"
-            value["exceptionFlags"] = list(self.exception_flags)
-        return value
+            result.update(nanClass=self.nan_class, exceptionFlags=list(self.exception_flags))
+        return result
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "CanonicalValue":
-        type_name = str(value.get("type", ""))
-        if type_name == "ptr":
-            pointee = value.get("pointeeValue")
-            return cls(
-                type_name="ptr", object_id=str(value.get("objectId", "")),
-                offset=value.get("offset") if isinstance(value.get("offset"), int) else None,
-                pointee_value=cls.from_dict(pointee) if isinstance(pointee, Mapping) else None,
-            )
-        width = _FLOAT_WIDTHS.get(type_name)
-        if width is None:
-            digits = re.search(r"(\d+)$", type_name)
-            width = int(digits.group(1)) if digits else 0
-        return cls(
-            type_name=type_name, bits=str(value.get("bits", "")), width_bits=width,
-            nan_class=str(value.get("nanClass", "")),
-            exception_flags=tuple(sorted(set(map(str, value.get("exceptionFlags", ()))))),
-        )
+        kind = _str(value, "type", "value")
+        if kind == "ptr":
+            if not {"type", "objectId", "offset"}.issubset(value) or not set(value).issubset({"type", "objectId", "offset", "pointeeValue"}):
+                raise ValueError("pointer fields are invalid")
+            nested = value.get("pointeeValue")
+            if nested is not None and not isinstance(nested, Mapping): raise ValueError("pointeeValue is invalid")
+            return cls("ptr", object_id=_str(value, "objectId", "value"), offset=_int(value, "offset", "value"),
+                       pointee_value=cls.from_dict(nested) if isinstance(nested, Mapping) else None)
+        expected = {"type", "bits", "widthBits"}
+        if kind in _FLOAT_WIDTHS: expected |= {"nanClass", "exceptionFlags"}
+        _fields(value, expected, "canonical value")
+        return cls(kind, _str(value, "bits", "value"), _int(value, "widthBits", "value"),
+                   _str(value, "nanClass", "value") if kind in _FLOAT_WIDTHS else "",
+                   _strs(value.get("exceptionFlags"), "exceptionFlags") if kind in _FLOAT_WIDTHS else ())
 
 
 @dataclass(frozen=True)
 class TextObservation:
     normalized_text: str
     sha256: str
-
     def __post_init__(self) -> None:
-        _require_sha256(self.sha256, "text sha256")
-        if self.sha256 != _sha256_text(self.normalized_text):
-            raise ValueError("text sha256 does not match normalized text")
+        _require_digest(self.sha256, "text digest")
+        if self.sha256 != _digest(self.normalized_text): raise ValueError("text digest mismatch")
 
+
+@dataclass(frozen=True)
+class ToolIdentity:
+    tool_id: str
+    version: str
+    binary_digest: str
+    def __post_init__(self) -> None:
+        if not self.tool_id or not self.version: raise ValueError("tool identity is incomplete")
+        _require_digest(self.binary_digest, "tool binary digest")
     def to_dict(self) -> dict[str, str]:
-        return {"text": self.normalized_text, "sha256": self.sha256}
-
+        return {"id": self.tool_id, "version": self.version, "binaryDigest": self.binary_digest}
     @classmethod
-    def from_dict(cls, value: Mapping[str, object]) -> "TextObservation":
-        return cls(str(value.get("text", "")), str(value.get("sha256", "")))
+    def from_dict(cls, value: Mapping[str, object]) -> "ToolIdentity":
+        _fields(value, {"id", "version", "binaryDigest"}, "tool identity")
+        return cls(_str(value, "id", "tool"), _str(value, "version", "tool"), _str(value, "binaryDigest", "tool"))
+
+
+@dataclass(frozen=True)
+class RunnerCommandProfile:
+    profile_id: str
+    argv_digest: str
+    schema_version: str = RUNNER_COMMAND_PROFILE_SCHEMA
+    def __post_init__(self) -> None:
+        if self.schema_version != RUNNER_COMMAND_PROFILE_SCHEMA or not self.profile_id:
+            raise ValueError("runner command profile is invalid")
+        _require_digest(self.argv_digest, "runner argv digest")
+    def to_dict(self) -> dict[str, str]:
+        return {"schemaVersion": self.schema_version, "profileId": self.profile_id, "argvDigest": self.argv_digest}
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "RunnerCommandProfile":
+        _fields(value, {"schemaVersion", "profileId", "argvDigest"}, "runner command profile")
+        return cls(_str(value, "profileId", "command"), _str(value, "argvDigest", "command"),
+                   _str(value, "schemaVersion", "command"))
 
 
 @dataclass(frozen=True)
@@ -132,43 +178,56 @@ class ExecutionResult:
     stderr: TextObservation
     exported_state: tuple[tuple[str, CanonicalValue], ...] = ()
     files: tuple[tuple[str, str], ...] = ()
-
     def __post_init__(self) -> None:
-        if not isinstance(self.exit_code, int):
-            raise ValueError("exit code must be an integer")
-        if tuple(sorted(self.exported_state)) != self.exported_state or len(dict(self.exported_state)) != len(self.exported_state):
-            raise ValueError("exported state must be unique and sorted")
-        if tuple(sorted(self.files)) != self.files or len(dict(self.files)) != len(self.files):
-            raise ValueError("file observations must be unique and sorted")
-        for _, digest in self.files:
-            _require_sha256(digest, "file digest")
-
+        if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int): raise ValueError("exit code is invalid")
+        for values, label in ((self.exported_state, "exported state"), (self.files, "files")):
+            keys = tuple(x[0] for x in values)
+            if tuple(sorted(set(keys))) != keys: raise ValueError(label + " must be unique and sorted")
+        for _, digest in self.files: _require_digest(digest, "file digest")
     def to_dict(self) -> dict[str, object]:
-        return {
-            "returnValue": None if self.return_value is None else self.return_value.to_dict(),
-            "exitCode": self.exit_code,
-            "stdout": self.stdout.normalized_text, "stdoutSha256": self.stdout.sha256,
-            "stderr": self.stderr.normalized_text, "stderrSha256": self.stderr.sha256,
-            "exportedState": {key: value.to_dict() for key, value in self.exported_state},
-            "files": dict(self.files),
-        }
-
+        return {"returnValue": None if self.return_value is None else self.return_value.to_dict(), "exitCode": self.exit_code,
+                "stdout": {"text": self.stdout.normalized_text, "sha256": self.stdout.sha256},
+                "stderr": {"text": self.stderr.normalized_text, "sha256": self.stderr.sha256},
+                "exportedState": [{"name": k, "value": v.to_dict()} for k, v in self.exported_state],
+                "files": [{"path": k, "sha256": v} for k, v in self.files]}
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ExecutionResult":
-        return cls(
-            return_value=CanonicalValue.from_dict(value["returnValue"]) if isinstance(value.get("returnValue"), Mapping) else None,
-            exit_code=value.get("exitCode") if isinstance(value.get("exitCode"), int) else -1,
-            stdout=TextObservation(str(value.get("stdout", "")), str(value.get("stdoutSha256", ""))),
-            stderr=TextObservation(str(value.get("stderr", "")), str(value.get("stderrSha256", ""))),
-            exported_state=tuple(sorted((str(key), CanonicalValue.from_dict(item)) for key, item in dict(value.get("exportedState", {})).items() if isinstance(item, Mapping))),
-            files=tuple(sorted((str(key), str(item)) for key, item in dict(value.get("files", {})).items())),
-        )
+        _fields(value, {"returnValue", "exitCode", "stdout", "stderr", "exportedState", "files"}, "execution result")
+        def text(name: str) -> TextObservation:
+            raw = value.get(name)
+            if not isinstance(raw, Mapping): raise ValueError(name + " must be an object")
+            _fields(raw, {"text", "sha256"}, name)
+            return TextObservation(_str(raw, "text", name, True), _str(raw, "sha256", name))
+        exported, files = value.get("exportedState"), value.get("files")
+        if not isinstance(exported, list) or not isinstance(files, list): raise ValueError("result collections must be arrays")
+        eout, fout = [], []
+        for raw in exported:
+            if not isinstance(raw, Mapping): raise ValueError("exported state entry is invalid")
+            _fields(raw, {"name", "value"}, "exported state")
+            val = raw.get("value")
+            if not isinstance(val, Mapping): raise ValueError("exported state value is invalid")
+            eout.append((_str(raw, "name", "state"), CanonicalValue.from_dict(val)))
+        for raw in files:
+            if not isinstance(raw, Mapping): raise ValueError("file entry is invalid")
+            _fields(raw, {"path", "sha256"}, "file")
+            fout.append((_str(raw, "path", "file"), _str(raw, "sha256", "file")))
+        ret = value.get("returnValue")
+        if ret is not None and not isinstance(ret, Mapping): raise ValueError("returnValue is invalid")
+        return cls(CanonicalValue.from_dict(ret) if isinstance(ret, Mapping) else None, _int(value, "exitCode", "result"),
+                   text("stdout"), text("stderr"), tuple(eout), tuple(fout))
 
 
 @dataclass(frozen=True)
 class LogicalOperandObservation:
+    fragment_id: str
+    operand_index: int
+    operand_name: str
     operand_id: str
     access: str
+    width_bits: int
+    signedness: str
+    escaped: bool
+    shell_fact_identity: str
     before: CanonicalValue | None
     after: CanonicalValue | None
     tied_to_operand_id: str = ""
@@ -176,20 +235,50 @@ class LogicalOperandObservation:
     fixed_register_constraint: str = ""
 
     def __post_init__(self) -> None:
-        if not self.operand_id or self.access not in {"input", "output", "read_write"}:
-            raise ValueError("logical operand identity/access is invalid")
-        if self.access == "input" and self.after is not None:
-            raise ValueError("input operand cannot have an after value")
-        if self.access == "output" and self.before is not None:
-            raise ValueError("output operand cannot have a before value")
+        if not self.fragment_id or self.operand_index < 0 or not self.operand_name or not self.operand_id:
+            raise ValueError("logical operand identity is incomplete")
+        if self.access not in {"input", "output", "read_write"} or self.width_bits <= 0:
+            raise ValueError("logical operand access/width is invalid")
+        if self.signedness not in {"signed", "unsigned", "not_applicable"}:
+            raise ValueError("logical operand signedness is invalid")
+        if not isinstance(self.escaped, bool): raise ValueError("operand escaped must be boolean")
+        _require_digest(self.shell_fact_identity, "operand shell fact identity")
+        if self.access == "input" and (self.before is None or self.after is not None):
+            raise ValueError("input operand requires only a before value")
+        if self.access == "output" and (self.before is not None or self.after is None):
+            raise ValueError("output operand requires only an after value")
+        if self.access == "read_write" and (self.before is None or self.after is None):
+            raise ValueError("read-write operand requires before and after values")
 
     def to_dict(self) -> dict[str, object]:
-        return {"operandId": self.operand_id, "access": self.access,
+        return {"fragmentId": self.fragment_id, "operandIndex": self.operand_index,
+                "operandName": self.operand_name, "operandId": self.operand_id,
+                "access": self.access, "widthBits": self.width_bits,
+                "signedness": self.signedness, "escaped": self.escaped,
+                "shellFactIdentity": self.shell_fact_identity,
                 "before": None if self.before is None else self.before.to_dict(),
                 "after": None if self.after is None else self.after.to_dict(),
-                "tiedToOperandId": self.tied_to_operand_id,
-                "earlyClobber": self.early_clobber,
+                "tiedToOperandId": self.tied_to_operand_id, "earlyClobber": self.early_clobber,
                 "fixedRegisterConstraint": self.fixed_register_constraint}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "LogicalOperandObservation":
+        _fields(value, {"fragmentId", "operandIndex", "operandName", "operandId", "access", "widthBits",
+                        "signedness", "escaped", "shellFactIdentity", "before", "after",
+                        "tiedToOperandId", "earlyClobber", "fixedRegisterConstraint"}, "logical operand")
+        before, after = value.get("before"), value.get("after")
+        if (before is not None and not isinstance(before, Mapping)) or (after is not None and not isinstance(after, Mapping)):
+            raise ValueError("operand values are invalid")
+        escaped, early = value.get("escaped"), value.get("earlyClobber")
+        if not isinstance(escaped, bool) or not isinstance(early, bool): raise ValueError("operand boolean facts are invalid")
+        return cls(_str(value, "fragmentId", "operand"), _int(value, "operandIndex", "operand"),
+                   _str(value, "operandName", "operand"), _str(value, "operandId", "operand"),
+                   _str(value, "access", "operand"), _int(value, "widthBits", "operand"),
+                   _str(value, "signedness", "operand"), escaped, _str(value, "shellFactIdentity", "operand"),
+                   CanonicalValue.from_dict(before) if isinstance(before, Mapping) else None,
+                   CanonicalValue.from_dict(after) if isinstance(after, Mapping) else None,
+                   _str(value, "tiedToOperandId", "operand", True), early,
+                   _str(value, "fixedRegisterConstraint", "operand", True))
 
 
 @dataclass(frozen=True)
@@ -197,193 +286,335 @@ class MemoryObjectObservation:
     object_id: str
     size_bytes: int
     content_digest: str
-    accesses: tuple[tuple[int, str, int, int, str], ...] = ()
-
     def __post_init__(self) -> None:
-        if not self.object_id or self.size_bytes < 0:
-            raise ValueError("memory object identity/size is invalid")
-        _require_sha256(self.content_digest, "memory content digest")
-        for offset, access, size, alignment, atomicity in self.accesses:
-            if offset < 0 or size <= 0 or alignment <= 0 or access not in {"read", "write", "read_write"} or not atomicity:
-                raise ValueError("memory access is invalid")
-
+        if not self.object_id or self.size_bytes < 0: raise ValueError("memory object is invalid")
+        _require_digest(self.content_digest, "memory content digest")
     def to_dict(self) -> dict[str, object]:
-        return {"objectId": self.object_id, "sizeBytes": self.size_bytes,
-                "contentDigest": self.content_digest,
-                "accesses": [{"offset": offset, "access": access, "size": size,
-                              "alignment": alignment, "atomicity": atomicity}
-                             for offset, access, size, alignment, atomicity in self.accesses]}
-
+        return {"objectId": self.object_id, "sizeBytes": self.size_bytes, "contentDigest": self.content_digest}
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "MemoryObjectObservation":
-        accesses = []
-        for item in value.get("accesses", ()):
-            if not isinstance(item, Mapping):
-                raise ValueError("memory access must be an object")
-            accesses.append((
-                item.get("offset") if isinstance(item.get("offset"), int) else -1,
-                str(item.get("access", "")), item.get("size") if isinstance(item.get("size"), int) else 0,
-                item.get("alignment") if isinstance(item.get("alignment"), int) else 0,
-                str(item.get("atomicity", "")),
-            ))
-        return cls(str(value.get("objectId", "")), value.get("sizeBytes") if isinstance(value.get("sizeBytes"), int) else -1,
-                   str(value.get("contentDigest", "")), tuple(accesses))
+        _fields(value, {"objectId", "sizeBytes", "contentDigest"}, "memory object")
+        return cls(_str(value, "objectId", "memory"), _int(value, "sizeBytes", "memory"),
+                   _str(value, "contentDigest", "memory"))
+
+
+@dataclass(frozen=True)
+class SemanticEvent:
+    event_id: str
+    sequence: int
+    fragment_id: str
+    kind: str
+    subject_id: str
+    value: CanonicalValue | None
+    object_id: str
+    offset: int | None
+    access_size: int
+    alignment: int
+    atomicity: str
+    memory_order: str
+    branch_taken: bool | None
+    target_id: str
+    detail: str
+    ordering_predecessors: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.event_id or self.sequence < 0 or not self.fragment_id or self.kind not in _EVENT_KINDS:
+            raise ValueError("semantic event identity/kind is invalid")
+        _canonical_set(self.ordering_predecessors, "ordering predecessors")
+        memory = self.kind in {"read_memory", "write_memory", "atomic"}
+        if memory:
+            if not self.object_id or self.offset is None or self.offset < 0 or self.access_size <= 0 or self.alignment <= 0:
+                raise ValueError("memory event coordinates are invalid")
+            if self.atomicity not in _ATOMICITIES or self.memory_order not in _MEMORY_ORDERS or self.value is None:
+                raise ValueError("memory event value/ordering is invalid")
+            if ((self.atomicity == "none") != (self.memory_order == "not_applicable") or
+                    self.kind == "atomic" and self.atomicity == "none"):
+                raise ValueError("memory order and atomicity are inconsistent")
+        elif self.object_id or self.offset is not None or self.access_size or self.alignment:
+            raise ValueError("non-memory event cannot carry memory coordinates")
+        if self.kind == "fence":
+            if self.memory_order not in _MEMORY_ORDERS - {"not_applicable"}:
+                raise ValueError("fence event requires an explicit ordering")
+        elif not memory and self.memory_order:
+            raise ValueError("memory order is only valid on memory or fence events")
+        if (self.kind == "branch") != isinstance(self.branch_taken, bool):
+            raise ValueError("branch taken fact is present on the wrong event kind")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"eventId": self.event_id, "sequence": self.sequence, "fragmentId": self.fragment_id,
+                "kind": self.kind, "subjectId": self.subject_id,
+                "value": None if self.value is None else self.value.to_dict(), "objectId": self.object_id,
+                "offset": self.offset, "accessSize": self.access_size, "alignment": self.alignment,
+                "atomicity": self.atomicity, "memoryOrder": self.memory_order,
+                "branchTaken": self.branch_taken, "targetId": self.target_id, "detail": self.detail,
+                "orderingPredecessors": list(self.ordering_predecessors)}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "SemanticEvent":
+        _fields(value, {"eventId", "sequence", "fragmentId", "kind", "subjectId", "value", "objectId",
+                        "offset", "accessSize", "alignment", "atomicity", "memoryOrder", "branchTaken",
+                        "targetId", "detail", "orderingPredecessors"}, "semantic event")
+        val, offset, taken = value.get("value"), value.get("offset"), value.get("branchTaken")
+        if val is not None and not isinstance(val, Mapping): raise ValueError("event value is invalid")
+        if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int)): raise ValueError("event offset is invalid")
+        if taken is not None and not isinstance(taken, bool): raise ValueError("branchTaken is invalid")
+        return cls(_str(value, "eventId", "event"), _int(value, "sequence", "event"),
+                   _str(value, "fragmentId", "event"), _str(value, "kind", "event"),
+                   _str(value, "subjectId", "event", True), CanonicalValue.from_dict(val) if isinstance(val, Mapping) else None,
+                   _str(value, "objectId", "event", True), offset, _int(value, "accessSize", "event"),
+                   _int(value, "alignment", "event"), _str(value, "atomicity", "event", True),
+                   _str(value, "memoryOrder", "event", True), taken, _str(value, "targetId", "event", True),
+                   _str(value, "detail", "event", True), _strs(value.get("orderingPredecessors"), "orderingPredecessors"))
+
+
+@dataclass(frozen=True)
+class EffectRelation:
+    source_event_id: str
+    target_event_ids: tuple[str, ...]
+    relation: str
+    def __post_init__(self) -> None:
+        if not self.source_event_id or self.relation not in {"equivalent", "strengthened", "best_effort"}:
+            raise ValueError("effect relation is invalid")
+        if not self.target_event_ids: raise ValueError("effect relation requires targets")
+        _canonical_set(self.target_event_ids, "target event IDs")
+    def to_dict(self) -> dict[str, object]:
+        return {"sourceEventId": self.source_event_id, "targetEventIds": list(self.target_event_ids), "relation": self.relation}
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "EffectRelation":
+        _fields(value, {"sourceEventId", "targetEventIds", "relation"}, "effect relation")
+        return cls(_str(value, "sourceEventId", "relation"), _strs(value.get("targetEventIds"), "targetEventIds"),
+                   _str(value, "relation", "relation"))
+
+
+@dataclass(frozen=True)
+class ObservationProvenance:
+    artifact_digest: str
+    translation_manifest_digest: str
+    translation_artifact_identity: str
+    source_model_identity: str
+    proof_identity: str
+    shell_facts_identity: str
+    runtime_contract_id: str
+    runtime_contract_version: str
+    test_seed: int
+    generated_inputs_identity: str
+    comparison_policy: str
+    command_profile: RunnerCommandProfile
+    canonicalizer_version: str = ""
+
+    def __post_init__(self) -> None:
+        for label, value in (("artifact", self.artifact_digest), ("manifest", self.translation_manifest_digest),
+                             ("translation artifact", self.translation_artifact_identity),
+                             ("source model", self.source_model_identity), ("proof", self.proof_identity),
+                             ("shell facts", self.shell_facts_identity), ("generated inputs", self.generated_inputs_identity)):
+            _require_digest(value, label + " identity")
+        if not self.runtime_contract_id or not self.runtime_contract_version or not self.comparison_policy:
+            raise ValueError("provenance contract is incomplete")
+        if self.test_seed < 0: raise ValueError("test seed is invalid")
+        if self.canonicalizer_version and self.canonicalizer_version != OBSERVATION_CANONICALIZER_VERSION:
+            raise ValueError("canonicalizer version is unsupported")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"artifactDigest": self.artifact_digest, "translationManifestDigest": self.translation_manifest_digest,
+                "translationArtifactIdentity": self.translation_artifact_identity,
+                "sourceModelIdentity": self.source_model_identity, "proofIdentity": self.proof_identity,
+                "shellFactsIdentity": self.shell_facts_identity, "runtimeContractId": self.runtime_contract_id,
+                "runtimeContractVersion": self.runtime_contract_version, "testSeed": self.test_seed,
+                "generatedInputsIdentity": self.generated_inputs_identity, "comparisonPolicy": self.comparison_policy,
+                "runnerCommandProfile": self.command_profile.to_dict(), "canonicalizerVersion": self.canonicalizer_version}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ObservationProvenance":
+        names = {"artifactDigest", "translationManifestDigest", "translationArtifactIdentity", "sourceModelIdentity",
+                 "proofIdentity", "shellFactsIdentity", "runtimeContractId", "runtimeContractVersion", "testSeed",
+                 "generatedInputsIdentity", "comparisonPolicy", "runnerCommandProfile", "canonicalizerVersion"}
+        _fields(value, names, "observation provenance")
+        command = value.get("runnerCommandProfile")
+        if not isinstance(command, Mapping): raise ValueError("runner command profile is invalid")
+        strings = {name: _str(value, name, "provenance") for name in names - {"testSeed", "runnerCommandProfile", "canonicalizerVersion"}}
+        return cls(strings["artifactDigest"], strings["translationManifestDigest"], strings["translationArtifactIdentity"],
+                   strings["sourceModelIdentity"], strings["proofIdentity"], strings["shellFactsIdentity"],
+                   strings["runtimeContractId"], strings["runtimeContractVersion"], _int(value, "testSeed", "provenance"),
+                   strings["generatedInputsIdentity"], strings["comparisonPolicy"], RunnerCommandProfile.from_dict(command),
+                   _str(value, "canonicalizerVersion", "provenance", True))
 
 
 @dataclass(frozen=True)
 class ExecutionObservation:
     test_id: str
     fragment_ids: tuple[str, ...]
-    runner: str
-    runner_version: str
-    compiler: str
-    compiler_version: str
+    runner: ToolIdentity
+    compiler: ToolIdentity
+    runtime: ToolIdentity
+    loader: ToolIdentity
     optimization: str
     sanitizer: str
     source_execution_profile: str
     target_execution_mode: str
-    runtime_version: str
     initial_state_identity: str
     preservation_mode: PreservationMode
     result: ExecutionResult
     logical_operands: tuple[LogicalOperandObservation, ...]
     memory_objects: tuple[MemoryObjectObservation, ...]
-    control_flow: tuple[tuple[str, str], ...]
-    traps: tuple[tuple[str, str], ...]
-    privileged_state: tuple[tuple[str, str], ...]
-    external_events: tuple[tuple[str, str], ...]
+    semantic_events: tuple[SemanticEvent, ...]
+    effect_relations: tuple[EffectRelation, ...]
+    privileged_state: tuple[tuple[str, CanonicalValue], ...]
     ignored_state: tuple[str, ...]
-    provenance: tuple[tuple[str, str], ...]
+    provenance: ObservationProvenance
     schema_version: str = VALIDATION_OBSERVATION_SCHEMA
 
     def __post_init__(self) -> None:
-        if self.schema_version != VALIDATION_OBSERVATION_SCHEMA:
-            raise ValueError("observation schema version is unsupported")
-        if not all((self.test_id, self.runner, self.runner_version, self.compiler,
-                    self.compiler_version, self.source_execution_profile,
-                    self.target_execution_mode, self.runtime_version,
-                    self.initial_state_identity)):
-            raise ValueError("observation provenance is incomplete")
-        if tuple(sorted(set(self.fragment_ids))) != self.fragment_ids:
-            raise ValueError("fragment IDs must be unique and sorted")
-        if tuple(item.operand_id for item in self.logical_operands) != tuple(sorted(item.operand_id for item in self.logical_operands)):
-            raise ValueError("logical operands must be sorted by logical operand ID")
-        if len({item.operand_id for item in self.logical_operands}) != len(self.logical_operands):
-            raise ValueError("logical operand IDs must be unique")
-        if tuple(item.object_id for item in self.memory_objects) != tuple(sorted(item.object_id for item in self.memory_objects)):
-            raise ValueError("memory objects must be sorted by object ID")
-        if len({item.object_id for item in self.memory_objects}) != len(self.memory_objects):
-            raise ValueError("memory object IDs must be unique")
-        for name in ("control_flow", "traps", "privileged_state", "external_events", "provenance"):
-            values = getattr(self, name)
-            if tuple(sorted(values)) != values or len(dict(values)) != len(values):
-                raise ValueError(name + " must be unique and stably sorted")
-        if tuple(sorted(set(self.ignored_state))) != self.ignored_state:
-            raise ValueError("ignored state must be unique and sorted")
-        for required in ("artifactDigest", "translationManifestDigest", "sourceModelIdentity",
-                         "runtimeContract", "runtimeContractVersion", "runnerCommandProfile",
-                         "testSeed", "generatedInputsIdentity", "comparisonPolicy"):
-            if not dict(self.provenance).get(required):
-                raise ValueError("observation provenance is missing " + required)
-        provenance = dict(self.provenance)
-        for field_name in ("artifactDigest", "translationManifestDigest", "generatedInputsIdentity"):
-            _require_sha256(provenance[field_name], "provenance." + field_name)
+        if self.schema_version != VALIDATION_OBSERVATION_SCHEMA or not self.test_id:
+            raise ValueError("observation schema/test identity is invalid")
+        _require_digest(self.initial_state_identity, "initial state identity")
+        _canonical_set(self.fragment_ids, "fragment IDs")
+        _canonical_set(self.ignored_state, "ignored state")
+        operand_keys = tuple((x.fragment_id, x.operand_index, x.operand_id) for x in self.logical_operands)
+        if tuple(sorted(set(operand_keys))) != operand_keys:
+            raise ValueError("logical operands must be unique and canonically ordered")
+        if any(x.fragment_id not in self.fragment_ids for x in self.logical_operands):
+            raise ValueError("operand references unknown fragment")
+        object_ids = tuple(x.object_id for x in self.memory_objects)
+        if tuple(sorted(set(object_ids))) != object_ids:
+            raise ValueError("memory objects must be unique and canonically ordered")
+        seen: set[str] = set()
+        for sequence, event in enumerate(self.semantic_events):
+            if event.sequence != sequence or event.event_id in seen:
+                raise ValueError("events require unique IDs and contiguous execution order")
+            if event.fragment_id not in self.fragment_ids: raise ValueError("event references unknown fragment")
+            if any(pred not in seen for pred in event.ordering_predecessors):
+                raise ValueError("ordering predecessor must be an earlier event")
+            if event.object_id and event.object_id not in object_ids: raise ValueError("event references unknown memory object")
+            seen.add(event.event_id)
+        sources = tuple(x.source_event_id for x in self.effect_relations)
+        if tuple(sorted(set(sources))) != sources: raise ValueError("effect relations must be unique and sorted")
+        if any(target not in seen for x in self.effect_relations for target in x.target_event_ids):
+            raise ValueError("effect relation references unknown target event")
+        state_keys = tuple(x[0] for x in self.privileged_state)
+        if tuple(sorted(set(state_keys))) != state_keys: raise ValueError("privileged state must be unique and sorted")
 
     @property
     def identity(self) -> str:
-        return "sha256:" + sha256(_canonical_json(self.to_dict()).encode("utf-8")).hexdigest()
+        return _digest(_canonical_json(self.to_dict()))
+
+    def validate_translation_artifact(self, artifact: object) -> None:
+        fragment_id = getattr(artifact, "fragment_id", None)
+        if fragment_id not in self.fragment_ids: raise ValueError("observation does not bind artifact fragment")
+        checks = (("source_model_identity", self.provenance.source_model_identity),
+                  ("proof_identity", self.provenance.proof_identity),
+                  ("shell_facts_identity", self.provenance.shell_facts_identity),
+                  ("runtime_contract_id", self.provenance.runtime_contract_id),
+                  ("runtime_contract_version", self.provenance.runtime_contract_version),
+                  ("preservation_mode", self.preservation_mode))
+        if any(getattr(artifact, name, None) != expected for name, expected in checks):
+            raise ValueError("observation and translation artifact identities differ")
+        if any(x.shell_fact_identity != self.provenance.shell_facts_identity for x in self.logical_operands):
+            raise ValueError("operand shell facts do not bind provenance")
+
+    def validate_effect_relations(self, source: "ExecutionObservation") -> None:
+        source_ids = {x.event_id for x in source.semantic_events}
+        if any(x.source_event_id not in source_ids for x in self.effect_relations):
+            raise ValueError("effect relation references unknown source event")
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "schemaVersion": self.schema_version, "testId": self.test_id,
-            "fragmentIds": list(self.fragment_ids), "runner": self.runner,
-            "runnerVersion": self.runner_version, "compiler": self.compiler,
-            "compilerVersion": self.compiler_version, "optimization": self.optimization,
-            "sanitizer": self.sanitizer, "sourceExecutionProfile": self.source_execution_profile,
-            "targetExecutionMode": self.target_execution_mode, "runtimeVersion": self.runtime_version,
-            "initialStateIdentity": self.initial_state_identity,
-            "preservationMode": self.preservation_mode.value, "result": self.result.to_dict(),
-            "logicalOperands": [item.to_dict() for item in self.logical_operands],
-            "memoryObjects": [item.to_dict() for item in self.memory_objects],
-            "controlFlow": dict(self.control_flow), "traps": dict(self.traps),
-            "privilegedState": dict(self.privileged_state), "externalEvents": dict(self.external_events),
-            "ignoredState": list(self.ignored_state), "provenance": dict(self.provenance),
-        }
+        return {"schemaVersion": self.schema_version, "testId": self.test_id, "fragmentIds": list(self.fragment_ids),
+                "runner": self.runner.to_dict(), "compiler": self.compiler.to_dict(), "runtime": self.runtime.to_dict(),
+                "loader": self.loader.to_dict(), "optimization": self.optimization, "sanitizer": self.sanitizer,
+                "sourceExecutionProfile": self.source_execution_profile, "targetExecutionMode": self.target_execution_mode,
+                "initialStateIdentity": self.initial_state_identity, "preservationMode": self.preservation_mode.value,
+                "result": self.result.to_dict(), "logicalOperands": [x.to_dict() for x in self.logical_operands],
+                "memoryObjects": [x.to_dict() for x in self.memory_objects],
+                "semanticEvents": [x.to_dict() for x in self.semantic_events],
+                "effectRelations": [x.to_dict() for x in self.effect_relations],
+                "privilegedState": [{"name": k, "value": v.to_dict()} for k, v in self.privileged_state],
+                "ignoredState": list(self.ignored_state), "provenance": self.provenance.to_dict()}
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ExecutionObservation":
-        fields = {
-            "schemaVersion", "testId", "fragmentIds", "runner", "runnerVersion",
-            "compiler", "compilerVersion", "optimization", "sanitizer",
-            "sourceExecutionProfile", "targetExecutionMode", "runtimeVersion",
-            "initialStateIdentity", "preservationMode", "result", "logicalOperands",
-            "memoryObjects", "controlFlow", "traps", "privilegedState",
-            "externalEvents", "ignoredState", "provenance",
-        }
-        if set(value) != fields:
-            raise ValueError("observation fields are incomplete or unknown")
-        if value.get("schemaVersion") != VALIDATION_OBSERVATION_SCHEMA:
-            raise ValueError("observation schema version is unsupported")
-        operands = []
-        for item in value.get("logicalOperands", ()):
-            if not isinstance(item, Mapping):
-                raise ValueError("logical operand must be an object")
-            before, after = item.get("before"), item.get("after")
-            operands.append(LogicalOperandObservation(
-                operand_id=str(item.get("operandId", "")), access=str(item.get("access", "")),
-                before=CanonicalValue.from_dict(before) if isinstance(before, Mapping) else None,
-                after=CanonicalValue.from_dict(after) if isinstance(after, Mapping) else None,
-                tied_to_operand_id=str(item.get("tiedToOperandId", "")),
-                early_clobber=bool(item.get("earlyClobber", False)),
-                fixed_register_constraint=str(item.get("fixedRegisterConstraint", "")),
-            ))
-        def stable_mapping(name: str) -> tuple[tuple[str, str], ...]:
-            source = value.get(name, {})
-            if not isinstance(source, Mapping):
-                raise ValueError(name + " must be an object")
-            return tuple(sorted((str(key), str(item)) for key, item in source.items()))
-        return cls(
-            test_id=str(value.get("testId", "")),
-            fragment_ids=tuple(sorted(set(map(str, value.get("fragmentIds", ()))))),
-            runner=str(value.get("runner", "")), runner_version=str(value.get("runnerVersion", "")),
-            compiler=str(value.get("compiler", "")), compiler_version=str(value.get("compilerVersion", "")),
-            optimization=str(value.get("optimization", "")), sanitizer=str(value.get("sanitizer", "")),
-            source_execution_profile=str(value.get("sourceExecutionProfile", "")),
-            target_execution_mode=str(value.get("targetExecutionMode", "")),
-            runtime_version=str(value.get("runtimeVersion", "")), initial_state_identity=str(value.get("initialStateIdentity", "")),
-            preservation_mode=PreservationMode(str(value.get("preservationMode", ""))),
-            result=ExecutionResult.from_dict(value.get("result", {})),
-            logical_operands=tuple(sorted(operands, key=lambda item: item.operand_id)),
-            memory_objects=tuple(sorted((MemoryObjectObservation.from_dict(item) for item in value.get("memoryObjects", ()) if isinstance(item, Mapping)), key=lambda item: item.object_id)),
-            control_flow=stable_mapping("controlFlow"), traps=stable_mapping("traps"),
-            privileged_state=stable_mapping("privilegedState"), external_events=stable_mapping("externalEvents"),
-            ignored_state=tuple(sorted(set(map(str, value.get("ignoredState", ()))))),
-            provenance=stable_mapping("provenance"), schema_version=str(value.get("schemaVersion", "")),
-        )
+        expected = {"schemaVersion", "testId", "fragmentIds", "runner", "compiler", "runtime", "loader",
+                    "optimization", "sanitizer", "sourceExecutionProfile", "targetExecutionMode", "initialStateIdentity",
+                    "preservationMode", "result", "logicalOperands", "memoryObjects", "semanticEvents",
+                    "effectRelations", "privilegedState", "ignoredState", "provenance"}
+        _fields(value, expected, "observation")
+        if value.get("schemaVersion") != VALIDATION_OBSERVATION_SCHEMA: raise ValueError("unsupported observation schema")
+        def obj(name: str) -> Mapping[str, object]:
+            raw = value.get(name)
+            if not isinstance(raw, Mapping): raise ValueError(name + " must be an object")
+            return raw
+        def arr(name: str) -> list[object]:
+            raw = value.get(name)
+            if not isinstance(raw, list): raise ValueError(name + " must be an array")
+            return raw
+        def parse(name: str, parser):
+            output = []
+            for raw in arr(name):
+                if not isinstance(raw, Mapping): raise ValueError(name + " entry is invalid")
+                output.append(parser(raw))
+            return tuple(output)
+        state = []
+        for raw in arr("privilegedState"):
+            if not isinstance(raw, Mapping): raise ValueError("privileged state entry is invalid")
+            _fields(raw, {"name", "value"}, "privileged state")
+            state_value = raw.get("value")
+            if not isinstance(state_value, Mapping): raise ValueError("privileged state value is invalid")
+            state.append((_str(raw, "name", "state"), CanonicalValue.from_dict(state_value)))
+        return cls(_str(value, "testId", "observation"), _strs(value.get("fragmentIds"), "fragmentIds"),
+                   ToolIdentity.from_dict(obj("runner")), ToolIdentity.from_dict(obj("compiler")),
+                   ToolIdentity.from_dict(obj("runtime")), ToolIdentity.from_dict(obj("loader")),
+                   _str(value, "optimization", "observation"), _str(value, "sanitizer", "observation"),
+                   _str(value, "sourceExecutionProfile", "observation"),
+                   _str(value, "targetExecutionMode", "observation"),
+                   _str(value, "initialStateIdentity", "observation"),
+                   PreservationMode(_str(value, "preservationMode", "observation")), ExecutionResult.from_dict(obj("result")),
+                   parse("logicalOperands", LogicalOperandObservation.from_dict),
+                   parse("memoryObjects", MemoryObjectObservation.from_dict), parse("semanticEvents", SemanticEvent.from_dict),
+                   parse("effectRelations", EffectRelation.from_dict), tuple(state),
+                   _strs(value.get("ignoredState"), "ignoredState"), ObservationProvenance.from_dict(obj("provenance")),
+                   _str(value, "schemaVersion", "observation"))
 
 
-def validation_identity(
-    *, source_artifact_hash: str, target_artifact_hash: str,
-    translation_manifest_hash: str, source_model_identity: str,
-    runtime_contract: str, runtime_version: str,
-    source_observation: ExecutionObservation | None,
-    target_observation: ExecutionObservation | None,
-    comparison_policy: str,
-) -> str:
-    """Stable identity for a cross-ISA validation decision."""
-    for name, value in (("source artifact hash", source_artifact_hash),
-                        ("target artifact hash", target_artifact_hash),
-                        ("translation manifest hash", translation_manifest_hash)):
-        _require_sha256(value, name)
+def canonicalize_observation_input(value: Mapping[str, object], *, version: str) -> dict[str, object]:
+    """Explicitly canonicalize set-like collections without reordering events."""
+    if version != OBSERVATION_CANONICALIZER_VERSION:
+        raise ValueError("unsupported observation canonicalizer")
+    result = json.loads(json.dumps(value))
+    for name in ("fragmentIds", "ignoredState"):
+        raw = result.get(name)
+        if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+            raise ValueError(name + " cannot be canonicalized")
+        result[name] = sorted(set(raw))
+    specifications = (
+        ("logicalOperands", lambda x: (x.get("fragmentId"), x.get("operandIndex"), x.get("operandId"))),
+        ("memoryObjects", lambda x: x.get("objectId")),
+        ("effectRelations", lambda x: x.get("sourceEventId")),
+    )
+    for name, key in specifications:
+        raw = result.get(name)
+        if not isinstance(raw, list) or not all(isinstance(x, dict) for x in raw):
+            raise ValueError(name + " cannot be canonicalized")
+        result[name] = sorted(raw, key=key)
+    provenance = result.get("provenance")
+    if not isinstance(provenance, dict): raise ValueError("provenance cannot record canonicalization")
+    provenance["canonicalizerVersion"] = version
+    return result
+
+
+def validation_identity(*, source_artifact_hash: str, target_artifact_hash: str,
+                        translation_manifest_hash: str, source_model_identity: str,
+                        runtime_contract: str, runtime_version: str,
+                        source_observation: ExecutionObservation | None,
+                        target_observation: ExecutionObservation | None,
+                        comparison_policy: str) -> str:
+    for label, value in (("source artifact", source_artifact_hash), ("target artifact", target_artifact_hash),
+                         ("translation manifest", translation_manifest_hash)):
+        _require_digest(value, label + " hash")
     if not all((source_model_identity, runtime_contract, runtime_version, comparison_policy)):
         raise ValueError("validation identity inputs are incomplete")
-    payload = {
-        "schemaVersion": VALIDATION_OBSERVATION_SCHEMA,
-        "sourceArtifactHash": source_artifact_hash, "targetArtifactHash": target_artifact_hash,
-        "translationManifestHash": translation_manifest_hash,
-        "sourceModelIdentity": source_model_identity, "runtimeContract": runtime_contract,
-        "runtimeVersion": runtime_version, "comparisonPolicy": comparison_policy,
-        "sourceObservation": None if source_observation is None else source_observation.to_dict(),
-        "targetObservation": None if target_observation is None else target_observation.to_dict(),
-    }
-    return "sha256:" + sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    payload = {"schemaVersion": VALIDATION_OBSERVATION_SCHEMA,
+               "sourceArtifactHash": source_artifact_hash, "targetArtifactHash": target_artifact_hash,
+               "translationManifestHash": translation_manifest_hash, "sourceModelIdentity": source_model_identity,
+               "runtimeContract": runtime_contract, "runtimeVersion": runtime_version,
+               "comparisonPolicy": comparison_policy,
+               "sourceObservation": None if source_observation is None else source_observation.to_dict(),
+               "targetObservation": None if target_observation is None else target_observation.to_dict()}
+    return _digest(_canonical_json(payload))

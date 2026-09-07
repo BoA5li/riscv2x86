@@ -49,6 +49,16 @@ class PipelineValidationContext:
             raise ValueError("source observation references an unknown fragment")
         if not set(self.target_observations).issubset(keys):
             raise ValueError("target observation references an unknown fragment")
+        for observations, program, label in (
+            (self.source_observations, self.source_program_artifact, "source"),
+            (self.target_observations, self.target_program_artifact, "target"),
+        ):
+            for fragment_id, observation in observations.items():
+                if observation.provenance.translation_manifest_digest != self.translation_manifest_digest:
+                    raise ValueError(label + " observation manifest binding mismatch")
+                if observation.provenance.artifact_digest != program.artifact_digest:
+                    raise ValueError(label + " observation artifact binding mismatch")
+                observation.validate_translation_artifact(self.translation_artifacts[fragment_id])
 
     def __call__(self, *, finding: object, **_kwargs: object) -> TranslationValidationResult:
         fragment = getattr(finding, "fragment", None)
