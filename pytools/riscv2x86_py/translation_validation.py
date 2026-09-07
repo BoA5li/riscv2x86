@@ -411,6 +411,9 @@ def run_translation_validation(
             target_program_artifact=target_program_artifact,
             validation_plan=validation_plan,
             target_environment=environment_payload,
+            source_observation=source_observation,
+            target_observation=target_observation,
+            comparison_policy=comparison_policy,
         )
         if not isinstance(layer, ValidationLayerResult) or layer.level is not level:
             layers.append(ValidationLayerResult(level, ValidationStatus.FAILED, detail="invalid layer runner result"))

@@ -1,4 +1,4 @@
-name: Phase 8 L0 validation
+name: Phase 8 L0 and L1 validation
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
       - fix-phase8-typed-writeback-gate
       - fix-phase8-elf-abi-hard-constraints
       - fix-phase8-real-l0-matrix-ci
+      - phase8-l1-functional-differential
   pull_request:
 
 jobs:
@@ -21,7 +22,7 @@ jobs:
       - name: Install test and RV64 toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-riscv64-linux-gnu clang binutils
+          sudo apt-get install -y gcc-riscv64-linux-gnu clang binutils qemu-user
           python -m pip install pytest
       - name: Run L0 contract tests
         env:
@@ -33,6 +34,8 @@ jobs:
           pytools/tests/test_translation_validation.py
           pytools/tests/test_validation_observation.py
           pytools/tests/test_validation_status.py
+          pytools/tests/test_validation_case.py
+          pytools/tests/test_l1_differential.py
       - name: Run production L0 matrix with real executable toolchains
         env:
           PYTHONPATH: pytools
@@ -41,6 +44,10 @@ jobs:
         env:
           PYTHONPATH: pytools
         run: python pytools/tests/run_real_l0_matrix.py --link-kind shared_library
+      - name: Run production L1 differential loop with RV64 QEMU and x86-64 native
+        env:
+          PYTHONPATH: pytools
+        run: python pytools/tests/run_real_l1_differential.py
       - name: Exercise real ASan and UBSan negative findings
         shell: bash
         run: |

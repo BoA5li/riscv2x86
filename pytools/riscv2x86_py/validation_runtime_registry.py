@@ -22,8 +22,14 @@ def _l0_build_matrix_factory(config: Mapping[str, object]) -> LayerValidator:
     return build_l0_validator(load_l0_build_matrix(config))
 
 
+def _l1_differential_factory(config: Mapping[str, object]) -> LayerValidator:
+    from .l1_differential import build_l1_validator, load_l1_runner_config
+    return build_l1_validator(load_l1_runner_config(config))
+
+
 _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l0-build-matrix": _l0_build_matrix_factory,
+    "l1-functional-differential": _l1_differential_factory,
 }
 
 
