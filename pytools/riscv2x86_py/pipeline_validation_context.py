@@ -8,7 +8,8 @@ from typing import Mapping
 
 from .translation_validation import (
     ProgramArtifact, TargetEnvironment, TranslationArtifact,
-    TranslationValidationResult, ValidationPlan, ValidationRuntimeRegistry,
+    TranslationValidationResult, ValidationLevel, ValidationPlan,
+    ValidationRuntimeRegistry,
     program_artifact_from_dict, run_translation_validation,
     target_environment_from_dict, translation_artifact_from_dict,
     validation_plan_from_dict,
@@ -42,6 +43,15 @@ class PipelineValidationContext:
             raise ValueError("pipeline validation manifest digest is invalid")
         if not self.comparison_policy:
             raise ValueError("pipeline validation comparison policy is missing")
+        l0_validator = self.runtime_registry.validator_for(ValidationLevel.L0)
+        l0_matrix = getattr(l0_validator, "l0_matrix", None)
+        if l0_validator is not None and l0_matrix is None:
+            raise ValueError("pipeline L0 validator lacks a manifest-bound matrix")
+        if l0_matrix is not None and (
+            getattr(l0_matrix, "translation_manifest_digest", "")
+            != self.translation_manifest_digest
+        ):
+            raise ValueError("pipeline and L0 validator manifest digests differ")
         keys = set(self.translation_artifacts)
         if not keys or set(self.ignored_state_escapes) != keys:
             raise ValueError("pipeline validation fragment coverage is incomplete")

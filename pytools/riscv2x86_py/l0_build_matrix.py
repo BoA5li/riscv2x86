@@ -1,29 +1,26 @@
-"""Fail-closed L0 source/target build, link, ABI and runtime-load matrix.
-
-This is deliberately a command runner, rather than a record that a caller may
-mark as built.  A missing compiler, ELF inspector, loader, or sanitizer support
-is inconclusive; it is never a successful matrix cell.
-"""
+"""Executable L0 RV64/x86-64 build, link, ABI, dependency and load matrix."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Callable, Mapping, Sequence
 
-from .translation_validation import (
-    ProgramArtifact, ValidationLayerResult, ValidationLevel,
-)
+from .l0_artifact_manifest import ExpectedArtifact, ExpectedElf, l0_artifact_manifest_from_dict
+from .translation_validation import ProgramArtifact, TranslationArtifact, ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
 
-
-L0_BUILD_MATRIX_SCHEMA = "riscv2x86.l0-build-matrix.v1"
+L0_BUILD_MATRIX_SCHEMA = "riscv2x86.l0-build-matrix.v2"
 _OPTIMIZATIONS = ("-O0", "-O2", "-O3")
 _SANITIZERS = ("none", "asan", "ubsan")
 _COMPILERS = ("gcc", "clang")
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SANITIZER_FINDINGS = ("addresssanitizer", "undefinedbehaviorsanitizer", "runtime error:", "ubsan:")
+_SANITIZER_FLAGS = {"asan": "address", "ubsan": "undefined"}
 
 
 @dataclass(frozen=True)
@@ -31,14 +28,19 @@ class CommandResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    timed_out: bool = False
 
 
-CommandRunner = Callable[[Sequence[str], Path], CommandResult]
+CommandRunner = Callable[[Sequence[str], Path, int], CommandResult]
 
 
-def _run(argv: Sequence[str], cwd: Path) -> CommandResult:
-    completed = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
-    return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+def _run(argv: Sequence[str], cwd: Path, timeout: int) -> CommandResult:
+    try:
+        completed = subprocess.run(argv, cwd=cwd, text=True, capture_output=True,
+                                   check=False, timeout=timeout)
+        return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(124, str(exc.stdout or ""), str(exc.stderr or ""), True)
 
 
 def _digest(path: Path) -> str:
@@ -64,158 +66,314 @@ class L0BuildMatrix:
     libraries: tuple[str, ...] = ()
     link_kind: str = "executable"
     warnings_as_errors: bool = True
+    runtime_timeout_seconds: int = 10
 
     def __post_init__(self) -> None:
-        if not all((self.source_path, self.source_compiler, self.target_path,
-                    self.work_directory, self.translation_manifest_path,
-                    self.translation_manifest_digest)):
-            raise ValueError("L0 build matrix identity is incomplete")
-        if not set(_COMPILERS).issubset(self.target_compilers):
-            raise ValueError("initial L0 matrix requires GCC and Clang")
-        if not set(_OPTIMIZATIONS).issubset(self.optimizations):
-            raise ValueError("initial L0 matrix requires -O0/-O2/-O3")
-        if not set(_SANITIZERS).issubset(self.sanitizers):
-            raise ValueError("initial L0 matrix requires none/asan/ubsan")
-        if self.link_kind not in {"executable", "shared_library"}:
-            raise ValueError("L0 link kind is unsupported")
+        if not all((self.source_path, self.source_compiler, self.target_path, self.work_directory,
+                    self.translation_manifest_path, self.translation_manifest_digest)):
+            raise ValueError("L0 matrix identity is incomplete")
+        if not _SHA256.fullmatch(self.translation_manifest_digest): raise ValueError("manifest digest is invalid")
+        for actual, required, label in ((self.target_compilers, _COMPILERS, "compilers"),
+                                        (self.optimizations, _OPTIMIZATIONS, "optimizations"),
+                                        (self.sanitizers, _SANITIZERS, "sanitizers")):
+            if tuple(actual) != tuple(required): raise ValueError("L0 matrix requires exact ordered " + label)
+        if self.link_kind not in {"executable", "shared_library"}: raise ValueError("unsupported link kind")
+        if not isinstance(self.warnings_as_errors, bool) or self.runtime_timeout_seconds <= 0:
+            raise ValueError("warning policy/runtime timeout is invalid")
 
 
 def load_l0_build_matrix(data: Mapping[str, object]) -> L0BuildMatrix:
-    if data.get("schemaVersion") != L0_BUILD_MATRIX_SCHEMA:
-        raise ValueError("L0 build matrix schema version is unsupported")
+    expected = {"schemaVersion", "sourcePath", "sourceCompiler", "sourceFlags", "targetPath",
+                "targetCompilers", "targetFlags", "optimizations", "sanitizers", "workDirectory",
+                "translationManifestPath", "translationManifestDigest", "runtimeHeaders",
+                "includeDirectories", "libraryDirectories", "libraries", "linkKind", "warningPolicy",
+                "runtimeTimeoutSeconds"}
+    optional = {"runtimeHeaders", "includeDirectories", "libraryDirectories", "libraries",
+                "linkKind", "warningPolicy", "runtimeTimeoutSeconds"}
+    if not set(data).issubset(expected) or not expected - optional <= set(data):
+        raise ValueError("L0 matrix fields are incomplete or unknown")
+    if data.get("schemaVersion") != L0_BUILD_MATRIX_SCHEMA: raise ValueError("unsupported L0 matrix schema")
+    def string(name: str, default: str = "") -> str:
+        value = data.get(name, default)
+        if not isinstance(value, str): raise ValueError(name + " must be a string")
+        return value
     def values(name: str) -> tuple[str, ...]:
-        value = data.get(name, ())
-        if not isinstance(value, list):
-            raise ValueError("L0 build matrix %s must be an array" % name)
-        return tuple(map(str, value))
-    warning = data.get("warningPolicy", {})
-    if not isinstance(warning, Mapping):
-        raise ValueError("L0 warning policy must be an object")
-    return L0BuildMatrix(
-        source_path=str(data.get("sourcePath", "")), source_compiler=str(data.get("sourceCompiler", "")),
-        source_flags=values("sourceFlags"), target_path=str(data.get("targetPath", "")),
-        target_compilers=values("targetCompilers"), target_flags=values("targetFlags"),
-        optimizations=values("optimizations"), sanitizers=values("sanitizers"),
-        work_directory=str(data.get("workDirectory", "")),
-        translation_manifest_path=str(data.get("translationManifestPath", "")),
-        translation_manifest_digest=str(data.get("translationManifestDigest", "")),
-        runtime_headers=values("runtimeHeaders"), include_directories=values("includeDirectories"),
-        library_directories=values("libraryDirectories"), libraries=values("libraries"),
-        link_kind=str(data.get("linkKind", "executable")),
-        warnings_as_errors=bool(warning.get("warningsAsErrors", True)),
-    )
-
-
-def _tool(name: str) -> bool:
-    return bool(shutil.which(name))
-
-
-def _status(cells: list[dict[str, object]]) -> ValidationStatus:
-    statuses = {str(cell["status"]) for cell in cells}
-    if "failed" in statuses:
-        return ValidationStatus.FAILED
-    if "inconclusive" in statuses:
-        return ValidationStatus.INCONCLUSIVE
-    return ValidationStatus.VERIFIED
+        value = data.get(name, [])
+        if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+            raise ValueError(name + " must be an array of strings")
+        return tuple(value)
+    warning = data.get("warningPolicy", {"warningsAsErrors": True})
+    if not isinstance(warning, Mapping) or set(warning) != {"warningsAsErrors"}:
+        raise ValueError("warningPolicy is malformed")
+    warnings_as_errors = warning.get("warningsAsErrors")
+    if not isinstance(warnings_as_errors, bool): raise ValueError("warningsAsErrors must be boolean")
+    timeout = data.get("runtimeTimeoutSeconds", 10)
+    if isinstance(timeout, bool) or not isinstance(timeout, int): raise ValueError("runtime timeout must be integer")
+    return L0BuildMatrix(string("sourcePath"), string("sourceCompiler"), values("sourceFlags"),
+                         string("targetPath"), values("targetCompilers"), values("targetFlags"),
+                         values("optimizations"), values("sanitizers"), string("workDirectory"),
+                         string("translationManifestPath"), string("translationManifestDigest"),
+                         values("runtimeHeaders"), values("includeDirectories"), values("libraryDirectories"),
+                         values("libraries"), string("linkKind", "executable"), warnings_as_errors, timeout)
 
 
 def _cell_id(compiler: str, optimization: str, sanitizer: str) -> str:
-    return "%s-%s-%s" % (compiler, optimization[1:], sanitizer)
+    return f"{compiler}-{optimization[1:]}-{sanitizer}"
 
 
-def _inspect_elf(path: Path, expected_machine: str, cwd: Path, runner: CommandRunner, tool_available: Callable[[str], bool]) -> CommandResult | None:
-    if not tool_available("readelf"):
-        return None
-    result = runner(("readelf", "-h", str(path)), cwd)
-    if result.returncode or "ELF" not in result.stdout or expected_machine not in result.stdout:
-        return CommandResult(1, result.stdout, result.stderr or "ELF ABI/machine mismatch")
-    return result
+def _status(cells: list[dict[str, object]]) -> ValidationStatus:
+    statuses = {cell["status"] for cell in cells}
+    return (ValidationStatus.FAILED if "failed" in statuses else
+            ValidationStatus.INCONCLUSIVE if "inconclusive" in statuses else ValidationStatus.VERIFIED)
 
 
-def _unsupported_sanitizer(text: str) -> bool:
-    lowered = text.lower()
-    return "unrecognized" in lowered or "unsupported option" in lowered or "cannot find" in lowered and "asan" in lowered
+def _unsupported_sanitizer(text: str, sanitizer: str) -> bool:
+    value = text.lower()
+    names = (sanitizer, "lib" + sanitizer, _SANITIZER_FLAGS.get(sanitizer, sanitizer))
+    unavailable = ("unsupported option", "unrecognized command-line option", "unknown argument",
+                   "cannot find", "unable to find library", "library not found", "not supported")
+    return any(marker in value for marker in unavailable) and any(name in value for name in names)
+
+
+def _sanitizer_finding(result: CommandResult) -> bool:
+    text = (result.stdout + "\n" + result.stderr).lower()
+    return any(marker in text for marker in _SANITIZER_FINDINGS)
+
+
+def _readelf(path: Path, option: str, cwd: Path, runner: CommandRunner, timeout: int) -> CommandResult:
+    return runner(("readelf", option, str(path)), cwd, timeout)
+
+
+def _match(pattern: str, text: str, label: str) -> str:
+    found = re.search(pattern, text, re.MULTILINE)
+    if not found: raise ValueError("readelf output lacks " + label)
+    return found.group(1).strip()
+
+
+def _inspect_elf(path: Path, cwd: Path, runner: CommandRunner, timeout: int) -> tuple[ExpectedElf | None, str]:
+    header = _readelf(path, "-hW", cwd, runner, timeout)
+    program = _readelf(path, "-lW", cwd, runner, timeout)
+    dynamic = _readelf(path, "-dW", cwd, runner, timeout)
+    symbols = _readelf(path, "-sW", cwd, runner, timeout)
+    relocations = _readelf(path, "-rW", cwd, runner, timeout)
+    if any(x.timed_out or x.returncode for x in (header, program, dynamic, symbols, relocations)):
+        return None, "readelf header/program/dynamic/symbol/relocation inspection failed"
+    try:
+        elf_class = _match(r"Class:\s*(ELF\d+)", header.stdout, "class")
+        data = _match(r"Data:\s*([^\n]+)", header.stdout, "data").lower()
+        endian = "little" if "little endian" in data else "big" if "big endian" in data else ""
+        raw_type = _match(r"Type:\s*([A-Z]+)", header.stdout, "type")
+        machine = _match(r"Machine:\s*([^\n]+)", header.stdout, "machine")
+        os_abi = _match(r"OS/ABI:\s*([^\n]+)", header.stdout, "OS/ABI")
+        abi_version = _match(r"ABI Version:\s*([^\n]+)", header.stdout, "ABI version")
+        flags = _match(r"Flags:\s*([^\n]+)", header.stdout, "flags")
+        interpreter_match = re.search(r"Requesting program interpreter:\s*([^\]]+)\]", program.stdout)
+        needed = tuple(sorted(set(re.findall(r"Shared library: \[([^\]]+)\]", dynamic.stdout))))
+        runpath = tuple(sorted(set(re.findall(r"(?:RUNPATH|RPATH).*Library (?:run)?path: \[([^\]]*)\]", dynamic.stdout))))
+        soname_match = re.search(r"SONAME.*Library soname: \[([^\]]+)\]", dynamic.stdout)
+        undefined_names = []
+        for line in symbols.stdout.splitlines():
+            parts = line.split()
+            if "UND" in parts and parts.index("UND") + 1 < len(parts):
+                undefined_names.append(parts[parts.index("UND") + 1].split("@", 1)[0])
+        undefined = tuple(sorted(set(undefined_names)))
+        reloc = tuple(sorted(set(re.findall(r"\b(R_[A-Z0-9_]+)\b", relocations.stdout))))
+        return ExpectedElf(elf_class, endian, raw_type, machine, os_abi, abi_version, flags,
+                           interpreter_match.group(1) if interpreter_match else "", needed, runpath,
+                           soname_match.group(1) if soname_match else "", undefined, reloc), ""
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _elf_matches(actual: ExpectedElf, expected: ExpectedElf) -> bool:
+    return actual == expected
+
+
+def _flags(matrix: L0BuildMatrix, optimization: str, sanitizer: str) -> tuple[str, ...]:
+    flags = (*matrix.target_flags, optimization)
+    if sanitizer != "none": flags += ("-fsanitize=" + _SANITIZER_FLAGS[sanitizer],)
+    if matrix.link_kind == "shared_library": flags += ("-fPIC",)
+    if matrix.warnings_as_errors: flags += ("-Werror",)
+    return flags
+
+
+def _runtime_load(output: Path, compiler: str, sanitizer_flags: tuple[str, ...], matrix: L0BuildMatrix,
+                  ident: str, cwd: Path, runner: CommandRunner) -> CommandResult:
+    if matrix.link_kind == "executable":
+        return runner(("env", "LD_BIND_NOW=1", str(output)), cwd, matrix.runtime_timeout_seconds)
+    harness = cwd / ("dlopen-" + ident + ".c")
+    harness.write_text("#include <dlfcn.h>\nint main(int c,char**v){void*h=dlopen(v[1],RTLD_NOW);"
+                       "if(!h)return 111;return dlclose(h)?112:0;}\n", encoding="utf-8")
+    binary = cwd / ("dlopen-" + ident)
+    built = runner((compiler, *sanitizer_flags, str(harness), "-ldl", "-o", str(binary)),
+                   cwd, matrix.runtime_timeout_seconds)
+    if built.returncode or built.timed_out: return built
+    return runner((str(binary), str(output)), cwd, matrix.runtime_timeout_seconds)
+
+
+def _load_manifest(matrix: L0BuildMatrix):
+    path = Path(matrix.translation_manifest_path)
+    if not path.is_file() or _digest(path) != matrix.translation_manifest_digest:
+        raise ValueError("translation manifest hash mismatch")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("translation manifest is not valid JSON") from exc
+    if not isinstance(raw, Mapping): raise ValueError("translation manifest must be an object")
+    return l0_artifact_manifest_from_dict(raw)
+
+
+def _check_manifest_binding(manifest, matrix: L0BuildMatrix, translation: TranslationArtifact,
+                            source: ProgramArtifact, target: ProgramArtifact) -> str:
+    expected_cells = tuple(_cell_id(c, o, s) for c in matrix.target_compilers
+                           for o in matrix.optimizations for s in matrix.sanitizers)
+    if tuple(manifest.targets) != tuple(sorted(expected_cells)) or set(manifest.targets) != set(expected_cells):
+        return "manifest must declare exactly all 18 target cells"
+    checks = ((manifest.translation_identity, translation.identity),
+              (manifest.plan_identity, translation.translation_plan_id),
+              (manifest.proof_identity, translation.proof_identity),
+              (manifest.runtime_contract_id, translation.runtime_contract_id),
+              (manifest.runtime_contract_version, translation.runtime_contract_version),
+              (manifest.recipe_identity, translation.recipe_id),
+              (manifest.runtime_headers, matrix.runtime_headers),
+              (manifest.include_directories, matrix.include_directories),
+              (manifest.library_directories, matrix.library_directories),
+              (manifest.libraries, matrix.libraries),
+              (manifest.source.artifact_digest, source.artifact_digest),
+              (manifest.source.object_digest, source.artifact_digest),
+              (manifest.source.artifact_kind, source.artifact_kind),
+              (manifest.targets["gcc-O0-none"].artifact_digest, target.artifact_digest),
+              (manifest.targets["gcc-O0-none"].artifact_kind, target.artifact_kind))
+    return "" if all(a == b for a, b in checks) else "manifest translation/artifact binding mismatch"
+
+
+def _cell(status: str, ident: str, detail: str, **facts: object) -> dict[str, object]:
+    return {"id": ident, "status": status, "detail": detail, **facts}
 
 
 def run_l0_build_matrix(
-    matrix: L0BuildMatrix, source_program_artifact: ProgramArtifact,
-    target_program_artifact: ProgramArtifact, *, command_runner: CommandRunner = _run,
-    tool_available: Callable[[str], bool] = _tool,
+    matrix: L0BuildMatrix, translation_artifact: TranslationArtifact,
+    source_program_artifact: ProgramArtifact, target_program_artifact: ProgramArtifact, *,
+    command_runner: CommandRunner = _run, tool_available: Callable[[str], bool] = lambda name: bool(shutil.which(name)),
 ) -> ValidationLayerResult:
-    """Build the RV64 source and every x86-64 target matrix cell.
-
-    The supplied ProgramArtifact digests are expected hashes, not decorative
-    metadata.  The source is an RV64 object; the designated primary target is
-    GCC/-O0/no-sanitizer and must be the linked artifact path supplied to the
-    validation entry point.
-    """
     cells: list[dict[str, object]] = []
     cwd = Path(matrix.work_directory)
     cwd.mkdir(parents=True, exist_ok=True)
-    manifest = Path(matrix.translation_manifest_path)
-    if not manifest.is_file() or _digest(manifest) != matrix.translation_manifest_digest:
-        cells.append({"id": "manifest", "status": "failed", "detail": "translation manifest hash mismatch"})
-    elif source_program_artifact.artifact_kind != "object" or target_program_artifact.artifact_kind != matrix.link_kind:
-        cells.append({"id": "artifact-kind", "status": "failed", "detail": "artifact kind does not match L0 build contract"})
-    elif not tool_available(matrix.source_compiler) or not tool_available("readelf"):
-        cells.append({"id": "source-rv64", "status": "inconclusive", "detail": "source compiler or readelf unavailable"})
-    else:
-        source_out = Path(source_program_artifact.artifact_path)
-        source_out.parent.mkdir(parents=True, exist_ok=True)
-        source_flags = (*matrix.source_flags, "-Werror") if matrix.warnings_as_errors else matrix.source_flags
-        source = command_runner((matrix.source_compiler, *source_flags, "-c", matrix.source_path, "-o", str(source_out)), cwd)
-        elf = _inspect_elf(source_out, "RISC-V", cwd, command_runner, tool_available) if source.returncode == 0 and source_out.is_file() else CommandResult(1, "", "source build did not produce object")
-        ok = (source.returncode == 0 and elf is not None and elf.returncode == 0
-              and _digest(source_out) == source_program_artifact.artifact_digest
-              and (not matrix.warnings_as_errors or "warning:" not in source.stderr))
-        cells.append({"id": "source-rv64", "status": "verified" if ok else "failed", "detail": source.stderr or (elf.stderr if elf else "readelf unavailable")})
+    try:
+        manifest = _load_manifest(matrix)
+        binding_error = _check_manifest_binding(manifest, matrix, translation_artifact,
+                                                source_program_artifact, target_program_artifact)
+        if binding_error: raise ValueError(binding_error)
+    except ValueError as exc:
+        cells.append(_cell("failed", "manifest", str(exc)))
+        return _finish(matrix, cells)
+
+    required_tools = {matrix.source_compiler, "readelf", *matrix.target_compilers}
+    missing = sorted(tool for tool in required_tools if not tool_available(tool))
+    if missing:
+        cells.append(_cell("inconclusive", "tools", "unavailable tools: " + ",".join(missing)))
+        return _finish(matrix, cells)
+
+    source_out = Path(source_program_artifact.artifact_path)
+    source_out.parent.mkdir(parents=True, exist_ok=True)
+    source_flags = (*matrix.source_flags, *(("-Werror",) if matrix.warnings_as_errors else ()))
+    triple = command_runner((matrix.source_compiler, "-dumpmachine"), cwd, matrix.runtime_timeout_seconds)
+    built = command_runner((matrix.source_compiler, *source_flags, "-c", matrix.source_path,
+                            "-o", str(source_out)), cwd, matrix.runtime_timeout_seconds)
+    source_elf, elf_detail = _inspect_elf(source_out, cwd, command_runner, matrix.runtime_timeout_seconds) \
+        if not built.returncode and source_out.is_file() else (None, "source object missing")
+    source_bad = (triple.returncode or triple.timed_out or built.returncode or built.timed_out or source_elf is None or
+                  triple.stdout.strip() != manifest.source.compiler_triple or manifest.source.compiler_identity != matrix.source_compiler or
+                  manifest.source.flags != source_flags or not source_out.is_file() or
+                  _digest(source_out) != manifest.source.artifact_digest or
+                  manifest.source.object_elf != manifest.source.elf or
+                  source_elf is not None and not _elf_matches(source_elf, manifest.source.elf) or
+                  matrix.warnings_as_errors and "warning:" in built.stderr.lower())
+    cells.append(_cell("failed" if source_bad else "verified", "source-rv64",
+                       built.stderr or elf_detail, artifactDigest=_digest(source_out) if source_out.is_file() else "",
+                       compilerTriple=triple.stdout.strip()))
 
     includes = tuple("-I" + item for item in matrix.include_directories)
     libdirs = tuple("-L" + item for item in matrix.library_directories)
     libs = tuple("-l" + item for item in matrix.libraries)
     for compiler in matrix.target_compilers:
+        compiler_triple = command_runner((compiler, "-dumpmachine"), cwd, matrix.runtime_timeout_seconds)
         for optimization in matrix.optimizations:
             for sanitizer in matrix.sanitizers:
                 ident = _cell_id(compiler, optimization, sanitizer)
-                if not tool_available(compiler) or not tool_available("readelf") or not tool_available("ldd"):
-                    cells.append({"id": ident, "status": "inconclusive", "detail": "target compiler, readelf, or loader unavailable"})
-                    continue
-                sanitizer_flags = () if sanitizer == "none" else ("-fsanitize=" + sanitizer,)
-                common = (*matrix.target_flags, optimization, *sanitizer_flags, *includes)
-                if matrix.warnings_as_errors:
-                    common += ("-Werror",)
-                syntax = command_runner((compiler, "-fsyntax-only", *common, matrix.target_path), cwd)
-                if syntax.returncode:
-                    cells.append({"id": ident, "status": "inconclusive" if sanitizer != "none" and _unsupported_sanitizer(syntax.stderr) else "failed", "detail": syntax.stderr})
-                    continue
-                header_probe = cwd / ("l0-headers-" + ident + ".c")
-                header_probe.write_text("".join('#include <%s>\n' % h for h in matrix.runtime_headers) + "int main(void){return 0;}\n", encoding="utf-8")
-                headers = command_runner((compiler, "-fsyntax-only", *common, str(header_probe)), cwd)
-                if headers.returncode:
-                    cells.append({"id": ident, "status": "failed", "detail": "runtime header resolution: " + headers.stderr})
-                    continue
+                expected = manifest.targets[ident]
+                sanitizer_flags = () if sanitizer == "none" else ("-fsanitize=" + _SANITIZER_FLAGS[sanitizer],)
+                flags = _flags(matrix, optimization, sanitizer)
+                if compiler_triple.returncode or compiler_triple.timed_out:
+                    cells.append(_cell("inconclusive", ident, "compiler triple unavailable")); continue
+                if (expected.compiler_identity != compiler or expected.compiler_triple != compiler_triple.stdout.strip() or
+                        expected.flags != flags or expected.runtime_libraries != matrix.libraries or
+                        expected.artifact_kind != matrix.link_kind):
+                    cells.append(_cell("failed", ident, "manifest toolchain/flags/runtime declaration mismatch")); continue
+                common = (*flags, *includes)
+                syntax = command_runner((compiler, "-fsyntax-only", *common, matrix.target_path), cwd,
+                                        matrix.runtime_timeout_seconds)
+                if syntax.returncode or syntax.timed_out:
+                    status = "inconclusive" if sanitizer != "none" and _unsupported_sanitizer(syntax.stderr, sanitizer) else "failed"
+                    cells.append(_cell(status, ident, "target syntax: " + syntax.stderr)); continue
+                header = cwd / ("headers-" + ident + ".c")
+                header.write_text("".join(f"#include <{name}>\n" for name in matrix.runtime_headers) +
+                                  "int main(void){return 0;}\n", encoding="utf-8")
+                header_result = command_runner((compiler, "-fsyntax-only", *common, str(header)), cwd,
+                                               matrix.runtime_timeout_seconds)
+                if header_result.returncode or header_result.timed_out:
+                    cells.append(_cell("failed", ident, "runtime header resolution: " + header_result.stderr)); continue
                 obj = cwd / (ident + ".o")
-                built = command_runner((compiler, "-c", *common, matrix.target_path, "-o", str(obj)), cwd)
-                output = Path(target_program_artifact.artifact_path) if ident == "gcc-O0-none" else cwd / (ident + (".so" if matrix.link_kind == "shared_library" else ".exe"))
+                object_result = command_runner((compiler, "-c", *common, matrix.target_path, "-o", str(obj)), cwd,
+                                               matrix.runtime_timeout_seconds)
+                output = (Path(target_program_artifact.artifact_path) if ident == "gcc-O0-none" else
+                          cwd / (ident + (".so" if matrix.link_kind == "shared_library" else ".exe")))
                 output.parent.mkdir(parents=True, exist_ok=True)
-                link_flags = ("-shared",) if matrix.link_kind == "shared_library" else ()
-                linked = command_runner((compiler, *sanitizer_flags, *link_flags, str(obj), "-o", str(output), *libdirs, *libs), cwd)
-                elf = _inspect_elf(output, "X86-64", cwd, command_runner, tool_available) if linked.returncode == 0 and output.is_file() else CommandResult(1, "", "target link did not produce artifact")
-                load = command_runner(("ldd", str(output)), cwd) if elf is not None and elf.returncode == 0 else CommandResult(1, "", "not loadable")
-                warning_text = syntax.stderr + headers.stderr + built.stderr + linked.stderr
-                bad = built.returncode or linked.returncode or elf is None or elf.returncode or load.returncode or "not found" in load.stdout or (matrix.warnings_as_errors and "warning:" in warning_text)
-                unsupported = sanitizer != "none" and _unsupported_sanitizer(warning_text)
-                digest_bad = ident == "gcc-O0-none" and (not output.is_file() or _digest(output) != target_program_artifact.artifact_digest)
-                cells.append({"id": ident, "status": "inconclusive" if unsupported else "failed" if bad or digest_bad else "verified", "detail": warning_text or load.stderr, "artifactDigest": _digest(output) if output.is_file() else ""})
+                link_mode = ("-shared",) if matrix.link_kind == "shared_library" else ()
+                link_result = command_runner((compiler, *sanitizer_flags, *link_mode, str(obj), "-o", str(output),
+                                              *libdirs, *libs), cwd, matrix.runtime_timeout_seconds)
+                text = syntax.stderr + header_result.stderr + object_result.stderr + link_result.stderr
+                if object_result.returncode or link_result.returncode or object_result.timed_out or link_result.timed_out:
+                    status = "inconclusive" if sanitizer != "none" and _unsupported_sanitizer(text, sanitizer) else "failed"
+                    cells.append(_cell(status, ident, "compile/link: " + text)); continue
+                object_elf, object_detail = _inspect_elf(obj, cwd, command_runner, matrix.runtime_timeout_seconds)
+                if (not obj.is_file() or _digest(obj) != expected.object_digest or object_elf is None or
+                        not _elf_matches(object_elf, expected.object_elf)):
+                    cells.append(_cell("failed", ident, "object ELF/ABI/relocation mismatch: " + object_detail)); continue
+                actual_elf, elf_detail = _inspect_elf(output, cwd, command_runner, matrix.runtime_timeout_seconds)
+                if actual_elf is None or not _elf_matches(actual_elf, expected.elf):
+                    cells.append(_cell("failed", ident, "ELF/ABI/dependency mismatch: " + elf_detail)); continue
+                if not output.is_file() or _digest(output) != expected.artifact_digest:
+                    cells.append(_cell("failed", ident, "cell artifact digest mismatch")); continue
+                if matrix.warnings_as_errors and "warning:" in text.lower():
+                    cells.append(_cell("failed", ident, "compiler warning under Werror policy")); continue
+                runtime = _runtime_load(output, compiler, sanitizer_flags, matrix, ident, cwd, command_runner)
+                if runtime.timed_out:
+                    cells.append(_cell("failed", ident, "runtime-load timed out")); continue
+                if runtime.returncode < 0:
+                    cells.append(_cell("failed", ident, "runtime-load terminated by signal")); continue
+                if _sanitizer_finding(runtime):
+                    cells.append(_cell("failed", ident, "sanitizer runtime finding: " + runtime.stderr)); continue
+                if runtime.returncode:
+                    cells.append(_cell("failed", ident, "runtime-load exit code %d: %s" % (runtime.returncode, runtime.stderr))); continue
+                cells.append(_cell("verified", ident, runtime.stderr,
+                                   artifactDigest=_digest(output), compilerTriple=compiler_triple.stdout.strip(),
+                                   runtimeExitCode=runtime.returncode))
+    return _finish(matrix, cells)
 
-    status = _status(cells)
-    evidence = "sha256:" + sha256(json.dumps({"schemaVersion": L0_BUILD_MATRIX_SCHEMA, "manifest": matrix.translation_manifest_digest, "cells": cells}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return ValidationLayerResult(ValidationLevel.L0, status, evidence, json.dumps(cells, sort_keys=True))
+
+def _finish(matrix: L0BuildMatrix, cells: list[dict[str, object]]) -> ValidationLayerResult:
+    payload = {"schemaVersion": L0_BUILD_MATRIX_SCHEMA, "manifest": matrix.translation_manifest_digest, "cells": cells}
+    evidence = "sha256:" + sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return ValidationLayerResult(ValidationLevel.L0, _status(cells), evidence, json.dumps(cells, sort_keys=True))
 
 
 def build_l0_validator(matrix: L0BuildMatrix) -> Callable[..., ValidationLayerResult]:
     def validator(**kwargs: object) -> ValidationLayerResult:
         if kwargs.get("level") is not ValidationLevel.L0:
-            return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.FAILED, detail="L0 validator invoked for wrong level")
-        return run_l0_build_matrix(matrix, kwargs["source_program_artifact"], kwargs["target_program_artifact"])
+            return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.FAILED,
+                                         detail="L0 validator invoked for wrong level")
+        return run_l0_build_matrix(matrix, kwargs["translation_artifact"],
+                                   kwargs["source_program_artifact"], kwargs["target_program_artifact"])
+    setattr(validator, "l0_matrix", matrix)
     return validator

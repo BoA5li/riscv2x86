@@ -1,0 +1,55 @@
+name: Phase 8 L0 validation
+
+on:
+  push:
+    branches:
+      - fix-phase8-observation-schema-v2
+      - fix-phase8-l0-runtime-manifest
+  pull_request:
+
+jobs:
+  l0-contract-and-real-toolchains:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test and RV64 toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu clang binutils
+          python -m pip install pytest
+      - name: Run L0 contract tests
+        env:
+          PYTHONPATH: pytools
+        run: python -m pytest -q pytools/tests/test_l0_build_matrix.py pytools/tests/test_validation_configuration.py
+      - name: Exercise real RV64, GCC, Clang, ASan and UBSan builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          printf 'int rv64_object(int x){return x+1;}\n' > "$work/source.c"
+          riscv64-linux-gnu-gcc -march=rv64gc -mabi=lp64d -Werror -c "$work/source.c" -o "$work/source.o"
+          readelf -hW "$work/source.o" | grep -q 'Class:.*ELF64'
+          readelf -hW "$work/source.o" | grep -q 'Machine:.*RISC-V'
+          printf '#include <stdlib.h>\nint main(void){return 0;}\n' > "$work/target.c"
+          for cc in gcc clang; do
+            for opt in O0 O2 O3; do
+              "$cc" "-$opt" -Wall -Werror "$work/target.c" -o "$work/${cc}-${opt}"
+              env LD_BIND_NOW=1 "$work/${cc}-${opt}"
+              "$cc" "-$opt" -Wall -Werror -fsanitize=address "$work/target.c" -o "$work/${cc}-${opt}-asan"
+              "$work/${cc}-${opt}-asan"
+              "$cc" "-$opt" -Wall -Werror -fsanitize=undefined "$work/target.c" -o "$work/${cc}-${opt}-ubsan"
+              "$work/${cc}-${opt}-ubsan"
+              "$cc" "-$opt" -Wall -Werror -fPIC -shared "$work/source.c" -o "$work/${cc}-${opt}.so"
+              python -c 'import ctypes,os,sys; ctypes.CDLL(sys.argv[1], mode=os.RTLD_NOW)' "$work/${cc}-${opt}.so"
+            done
+          done
+          printf '#include <stdlib.h>\nint main(void){volatile int i=1;int*p=malloc(sizeof(int));p[i]=1;free(p);return 0;}\n' > "$work/asan-bad.c"
+          gcc -O0 -fsanitize=address "$work/asan-bad.c" -o "$work/asan-bad"
+          if ASAN_OPTIONS=halt_on_error=1 "$work/asan-bad"; then exit 1; fi
+          printf '#include <limits.h>\nint main(void){volatile int x=INT_MAX;return (x+1)==0;}\n' > "$work/ubsan-bad.c"
+          gcc -O0 -fsanitize=undefined "$work/ubsan-bad.c" -o "$work/ubsan-bad"
+          if UBSAN_OPTIONS=halt_on_error=1 "$work/ubsan-bad"; then exit 1; fi
