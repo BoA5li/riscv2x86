@@ -15,12 +15,17 @@ from .translation_validation import ProgramArtifact, TranslationArtifact, Valida
 from .validation_status import ValidationStatus
 
 L0_BUILD_MATRIX_SCHEMA = "riscv2x86.l0-build-matrix.v2"
+L0_ELF_ABI_POLICY_VERSION = "riscv2x86.l0-elf-abi-policy.v1"
 _OPTIMIZATIONS = ("-O0", "-O2", "-O3")
 _SANITIZERS = ("none", "asan", "ubsan")
 _COMPILERS = ("gcc", "clang")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SANITIZER_FINDINGS = ("addresssanitizer", "undefinedbehaviorsanitizer", "runtime error:", "ubsan:")
 _SANITIZER_FLAGS = {"asan": "address", "ubsan": "undefined"}
+_SOURCE_ISA = "rv64gc"
+_SOURCE_ABI = "lp64d"
+_TARGET_ISA = "x86_64"
+_TARGET_ABI = "sysv_amd64"
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,111 @@ def _elf_matches(actual: ExpectedElf, expected: ExpectedElf) -> bool:
     return actual == expected
 
 
+def _numeric_elf_flags(value: str) -> int | None:
+    match = re.match(r"\s*0x([0-9a-fA-F]+)", value)
+    return None if match is None else int(match.group(1), 16)
+
+
+def _machine_is_x86_64(value: str) -> bool:
+    normalized = value.strip().lower().replace("_", "-")
+    return normalized in {
+        "advanced micro devices x86-64", "amd x86-64", "x86-64",
+    }
+
+
+def _common_elf64_error(elf: ExpectedElf) -> str:
+    if elf.elf_class != "ELF64":
+        return "ELF class must be ELF64"
+    if elf.endian != "little":
+        return "ELF data encoding must be little-endian"
+    if elf.os_abi not in {"UNIX - System V", "UNIX - GNU"}:
+        return "ELF OS/ABI is incompatible with the supported Linux/System-V ABI"
+    if elf.abi_version != "0":
+        return "ELF ABI version must be zero"
+    return ""
+
+
+def _source_elf_abi_error(elf: ExpectedElf) -> str:
+    reason = _common_elf64_error(elf)
+    if reason:
+        return reason
+    if elf.elf_type != "REL" or elf.machine.strip() != "RISC-V":
+        return "RV64 source artifact must be an EM_RISCV relocatable object"
+    flags = _numeric_elf_flags(elf.abi_flags)
+    if flags is None:
+        return "RV64 ELF e_flags are not parseable"
+    if flags & 0x6 != 0x4:
+        return "RV64 ELF does not declare the LP64D double-float ABI"
+    if flags & 0x1 == 0:
+        return "RV64GC ELF does not declare the compressed-instruction extension"
+    if flags & 0x8:
+        return "RV64 ELF incorrectly declares the RV32E ABI"
+    if elf.interpreter or elf.needed or elf.soname:
+        return "RV64 source object unexpectedly contains dynamic-link metadata"
+    if any(not item.startswith("R_RISCV_") for item in elf.relocation_types):
+        return "RV64 source object contains a non-RISC-V relocation"
+    return ""
+
+
+def _target_elf_abi_error(elf: ExpectedElf, *, artifact_kind: str) -> str:
+    reason = _common_elf64_error(elf)
+    if reason:
+        return reason
+    if not _machine_is_x86_64(elf.machine):
+        return "target artifact must use the x86-64 ELF machine"
+    flags = _numeric_elf_flags(elf.abi_flags)
+    if flags != 0:
+        return "x86-64 ELF e_flags must be zero"
+    if any(not item.startswith("R_X86_64_") for item in elf.relocation_types):
+        return "target artifact contains a non-x86-64 relocation"
+    if artifact_kind == "object":
+        if elf.elf_type != "REL":
+            return "x86-64 object must have ELF type ET_REL"
+        if elf.interpreter or elf.needed or elf.soname:
+            return "x86-64 object unexpectedly contains dynamic-link metadata"
+    elif artifact_kind == "executable":
+        if elf.elf_type not in {"EXEC", "DYN"}:
+            return "x86-64 executable must have ELF type ET_EXEC or PIE ET_DYN"
+        if elf.elf_type == "DYN" and not elf.interpreter:
+            return "x86-64 PIE executable lacks a dynamic interpreter"
+        if elf.soname:
+            return "x86-64 executable must not declare a shared-library SONAME"
+    elif artifact_kind == "shared_library":
+        if elf.elf_type != "DYN":
+            return "x86-64 shared library must have ELF type ET_DYN"
+        if elf.interpreter:
+            return "x86-64 shared library must not declare a program interpreter"
+    else:
+        return "unsupported target artifact kind"
+    return ""
+
+
+def _environment_abi_error(environment: Mapping[str, object] | None) -> str:
+    if environment is None:
+        return ""
+    required = {
+        "sourceIsa": _SOURCE_ISA, "sourceAbi": _SOURCE_ABI,
+        "targetIsa": _TARGET_ISA, "targetAbi": _TARGET_ABI,
+    }
+    if any(environment.get(name) != value for name, value in required.items()):
+        return "L0 environment is outside the fixed RV64GC/LP64D to x86-64/SysV ABI policy"
+    return ""
+
+
+def _source_triple_error(value: str) -> str:
+    normalized = value.strip().lower()
+    return "" if "riscv64" in normalized and "riscv32" not in normalized else (
+        "source compiler triple is not RV64"
+    )
+
+
+def _target_triple_error(value: str) -> str:
+    normalized = value.strip().lower()
+    return "" if "x86_64" in normalized or "amd64" in normalized else (
+        "target compiler triple is not x86-64"
+    )
+
+
 def _flags(matrix: L0BuildMatrix, optimization: str, sanitizer: str) -> tuple[str, ...]:
     flags = (*matrix.target_flags, optimization)
     if sanitizer != "none": flags += ("-fsanitize=" + _SANITIZER_FLAGS[sanitizer],)
@@ -248,6 +358,7 @@ def _cell(status: str, ident: str, detail: str, **facts: object) -> dict[str, ob
 def run_l0_build_matrix(
     matrix: L0BuildMatrix, translation_artifact: TranslationArtifact,
     source_program_artifact: ProgramArtifact, target_program_artifact: ProgramArtifact, *,
+    target_environment: Mapping[str, object] | None = None,
     command_runner: CommandRunner = _run, tool_available: Callable[[str], bool] = lambda name: bool(shutil.which(name)),
 ) -> ValidationLayerResult:
     cells: list[dict[str, object]] = []
@@ -260,6 +371,11 @@ def run_l0_build_matrix(
         if binding_error: raise ValueError(binding_error)
     except ValueError as exc:
         cells.append(_cell("failed", "manifest", str(exc)))
+        return _finish(matrix, cells)
+
+    environment_error = _environment_abi_error(target_environment)
+    if environment_error:
+        cells.append(_cell("failed", "elf-abi-policy", environment_error))
         return _finish(matrix, cells)
 
     required_tools = {matrix.source_compiler, "readelf", *matrix.target_compilers}
@@ -276,7 +392,10 @@ def run_l0_build_matrix(
                             "-o", str(source_out)), cwd, matrix.runtime_timeout_seconds)
     source_elf, elf_detail = _inspect_elf(source_out, cwd, command_runner, matrix.runtime_timeout_seconds) \
         if not built.returncode and source_out.is_file() else (None, "source object missing")
+    source_policy_error = "" if source_elf is None else _source_elf_abi_error(source_elf)
+    source_triple_error = _source_triple_error(triple.stdout) if not triple.returncode else ""
     source_bad = (triple.returncode or triple.timed_out or built.returncode or built.timed_out or source_elf is None or
+                  bool(source_policy_error) or bool(source_triple_error) or
                   triple.stdout.strip() != manifest.source.compiler_triple or manifest.source.compiler_identity != matrix.source_compiler or
                   manifest.source.flags != source_flags or not source_out.is_file() or
                   _digest(source_out) != manifest.source.artifact_digest or
@@ -284,7 +403,8 @@ def run_l0_build_matrix(
                   source_elf is not None and not _elf_matches(source_elf, manifest.source.elf) or
                   matrix.warnings_as_errors and "warning:" in built.stderr.lower())
     cells.append(_cell("failed" if source_bad else "verified", "source-rv64",
-                       built.stderr or elf_detail, artifactDigest=_digest(source_out) if source_out.is_file() else "",
+                       built.stderr or source_policy_error or source_triple_error or elf_detail,
+                       artifactDigest=_digest(source_out) if source_out.is_file() else "",
                        compilerTriple=triple.stdout.strip()))
 
     includes = tuple("-I" + item for item in matrix.include_directories)
@@ -300,6 +420,9 @@ def run_l0_build_matrix(
                 flags = _flags(matrix, optimization, sanitizer)
                 if compiler_triple.returncode or compiler_triple.timed_out:
                     cells.append(_cell("inconclusive", ident, "compiler triple unavailable")); continue
+                triple_policy_error = _target_triple_error(compiler_triple.stdout)
+                if triple_policy_error:
+                    cells.append(_cell("failed", ident, triple_policy_error)); continue
                 if (expected.compiler_identity != compiler or expected.compiler_triple != compiler_triple.stdout.strip() or
                         expected.flags != flags or expected.runtime_libraries != matrix.libraries or
                         expected.artifact_kind != matrix.link_kind):
@@ -331,12 +454,20 @@ def run_l0_build_matrix(
                     status = "inconclusive" if sanitizer != "none" and _unsupported_sanitizer(text, sanitizer) else "failed"
                     cells.append(_cell(status, ident, "compile/link: " + text)); continue
                 object_elf, object_detail = _inspect_elf(obj, cwd, command_runner, matrix.runtime_timeout_seconds)
+                object_policy_error = "" if object_elf is None else _target_elf_abi_error(
+                    object_elf, artifact_kind="object",
+                )
                 if (not obj.is_file() or _digest(obj) != expected.object_digest or object_elf is None or
-                        not _elf_matches(object_elf, expected.object_elf)):
-                    cells.append(_cell("failed", ident, "object ELF/ABI/relocation mismatch: " + object_detail)); continue
+                        bool(object_policy_error) or not _elf_matches(object_elf, expected.object_elf)):
+                    cells.append(_cell("failed", ident, "object ELF/ABI/relocation mismatch: " +
+                                       (object_policy_error or object_detail))); continue
                 actual_elf, elf_detail = _inspect_elf(output, cwd, command_runner, matrix.runtime_timeout_seconds)
-                if actual_elf is None or not _elf_matches(actual_elf, expected.elf):
-                    cells.append(_cell("failed", ident, "ELF/ABI/dependency mismatch: " + elf_detail)); continue
+                final_policy_error = "" if actual_elf is None else _target_elf_abi_error(
+                    actual_elf, artifact_kind=matrix.link_kind,
+                )
+                if actual_elf is None or final_policy_error or not _elf_matches(actual_elf, expected.elf):
+                    cells.append(_cell("failed", ident, "ELF/ABI/dependency mismatch: " +
+                                       (final_policy_error or elf_detail))); continue
                 if not output.is_file() or _digest(output) != expected.artifact_digest:
                     cells.append(_cell("failed", ident, "cell artifact digest mismatch")); continue
                 if matrix.warnings_as_errors and "warning:" in text.lower():
@@ -357,7 +488,12 @@ def run_l0_build_matrix(
 
 
 def _finish(matrix: L0BuildMatrix, cells: list[dict[str, object]]) -> ValidationLayerResult:
-    payload = {"schemaVersion": L0_BUILD_MATRIX_SCHEMA, "manifest": matrix.translation_manifest_digest, "cells": cells}
+    payload = {
+        "schemaVersion": L0_BUILD_MATRIX_SCHEMA,
+        "elfAbiPolicyVersion": L0_ELF_ABI_POLICY_VERSION,
+        "manifest": matrix.translation_manifest_digest,
+        "cells": cells,
+    }
     evidence = "sha256:" + sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return ValidationLayerResult(ValidationLevel.L0, _status(cells), evidence, json.dumps(cells, sort_keys=True))
 
@@ -368,6 +504,7 @@ def build_l0_validator(matrix: L0BuildMatrix) -> Callable[..., ValidationLayerRe
             return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.FAILED,
                                          detail="L0 validator invoked for wrong level")
         return run_l0_build_matrix(matrix, kwargs["translation_artifact"],
-                                   kwargs["source_program_artifact"], kwargs["target_program_artifact"])
+                                   kwargs["source_program_artifact"], kwargs["target_program_artifact"],
+                                   target_environment=kwargs.get("target_environment"))
     setattr(validator, "l0_matrix", matrix)
     return validator
