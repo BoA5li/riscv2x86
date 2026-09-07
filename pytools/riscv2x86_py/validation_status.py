@@ -10,7 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import re
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
+
+if TYPE_CHECKING:
+    from .l0_artifact_manifest import L0ArtifactManifest
+    from .translation_validation import (
+        ProgramArtifact, TranslationArtifact, TranslationValidationResult,
+    )
 
 
 VALIDATION_STATUS_VERSION = "riscv2x86.validation-status.v1"
@@ -242,18 +248,123 @@ def _validation_evidence_reason(
     return ""
 
 
+def _typed_writeback_binding_reason(
+    result: "TranslationValidationResult",
+    manifest: "L0ArtifactManifest",
+    manifest_digest: str,
+    translation: "TranslationArtifact",
+    source: "ProgramArtifact",
+    target: "ProgramArtifact",
+    artifact: Mapping[str, object],
+) -> str:
+    """Prove that the gate inputs form one validation transaction."""
+    from .translation_validation import ValidationProfile
+
+    evidence = artifact.get("validationEvidence")
+    if not isinstance(evidence, Mapping):
+        return "validation.writeback-evidence-missing"
+    if not _sha256_identity(result.validation_identity):
+        return "validation.writeback-result-identity-invalid"
+    if (
+        evidence.get("validationIdentity") != result.validation_identity
+        or evidence.get("validationStatus") != result.status.value
+        or evidence.get("validationProfile") != result.profile.value
+    ):
+        return "validation.writeback-result-evidence-mismatch"
+
+    profile_levels = {
+        ValidationProfile.BUILD: ("L0",),
+        ValidationProfile.FUNCTIONAL: ("L0", "L1"),
+        ValidationProfile.ARCHITECTURAL: ("L0", "L1", "L2"),
+        ValidationProfile.MICROARCH: ("L0", "L1", "L2", "L3"),
+    }
+    required = profile_levels.get(result.profile)
+    actual_levels = tuple(item.level.value for item in result.layer_results)
+    completed = tuple(item.value for item in result.completed_levels)
+    if (
+        required is None
+        or actual_levels != required
+        or completed != required
+        or result.reason_codes
+        or any(item.status is not ValidationStatus.VERIFIED for item in result.layer_results)
+        or any(not _sha256_identity(item.evidence_identity) for item in result.layer_results)
+    ):
+        return "validation.writeback-result-levels-invalid"
+    evidence_levels = evidence.get("levels")
+    if not isinstance(evidence_levels, Mapping) or set(evidence_levels) != set(required):
+        return "validation.writeback-result-evidence-mismatch"
+    for item in result.layer_results:
+        recorded = evidence_levels.get(item.level.value)
+        if not isinstance(recorded, Mapping) or (
+            recorded.get("status") != item.status.value
+            or recorded.get("evidenceIdentity") != item.evidence_identity
+        ):
+            return "validation.writeback-result-evidence-mismatch"
+
+    if not _sha256_identity(manifest_digest):
+        return "validation.writeback-manifest-digest-invalid"
+    if evidence.get("translationManifestDigest") != manifest_digest:
+        return "validation.writeback-manifest-object-mismatch"
+    baseline = manifest.targets.get("gcc-O0-none")
+    if baseline is None:
+        return "validation.writeback-manifest-target-missing"
+    if (
+        manifest.translation_identity != translation.identity
+        or manifest.plan_identity != translation.translation_plan_id
+        or manifest.proof_identity != translation.proof_identity
+        or manifest.runtime_contract_id != translation.runtime_contract_id
+        or manifest.runtime_contract_version != translation.runtime_contract_version
+        or manifest.recipe_identity != translation.recipe_id
+        or manifest.source.artifact_digest != source.artifact_digest
+        or manifest.source.artifact_kind != source.artifact_kind
+        or baseline.artifact_digest != target.artifact_digest
+        or baseline.artifact_kind != target.artifact_kind
+    ):
+        return "validation.writeback-typed-manifest-binding-mismatch"
+    if (
+        evidence.get("sourceArtifactDigest") != source.artifact_digest
+        or evidence.get("targetArtifactDigest") != target.artifact_digest
+        or preservation_mode_from_artifact(artifact) is not translation.preservation_mode
+        or artifact.get("proofIdentity") != translation.proof_identity
+        or artifact.get("shellFactsIdentity") != translation.shell_facts_identity
+        or _runtime_identity(artifact) != (
+            translation.runtime_contract_id, translation.runtime_contract_version,
+        )
+        or tuple(artifact.get("ignoredSourceState", ()))
+            != translation.ignored_source_state
+    ):
+        return "validation.writeback-typed-artifact-binding-mismatch"
+    return ""
+
+
 def admit_writeback(
-    status: str | ValidationStatus,
+    validation_result: "TranslationValidationResult",
+    artifact_manifest: "L0ArtifactManifest",
     *,
+    manifest_digest: str,
+    translation_artifact: "TranslationArtifact",
+    source_program_artifact: "ProgramArtifact",
+    target_program_artifact: "ProgramArtifact",
     approval_artifact: Mapping[str, object] | None = None,
 ) -> WritebackAdmission:
-    """Return the only policy decision that may authorize a replacement.
+    """Authorize only one complete, typed and manifest-bound transaction."""
+    from .l0_artifact_manifest import L0ArtifactManifest
+    from .translation_validation import (
+        ProgramArtifact, TranslationArtifact, TranslationValidationResult,
+    )
 
-    Unclassified legacy strict recipes remain eligible only after an actual
-    ``verified`` result.  New functional and microarchitecture claims have
-    stronger, explicit manifest requirements.
-    """
-    normalized = normalize_validation_status(status)
+    if not (
+        isinstance(validation_result, TranslationValidationResult)
+        and isinstance(artifact_manifest, L0ArtifactManifest)
+        and isinstance(translation_artifact, TranslationArtifact)
+        and isinstance(source_program_artifact, ProgramArtifact)
+        and isinstance(target_program_artifact, ProgramArtifact)
+    ):
+        return WritebackAdmission(
+            False, ValidationStatus.FAILED,
+            "validation.writeback-typed-input-invalid",
+        )
+    normalized = validation_result.status
     if normalized is not ValidationStatus.VERIFIED:
         return WritebackAdmission(False, normalized, "validation.writeback-not-verified")
 
@@ -263,6 +374,13 @@ def admit_writeback(
         return WritebackAdmission(
             False, normalized, "validation.writeback-preservation-mode-missing",
         )
+    reason = _typed_writeback_binding_reason(
+        validation_result, artifact_manifest, manifest_digest,
+        translation_artifact, source_program_artifact,
+        target_program_artifact, artifact,
+    )
+    if reason:
+        return WritebackAdmission(False, normalized, reason)
     reason = _validation_evidence_reason(artifact, mode)
     if reason:
         return WritebackAdmission(False, normalized, reason)
