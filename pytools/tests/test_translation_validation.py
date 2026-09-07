@@ -1,6 +1,7 @@
 from riscv2x86_py.translation_validation import (
     ProgramArtifact,
     TranslationArtifact,
+    TargetEnvironment,
     ValidationLayerResult,
     ValidationLevel,
     ValidationPlan,
@@ -9,6 +10,7 @@ from riscv2x86_py.translation_validation import (
     run_translation_validation,
 )
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
+from hashlib import sha256
 
 
 def _translation(mode=PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY):
@@ -23,6 +25,17 @@ def _program(name):
     return ProgramArtifact(name, "/tmp/" + name, "executable", "sha256:" + name, "build-1")
 
 
+def _environment(source_runners=("qemu",), target_runners=("native",)):
+    return TargetEnvironment(
+        "environment-1", "rv64gc", "lp64d", "x86_64", "sysv_amd64",
+        source_runners, target_runners, ("none",), "runtime-1", "loader-1",
+    )
+
+
+def _digest(value):
+    return "sha256:" + sha256(value.encode()).hexdigest()
+
+
 def _plan(profile):
     return ValidationPlan("validation-plan-1", profile, "qemu", "native", 7, 30, "registry-v1", "experiment-v1" if profile is ValidationProfile.MICROARCH else "")
 
@@ -31,7 +44,7 @@ def _registry(calls, levels):
     def validate(**kwargs):
         level = kwargs["level"]
         calls.append(level)
-        return ValidationLayerResult(level, ValidationStatus.VERIFIED, "evidence:" + level.value)
+        return ValidationLayerResult(level, ValidationStatus.VERIFIED, _digest("evidence:" + level.value))
     return ValidationRuntimeRegistry("registry-v1", {level: validate for level in levels})
 
 
@@ -40,7 +53,7 @@ def test_functional_plan_runs_l0_then_l1_and_is_reproducible():
     args = dict(
         translation_artifact=_translation(), source_program_artifact=_program("source"),
         target_program_artifact=_program("target"), validation_plan=_plan(ValidationProfile.FUNCTIONAL),
-        target_environment={"architecture": "x86_64"},
+        target_environment=_environment(),
         runtime_registry=_registry(calls, (ValidationLevel.L0, ValidationLevel.L1)),
     )
     first = run_translation_validation(**args)
@@ -55,7 +68,7 @@ def test_missing_layer_runner_is_inconclusive_and_stops_pipeline():
     calls = []
     result = run_translation_validation(
         _translation(), _program("source"), _program("target"),
-        _plan(ValidationProfile.FUNCTIONAL), {},
+        _plan(ValidationProfile.FUNCTIONAL), _environment(),
         _registry(calls, (ValidationLevel.L0,)),
     )
     assert result.status is ValidationStatus.INCONCLUSIVE
@@ -66,7 +79,7 @@ def test_missing_layer_runner_is_inconclusive_and_stops_pipeline():
 def test_strict_architecture_claim_rejects_build_only_profile_before_runner():
     result = run_translation_validation(
         _translation(PreservationMode.ARCHITECTURE_EQUIVALENT),
-        _program("source"), _program("target"), _plan(ValidationProfile.BUILD), {},
+        _program("source"), _program("target"), _plan(ValidationProfile.BUILD), _environment(),
         _registry([], (ValidationLevel.L0,)),
     )
     assert result.status is ValidationStatus.FAILED
@@ -76,8 +89,21 @@ def test_strict_architecture_claim_rejects_build_only_profile_before_runner():
 def test_microarchitecture_claim_requires_microarch_profile_and_l3():
     result = run_translation_validation(
         _translation(PreservationMode.MICROARCHITECTURE_INTENT_PRESERVED),
-        _program("source"), _program("target"), _plan(ValidationProfile.ARCHITECTURAL), {},
+        _program("source"), _program("target"), _plan(ValidationProfile.ARCHITECTURAL), _environment(),
         _registry([], (ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2)),
     )
     assert result.status is ValidationStatus.FAILED
     assert result.reason_codes == ("validation.microarch-profile-insufficient",)
+
+
+def test_unavailable_declared_runner_is_inconclusive_before_layer_execution():
+    calls = []
+    result = run_translation_validation(
+        _translation(), _program("source"), _program("target"),
+        _plan(ValidationProfile.FUNCTIONAL),
+        _environment(source_runners=("spike",)),
+        _registry(calls, (ValidationLevel.L0, ValidationLevel.L1)),
+    )
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert result.reason_codes == ("validation.source-runner-capability-missing",)
+    assert calls == []

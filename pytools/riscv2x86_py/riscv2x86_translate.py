@@ -585,6 +585,17 @@ def parse_args() -> argparse.Namespace:
             "Default behavior is strict: untranslated inline asm causes failure."
         ),
     )
+    verification = parser.add_mutually_exclusive_group(required=True)
+    verification.add_argument(
+        "--validation-context",
+        type=Path,
+        help="Versioned unified Phase-8 validation context passed to the backend.",
+    )
+    verification.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Explicitly disable Phase-8 validation; replacements are withheld.",
+    )
 
     parser.add_argument(
         "--allow-functional-fallbacks",
@@ -713,6 +724,14 @@ def translate_one(
 
     if args.allow_functional_fallbacks:
         backend_cmd.append("--allow-functional-fallbacks")
+    validation_context = getattr(args, "validation_context", None)
+    skip_verify = bool(getattr(args, "skip_verify", False))
+    if validation_context is not None:
+        backend_cmd.extend([
+            "--validation-context", str(validation_context.resolve()),
+        ])
+    elif skip_verify:
+        backend_cmd.append("--skip-verify")
     if args.abi_call_sidecar is not None:
         backend_cmd.extend(["--abi-call-sidecar", str(args.abi_call_sidecar.resolve())])
     if args.abi_wrapper_registry is not None:

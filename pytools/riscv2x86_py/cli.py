@@ -13,6 +13,7 @@ from .pipeline import run
 from .abi_sidecar import load_abi_call_sidecar, load_target_abi_wrapper_registry
 from .whole_function_sidecar import load_whole_function_sidecar
 from .privileged_pipeline_inputs import load_privileged_pipeline_inputs
+from .pipeline_validation_context import load_pipeline_validation_context
 
 
 def main() -> int:
@@ -63,6 +64,14 @@ def main() -> int:
         help=(
             "Skip Phase 8 verification. "
             "Output findings will be marked not_verified."
+        ),
+    )
+    ap.add_argument(
+        "--validation-context",
+        default=None,
+        help=(
+            "Versioned unified Phase-8 validation context containing the plan, "
+            "environment, runtime registry, artifacts and observations."
         ),
     )
     ap.add_argument(
@@ -127,6 +136,10 @@ def main() -> int:
 
     if not args.out:
         ap.error("--out is required")
+    if args.skip_verify and args.validation_context is not None:
+        ap.error("--skip-verify cannot be combined with --validation-context")
+    if not args.skip_verify and args.validation_context is None:
+        ap.error("--validation-context is required unless --skip-verify is used")
 
     try:
         # 使用已经由 integration test 覆盖的 Ghidra support/pythonRun 路径。
@@ -167,6 +180,10 @@ def main() -> int:
             ),
             allow_functional_fallbacks=args.allow_functional_fallbacks,
         )
+        validation_runner = (
+            None if args.validation_context is None
+            else load_pipeline_validation_context(args.validation_context)
+        )
         stats = run(
             args.inp,
             args.out,
@@ -179,6 +196,7 @@ def main() -> int:
             whole_function_sidecar=whole_function_sidecar,
             privileged_pipeline_inputs=privileged_pipeline_inputs,
             allow_functional_fallbacks=args.allow_functional_fallbacks,
+            validation_runner=validation_runner,
         )
     except Exception as exc:
         print(

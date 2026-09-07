@@ -6,18 +6,15 @@ import json
 from pathlib import Path
 
 from .translation_validation import (
-    ProgramArtifact,
-    TranslationArtifact,
-    ValidationPlan,
     ValidationProfile,
-    ValidationRuntimeRegistry,
     load_validation_plan,
+    load_target_environment,
+    program_artifact_from_dict,
     run_translation_validation,
+    translation_artifact_from_dict,
 )
-from .validation_status import PreservationMode
 from .validation_observation import ExecutionObservation
-from .translation_validation import ValidationLevel
-from .l0_build_matrix import build_l0_validator, load_l0_build_matrix
+from .validation_runtime_registry import load_validation_runtime_registry
 
 
 def _load_json(path: str) -> dict[str, object]:
@@ -25,36 +22,6 @@ def _load_json(path: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"JSON object required: {path}")
     return value
-
-
-def _translation_artifact(data: dict[str, object]) -> TranslationArtifact:
-    return TranslationArtifact(
-        fragment_id=str(data.get("fragment_id", "")),
-        source_model_identity=str(data.get("source_model_identity", "")),
-        translation_plan_id=str(data.get("translation_plan_id", "")),
-        constraint_id=str(data.get("constraint_id", "")),
-        proof_identity=str(data.get("proof_identity", "")),
-        preservation_mode=PreservationMode(str(data.get("preservation_mode", ""))),
-        shell_facts_identity=str(data.get("shell_facts_identity", "")),
-        runtime_contract_id=str(data.get("runtime_contract_id", "")),
-        runtime_contract_version=str(data.get("runtime_contract_version", "")),
-        recipe_id=str(data.get("recipe_id", "")),
-        ignored_source_state=tuple(
-            sorted(set(map(str, data.get("ignored_source_state", ()))))
-        ),
-        semantic_class=str(data.get("semantic_class", "")),
-        target_route=str(data.get("target_route", "")),
-    )
-
-
-def _program_artifact(data: dict[str, object]) -> ProgramArtifact:
-    return ProgramArtifact(
-        artifact_id=str(data.get("artifact_id", "")),
-        artifact_path=str(data.get("artifact_path", "")),
-        artifact_kind=str(data.get("artifact_kind", "")),
-        artifact_digest=str(data.get("artifact_digest", "")),
-        build_identity=str(data.get("build_identity", "")),
-    )
 
 
 def main() -> int:
@@ -95,19 +62,13 @@ def main() -> int:
         from dataclasses import replace
         plan = replace(plan, **overrides)
 
-    registry_json = _load_json(args.runtime_registry)
-    validators = {}
-    l0_matrix = registry_json.get("l0BuildMatrix")
-    if l0_matrix is not None:
-        if not isinstance(l0_matrix, dict):
-            raise ValueError("runtime registry l0BuildMatrix must be an object")
-        validators[ValidationLevel.L0] = build_l0_validator(load_l0_build_matrix(l0_matrix))
-    registry = ValidationRuntimeRegistry(version=str(registry_json.get("version", "")), layer_validators=validators)
+    target_environment = load_target_environment(args.target_environment)
+    registry = load_validation_runtime_registry(args.runtime_registry)
     result = run_translation_validation(
-        _translation_artifact(_load_json(args.translation_artifact)),
-        _program_artifact(_load_json(args.source_program_artifact)),
-        _program_artifact(_load_json(args.target_program_artifact)),
-        plan, _load_json(args.target_environment), registry,
+        translation_artifact_from_dict(_load_json(args.translation_artifact)),
+        program_artifact_from_dict(_load_json(args.source_program_artifact)),
+        program_artifact_from_dict(_load_json(args.target_program_artifact)),
+        plan, target_environment, registry,
         source_observation=(
             ExecutionObservation.from_dict(_load_json(args.source_observation))
             if args.source_observation else None

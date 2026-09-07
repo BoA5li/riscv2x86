@@ -89,7 +89,8 @@ def test_launcher_exposes_both_abi_sidecar_options(monkeypatch=None):
     old = sys.argv
     try:
         sys.argv = ["riscv2x86-translate", "--input", "in.c", "--output-dir", "out",
-                   "--abi-call-sidecar", "calls.json", "--abi-wrapper-registry", "wrappers.json"]
+                   "--abi-call-sidecar", "calls.json", "--abi-wrapper-registry", "wrappers.json",
+                   "--skip-verify"]
         args = parse_args()
         assert str(args.abi_call_sidecar) == "calls.json"
         assert str(args.abi_wrapper_registry) == "wrappers.json"

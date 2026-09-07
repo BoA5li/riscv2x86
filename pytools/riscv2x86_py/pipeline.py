@@ -5,7 +5,7 @@ from dataclasses import replace
 import re
 from collections.abc import Mapping
 from types import SimpleNamespace
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from .schema import Finding, load_report, save_report
 from .assemble import assemble
@@ -13,7 +13,6 @@ from .lift import lift, GhidraLanguageRegisterResolver
 from .pcode_ir import from_lifted
 from .translate import translate, _replacement_has_early_clobber_output_constraint
 from .runtime_facts import build_translation_runtime_facts
-from .verify import verify
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
 from .helper_runtime_manifest import RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL
@@ -51,8 +50,34 @@ from .privileged_output_manifest import (
 from .validation_status import (
     ValidationStatus,
     admit_writeback,
-    normalize_validation_status,
 )
+from .translation_validation import TranslationValidationResult
+
+
+PipelineValidationRunner = Callable[..., TranslationValidationResult]
+
+
+def _run_unified_phase8_validation(
+    validation_runner: PipelineValidationRunner | None, *,
+    finding: Finding, lift_result: object, ir_summary: object,
+    translation_result: object,
+) -> tuple[ValidationStatus, str]:
+    """Invoke the only Phase-8 authority accepted by the writeback path."""
+    if validation_runner is None:
+        return ValidationStatus.INCONCLUSIVE, (
+            "unified translation validation runner is not configured; "
+            "legacy verify() cannot authorize writeback"
+        )
+    result = validation_runner(
+        finding=finding, lift_result=lift_result, ir_summary=ir_summary,
+        translation_result=translation_result,
+    )
+    if not isinstance(result, TranslationValidationResult):
+        return ValidationStatus.FAILED, (
+            "unified translation validation runner returned an invalid result"
+        )
+    details = [item.detail for item in result.layer_results if item.detail]
+    return result.status, "; ".join((*result.reason_codes, *details))
 
 def _finalize_finding_privileged_manifest(
     finding: Finding,
@@ -1000,6 +1025,7 @@ def run(
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     privileged_pipeline_inputs: PrivilegedPipelineInputs | None = None,
     allow_functional_fallbacks: bool = False,
+    validation_runner: PipelineValidationRunner | None = None,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
 
@@ -1736,7 +1762,6 @@ def run(
             f.ruleName = "phase6.lower_to_c"
 
         # Phase 8: verify
-                # Phase 8: verify
         #
         # verify_enabled=False 仅用于集成链路测试、调试或分阶段部署。
         #
@@ -1766,9 +1791,12 @@ def run(
             stats["translated_unverified"] += 1
             continue
 
-        vr = verify(f.fragment, lr, summary, tr)
-        f.verificationStatus = normalize_validation_status(vr.status).value
-        f.verificationDetail = vr.detail
+        phase8_status, phase8_detail = _run_unified_phase8_validation(
+            validation_runner, finding=f, lift_result=lr,
+            ir_summary=summary, translation_result=tr,
+        )
+        f.verificationStatus = phase8_status.value
+        f.verificationDetail = phase8_detail
         admission = admit_writeback(
             f.verificationStatus,
             approval_artifact=f.approvalArtifact,

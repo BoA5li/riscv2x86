@@ -12,6 +12,7 @@ from enum import Enum
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping
 
 from .validation_status import PreservationMode, ValidationStatus
@@ -19,6 +20,7 @@ from .validation_observation import ExecutionObservation
 
 
 VALIDATION_PLAN_SCHEMA = "riscv2x86.validation-plan.v1"
+TARGET_ENVIRONMENT_SCHEMA = "riscv2x86.target-environment.v1"
 TRANSLATION_VALIDATION_VERSION = "riscv2x86.translation-validation.v1"
 
 
@@ -34,6 +36,71 @@ class ValidationLevel(str, Enum):
     L1 = "L1"
     L2 = "L2"
     L3 = "L3"
+
+
+@dataclass(frozen=True)
+class TargetEnvironment:
+    environment_id: str
+    source_isa: str
+    source_abi: str
+    target_isa: str
+    target_abi: str
+    source_runner_capabilities: tuple[str, ...]
+    target_runner_capabilities: tuple[str, ...]
+    sanitizer_capabilities: tuple[str, ...]
+    runtime_identity: str
+    loader_identity: str
+    schema_version: str = TARGET_ENVIRONMENT_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema_version != TARGET_ENVIRONMENT_SCHEMA:
+            raise ValueError("target environment schema version is unsupported")
+        if not all((self.environment_id, self.runtime_identity, self.loader_identity)):
+            raise ValueError("target environment identity is incomplete")
+        if re.fullmatch(r"rv64(?:i|e|g)[a-z0-9_]*", self.source_isa) is None:
+            raise ValueError("initial validation environment requires an RV64 source ISA")
+        if self.source_abi not in {"lp64", "lp64f", "lp64d"}:
+            raise ValueError("source ABI is unsupported")
+        if self.target_isa != "x86_64" or self.target_abi != "sysv_amd64":
+            raise ValueError("initial validation environment requires x86-64 SysV")
+        self._validate_capabilities(
+            self.source_runner_capabilities, {"spike", "qemu", "custom"},
+            "source runner",
+        )
+        self._validate_capabilities(
+            self.target_runner_capabilities,
+            {"native", "logical-csr-runtime", "custom"}, "target runner",
+        )
+        self._validate_capabilities(
+            self.sanitizer_capabilities, {"none", "asan", "ubsan"},
+            "sanitizer",
+        )
+        if "none" not in self.sanitizer_capabilities:
+            raise ValueError("target environment must support the none sanitizer cell")
+
+    @staticmethod
+    def _validate_capabilities(
+        values: tuple[str, ...], allowed: set[str], name: str,
+    ) -> None:
+        if not values or tuple(sorted(set(values))) != values:
+            raise ValueError(name + " capabilities must be non-empty, unique and sorted")
+        if not set(values).issubset(allowed):
+            raise ValueError(name + " capability is unsupported")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schemaVersion": self.schema_version,
+            "environmentId": self.environment_id,
+            "sourceIsa": self.source_isa,
+            "sourceAbi": self.source_abi,
+            "targetIsa": self.target_isa,
+            "targetAbi": self.target_abi,
+            "sourceRunnerCapabilities": list(self.source_runner_capabilities),
+            "targetRunnerCapabilities": list(self.target_runner_capabilities),
+            "sanitizerCapabilities": list(self.sanitizer_capabilities),
+            "runtimeIdentity": self.runtime_identity,
+            "loaderIdentity": self.loader_identity,
+        }
 
 
 _PROFILE_LEVELS = {
@@ -100,8 +167,11 @@ class ValidationPlan:
     timeout_seconds: int
     runtime_registry_version: str
     experiment_contract_id: str = ""
+    schema_version: str = VALIDATION_PLAN_SCHEMA
 
     def __post_init__(self) -> None:
+        if self.schema_version != VALIDATION_PLAN_SCHEMA:
+            raise ValueError("validation plan schema version is unsupported")
         if not self.plan_id or not self.runtime_registry_version:
             raise ValueError("validation plan identity is incomplete")
         if self.source_runner not in {"spike", "qemu", "custom"}:
@@ -216,7 +286,7 @@ def run_translation_validation(
     source_program_artifact: ProgramArtifact,
     target_program_artifact: ProgramArtifact,
     validation_plan: ValidationPlan,
-    target_environment: Mapping[str, object],
+    target_environment: TargetEnvironment,
     runtime_registry: ValidationRuntimeRegistry,
     *,
     source_observation: ExecutionObservation | None = None,
@@ -235,6 +305,8 @@ def run_translation_validation(
             target_observation=target_observation, comparison_policy=comparison_policy,
         )
 
+    environment_payload = target_environment.to_dict()
+
     reason = _validate_profile(translation_artifact, validation_plan)
     if runtime_registry.version != validation_plan.runtime_registry_version:
         reason = reason or "validation.runtime-registry-version-mismatch"
@@ -244,7 +316,26 @@ def run_translation_validation(
             reasons=(reason,), translation_artifact=translation_artifact,
             source_program_artifact=source_program_artifact,
             target_program_artifact=target_program_artifact,
-            target_environment=target_environment,
+            target_environment=environment_payload,
+        )
+
+    if validation_plan.source_runner not in target_environment.source_runner_capabilities:
+        return finish(
+            status=ValidationStatus.INCONCLUSIVE, plan=validation_plan,
+            reasons=("validation.source-runner-capability-missing",),
+            translation_artifact=translation_artifact,
+            source_program_artifact=source_program_artifact,
+            target_program_artifact=target_program_artifact,
+            target_environment=environment_payload,
+        )
+    if validation_plan.target_runner not in target_environment.target_runner_capabilities:
+        return finish(
+            status=ValidationStatus.INCONCLUSIVE, plan=validation_plan,
+            reasons=("validation.target-runner-capability-missing",),
+            translation_artifact=translation_artifact,
+            source_program_artifact=source_program_artifact,
+            target_program_artifact=target_program_artifact,
+            target_environment=environment_payload,
         )
 
     layers: list[ValidationLayerResult] = []
@@ -261,14 +352,14 @@ def run_translation_validation(
                 translation_artifact=translation_artifact,
                 source_program_artifact=source_program_artifact,
                 target_program_artifact=target_program_artifact,
-                target_environment=target_environment,
+                target_environment=environment_payload,
             )
         layer = validator(
             level=level, translation_artifact=translation_artifact,
             source_program_artifact=source_program_artifact,
             target_program_artifact=target_program_artifact,
             validation_plan=validation_plan,
-            target_environment=target_environment,
+            target_environment=environment_payload,
         )
         if not isinstance(layer, ValidationLayerResult) or layer.level is not level:
             layers.append(ValidationLayerResult(level, ValidationStatus.FAILED, detail="invalid layer runner result"))
@@ -276,7 +367,7 @@ def run_translation_validation(
                 status=ValidationStatus.FAILED, plan=validation_plan, layers=tuple(layers),
                 reasons=("validation.layer-runner-protocol-error:" + level.value,),
                 translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
-                target_program_artifact=target_program_artifact, target_environment=target_environment,
+                target_program_artifact=target_program_artifact, target_environment=environment_payload,
             )
         layers.append(layer)
         if layer.status is not ValidationStatus.VERIFIED:
@@ -284,23 +375,163 @@ def run_translation_validation(
                 status=layer.status, plan=validation_plan, layers=tuple(layers),
                 reasons=("validation.layer-not-verified:" + level.value,),
                 translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
-                target_program_artifact=target_program_artifact, target_environment=target_environment,
+                target_program_artifact=target_program_artifact, target_environment=environment_payload,
             )
     return finish(
         status=ValidationStatus.VERIFIED, plan=validation_plan, layers=tuple(layers),
         translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
-        target_program_artifact=target_program_artifact, target_environment=target_environment,
+        target_program_artifact=target_program_artifact, target_environment=environment_payload,
+    )
+
+
+def _strict_fields(
+    data: Mapping[str, object], expected: set[str], label: str,
+) -> None:
+    if set(data) != expected:
+        missing = sorted(expected - set(data))
+        unknown = sorted(set(data) - expected)
+        raise ValueError(
+            f"{label} fields are incomplete or unknown: "
+            f"missing={missing}, unknown={unknown}"
+        )
+
+
+def _required_string(data: Mapping[str, object], name: str, label: str) -> str:
+    value = data.get(name)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} {name} must be a non-empty string")
+    return value
+
+
+def _string(data: Mapping[str, object], name: str, label: str) -> str:
+    value = data.get(name)
+    if not isinstance(value, str):
+        raise ValueError(f"{label} {name} must be a string")
+    return value
+
+
+def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArtifact:
+    fields = {
+        "fragment_id", "source_model_identity", "translation_plan_id",
+        "constraint_id", "proof_identity", "preservation_mode",
+        "shell_facts_identity", "runtime_contract_id",
+        "runtime_contract_version", "recipe_id", "ignored_source_state",
+        "semantic_class", "target_route",
+    }
+    _strict_fields(data, fields, "translation artifact")
+    ignored = data.get("ignored_source_state")
+    if not isinstance(ignored, list) or not all(isinstance(item, str) for item in ignored):
+        raise ValueError("translation artifact ignored source state must be an array")
+    return TranslationArtifact(
+        fragment_id=str(data.get("fragment_id", "")),
+        source_model_identity=str(data.get("source_model_identity", "")),
+        translation_plan_id=str(data.get("translation_plan_id", "")),
+        constraint_id=str(data.get("constraint_id", "")),
+        proof_identity=str(data.get("proof_identity", "")),
+        preservation_mode=PreservationMode(str(data.get("preservation_mode", ""))),
+        shell_facts_identity=str(data.get("shell_facts_identity", "")),
+        runtime_contract_id=str(data.get("runtime_contract_id", "")),
+        runtime_contract_version=str(data.get("runtime_contract_version", "")),
+        recipe_id=str(data.get("recipe_id", "")),
+        ignored_source_state=tuple(ignored),
+        semantic_class=str(data.get("semantic_class", "")),
+        target_route=str(data.get("target_route", "")),
+    )
+
+
+def program_artifact_from_dict(data: Mapping[str, object]) -> ProgramArtifact:
+    fields = {
+        "artifact_id", "artifact_path", "artifact_kind", "artifact_digest",
+        "build_identity",
+    }
+    _strict_fields(data, fields, "program artifact")
+    return ProgramArtifact(
+        artifact_id=str(data.get("artifact_id", "")),
+        artifact_path=str(data.get("artifact_path", "")),
+        artifact_kind=str(data.get("artifact_kind", "")),
+        artifact_digest=str(data.get("artifact_digest", "")),
+        build_identity=str(data.get("build_identity", "")),
+    )
+
+
+def validation_plan_from_dict(data: Mapping[str, object]) -> ValidationPlan:
+    fields = {
+        "schemaVersion", "planId", "profile", "sourceRunner", "targetRunner",
+        "seed", "timeoutSeconds", "runtimeRegistryVersion",
+        "experimentContractId",
+    }
+    _strict_fields(data, fields, "validation plan")
+    if data.get("schemaVersion") != VALIDATION_PLAN_SCHEMA:
+        raise ValueError("validation plan schema version is unsupported")
+    seed = data.get("seed")
+    timeout = data.get("timeoutSeconds")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("validation plan seed must be an integer")
+    if isinstance(timeout, bool) or not isinstance(timeout, int):
+        raise ValueError("validation plan timeout must be an integer")
+    return ValidationPlan(
+        plan_id=_required_string(data, "planId", "validation plan"),
+        profile=ValidationProfile(_required_string(data, "profile", "validation plan")),
+        source_runner=_required_string(data, "sourceRunner", "validation plan"),
+        target_runner=_required_string(data, "targetRunner", "validation plan"),
+        seed=seed, timeout_seconds=timeout,
+        runtime_registry_version=_required_string(
+            data, "runtimeRegistryVersion", "validation plan",
+        ),
+        experiment_contract_id=_string(
+            data, "experimentContractId", "validation plan",
+        ),
+        schema_version=_required_string(data, "schemaVersion", "validation plan"),
     )
 
 
 def load_validation_plan(path: str | Path) -> ValidationPlan:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, Mapping) or data.get("schemaVersion") != VALIDATION_PLAN_SCHEMA:
-        raise ValueError("validation plan schema version is unsupported")
-    return ValidationPlan(
-        plan_id=str(data.get("planId", "")), profile=ValidationProfile(str(data.get("profile", ""))),
-        source_runner=str(data.get("sourceRunner", "")), target_runner=str(data.get("targetRunner", "")),
-        seed=int(data.get("seed", -1)), timeout_seconds=int(data.get("timeoutSeconds", 0)),
-        runtime_registry_version=str(data.get("runtimeRegistryVersion", "")),
-        experiment_contract_id=str(data.get("experimentContractId", "")),
+    if not isinstance(data, Mapping):
+        raise ValueError("validation plan must be an object")
+    return validation_plan_from_dict(data)
+
+
+def target_environment_from_dict(data: Mapping[str, object]) -> TargetEnvironment:
+    fields = {
+        "schemaVersion", "environmentId", "sourceIsa", "sourceAbi",
+        "targetIsa", "targetAbi", "sourceRunnerCapabilities",
+        "targetRunnerCapabilities", "sanitizerCapabilities", "runtimeIdentity",
+        "loaderIdentity",
+    }
+    _strict_fields(data, fields, "target environment")
+
+    def capabilities(name: str) -> tuple[str, ...]:
+        value = data.get(name)
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) and item for item in value
+        ):
+            raise ValueError(name + " must be a non-empty string array")
+        return tuple(value)
+
+    return TargetEnvironment(
+        environment_id=_required_string(data, "environmentId", "target environment"),
+        source_isa=_required_string(data, "sourceIsa", "target environment"),
+        source_abi=_required_string(data, "sourceAbi", "target environment"),
+        target_isa=_required_string(data, "targetIsa", "target environment"),
+        target_abi=_required_string(data, "targetAbi", "target environment"),
+        source_runner_capabilities=capabilities("sourceRunnerCapabilities"),
+        target_runner_capabilities=capabilities("targetRunnerCapabilities"),
+        sanitizer_capabilities=capabilities("sanitizerCapabilities"),
+        runtime_identity=_required_string(
+            data, "runtimeIdentity", "target environment",
+        ),
+        loader_identity=_required_string(
+            data, "loaderIdentity", "target environment",
+        ),
+        schema_version=_required_string(
+            data, "schemaVersion", "target environment",
+        ),
     )
+
+
+def load_target_environment(path: str | Path) -> TargetEnvironment:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, Mapping):
+        raise ValueError("target environment must be an object")
+    return target_environment_from_dict(data)
