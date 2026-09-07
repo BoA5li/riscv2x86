@@ -49,22 +49,24 @@ from .privileged_output_manifest import (
 )
 from .validation_status import (
     ValidationStatus,
+    WritebackAdmission,
     admit_writeback,
 )
+from .pipeline_validation_context import WritebackValidationInput
 from .translation_validation import TranslationValidationResult
 
 
-PipelineValidationRunner = Callable[..., TranslationValidationResult]
+PipelineValidationRunner = Callable[..., WritebackValidationInput]
 
 
 def _run_unified_phase8_validation(
     validation_runner: PipelineValidationRunner | None, *,
     finding: Finding, lift_result: object, ir_summary: object,
     translation_result: object,
-) -> tuple[ValidationStatus, str]:
+) -> tuple[WritebackValidationInput | None, ValidationStatus, str]:
     """Invoke the only Phase-8 authority accepted by the writeback path."""
     if validation_runner is None:
-        return ValidationStatus.INCONCLUSIVE, (
+        return None, ValidationStatus.INCONCLUSIVE, (
             "unified translation validation runner is not configured; "
             "legacy verify() cannot authorize writeback"
         )
@@ -72,12 +74,16 @@ def _run_unified_phase8_validation(
         finding=finding, lift_result=lift_result, ir_summary=ir_summary,
         translation_result=translation_result,
     )
-    if not isinstance(result, TranslationValidationResult):
-        return ValidationStatus.FAILED, (
+    if (
+        not isinstance(result, WritebackValidationInput)
+        or not isinstance(result.validation_result, TranslationValidationResult)
+    ):
+        return None, ValidationStatus.FAILED, (
             "unified translation validation runner returned an invalid result"
         )
-    details = [item.detail for item in result.layer_results if item.detail]
-    return result.status, "; ".join((*result.reason_codes, *details))
+    validation = result.validation_result
+    details = [item.detail for item in validation.layer_results if item.detail]
+    return result, validation.status, "; ".join((*validation.reason_codes, *details))
 
 def _finalize_finding_privileged_manifest(
     finding: Finding,
@@ -1791,15 +1797,23 @@ def run(
             stats["translated_unverified"] += 1
             continue
 
-        phase8_status, phase8_detail = _run_unified_phase8_validation(
+        phase8_input, phase8_status, phase8_detail = _run_unified_phase8_validation(
             validation_runner, finding=f, lift_result=lr,
             ir_summary=summary, translation_result=tr,
         )
         f.verificationStatus = phase8_status.value
         f.verificationDetail = phase8_detail
-        admission = admit_writeback(
-            f.verificationStatus,
-            approval_artifact=f.approvalArtifact,
+        admission = (
+            WritebackAdmission(False, phase8_status, "validation.writeback-input-missing")
+            if phase8_input is None else admit_writeback(
+                phase8_input.validation_result,
+                phase8_input.artifact_manifest,
+                manifest_digest=phase8_input.manifest_digest,
+                translation_artifact=phase8_input.translation_artifact,
+                source_program_artifact=phase8_input.source_program_artifact,
+                target_program_artifact=phase8_input.target_program_artifact,
+                approval_artifact=f.approvalArtifact,
+            )
         )
 
         if admission.allowed:
