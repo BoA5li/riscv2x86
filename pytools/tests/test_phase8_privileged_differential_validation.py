@@ -10,7 +10,7 @@ from riscv2x86_py.privileged_differential_validation import (
 PROOF = "sha256:" + "1" * 64
 
 
-def _observation(runner="riscv-emulator"):
+def _observation(runner="riscv-emulator", ignored=()):
     return PrivilegedMachineObservation(
         runner, "runtime-v1", "initial-logical-state-1",
         (("mstatus", "0x80"),), "m",
@@ -19,7 +19,8 @@ def _observation(runner="riscv-emulator"):
         (("mie", "1"),), (("satp", "bare"),), "normal",
         (("error-status", "0"), ("external-event", "none"),
          ("memory", "sha256:abc"), ("output:0", "7"),
-         ("termination", "normal"), ("trap-to-result", "none")),
+        ("termination", "normal"), ("trap-to-result", "none")),
+        ignored_state=ignored,
     )
 
 
@@ -44,6 +45,7 @@ def _strict_manifest():
         "microarchitectureSemanticsPreserved": False,
         "observableEffectsProved": (), "ignoredSourceState": (),
         "proof": {"identity": PROOF},
+        "ignoredStateEscapes": False,
     }
 
 
@@ -59,6 +61,7 @@ def _fallback_manifest():
         ),
         "ignoredSourceState": ("csr:mstatus", "interrupt:timing"),
         "proof": {"identity": PROOF},
+        "ignoredStateEscapes": False,
     }
 
 
@@ -73,7 +76,7 @@ def test_strict_validation_compares_complete_privileged_state_relation():
     assert result.engineering_matrix_complete
     assert result.compared_effect_ids == (
         "continuation", "csr", "interrupt", "memory", "mmu-tlb",
-        "privilege-mode", "termination", "trap",
+        "privilege-mode", "runtime-old-new", "termination", "trap",
     )
     assert result.validation_identity.startswith("sha256:")
 
@@ -91,7 +94,7 @@ def test_strict_state_difference_is_reported_by_dimension():
 
 
 def test_fallback_compares_only_authorized_observable_projection():
-    source = _observation()
+    source = _observation(ignored=("csr:mstatus", "interrupt:timing"))
     target = replace(
         source, runner_id="x86-target-runtime",
         csr_state=(("mstatus", "not-preserved"),),
@@ -113,8 +116,8 @@ def test_fallback_rejects_ignored_state_escape_and_false_preservation_claim():
     )
     manifest["architectureSemanticsPreserved"] = True
     result = validate_privileged_differential(
-        source=_observation(),
-        target=replace(_observation(), runner_id="x86-target-runtime"),
+        source=_observation(ignored=("csr:mstatus", "interrupt:timing")),
+        target=replace(_observation(ignored=("csr:mstatus", "interrupt:timing")), runner_id="x86-target-runtime"),
         manifest=manifest, engineering_records=_engineering(),
     )
     assert not result.approved

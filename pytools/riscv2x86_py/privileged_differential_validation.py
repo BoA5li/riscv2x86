@@ -38,6 +38,8 @@ class PrivilegedMachineObservation:
     termination_class: str
     observable_effects: tuple[tuple[str, str], ...]
     external_events: tuple[str, ...] = ()
+    runtime_state_relation: tuple[tuple[str, str], ...] = ()
+    ignored_state: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -49,12 +51,15 @@ class PrivilegedMachineObservation:
         for name in (
             "csr_state", "trap_state", "memory_state", "interrupt_state",
             "address_translation_state", "observable_effects",
+            "runtime_state_relation",
         ):
             values = getattr(self, name)
             if tuple(sorted(values)) != values or len(dict(values)) != len(values):
                 raise ValueError(f"{name} must be unique and stably sorted")
-        if tuple(sorted(set(self.external_events))) != self.external_events:
-            raise ValueError("external events must be unique and sorted")
+        if not all(isinstance(item, str) and item for item in self.external_events):
+            raise ValueError("external events must be an ordered string sequence")
+        if tuple(sorted(set(self.ignored_state))) != self.ignored_state:
+            raise ValueError("ignored state must be unique and sorted")
 
 
 @dataclass(frozen=True)
@@ -142,6 +147,7 @@ def validate_privileged_differential(
     target: PrivilegedMachineObservation,
     manifest: Mapping[str, object],
     engineering_records: Sequence[EngineeringValidationRecord],
+    require_engineering_matrix: bool = True,
 ) -> PrivilegedDifferentialValidationResult:
     """Validate one strict or fallback source/target execution pair."""
     mode = DifferentialPreservationMode(str(
@@ -178,6 +184,9 @@ def validate_privileged_differential(
             "termination": (
                 source.termination_class == target.termination_class
             ),
+            "runtime-old-new": (
+                source.runtime_state_relation == target.runtime_state_relation
+            ),
         }
         compared.extend(relations)
         reasons.extend(
@@ -186,6 +195,8 @@ def validate_privileged_differential(
         )
         if ignored:
             reasons.append("phase8.privileged.strict-ignored-state-forbidden")
+        if source.ignored_state or target.ignored_state:
+            reasons.append("phase8.privileged.strict-runner-ignored-state-forbidden")
         if manifest.get("architectureSemanticsPreserved") is not True:
             reasons.append("phase8.privileged.strict-conclusion-invalid")
     else:
@@ -206,6 +217,10 @@ def validate_privileged_differential(
                 )
         if not ignored:
             reasons.append("phase8.privileged.ignored-state-manifest-missing")
+        if source.ignored_state != ignored or target.ignored_state != ignored:
+            reasons.append("phase8.privileged.ignored-state-declaration-mismatch")
+        if manifest.get("ignoredStateEscapes") is not False:
+            reasons.append("phase8.privileged.ignored-state-escape")
         if set(ignored) & set(observable):
             reasons.append("phase8.privileged.ignored-state-escape")
         if (
@@ -214,8 +229,9 @@ def validate_privileged_differential(
         ):
             reasons.append("phase8.privileged.fallback-conclusion-invalid")
 
-    engineering_reasons, engineering_complete = _engineering_reasons(
-        engineering_records
+    engineering_reasons, engineering_complete = (
+        _engineering_reasons(engineering_records)
+        if require_engineering_matrix else ([], True)
     )
     reasons.extend(engineering_reasons)
     unique_reasons = tuple(sorted(set(reasons)))
