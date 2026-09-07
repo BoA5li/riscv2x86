@@ -20,7 +20,8 @@ _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FLOAT_WIDTHS = {"f16": 16, "f32": 32, "f64": 64, "f128": 128}
 _EVENT_KINDS = {"read_operand", "write_operand", "read_memory", "write_memory",
                 "branch", "call", "return", "trap", "fence", "atomic",
-                "external", "privileged_state"}
+                "external", "csr_read", "csr_write", "privilege_transition",
+                "privileged_state"}
 _MEMORY_ORDERS = {"not_applicable", "relaxed", "consume", "acquire", "release",
                   "acq_rel", "seq_cst", "compiler", "hardware"}
 _ATOMICITIES = {"none", "atomic", "lr_sc", "amo", "lock_prefixed"}
@@ -327,7 +328,8 @@ class SemanticEvent:
                 raise ValueError("memory event coordinates are invalid")
             if self.atomicity not in _ATOMICITIES or self.memory_order not in _MEMORY_ORDERS or self.value is None:
                 raise ValueError("memory event value/ordering is invalid")
-            if ((self.atomicity == "none") != (self.memory_order == "not_applicable") or
+            if ((self.atomicity == "none" and self.memory_order not in {"not_applicable", "relaxed"}) or
+                    (self.atomicity != "none" and self.memory_order == "not_applicable") or
                     self.kind == "atomic" and self.atomicity == "none"):
                 raise ValueError("memory order and atomicity are inconsistent")
         elif self.object_id or self.offset is not None or self.access_size or self.alignment:

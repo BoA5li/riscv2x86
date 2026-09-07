@@ -32,10 +32,16 @@ def _l2_operand_differential_factory(config: Mapping[str, object]) -> LayerValid
     return build_l2_operand_validator(load_l2_operand_runner_config(config))
 
 
+def _l2_effect_trace_differential_factory(config: Mapping[str, object]) -> LayerValidator:
+    from .l2_effect_trace_differential import build_l2_effect_validator, load_l2_effect_runner_config
+    return build_l2_effect_validator(load_l2_effect_runner_config(config))
+
+
 _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l0-build-matrix": _l0_build_matrix_factory,
     "l1-functional-differential": _l1_differential_factory,
     "l2-logical-operand-differential": _l2_operand_differential_factory,
+    "l2-effect-trace-differential": _l2_effect_trace_differential_factory,
 }
 
 
