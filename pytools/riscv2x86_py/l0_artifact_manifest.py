@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
+import json
+from pathlib import Path
 import re
 from typing import Mapping
 
@@ -164,3 +167,26 @@ def l0_artifact_manifest_from_dict(value: Mapping[str, object]) -> L0ArtifactMan
         _ordered_strings(value.get("libraries"), "manifest.libraries"),
         ExpectedArtifact.from_dict(source), parsed, _string(value, "schemaVersion", "manifest"),
     )
+
+
+def load_l0_artifact_manifest(
+    path: str | Path, expected_digest: str,
+) -> L0ArtifactManifest:
+    """Load the exact manifest whose digest was admitted by the caller."""
+    manifest_path = Path(path)
+    if not _SHA256.fullmatch(expected_digest):
+        raise ValueError("translation manifest digest is invalid")
+    try:
+        payload = manifest_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("translation manifest is unavailable") from exc
+    actual_digest = "sha256:" + sha256(payload).hexdigest()
+    if actual_digest != expected_digest:
+        raise ValueError("translation manifest hash mismatch")
+    try:
+        raw = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("translation manifest is not valid JSON") from exc
+    if not isinstance(raw, Mapping):
+        raise ValueError("translation manifest must be an object")
+    return l0_artifact_manifest_from_dict(raw)
