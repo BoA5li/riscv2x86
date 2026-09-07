@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from typing import Callable, Mapping, Sequence
 
-from .l0_artifact_manifest import ExpectedArtifact, ExpectedElf, l0_artifact_manifest_from_dict
+from .l0_artifact_manifest import ExpectedArtifact, ExpectedElf, load_l0_artifact_manifest
 from .translation_validation import ProgramArtifact, TranslationArtifact, ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
 
@@ -212,15 +212,9 @@ def _runtime_load(output: Path, compiler: str, sanitizer_flags: tuple[str, ...],
 
 
 def _load_manifest(matrix: L0BuildMatrix):
-    path = Path(matrix.translation_manifest_path)
-    if not path.is_file() or _digest(path) != matrix.translation_manifest_digest:
-        raise ValueError("translation manifest hash mismatch")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("translation manifest is not valid JSON") from exc
-    if not isinstance(raw, Mapping): raise ValueError("translation manifest must be an object")
-    return l0_artifact_manifest_from_dict(raw)
+    return load_l0_artifact_manifest(
+        matrix.translation_manifest_path, matrix.translation_manifest_digest,
+    )
 
 
 def _check_manifest_binding(manifest, matrix: L0BuildMatrix, translation: TranslationArtifact,
