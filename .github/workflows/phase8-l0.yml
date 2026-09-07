@@ -5,6 +5,7 @@ on:
     branches:
       - fix-phase8-observation-schema-v2
       - fix-phase8-l0-runtime-manifest
+      - fix-phase8-typed-writeback-gate
   pull_request:
 
 jobs:
@@ -23,7 +24,13 @@ jobs:
       - name: Run L0 contract tests
         env:
           PYTHONPATH: pytools
-        run: python -m pytest -q pytools/tests/test_l0_build_matrix.py pytools/tests/test_validation_configuration.py
+        run: >-
+          python -m pytest -q
+          pytools/tests/test_l0_build_matrix.py
+          pytools/tests/test_validation_configuration.py
+          pytools/tests/test_translation_validation.py
+          pytools/tests/test_validation_observation.py
+          pytools/tests/test_validation_status.py
       - name: Exercise real RV64, GCC, Clang, ASan and UBSan builds
         shell: bash
         run: |
