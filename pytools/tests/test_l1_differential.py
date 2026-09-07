@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from riscv2x86_py.l1_differential import (
+    ARCHITECTURAL_COMPARISON_POLICY,
     CommandResult, HarnessObservation, L1RunnerConfig, ProcessObservation,
     compare_l1_observations, run_l1_differential,
 )
@@ -47,7 +48,7 @@ def test_l1_comparator_uses_only_declared_logical_observables():
     )
 
 
-def _run(tmp_path: Path, mismatch: bool):
+def _run(tmp_path: Path, mismatch: bool, comparison_policy="riscv2x86.l1-observable-comparison.v1"):
     source, target = tmp_path / "source.c", tmp_path / "target.c"
     source.write_text("int main(void){return 0;}", encoding="utf-8")
     target.write_text("int main(void){return 0;}", encoding="utf-8")
@@ -92,7 +93,7 @@ def _run(tmp_path: Path, mismatch: bool):
         translation_artifact=SimpleNamespace(identity="sha256:" + "3" * 64),
         source_program_artifact=SimpleNamespace(artifact_digest="sha256:" + "4" * 64),
         target_program_artifact=SimpleNamespace(artifact_digest="sha256:" + "5" * 64),
-        comparison_policy="riscv2x86.l1-observable-comparison.v1",
+        comparison_policy=comparison_policy,
         command_runner=runner, tool_available=lambda _: True,
     )
 
@@ -102,6 +103,10 @@ def test_l1_runner_verifies_complete_replayable_domain(tmp_path):
     assert result.level is ValidationLevel.L1
     assert result.status is ValidationStatus.VERIFIED
     assert result.evidence_identity.startswith("sha256:")
+
+
+def test_l1_runner_accepts_architectural_policy_used_by_l2_plan(tmp_path):
+    assert _run(tmp_path, False, ARCHITECTURAL_COMPARISON_POLICY).status is ValidationStatus.VERIFIED
 
 
 def test_l1_runner_fails_closed_and_saves_minimized_replay(tmp_path):

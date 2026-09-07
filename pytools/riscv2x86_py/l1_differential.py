@@ -22,6 +22,7 @@ from .validation_status import ValidationStatus
 L1_RUNNER_SCHEMA = "riscv2x86.l1-differential-runner.v1"
 L1_HARNESS_OUTPUT_SCHEMA = "riscv2x86.l1-harness-output.v1"
 L1_COMPARISON_POLICY = "riscv2x86.l1-observable-comparison.v1"
+ARCHITECTURAL_COMPARISON_POLICY = "riscv2x86.comparison-policy.architectural.v1"
 L1_REPLAY_SCHEMA = "riscv2x86.l1-failure-replay.v1"
 _SHA256_PREFIX = "sha256:"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -269,7 +270,7 @@ def run_l1_differential(
     command_runner: CommandRunner = _run,
     tool_available: Callable[[str], bool] = lambda name: bool(shutil.which(name)),
 ) -> ValidationLayerResult:
-    if comparison_policy != L1_COMPARISON_POLICY:
+    if comparison_policy not in {L1_COMPARISON_POLICY, ARCHITECTURAL_COMPARISON_POLICY}:
         return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
                                      detail="L1 comparison policy identity mismatch")
     if (getattr(validation_plan, "source_runner", None) != "qemu" or
@@ -365,7 +366,7 @@ def run_l1_differential(
                         if candidate_mismatches:
                             minimized, arguments, mismatches = candidate, candidate_arguments, candidate_mismatches
                 replay_payload = {"schemaVersion": L1_REPLAY_SCHEMA,
-                                  "comparisonPolicy": L1_COMPARISON_POLICY,
+                                  "comparisonPolicy": comparison_policy,
                                   "minimization": "greedy-zero-1minimal-v1",
                                   "input": minimized, "mismatches": list(mismatches)}
                 replay_path = replay / (case.test_id + "-" + str(payload["caseIndex"]) + ".json")
@@ -373,7 +374,7 @@ def run_l1_differential(
                 evidence = _digest_bytes(json.dumps(evidence_cases, sort_keys=True).encode())
                 return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED, evidence,
                                              "L1 mismatch; replay=" + str(replay_path) + "; fields=" + ",".join(mismatches))
-    evidence_payload = {"schemaVersion": L1_RUNNER_SCHEMA, "comparisonPolicy": L1_COMPARISON_POLICY,
+    evidence_payload = {"schemaVersion": L1_RUNNER_SCHEMA, "comparisonPolicy": comparison_policy,
                         "translationIdentity": getattr(translation_artifact, "identity", ""),
                         "sourceProgramDigest": getattr(source_program_artifact, "artifact_digest", ""),
                         "targetProgramDigest": getattr(target_program_artifact, "artifact_digest", ""),
