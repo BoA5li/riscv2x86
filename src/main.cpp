@@ -111,7 +111,7 @@ int main(int argc, const char **argv) {
     int rc = Tool.run(newFrontendActionFactory(&Finder).get());
     if (rc != 0) {
         std::cerr << "[riscv2x86] clang tool returned " << rc
-                  << " (continuing with partial results)\n";
+                  << " (partial report retained; analysis is not valid)\n";
     }
 
     // Analysis-only suppresses source writes, not safe Phase 1/2 public
@@ -129,7 +129,7 @@ int main(int argc, const char **argv) {
     if (AnalysisOnly) {
         std::cout << "[riscv2x86] analysis-only: report written to "
                   << ReportJson << "\n";
-        return 0;
+        return rc;
     }
 
     riscv2x86::SourceRewriter rw(SourceRoot, OutputDir);
@@ -137,5 +137,5 @@ int main(int argc, const char **argv) {
     std::cout << "[riscv2x86] applied " << n
               << " rewrites into " << OutputDir << "\n";
 
-    return 0;
+    return rc;
 }

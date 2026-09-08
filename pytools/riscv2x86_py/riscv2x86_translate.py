@@ -80,6 +80,73 @@ class TranslationError(RuntimeError):
 
 
 _SOURCE_SUFFIXES = frozenset({".c"})
+_SOURCE_ARCH_FLAG_PREFIXES = (
+    "--target=", "-target=", "--sysroot=", "-march=", "-mabi=",
+)
+
+
+def _has_option(flags: Iterable[str], names: tuple[str, ...]) -> bool:
+    values = tuple(flags)
+    return any(
+        value == name or value.startswith(name + "=")
+        for value in values for name in names
+    )
+
+
+def _discover_source_sysroot(source_cc: str, target: str) -> str:
+    """Return a usable cross sysroot without borrowing host include paths."""
+    configured = os.environ.get("RISCV2X86_SOURCE_SYSROOT", "")
+    candidates: list[Path] = [Path(configured)] if configured else []
+    compiler = shutil.which(source_cc)
+    if compiler:
+        try:
+            result = subprocess.run(
+                (compiler, "-print-sysroot"), text=True, capture_output=True,
+                check=False, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                candidates.append(Path(result.stdout.strip()))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    candidates.append(Path("/usr") / target)
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved != Path("/") and (resolved / "include").is_dir():
+            return str(resolved)
+    return ""
+
+
+def source_frontend_flags(args: argparse.Namespace) -> tuple[str, ...]:
+    """Build an explicit RISC-V frontend target while honoring user overrides."""
+    common = tuple(getattr(args, "cflag", ()) or ())
+    source_only = tuple(getattr(args, "frontend_cflag", ()) or ())
+    supplied = (*common, *source_only)
+    target = str(getattr(args, "source_target", "") or
+                 ("riscv64-linux-gnu" if str(args.xlen) == "64" else "riscv32-linux-gnu"))
+    result: list[str] = []
+    if not _has_option(supplied, ("--target", "-target")):
+        result.append("--target=" + target)
+    if not _has_option(supplied, ("--sysroot",)):
+        sysroot = str(getattr(args, "source_sysroot", "") or "")
+        if not sysroot:
+            source_cc = str(getattr(args, "source_cc", "") or
+                            ("riscv64-linux-gnu-gcc" if str(args.xlen) == "64"
+                             else "riscv32-linux-gnu-gcc"))
+            sysroot = _discover_source_sysroot(source_cc, target)
+        if sysroot:
+            result.append("--sysroot=" + sysroot)
+    return tuple((*result, *supplied))
+
+
+def target_compiler_flags(args: argparse.Namespace) -> tuple[str, ...]:
+    """Do not leak source-ISA driver flags into the generated x86 build."""
+    common = tuple(getattr(args, "cflag", ()) or ())
+    target_only = tuple(getattr(args, "target_cflag", ()) or ())
+    filtered = tuple(
+        flag for flag in common
+        if not flag.startswith(_SOURCE_ARCH_FLAG_PREFIXES)
+    )
+    return (*filtered, *target_only)
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -564,6 +631,26 @@ def parse_args() -> argparse.Namespace:
             "--cflag=-std=gnu11 --cflag=-I/path/include"
         ),
     )
+    parser.add_argument(
+        "--frontend-cflag", action="append", default=[],
+        help="Extra source/RISC-V frontend-only argument; may be repeated.",
+    )
+    parser.add_argument(
+        "--target-cflag", action="append", default=[],
+        help="Extra generated x86 compiler-only argument; may be repeated.",
+    )
+    parser.add_argument(
+        "--source-target", default="",
+        help="Source Clang target triple. Default: riscv64/riscv32-linux-gnu from --xlen.",
+    )
+    parser.add_argument(
+        "--source-sysroot", default="",
+        help="Source sysroot. Default: RISCV2X86_SOURCE_SYSROOT or cross-toolchain discovery.",
+    )
+    parser.add_argument(
+        "--source-cc", default="",
+        help="Cross compiler used only to discover the source sysroot.",
+    )
 
     parser.add_argument(
         "--ghidra-install-dir",
@@ -684,6 +771,10 @@ def translate_one(
     print(f"rewritten file: {rewritten_file}")
     print(f"work-dir:       {work_dir}")
     print(f"xlen:           {args.xlen}")
+    frontend_flags = source_frontend_flags(args)
+    target_flags = target_compiler_flags(args)
+    print(f"source flags:   {' '.join(frontend_flags)}")
+    print(f"target flags:   {' '.join(target_flags)}")
 
     frontend_analysis_cmd = [
             args.frontend,
@@ -693,7 +784,7 @@ def translate_one(
             "--report-json", str(raw_report),
             str(source_file),
             "--",
-            *args.cflag,
+            *frontend_flags,
     ]
 
     run(frontend_analysis_cmd)
@@ -813,7 +904,7 @@ def translate_one(
     syntax_check_cmd = [
             args.cc,
             "-fsyntax-only",
-            *args.cflag,
+            *target_flags,
             *include_flags,
             str(rewritten_file),
     ]
@@ -823,7 +914,7 @@ def translate_one(
     compile_cmd = [
             args.cc,
             "-c",
-            *args.cflag,
+            *target_flags,
             *include_flags,
             str(rewritten_file),
             "-o", str(object_file),

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - phase10-paper-evaluation-reporting
+      - fix-phase10-translation-entry-contract
   workflow_dispatch:
   schedule:
     - cron: "41 2 * * 0"
@@ -33,6 +34,8 @@ jobs:
           pytools/tests/test_evaluation_runner.py
           pytools/tests/test_candidate_materialization.py
           pytools/tests/test_validation_configuration.py
+          pytools/tests/test_riscv2x86_translate_launcher.py
+          pytools/tests/test_csr_value_flow.py
 
   real-corpus-evaluation:
     if: vars.PAPER_CORPUS_RUNNER_ENABLED == 'true'

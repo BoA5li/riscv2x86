@@ -23,9 +23,36 @@ class CsrOperandAuthorityFacts:
     shell_facts:Mapping[str,bool]
     complete:bool
 
-# Compatibility alias for callers migrated incrementally; no adapter from
-# runtime facts exists because deriving authority from registers is forbidden.
+# Compatibility alias for callers migrated incrementally.  The compatibility
+# adapter below intentionally produces incomplete authority because deriving
+# decoder-node bindings from register names is forbidden.
 CsrOperandAuthority=CsrOperandAuthorityFacts
+
+def authority_from_phase4_facts(*, lifted_insns:tuple[Any,...]|list[Any],
+                                runtime_facts:Any) -> CsrOperandAuthorityFacts:
+    """Keep the pipeline usable without inventing missing CSR authority.
+
+    TranslationRuntimeFacts has authoritative register/width materialization,
+    but lacks the frontend sidecar fields required by the CSR join.  Returning
+    an explicitly incomplete object lets non-CSR translation proceed and
+    makes CSR translation fail closed at its semantic gate.
+    """
+    del lifted_insns  # Never reverse-map decoder nodes from register names.
+    widths = getattr(runtime_facts, "operand_width_bits", {}) or {}
+    provenance = getattr(runtime_facts, "provenance", "") or ""
+    return CsrOperandAuthorityFacts(
+        fragment_id=provenance,
+        value_node_to_operand_index={},
+        operand_width_bits=dict(widths),
+        operand_signedness={},
+        operand_access={},
+        tied_operand_pairs=(),
+        early_clobber_outputs=(),
+        fixed_register_constraints={},
+        output_escape_facts={},
+        shell_facts={},
+        complete=False,
+    )
 
 def _effect_id(addr:int, ordinal:int, op:Any)->str:
     return f"csr-effect:{addr:#x}:{ordinal}:{getattr(op,'csr_id',None) or 'unknown'}"

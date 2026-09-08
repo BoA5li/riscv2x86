@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from riscv2x86_py.csr_value_flow import CsrOperandAuthorityFacts,join_csr_operand_bindings
+from riscv2x86_py.csr_value_flow import CsrOperandAuthorityFacts,authority_from_phase4_facts,join_csr_operand_bindings
 from riscv2x86_py.pcode_ir import CanonicalPrivilegedOperation,CanonicalPrivilegedOperationKind,CanonicalCsrOperationKind
 def _auth(**kw):
  d=dict(fragment_id="f",value_node_to_operand_index={"old":0,"new":1},operand_width_bits={0:64,1:64},operand_signedness={0:"unsigned",1:"unsigned"},operand_access={0:"output",1:"input"},tied_operand_pairs=(),early_clobber_outputs=(),fixed_register_constraints={0:"",1:""},output_escape_facts={0:False},shell_facts={"volatile":True,"memory":False,"cc":False},complete=True);d.update(kw);return CsrOperandAuthorityFacts(**d)
@@ -15,3 +15,16 @@ def test_suppressed_operands_need_no_binding():
 def test_missing_strict_facts_and_escape_fail_closed():
  op=CanonicalPrivilegedOperation(CanonicalPrivilegedOperationKind.CSR_ACCESS,csr_id="riscv.csr.mstatus",csr_operation=CanonicalCsrOperationKind.READ,read_value_node_id="old")
  b=_join(op,_auth(output_escape_facts={0:True},fixed_register_constraints={}));assert not b.complete and "csr-join.output-escape-unproven" in b.reason_codes and "csr-join.fixed-register-fact-missing" in b.reason_codes
+
+def test_phase4_compatibility_adapter_is_explicitly_incomplete_and_does_not_infer_nodes():
+ authority=authority_from_phase4_facts(
+  lifted_insns=(),
+  runtime_facts=SimpleNamespace(
+   provenance="assembler-normalization.v1",
+   rv_to_operand_index={"a0":0}, operand_width_bits={0:64},
+  ),
+ )
+ assert authority.fragment_id=="assembler-normalization.v1"
+ assert authority.operand_width_bits=={0:64}
+ assert authority.value_node_to_operand_index=={}
+ assert authority.complete is False
