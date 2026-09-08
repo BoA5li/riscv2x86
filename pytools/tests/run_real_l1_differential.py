@@ -2,6 +2,7 @@
 """Exercise the production L1 runner with RV64 QEMU and native x86-64."""
 from __future__ import annotations
 
+import argparse
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -43,6 +44,11 @@ def _digest(path: Path) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--random-cases", type=int, default=4)
+    args = parser.parse_args()
+    if not 0 <= args.random_cases <= 10000:
+        parser.error("--random-cases must be between 0 and 10000")
     with tempfile.TemporaryDirectory(prefix="riscv2x86-real-l1-") as directory:
         root = Path(directory)
         source, target = root / "source.c", root / "target.c"
@@ -52,7 +58,8 @@ def main() -> int:
             "schemaVersion": VALIDATION_CASE_SCHEMA, "testId": "real-l1-rv64-x86",
             "inputGenerator": INPUT_GENERATOR_VERSION, "seed": 20260906,
             "inputDomain": {"arguments": [{"name": "lhs", "type": "u64"},
-                                           {"name": "rhs", "type": "u64"}], "randomCases": 4},
+                                           {"name": "rhs", "type": "u64"}],
+                            "randomCases": args.random_cases},
             "comparison": {"returnValue": True, "exitCode": True, "stdout": True,
                            "stderr": True, "assertions": True, "exportedState": ["out"]},
         }, sort_keys=True), encoding="utf-8")
@@ -73,6 +80,7 @@ def main() -> int:
         if result.status is not ValidationStatus.VERIFIED:
             raise RuntimeError(result.detail)
         print(json.dumps({"status": result.status.value,
+                          "randomCases": args.random_cases,
                           "evidenceIdentity": result.evidence_identity}, sort_keys=True))
     return 0
 

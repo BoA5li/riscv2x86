@@ -114,6 +114,8 @@ def _translation() -> TranslationArtifact:
 
 def _prepare_reference_artifacts(
     root: Path, link_kind: str, translation: TranslationArtifact,
+    compilers: tuple[str, ...], optimizations: tuple[str, ...],
+    sanitizers: tuple[str, ...],
 ) -> tuple[L0BuildMatrix, ProgramArtifact, ProgramArtifact]:
     source = root / "source.c"
     target = root / "target.c"
@@ -143,10 +145,10 @@ def _prepare_reference_artifacts(
     suffix = ".so" if link_kind == "shared_library" else ".exe"
     target_output = root / ("target" + suffix)
     targets: dict[str, ExpectedArtifact] = {}
-    for compiler in COMPILERS:
+    for compiler in compilers:
         triple = _run_checked((compiler, "-dumpmachine"), work)
-        for optimization in OPTIMIZATIONS:
-            for sanitizer in SANITIZERS:
+        for optimization in optimizations:
+            for sanitizer in sanitizers:
                 ident = _cell_id(compiler, optimization, sanitizer)
                 flags = _target_cell_flags(optimization, sanitizer, link_kind)
                 obj = work / (ident + ".o")
@@ -188,8 +190,8 @@ def _prepare_reference_artifacts(
         encoding="utf-8",
     )
     matrix = L0BuildMatrix(
-        str(source), SOURCE_COMPILER, SOURCE_FLAGS, str(target), COMPILERS,
-        TARGET_FLAGS, OPTIMIZATIONS, SANITIZERS, str(work), str(manifest_path),
+        str(source), SOURCE_COMPILER, SOURCE_FLAGS, str(target), compilers,
+        TARGET_FLAGS, optimizations, sanitizers, str(work), str(manifest_path),
         _digest(manifest_path), runtime_headers=("stdint.h",),
         link_kind=link_kind, runtime_timeout_seconds=60,
     )
@@ -205,12 +207,19 @@ def main() -> int:
     parser.add_argument(
         "--link-kind", choices=("executable", "shared_library"), required=True,
     )
+    parser.add_argument(
+        "--matrix-profile", choices=("smoke", "full"), default="full",
+        help="smoke runs gcc/O0/none; full runs GCC+Clang/O0+O2+O3/none+ASan+UBSan",
+    )
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="riscv2x86-real-l0-") as directory:
         root = Path(directory)
         translation = _translation()
+        compilers = ("gcc",) if args.matrix_profile == "smoke" else COMPILERS
+        optimizations = ("-O0",) if args.matrix_profile == "smoke" else OPTIMIZATIONS
+        sanitizers = ("none",) if args.matrix_profile == "smoke" else SANITIZERS
         matrix, source, target = _prepare_reference_artifacts(
-            root, args.link_kind, translation,
+            root, args.link_kind, translation, compilers, optimizations, sanitizers,
         )
         result = run_l0_build_matrix(
             matrix, translation, source, target,
@@ -224,18 +233,19 @@ def main() -> int:
             raise RuntimeError(json.dumps(cells, indent=2, sort_keys=True))
         expected_ids = {
             _cell_id(compiler, optimization, sanitizer)
-            for compiler in COMPILERS
-            for optimization in OPTIMIZATIONS
-            for sanitizer in SANITIZERS
+            for compiler in compilers
+            for optimization in optimizations
+            for sanitizer in sanitizers
         }
         actual_ids = {cell["id"] for cell in cells if cell["id"] != "source-rv64"}
-        if actual_ids != expected_ids or len(cells) != 19:
-            raise RuntimeError("real L0 result does not contain the complete 18-cell matrix")
+        if actual_ids != expected_ids or len(cells) != len(expected_ids) + 1:
+            raise RuntimeError("real L0 result does not contain the declared matrix")
         if any(cell["status"] != "verified" for cell in cells):
             raise RuntimeError("real L0 matrix contains a non-verified cell")
         print(
             json.dumps({
                 "linkKind": args.link_kind,
+                "matrixProfile": args.matrix_profile,
                 "status": result.status.value,
                 "evidenceIdentity": result.evidence_identity,
                 "verifiedCells": len(cells),

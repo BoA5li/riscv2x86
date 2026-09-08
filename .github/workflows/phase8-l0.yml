@@ -1,4 +1,4 @@
-name: Phase 8 L0 and L1 validation
+name: Phase 10 evaluation CI
 
 on:
   push:
@@ -19,22 +19,21 @@ on:
       - phase10-end-to-end-evaluation-runner
       - phase10-evaluation-bound-writeback
       - phase10-corpus-evaluation-metrics
+      - phase10-evaluation-ci-matrix
   pull_request:
 
 jobs:
-  l0-contract-and-real-toolchains:
+  schema-staging-and-negative-contracts:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install test and RV64 toolchains
+      - name: Install test dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-riscv64-linux-gnu clang binutils qemu-user
           python -m pip install pytest
-      - name: Run L0 contract tests
+      - name: Run schema, staging, persistence, rejection, and negative tests
         env:
           PYTHONPATH: pytools
         run: >-
@@ -50,6 +49,7 @@ jobs:
           pytools/tests/test_evaluation_runner.py
           pytools/tests/test_writeback_promotion.py
           pytools/tests/test_evaluation_aggregate.py
+          pytools/tests/test_evaluation_ci_contract.py
           pytools/tests/test_validation_case.py
           pytools/tests/test_l1_differential.py
           pytools/tests/test_l2_operand_differential.py
@@ -58,18 +58,50 @@ jobs:
           pytools/tests/test_phase8_privileged_differential_validation.py
           pytools/tests/test_l2_concurrency_runner.py
           pytools/tests/test_l3_experiment_runner.py
-      - name: Run production L0 matrix with real executable toolchains
+
+  real-l0-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install RV64 and x86-64 toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu binutils
+      - name: Run real executable L0 smoke
         env:
           PYTHONPATH: pytools
-        run: python pytools/tests/run_real_l0_matrix.py --link-kind executable
-      - name: Run production L0 matrix with real shared-library toolchains
+        run: python pytools/tests/run_real_l0_matrix.py --link-kind executable --matrix-profile smoke
+      - name: Run real shared-library L0 smoke
         env:
           PYTHONPATH: pytools
-        run: python pytools/tests/run_real_l0_matrix.py --link-kind shared_library
-      - name: Run production L1 differential loop with RV64 QEMU and x86-64 native
+        run: python pytools/tests/run_real_l0_matrix.py --link-kind shared_library --matrix-profile smoke
+
+  small-real-l1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install RV64 QEMU toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu qemu-user
+      - name: Run small real RV64-QEMU/x86-64 differential loop
         env:
           PYTHONPATH: pytools
-        run: python pytools/tests/run_real_l1_differential.py
+        run: python pytools/tests/run_real_l1_differential.py --random-cases 4
+
+  real-sanitizer-negatives:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
       - name: Exercise real ASan and UBSan negative findings
         shell: bash
         run: |

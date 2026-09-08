@@ -1,0 +1,167 @@
+name: Phase 10 evaluation nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase10-evaluation-nightly
+  cancel-in-progress: false
+
+jobs:
+  full-l0-and-expanded-l1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install complete RV64 and x86-64 toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu clang binutils qemu-user
+      - name: Run full executable GCC/Clang optimization/sanitizer matrix
+        env:
+          PYTHONPATH: pytools
+        run: |
+          set -euo pipefail
+          mkdir -p nightly-results
+          python pytools/tests/run_real_l0_matrix.py --link-kind executable --matrix-profile full | tee nightly-results/l0-executable.json
+      - name: Run full shared-library GCC/Clang optimization/sanitizer matrix
+        env:
+          PYTHONPATH: pytools
+        run: |
+          set -euo pipefail
+          python pytools/tests/run_real_l0_matrix.py --link-kind shared_library --matrix-profile full | tee nightly-results/l0-shared-library.json
+      - name: Run expanded replayable L1 input domain
+        env:
+          PYTHONPATH: pytools
+        run: |
+          set -euo pipefail
+          python pytools/tests/run_real_l1_differential.py --random-cases 256 | tee nightly-results/l1-expanded.json
+      - name: Preserve real nightly evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-real-l0-l1-${{ github.run_id }}
+          path: nightly-results/
+          if-no-files-found: error
+          retention-days: 30
+
+  l2-concurrency-and-privileged-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest
+      - name: Run L2 concurrency, memory-model, and privileged runner suites
+        env:
+          PYTHONPATH: pytools
+        run: >-
+          python -m pytest -q
+          --junitxml=l2-nightly-results.xml
+          pytools/tests/test_l2_concurrency_runner.py
+          pytools/tests/test_l2_privileged_runner.py
+          pytools/tests/test_phase8_privileged_differential_validation.py
+          pytools/tests/test_phase8_privileged_negative_matrix.py
+      - name: Preserve L2 protocol evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-l2-protocol-${{ github.run_id }}
+          path: l2-nightly-results.xml
+          if-no-files-found: error
+          retention-days: 30
+
+  privileged-real-evaluation:
+    if: vars.PRIVILEGED_RUNNER_ENABLED == 'true'
+    runs-on: [self-hosted, riscv-privileged]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run privileged evaluation request without prebuilt target artifact
+        env:
+          PYTHONPATH: pytools
+          EVALUATION_REQUEST: ${{ vars.PRIVILEGED_EVALUATION_REQUEST_PATH }}
+        run: |
+          set -euo pipefail
+          test -n "$EVALUATION_REQUEST" && test -f "$EVALUATION_REQUEST"
+          python -m riscv2x86_py.evaluation_cli \
+            --request "$EVALUATION_REQUEST" \
+            --work-directory privileged-evaluation-work \
+            --evaluation-output privileged-evaluation-result.json
+      - name: Preserve privileged evaluation and replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-privileged-${{ github.run_id }}
+          path: |
+            privileged-evaluation-result.json
+            privileged-evaluation-work/
+          if-no-files-found: error
+          retention-days: 30
+
+  l3-controlled-evaluation:
+    if: vars.L3_CONTROLLED_RUNNER_ENABLED == 'true'
+    runs-on: [self-hosted, l3-controlled]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run controlled L3 evaluation request without prebuilt target artifact
+        env:
+          PYTHONPATH: pytools
+          EVALUATION_REQUEST: ${{ vars.L3_EVALUATION_REQUEST_PATH }}
+        run: |
+          set -euo pipefail
+          test -n "$EVALUATION_REQUEST" && test -f "$EVALUATION_REQUEST"
+          python -m riscv2x86_py.evaluation_cli \
+            --request "$EVALUATION_REQUEST" \
+            --work-directory l3-evaluation-work \
+            --evaluation-output l3-evaluation-result.json
+      - name: Preserve controlled experiment and replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-l3-controlled-${{ github.run_id }}
+          path: |
+            l3-evaluation-result.json
+            l3-evaluation-work/
+          if-no-files-found: error
+          retention-days: 30
+
+  controlled-capability-report:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record unavailable controlled capabilities as inconclusive
+        env:
+          PRIVILEGED_ENABLED: ${{ vars.PRIVILEGED_RUNNER_ENABLED }}
+          L3_ENABLED: ${{ vars.L3_CONTROLLED_RUNNER_ENABLED }}
+        run: |
+          mkdir -p capability-results
+          python - <<'PY'
+          import json, os
+          rows = []
+          for name, value in (("privileged", os.environ.get("PRIVILEGED_ENABLED")),
+                              ("l3-controlled", os.environ.get("L3_ENABLED"))):
+              enabled = value == "true"
+              rows.append({"capability": name, "configured": enabled,
+                           "status": "scheduled" if enabled else "inconclusive",
+                           "reasonCode": "" if enabled else "nightly.controlled-runner-not-configured"})
+          with open("capability-results/nightly-capabilities.json", "w", encoding="utf-8") as stream:
+              json.dump({"schemaVersion": "riscv2x86.nightly-capabilities.v1",
+                         "capabilities": rows}, stream, indent=2, sort_keys=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-capabilities-${{ github.run_id }}
+          path: capability-results/nightly-capabilities.json
+          if-no-files-found: error
+          retention-days: 30
