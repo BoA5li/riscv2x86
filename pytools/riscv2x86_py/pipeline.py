@@ -59,6 +59,9 @@ from .validation_status import (
 from .pipeline_validation_context import WritebackValidationInput
 from .output_manifest import OutputManifest
 from .translation_validation import TranslationValidationResult
+from .translation_attempt import (
+    save_translation_attempt_archive, terminal_attempt_from_finding,
+)
 
 
 PipelineValidationRunner = Callable[..., WritebackValidationInput]
@@ -2007,5 +2010,16 @@ def run(
         findings.extend(whole_function_findings)
         stats["whole_function_rewrites"] += len(whole_function_findings)
     _complete_non_candidate_evaluation_states(findings)
+    attempt_archive_path = str(out_json) + ".attempts.json"
+    attempt_archive = save_translation_attempt_archive(
+        tuple(
+            terminal_attempt_from_finding(finding, index)
+            for index, finding in enumerate(findings)
+        ),
+        attempt_archive_path,
+    )
+    stats["translation_attempt_archive"] = attempt_archive_path
+    stats["translation_attempt_archive_id"] = attempt_archive.archive_id
+    stats["translation_attempt_count"] = len(attempt_archive.attempts)
     save_report(findings, out_json)
     return stats
