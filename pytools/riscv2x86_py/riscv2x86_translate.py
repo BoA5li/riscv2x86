@@ -663,6 +663,8 @@ def translate_one(
     raw_report = work_dir / "raw_report.json"
     translated_report = work_dir / "translated_report.json"
     attempt_archive = Path(str(translated_report) + ".attempts.json")
+    candidate_staging = work_dir / "candidate_staging"
+    candidate_manifest = work_dir / "candidate_artifact_manifest.json"
     object_file = work_dir / f"{source_file.stem}.o"
 
     rewritten_file = get_output_source_path(
@@ -752,6 +754,21 @@ def translate_one(
             f"{attempt_archive}"
         )
 
+    # E2 candidate materialization is an evaluation operation, not public
+    # writeback.  It runs before strict report admission so failed and
+    # unverified candidates still have a reproducible staging artifact.
+    candidate_apply_cmd = [
+        args.python, "-m", "riscv2x86_py.candidate_apply_cli",
+        "--source-root", str(src_root),
+        "--staging-root", str(candidate_staging),
+        "--translated-report", str(translated_report),
+        "--attempt-archive", str(attempt_archive),
+        "--manifest-output", str(candidate_manifest),
+    ]
+    run(candidate_apply_cmd, env=backend_module_environment())
+    if not candidate_staging.is_dir() or not candidate_manifest.is_file():
+        raise TranslationError("candidate materializer did not produce staging artifacts")
+
     translated = load_json(translated_report)
     summarize_report(translated, title="translated backend report")
 
@@ -823,6 +840,8 @@ def translate_one(
     print(f"raw report:        {raw_report}")
     print(f"translated report: {translated_report}")
     print(f"attempt archive:   {attempt_archive}")
+    print(f"candidate staging: {candidate_staging}")
+    print(f"candidate manifest:{candidate_manifest}")
     print(f"compiled object:   {object_file}")
     return {
         "input": str(source_file),
@@ -830,6 +849,8 @@ def translate_one(
         "raw_report": str(raw_report),
         "translated_report": str(translated_report),
         "translation_attempt_archive": str(attempt_archive),
+        "candidate_staging": str(candidate_staging),
+        "candidate_artifact_manifest": str(candidate_manifest),
         "object": str(object_file),
     }
 
@@ -923,6 +944,12 @@ def main() -> int:
                 )
                 if attempt_archive.is_file():
                     failure["translation_attempt_archive"] = str(attempt_archive)
+                candidate_manifest = item_work_dir / "candidate_artifact_manifest.json"
+                candidate_staging = item_work_dir / "candidate_staging"
+                if candidate_manifest.is_file():
+                    failure["candidate_artifact_manifest"] = str(candidate_manifest)
+                if candidate_staging.is_dir():
+                    failure["candidate_staging"] = str(candidate_staging)
                 results.append(failure)
         summary = _write_batch_summary(work_dir, results)
         failed = [item for item in results if item["status"] == "failed"]
