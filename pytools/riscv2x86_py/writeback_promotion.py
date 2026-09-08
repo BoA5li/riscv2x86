@@ -78,8 +78,19 @@ def completed_evaluation_from_dict(value: Mapping[str, object]) -> CompletedEval
               "candidateManifestId", "attempts", "commands", "replayArtifact",
               "evaluationIdentity", "validationPlan", "targetEnvironment",
               "sourceProgramArtifact", "targetProgramArtifact", "comparisonPolicy"}
-    if set(value) != fields or value.get("schemaVersion") != "riscv2x86.evaluation-result.v1":
+    attribution_fields = {"validationUnit", "validationGroupId", "selectedAttemptIds",
+                          "environmentProvenance"}
+    schema = value.get("schemaVersion")
+    valid_shape = ((schema == "riscv2x86.evaluation-result.v1" and set(value) == fields)
+                   or (schema == "riscv2x86.evaluation-result.v2"
+                       and set(value) == fields | attribution_fields))
+    if not valid_shape:
         raise ValueError("completed evaluation schema or fields are invalid")
+    if schema == "riscv2x86.evaluation-result.v2" and (
+        value.get("validationUnit") != "program" or value.get("selectedAttemptIds") != []
+        or value.get("validationGroupId") != ""
+    ):
+        raise ValueError("only complete program evaluation can authorize writeback")
     evaluation_id, request_id, candidate_id = (
         value.get("evaluationIdentity"), value.get("requestIdentity"), value.get("candidateManifestId"),
     )

@@ -19,7 +19,7 @@ from riscv2x86_py.translation_validation import (
     _result as rebuild_validation_result,
 )
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
-from riscv2x86_py.writeback_promotion import promote_evaluated_staging
+from riscv2x86_py.writeback_promotion import completed_evaluation_from_dict, promote_evaluated_staging
 
 
 SOURCE = b'int f(int a){int out; asm("addi %0,%1,1"); return out;}\n'
@@ -181,6 +181,18 @@ def test_rejected_evaluation_preserves_staging_and_evidence(tmp_path):
     assert not final.exists()
     assert (staging / "case.c").read_bytes() == before
     assert evaluation.is_file()
+
+
+def test_single_candidate_evidence_cannot_authorize_whole_program_writeback(tmp_path):
+    *_paths, payload = _setup(tmp_path)
+    payload.update({"schemaVersion": "riscv2x86.evaluation-result.v2",
+                    "validationUnit": "single_candidate", "validationGroupId": "g0",
+                    "selectedAttemptIds": [payload["attempts"][0]["attemptArtifactId"]],
+                    "environmentProvenance": {"schemaVersion": "riscv2x86.environment-provenance.v1"}})
+    identity_payload = dict(payload); identity_payload.pop("evaluationIdentity"); identity_payload.pop("replayArtifact")
+    payload["evaluationIdentity"] = _sha(_canonical(identity_payload))
+    with pytest.raises(ValueError, match="complete program evaluation"):
+        completed_evaluation_from_dict(payload)
 
 
 def test_tampered_evaluation_or_staging_cannot_be_promoted(tmp_path):

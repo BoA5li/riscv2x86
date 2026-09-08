@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from riscv2x86_py.evaluation import EVALUATION_RESULT_SCHEMA, LEGACY_EVALUATION_RESULT_SCHEMA
+
 from riscv2x86_py.evaluation_aggregate import (
     AGGREGATION_POLICY, CORPUS_MANIFEST_SCHEMA, _DENOMINATORS,
     aggregate_corpus, corpus_manifest_from_dict, load_corpus_manifest,
@@ -16,7 +18,7 @@ def _sha(text: str) -> str:
 
 
 def _evaluation(path: Path, attempt_id: str, *, outcome="emitted", status="verified",
-                reason_codes=(), environment="env-a"):
+                reason_codes=(), environment="env-a", attributed=False):
     validation = None
     if status in {"verified", "failed", "inconclusive"}:
         validation = {
@@ -39,7 +41,7 @@ def _evaluation(path: Path, attempt_id: str, *, outcome="emitted", status="verif
         "reasonCodes": list(reason_codes), "replayArtifacts": [],
     }
     value = {
-        "schemaVersion": "riscv2x86.evaluation-result.v1",
+        "schemaVersion": EVALUATION_RESULT_SCHEMA if attributed else LEGACY_EVALUATION_RESULT_SCHEMA,
         "requestIdentity": _sha("request:" + attempt_id), "status": status,
         "reasonCodes": list(reason_codes), "candidateManifestId": _sha("candidate:" + attempt_id),
         "attempts": [attempt], "commands": [], "replayArtifact": "replay/evaluation-replay.json",
@@ -52,6 +54,10 @@ def _evaluation(path: Path, attempt_id: str, *, outcome="emitted", status="verif
         "sourceProgramArtifact": {}, "targetProgramArtifact": {},
         "comparisonPolicy": "riscv2x86.comparison-policy.architectural.v1",
     }
+    if attributed:
+        value.update({"validationUnit": "program", "validationGroupId": "",
+                      "selectedAttemptIds": [],
+                      "environmentProvenance": {"schemaVersion": "riscv2x86.environment-provenance.v1"}})
     identity_payload = dict(value)
     identity_payload.pop("replayArtifact")
     value["evaluationIdentity"] = "sha256:" + sha256(json.dumps(
@@ -173,3 +179,12 @@ def test_unexpected_attempt_is_reported_and_cannot_change_declared_denominator(t
     assert result["summaries"][0]["declaredAttempts"] == 1
     assert result["records"][0]["attemptArtifactId"] == expected
     assert result["records"][0]["status"] == "missing"
+
+
+def test_e5_aggregator_accepts_e7_attribution_extension(tmp_path):
+    attempt_id = _sha("attributed")
+    _evaluation(tmp_path / "evaluation.json", attempt_id, attributed=True)
+    manifest = corpus_manifest_from_dict(_manifest([
+        _entry("entry-a", attempt_id, "evaluation.json"),
+    ]))
+    assert aggregate_corpus(manifest, manifest_directory=tmp_path)["integrityStatus"] == "verified"

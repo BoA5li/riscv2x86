@@ -23,7 +23,7 @@ on:
   pull_request:
 
 jobs:
-  schema-staging-and-negative-contracts:
+  evaluation-contract-fixtures:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +50,7 @@ jobs:
           pytools/tests/test_writeback_promotion.py
           pytools/tests/test_evaluation_aggregate.py
           pytools/tests/test_evaluation_ci_contract.py
+          pytools/tests/test_paper_evaluation.py
           pytools/tests/test_validation_case.py
           pytools/tests/test_l1_differential.py
           pytools/tests/test_l2_operand_differential.py

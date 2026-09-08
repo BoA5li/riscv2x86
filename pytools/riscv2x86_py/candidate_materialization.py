@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import shutil
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from .schema import Finding, TranslationOutcome, load_report
 from .translation_attempt import (
@@ -212,6 +212,7 @@ def materialize_candidate_tree(
     *, source_root: str | Path, staging_root: str | Path,
     translated_report: str | Path, attempt_archive: str | Path,
     manifest_output: str | Path,
+    selected_attempt_ids: Sequence[str] | None = None,
 ) -> CandidateArtifactManifest:
     source = Path(source_root).resolve()
     staging = Path(staging_root).resolve()
@@ -229,6 +230,16 @@ def materialize_candidate_tree(
     findings = load_report(str(report_path))
     archive = load_translation_attempt_archive(archive_path)
     attempts = _attempts_by_index(archive, len(findings))
+    selected = None if selected_attempt_ids is None else tuple(selected_attempt_ids)
+    if selected is not None:
+        if not selected or selected != tuple(sorted(set(selected))):
+            raise ValueError("selected candidate attempts must be non-empty, unique and sorted")
+        known = {item.artifact_id for item in archive.attempts}
+        if not set(selected).issubset(known):
+            raise ValueError("selected candidate attempt is absent from archive")
+        outcomes = {item.artifact_id: item.translation_outcome for item in archive.attempts}
+        if any(outcomes[item] not in _EMITTED for item in selected):
+            raise ValueError("selected attempt has no materializable candidate")
     source_digest = _tree_digest(source)
     shutil.copytree(source, staging, symlinks=False)
     edit_manifests: list[CandidateEditManifest] = []
@@ -237,6 +248,8 @@ def materialize_candidate_tree(
         for index, finding in enumerate(findings):
             attempt = attempts[index]
             if attempt.translation_outcome not in _EMITTED:
+                continue
+            if selected is not None and attempt.artifact_id not in selected:
                 continue
             if attempt.fragment_id != str(getattr(finding.fragment, "id", "") or attempt.fragment_id):
                 raise ValueError("attempt/report fragment identity mismatch")

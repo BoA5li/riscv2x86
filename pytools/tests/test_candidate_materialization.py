@@ -169,3 +169,24 @@ def test_manifest_parser_rejects_identity_tampering(tmp_path):
     manifest_path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="manifest ID"):
         load_candidate_artifact_manifest(manifest_path)
+
+
+def test_selected_candidate_materialization_is_explicit_and_fail_closed(tmp_path):
+    source, _source_file, report, archive = _artifacts(tmp_path)
+    archived = json.loads(archive.read_text())
+    attempt_id = archived["attempts"][0]["artifactId"]
+    manifest = materialize_candidate_tree(
+        source_root=source, staging_root=tmp_path / "selected",
+        translated_report=report, attempt_archive=archive,
+        manifest_output=tmp_path / "selected.json",
+        selected_attempt_ids=(attempt_id,),
+    )
+    assert [item.attempt_artifact_id for item in manifest.edits] == [attempt_id]
+
+    with pytest.raises(ValueError, match="absent"):
+        materialize_candidate_tree(
+            source_root=source, staging_root=tmp_path / "unknown",
+            translated_report=report, attempt_archive=archive,
+            manifest_output=tmp_path / "unknown.json",
+            selected_attempt_ids=("sha256:" + "f" * 64,),
+        )

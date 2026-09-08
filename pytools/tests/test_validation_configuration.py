@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -12,7 +13,7 @@ from riscv2x86_py.translation_validation import (
     validation_plan_from_dict,
 )
 from riscv2x86_py.validation_runtime_registry import (
-    VALIDATION_RUNTIME_REGISTRY_SCHEMA,
+    LEGACY_VALIDATION_RUNTIME_REGISTRY_SCHEMA, VALIDATION_RUNTIME_REGISTRY_SCHEMA,
     validation_runtime_registry_from_dict,
 )
 from riscv2x86_py.validation_status import ValidationStatus
@@ -106,3 +107,55 @@ def test_runtime_registry_uses_only_registered_versioned_layer_factories():
                 "L1": {"type": "unregistered-runner", "config": {}},
             },
         })
+
+
+def test_runtime_registry_composes_named_dimension_evidence_without_overwrite():
+    def factory(config):
+        status = ValidationStatus(config["status"])
+        return lambda **kwargs: ValidationLayerResult(
+            kwargs["level"], status, "sha256:" + config["evidence"] * 64,
+        )
+
+    registry = validation_runtime_registry_from_dict({
+        "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-1",
+        "validators": {"L2": {"type": "composite", "validators": [
+            {"dimension": "operand", "type": "test", "config": {"status": "verified", "evidence": "1"}},
+            {"dimension": "shell", "type": "test", "config": {"status": "inconclusive", "evidence": "2"}},
+        ]}},
+    }, validator_factories={"test": factory})
+    result = registry.validator_for(ValidationLevel.L2)(level=ValidationLevel.L2)
+    detail = json.loads(result.detail)
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert result.evidence_identity.startswith("sha256:")
+    assert detail["dimensions"]["operand"]["status"] == "verified"
+    assert detail["dimensions"]["shell"]["status"] == "inconclusive"
+
+
+def test_runtime_registry_rejects_duplicate_composite_dimensions():
+    def factory(_config):
+        return lambda **kwargs: ValidationLayerResult(kwargs["level"], ValidationStatus.VERIFIED)
+
+    with pytest.raises(ValueError, match="unique and sorted"):
+        validation_runtime_registry_from_dict({
+            "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-1",
+            "validators": {"L2": {"type": "composite", "validators": [
+                {"dimension": "operand", "type": "test", "config": {}},
+                {"dimension": "operand", "type": "test", "config": {}},
+            ]}},
+        }, validator_factories={"test": factory})
+
+
+def test_legacy_registry_remains_readable_but_cannot_claim_composite_dimensions():
+    factory = lambda _config: (lambda **kwargs: ValidationLayerResult(
+        kwargs["level"], ValidationStatus.INCONCLUSIVE,
+    ))
+    legacy = {"schemaVersion": LEGACY_VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "legacy",
+              "validators": {"L1": {"type": "test", "config": {}}}}
+    assert validation_runtime_registry_from_dict(
+        legacy, validator_factories={"test": factory},
+    ).validator_for(ValidationLevel.L1) is not None
+    legacy["validators"] = {"L2": {"type": "composite", "validators": [
+        {"dimension": "operand", "type": "test", "config": {}},
+    ]}}
+    with pytest.raises(ValueError, match="schema v2"):
+        validation_runtime_registry_from_dict(legacy, validator_factories={"test": factory})

@@ -9,6 +9,8 @@ from riscv2x86_py.evaluation import (
     EVALUATION_REQUEST_SCHEMA, evaluation_request_from_dict,
     persist_evaluation_result, run_evaluation,
 )
+from riscv2x86_py.corpus_evaluation_cli import run_corpus_execution
+from riscv2x86_py.paper_evaluation import PAPER_EXECUTION_SCHEMA
 from riscv2x86_py.schema import (
     AsmFragment, Finding, PublicationOutcome, TranslationOutcome,
     ValidationOutcome, make_translation_attempt_artifact, save_report,
@@ -100,6 +102,7 @@ def _setup(tmp_path: Path, *, target_build_success=True):
                         "outputRelativePath": "build/target", "command": target_command},
         "translationCommand": [],
         "comparisonPolicy": "riscv2x86.comparison-policy.none.v1",
+        "validationUnit": "program", "validationGroupId": "", "selectedAttemptIds": [],
     })
     return request, source, attempt
 
@@ -177,6 +180,7 @@ def test_request_schema_and_work_tree_are_fail_closed(tmp_path):
             "targetBuild": {"artifactId": "t", "artifactKind": "executable",
                             "outputRelativePath": "t", "command": ["cc"]},
             "translationCommand": [], "comparisonPolicy": "policy",
+            "validationUnit": "program", "validationGroupId": "", "selectedAttemptIds": [],
         })
     with pytest.raises(ValueError, match="already exists"):
         existing = tmp_path / "existing"
@@ -186,3 +190,86 @@ def test_request_schema_and_work_tree_are_fail_closed(tmp_path):
     with pytest.raises(ValueError, match="must not overlap"):
         run_evaluation(request, work_directory=nested)
     assert not nested.exists()
+
+
+def test_single_candidate_evaluation_records_attribution_and_provenance(tmp_path):
+    request, _source, attempt = _setup(tmp_path)
+    request = replace(
+        request, validation_unit="single_candidate", validation_group_id="fragment-group-0",
+        selected_attempt_ids=(attempt.artifact_id,),
+    )
+    result = run_evaluation(request, work_directory=tmp_path / "single-evaluation")
+
+    assert result["validationUnit"] == "single_candidate"
+    assert result["validationGroupId"] == "fragment-group-0"
+    assert result["selectedAttemptIds"] == [attempt.artifact_id]
+    assert result["environmentProvenance"]["schemaVersion"] == "riscv2x86.environment-provenance.v1"
+    assert result["environmentProvenance"]["kernel"]
+    assert result["environmentProvenance"]["sourceBuildCommand"]
+
+
+def test_grouping_contract_rejects_ambiguous_or_noncanonical_selection(tmp_path):
+    request, _source, attempt = _setup(tmp_path)
+    with pytest.raises(ValueError, match="exactly one"):
+        replace(request, validation_unit="single_candidate", validation_group_id="g",
+                selected_attempt_ids=())
+    with pytest.raises(ValueError, match="unique and sorted"):
+        replace(request, validation_unit="group", validation_group_id="g",
+                selected_attempt_ids=(attempt.artifact_id, attempt.artifact_id))
+
+
+def test_corpus_runner_generates_requests_manifest_evidence_and_report(tmp_path):
+    request, source, attempt = _setup(tmp_path)
+    request = replace(request, validation_unit="single_candidate", validation_group_id="g0",
+                      selected_attempt_ids=(attempt.artifact_id,))
+    request_value = {
+        "schemaVersion": request.schema_version, "sourceRoot": request.source_root,
+        "sourceRelativePath": request.source_relative_path, "targetRelativePath": request.target_relative_path,
+        "translatedReport": request.translated_report, "attemptArchive": request.attempt_archive,
+        "validationPlan": request.validation_plan, "targetEnvironment": request.target_environment,
+        "runtimeRegistryTemplate": request.runtime_registry_template,
+        "translationArtifacts": request.translation_artifacts,
+        "sourceBuild": {"artifactId": request.source_build.artifact_id,
+                        "artifactKind": request.source_build.artifact_kind,
+                        "outputRelativePath": request.source_build.output_relative_path,
+                        "command": list(request.source_build.command)},
+        "targetBuild": {"artifactId": request.target_build.artifact_id,
+                        "artifactKind": request.target_build.artifact_kind,
+                        "outputRelativePath": request.target_build.output_relative_path,
+                        "command": list(request.target_build.command)},
+        "translationCommand": list(request.translation_command),
+        "comparisonPolicy": request.comparison_policy, "validationUnit": request.validation_unit,
+        "validationGroupId": request.validation_group_id,
+        "selectedAttemptIds": list(request.selected_attempt_ids),
+    }
+    begin, end = SOURCE.index(ASM), SOURCE.index(ASM) + len(ASM)
+    oracle_facts = {"fragmentId": "fragment:0", "relativePath": "case.c",
+                    "beginOffset": begin, "endOffset": end,
+                    "sourceSliceDigest": "sha256:" + __import__("hashlib").sha256(ASM).hexdigest(),
+                    "category": "integer", "subcategory": "scalar",
+                    "requiredDimensions": ["operand", "shell"]}
+    oracle_id = "sha256:" + __import__("hashlib").sha256(json.dumps(
+        oracle_facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    plan = {
+        "schemaVersion": PAPER_EXECUTION_SCHEMA,
+        "corpus": {"corpusId": "pilot", "corpusVersion": "1",
+                   "bootstrap": {"seed": 7, "resamples": 100, "confidenceLevel": 0.95},
+                   "programs": [{"programId": "program-0", "category": "integer",
+                                 "oracleFragments": [{"oracleFragmentId": oracle_id, **oracle_facts}],
+                                 "validations": [{"evaluationId": "eval-0", "unit": "single_candidate",
+                                     "groupId": "g0", "oracleFragmentIds": [oracle_id],
+                                     "expectedEnvironmentId": "test-env"}]}]},
+        "evaluations": [{"evaluationId": "eval-0", "request": request_value,
+                         "workDirectory": "work/eval-0", "resultPath": "results/eval-0.json"}],
+    }
+    plan_path = tmp_path / "corpus-plan.json"; plan_path.write_text(json.dumps(plan))
+    output = tmp_path / "corpus-run"
+    result = run_corpus_execution(plan_path, output)
+
+    assert result["integrityStatus"] == "verified"
+    assert (output / "requests/eval-0.json").is_file()
+    assert (output / "paper-corpus-manifest.json").is_file()
+    assert (output / "source-evidence/program-0/case.c").read_bytes() == (source / "case.c").read_bytes()
+    assert (output / "attempt-evidence/program-0.json").is_file()
+    assert (output / "paper-report/paper-evaluation.json").is_file()

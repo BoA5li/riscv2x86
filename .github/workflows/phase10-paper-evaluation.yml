@@ -1,0 +1,91 @@
+name: Phase 10 paper corpus evaluation
+
+on:
+  push:
+    branches:
+      - phase10-paper-evaluation-reporting
+  workflow_dispatch:
+  schedule:
+    - cron: "41 2 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase10-paper-corpus-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  paper-schema-and-metric-fixtures:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest
+      - name: Run oracle, attribution, aggregation, and batch-runner fixtures
+        env:
+          PYTHONPATH: pytools
+        run: >-
+          python -m pytest -q
+          pytools/tests/test_paper_evaluation.py
+          pytools/tests/test_evaluation_runner.py
+          pytools/tests/test_candidate_materialization.py
+          pytools/tests/test_validation_configuration.py
+
+  real-corpus-evaluation:
+    if: vars.PAPER_CORPUS_RUNNER_ENABLED == 'true'
+    runs-on: [self-hosted, paper-corpus]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+      - name: Execute real corpus, preserve failures, and generate paper report
+        env:
+          PYTHONPATH: pytools
+          EXECUTION_PLAN: ${{ vars.PAPER_CORPUS_EXECUTION_PLAN_PATH }}
+          CONTAINER_IMAGE_DIGEST: ${{ vars.PAPER_CORPUS_CONTAINER_IMAGE_DIGEST }}
+        run: |
+          set -uo pipefail
+          test -n "$EXECUTION_PLAN" && test -f "$EXECUTION_PLAN"
+          python -m riscv2x86_py.corpus_evaluation_cli \
+            --execution-plan "$EXECUTION_PLAN" \
+            --output-directory paper-corpus-run
+          status=$?
+          printf '%s\n' "$status" > paper-corpus-run-exit-status.txt
+          exit "$status"
+      - name: Archive complete corpus evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-corpus-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            paper-corpus-run/
+            paper-corpus-run-exit-status.txt
+          if-no-files-found: error
+          retention-days: 90
+
+  corpus-runner-capability:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record real-corpus capability without silent skip
+        env:
+          ENABLED: ${{ vars.PAPER_CORPUS_RUNNER_ENABLED }}
+        run: |
+          mkdir capability
+          python - <<'PY'
+          import json, os
+          enabled = os.environ.get("ENABLED") == "true"
+          value = {"schemaVersion": "riscv2x86.paper-runner-capability.v1",
+                   "configured": enabled,
+                   "status": "scheduled" if enabled else "inconclusive",
+                   "reasonCode": "" if enabled else "paper.real-corpus-runner-not-configured"}
+          with open("capability/paper-runner.json", "w", encoding="utf-8") as stream:
+              json.dump(value, stream, indent=2, sort_keys=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-corpus-capability-${{ github.run_id }}
+          path: capability/paper-runner.json
+          if-no-files-found: error
+          retention-days: 90

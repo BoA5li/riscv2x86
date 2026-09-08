@@ -13,7 +13,7 @@ import re
 import shutil
 from typing import Mapping, Sequence
 
-from .evaluation import EVALUATION_RESULT_SCHEMA
+from .evaluation import EVALUATION_RESULT_SCHEMA, LEGACY_EVALUATION_RESULT_SCHEMA
 from .schema import TranslationOutcome
 from .validation_status import ValidationStatus
 
@@ -180,10 +180,15 @@ def _load_evaluation(path: Path) -> Mapping[str, object]:
               "candidateManifestId", "attempts", "commands", "replayArtifact",
               "evaluationIdentity", "validationPlan", "targetEnvironment",
               "sourceProgramArtifact", "targetProgramArtifact", "comparisonPolicy"}
-    if not isinstance(value, Mapping) or set(value) != fields:
+    attribution_fields = {"validationUnit", "validationGroupId", "selectedAttemptIds",
+                          "environmentProvenance"}
+    if not isinstance(value, Mapping):
         raise ValueError("evaluation result fields are incomplete or unknown")
-    if value.get("schemaVersion") != EVALUATION_RESULT_SCHEMA:
-        raise ValueError("evaluation result schema is unsupported")
+    schema = value.get("schemaVersion")
+    valid_shape = ((schema == LEGACY_EVALUATION_RESULT_SCHEMA and set(value) == fields)
+                   or (schema == EVALUATION_RESULT_SCHEMA and set(value) == fields | attribution_fields))
+    if not valid_shape:
+        raise ValueError("evaluation result schema or fields are unsupported")
     identity = value.get("evaluationIdentity")
     if not isinstance(identity, str) or _SHA256.fullmatch(identity) is None:
         raise ValueError("evaluation identity is invalid")

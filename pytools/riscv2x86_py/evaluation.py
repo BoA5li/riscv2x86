@@ -4,7 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 from typing import Callable, Mapping, Sequence
@@ -24,8 +26,10 @@ from .validation_runtime_registry import validation_runtime_registry_from_dict
 from .validation_status import ValidationStatus
 
 
-EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v1"
-EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v1"
+LEGACY_EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v1"
+EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v2"
+LEGACY_EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v1"
+EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v2"
 EVALUATION_REPLAY_SCHEMA = "riscv2x86.evaluation-replay.v1"
 _EMITTED = {
     TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
@@ -90,10 +94,13 @@ class EvaluationRequest:
     target_build: BuildSpec
     translation_command: tuple[str, ...] = ()
     comparison_policy: str = "riscv2x86.comparison-policy.none.v1"
+    validation_unit: str = "program"
+    validation_group_id: str = ""
+    selected_attempt_ids: tuple[str, ...] = ()
     schema_version: str = EVALUATION_REQUEST_SCHEMA
 
     def __post_init__(self) -> None:
-        if self.schema_version != EVALUATION_REQUEST_SCHEMA:
+        if self.schema_version not in {LEGACY_EVALUATION_REQUEST_SCHEMA, EVALUATION_REQUEST_SCHEMA}:
             raise ValueError("evaluation request schema is unsupported")
         for value, label in ((self.source_relative_path, "source path"),
                              (self.target_relative_path, "target path")):
@@ -102,6 +109,18 @@ class EvaluationRequest:
             raise ValueError("evaluation source/report/archive identity is incomplete")
         if not self.validation_plan or not self.target_environment or not self.comparison_policy:
             raise ValueError("evaluation validation contract is incomplete")
+        if self.validation_unit not in {"program", "single_candidate", "group"}:
+            raise ValueError("evaluation validation unit is unsupported")
+        if self.selected_attempt_ids != tuple(sorted(set(self.selected_attempt_ids))):
+            raise ValueError("evaluation selected attempts must be unique and sorted")
+        if self.validation_unit == "program" and self.selected_attempt_ids:
+            raise ValueError("program validation cannot select individual attempts")
+        if self.validation_unit == "single_candidate" and len(self.selected_attempt_ids) != 1:
+            raise ValueError("single-candidate validation requires exactly one attempt")
+        if self.validation_unit == "group" and not self.selected_attempt_ids:
+            raise ValueError("group validation requires selected attempts")
+        if self.validation_unit != "program" and not self.validation_group_id:
+            raise ValueError("candidate validation requires a group identity")
 
 
 def _build_spec(value: object, label: str) -> BuildSpec:
@@ -123,7 +142,10 @@ def evaluation_request_from_dict(value: Mapping[str, object]) -> EvaluationReque
         "runtimeRegistryTemplate", "translationArtifacts", "sourceBuild", "targetBuild",
         "translationCommand", "comparisonPolicy",
     }
-    if set(value) != fields:
+    grouping_fields = {"validationUnit", "validationGroupId", "selectedAttemptIds"}
+    schema_version = value.get("schemaVersion")
+    expected = (fields if schema_version == LEGACY_EVALUATION_REQUEST_SCHEMA else fields | grouping_fields)
+    if schema_version not in {LEGACY_EVALUATION_REQUEST_SCHEMA, EVALUATION_REQUEST_SCHEMA} or set(value) != expected:
         raise ValueError("evaluation request fields are incomplete or unknown")
     registry, artifacts = value.get("runtimeRegistryTemplate"), value.get("translationArtifacts")
     if not isinstance(registry, Mapping) or not isinstance(artifacts, Mapping):
@@ -138,6 +160,9 @@ def evaluation_request_from_dict(value: Mapping[str, object]) -> EvaluationReque
         if not isinstance(item, str):
             raise ValueError(name + " must be a string")
         return item
+    selected = value.get("selectedAttemptIds", [])
+    if not isinstance(selected, list) or not all(isinstance(item, str) and item for item in selected):
+        raise ValueError("selectedAttemptIds must be an array of non-empty strings")
     return EvaluationRequest(
         text("sourceRoot"), text("sourceRelativePath"), text("targetRelativePath"),
         text("translatedReport"), text("attemptArchive"), text("validationPlan"),
@@ -145,7 +170,10 @@ def evaluation_request_from_dict(value: Mapping[str, object]) -> EvaluationReque
         _build_spec(value.get("sourceBuild"), "source"),
         _build_spec(value.get("targetBuild"), "target"),
         _strings(value.get("translationCommand"), "translationCommand", allow_empty=True),
-        text("comparisonPolicy"), text("schemaVersion"),
+        text("comparisonPolicy"),
+        str(value.get("validationUnit", "program")),
+        str(value.get("validationGroupId", "")), tuple(selected),
+        text("schemaVersion"),
     )
 
 
@@ -224,6 +252,52 @@ def _overall(statuses: Sequence[ValidationStatus]) -> ValidationStatus:
     return ValidationStatus.VERIFIED
 
 
+def _tool_version(executable: str) -> str:
+    try:
+        result = subprocess.run((executable, "--version"), text=True, capture_output=True,
+                                check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+    text = (result.stdout or result.stderr).splitlines()
+    return text[0].strip() if text else "unavailable"
+
+
+def _environment_provenance(
+    request: EvaluationRequest, commands: Sequence[CommandRecord], environment: object | None,
+) -> dict[str, object]:
+    executables = sorted({item.command[0] for item in commands if item.command})
+    cpu_model = "unavailable"
+    microcode = "unavailable"
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.lower().startswith(("model name", "hardware")) and ":" in line:
+                cpu_model = line.split(":", 1)[1].strip()
+            if line.lower().startswith("microcode") and ":" in line:
+                microcode = line.split(":", 1)[1].strip()
+            if cpu_model != "unavailable" and microcode != "unavailable":
+                break
+    except OSError:
+        pass
+    environment_payload = environment.to_dict() if environment is not None else {}
+    return {
+        "schemaVersion": "riscv2x86.environment-provenance.v1",
+        "kernel": platform.release(), "platform": platform.platform(),
+        "machine": platform.machine(), "cpuModel": cpu_model, "microcode": microcode,
+        "toolVersions": {name: _tool_version(name) for name in executables},
+        "runnerVersions": {
+            "source": (_tool_version("qemu-riscv64")
+                       if environment_payload.get("sourceRunnerCapabilities")
+                       and "qemu" in environment_payload["sourceRunnerCapabilities"] else "custom-or-unavailable"),
+            "target": platform.platform(),
+        },
+        "sourceBuildCommand": list(request.source_build.command),
+        "targetBuildCommand": list(request.target_build.command),
+        "runtimeIdentity": str(environment_payload.get("runtimeIdentity", "unavailable")),
+        "loaderIdentity": str(environment_payload.get("loaderIdentity", "unavailable")),
+        "containerImageDigest": os.environ.get("CONTAINER_IMAGE_DIGEST", "unavailable"),
+    }
+
+
 def run_evaluation(
     request: EvaluationRequest, *, work_directory: str | Path,
     command_executor: Callable[[Sequence[str], Path, int, str], CommandRecord] = _execute,
@@ -262,6 +336,7 @@ def run_evaluation(
     candidate_manifest = materialize_candidate_tree(
         source_root=source_root, staging_root=staging, translated_report=report,
         attempt_archive=archive_path, manifest_output=candidate_manifest_path,
+        selected_attempt_ids=(request.selected_attempt_ids or None),
     )
     verify_candidate_artifact_manifest(
         candidate_manifest, source_root=source_root, staging_root=staging,
@@ -303,6 +378,13 @@ def run_evaluation(
     assert source_program is not None and target_program is not None
     per_attempt = []
     for attempt in archive.attempts:
+        if (request.selected_attempt_ids
+                and attempt.artifact_id not in request.selected_attempt_ids):
+            per_attempt.append(_attempt_result(
+                attempt, None, ValidationStatus.INCONCLUSIVE,
+                ("evaluation.attempt-not-in-validation-group",),
+            ))
+            continue
         if attempt.translation_outcome not in _EMITTED:
             per_attempt.append(_attempt_result(
                 attempt, None, ValidationStatus.INCONCLUSIVE,
@@ -353,8 +435,10 @@ def run_evaluation(
                 ("evaluation.attempt-validation-error",),
                 (str(failure.relative_to(work)),),
             ))
-    overall = _overall(tuple(ValidationStatus(item["status"]) for item in per_attempt))
-    reasons = tuple(sorted(set(reason for item in per_attempt for reason in item["reasonCodes"])))
+    attributable = [item for item in per_attempt if not request.selected_attempt_ids
+                    or item["attemptArtifactId"] in request.selected_attempt_ids]
+    overall = _overall(tuple(ValidationStatus(item["status"]) for item in attributable))
+    reasons = tuple(sorted(set(reason for item in attributable for reason in item["reasonCodes"])))
     return _result(
         request, work, commands, tuple(per_attempt), overall, reasons, candidate_manifest,
         plan=plan, environment=environment,
@@ -405,6 +489,9 @@ def _request_identity(request: EvaluationRequest) -> str:
         "sourceBuild": request.source_build.__dict__, "targetBuild": request.target_build.__dict__,
         "translationCommand": list(request.translation_command),
         "comparisonPolicy": request.comparison_policy,
+        "validationUnit": request.validation_unit,
+        "validationGroupId": request.validation_group_id,
+        "selectedAttemptIds": list(request.selected_attempt_ids),
     }
     return _digest_bytes(_canonical(payload))
 
@@ -440,6 +527,10 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
         "sourceProgramArtifact": program(source_program),
         "targetProgramArtifact": program(target_program),
         "comparisonPolicy": request.comparison_policy,
+        "validationUnit": request.validation_unit,
+        "validationGroupId": request.validation_group_id,
+        "selectedAttemptIds": list(request.selected_attempt_ids),
+        "environmentProvenance": _environment_provenance(request, commands, environment),
     }
     identity_payload = dict(payload); identity_payload.pop("replayArtifact")
     payload["evaluationIdentity"] = _digest_bytes(_canonical(identity_payload))

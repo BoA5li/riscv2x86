@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_regular_ci_covers_required_evaluation_smoke_contracts():
     workflow = (ROOT / ".github/workflows/phase8-l0.yml").read_text()
     assert "phase10-evaluation-ci-matrix" in workflow
-    assert "schema-staging-and-negative-contracts:" in workflow
+    assert "evaluation-contract-fixtures:" in workflow
     assert "test_translation_attempt.py" in workflow
     assert "test_candidate_materialization.py" in workflow
     assert "test_writeback_promotion.py" in workflow
@@ -17,6 +17,18 @@ def test_regular_ci_covers_required_evaluation_smoke_contracts():
     assert workflow.count("--matrix-profile smoke") == 2
     assert "run_real_l1_differential.py --random-cases 4" in workflow
     assert "real-sanitizer-negatives:" in workflow
+
+
+def test_paper_workflow_separates_fixtures_from_real_corpus_and_archives_failures():
+    workflow = (ROOT / ".github/workflows/phase10-paper-evaluation.yml").read_text()
+    assert "phase10-paper-evaluation-reporting" in workflow
+    assert "paper-schema-and-metric-fixtures:" in workflow
+    assert "real-corpus-evaluation:" in workflow
+    assert "PAPER_CORPUS_RUNNER_ENABLED" in workflow
+    assert "riscv2x86_py.corpus_evaluation_cli" in workflow
+    assert "if: always()" in workflow
+    assert "retention-days: 90" in workflow
+    assert "paper.real-corpus-runner-not-configured" in workflow
 
 
 def test_nightly_declares_full_matrix_expanded_domain_and_controlled_routes():
