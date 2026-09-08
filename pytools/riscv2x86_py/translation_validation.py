@@ -16,12 +16,13 @@ import re
 from typing import Any, Callable, Mapping
 
 from .validation_status import PreservationMode, ValidationStatus
+from .schema import ValidationOutcome
 from .validation_observation import ExecutionObservation
 
 
 VALIDATION_PLAN_SCHEMA = "riscv2x86.validation-plan.v1"
 TARGET_ENVIRONMENT_SCHEMA = "riscv2x86.target-environment.v1"
-TRANSLATION_VALIDATION_VERSION = "riscv2x86.translation-validation.v1"
+TRANSLATION_VALIDATION_VERSION = "riscv2x86.translation-validation.v2"
 
 
 class ValidationProfile(str, Enum):
@@ -209,10 +210,16 @@ class TranslationValidationResult:
     reason_codes: tuple[str, ...]
     validation_identity: str
 
+    @property
+    def validation_outcome(self) -> ValidationOutcome:
+        """Explicit E0 outcome; publication is decided by a separate gate."""
+        return ValidationOutcome(self.status.value)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "schemaVersion": TRANSLATION_VALIDATION_VERSION,
             "status": self.status.value,
+            "validationOutcome": self.validation_outcome.value,
             "profile": self.profile.value,
             "completedLevels": [item.value for item in self.completed_levels],
             "layers": [
