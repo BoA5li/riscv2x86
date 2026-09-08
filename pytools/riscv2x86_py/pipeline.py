@@ -7,7 +7,11 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Callable, Dict, List, Tuple
 
-from .schema import Finding, load_report, save_report
+from .schema import (
+    Finding, PublicationOutcome, TranslationOutcome, ValidationOutcome, load_report,
+    make_translation_attempt_artifact, save_report,
+    update_translation_attempt_outcomes,
+)
 from .assemble import assemble
 from .lift import lift, GhidraLanguageRegisterResolver
 from .pcode_ir import from_lifted
@@ -60,6 +64,96 @@ from .translation_validation import TranslationValidationResult
 PipelineValidationRunner = Callable[..., WritebackValidationInput]
 
 
+def _finding_experiment_identity(finding: Finding) -> str:
+    fragment = finding.fragment
+    if fragment is not None and fragment.id:
+        return fragment.id
+    return "finding:%s:%d:%d" % (
+        finding.fileName or "<unknown>", finding.line, finding.column,
+    )
+
+
+def _translation_outcome_for_candidate(finding: Finding, tr: object) -> TranslationOutcome:
+    artifact = finding.approvalArtifact
+    if artifact.get("preservationMode") == "functional_equivalence_only":
+        return TranslationOutcome.FUNCTIONAL_FALLBACK
+    if str(getattr(tr, "preservationLevel", "")).lower() == "conservative":
+        return TranslationOutcome.STRENGTHENED
+    return TranslationOutcome.EMITTED
+
+
+def _record_candidate_attempt(
+    finding: Finding, tr: object, *, replacement: str, rule_name: str,
+) -> None:
+    outcome = _translation_outcome_for_candidate(finding, tr)
+    finding.translationOutcome = outcome.value
+    finding.validationOutcome = ValidationStatus.NOT_VERIFIED.value
+    finding.publicationOutcome = PublicationOutcome.PENDING.value
+    finding.translationAttemptArtifact = make_translation_attempt_artifact(
+        fragment_id=_finding_experiment_identity(finding),
+        candidate_kind=str(getattr(tr, "kind", "")),
+        candidate_route=str(getattr(tr, "route", "")),
+        candidate_replacement=replacement,
+        candidate_rule_name=rule_name,
+        translation_outcome=outcome,
+        reason_codes=tuple(getattr(tr, "reason_codes", ()) or ()),
+    )
+
+
+def _finish_candidate_attempt(
+    finding: Finding, *, validation_outcome: str,
+    publication_outcome: PublicationOutcome, reason_codes: tuple[str, ...] = (),
+) -> None:
+    finding.validationOutcome = validation_outcome
+    finding.publicationOutcome = publication_outcome.value
+    finding.translationAttemptArtifact = update_translation_attempt_outcomes(
+        finding.translationAttemptArtifact,
+        validation_outcome=validation_outcome,
+        publication_outcome=publication_outcome,
+        reason_codes=reason_codes,
+    )
+
+
+def _complete_non_candidate_evaluation_states(findings: List[Finding]) -> None:
+    """Populate E0 states for legacy/public/non-candidate terminal paths."""
+    for finding in findings:
+        if finding.translationAttemptArtifact:
+            continue
+        status = finding.verificationStatus or ValidationOutcome.NOT_RUN.value
+        if status == ValidationStatus.NEEDS_ROUTE.value:
+            outcome = TranslationOutcome.NEEDS_ROUTE
+        elif status == ValidationStatus.KEEP.value:
+            outcome = TranslationOutcome.KEEP
+        elif status == ValidationStatus.UNSUPPORTED.value or finding.category == "Unsupported":
+            outcome = TranslationOutcome.UNSUPPORTED
+        elif finding.suggestedReplacement.strip():
+            outcome = TranslationOutcome.EMITTED
+        elif status == ValidationStatus.FAILED.value:
+            outcome = TranslationOutcome.FAILED
+        else:
+            outcome = TranslationOutcome.NOT_ATTEMPTED
+        publication = (
+            PublicationOutcome.ADMITTED
+            if outcome is TranslationOutcome.EMITTED
+            and finding.category == "ReplaceableByRule"
+            and bool(finding.suggestedReplacement.strip())
+            else PublicationOutcome.NOT_REQUESTED
+        )
+        finding.translationOutcome = outcome.value
+        finding.validationOutcome = status
+        finding.publicationOutcome = publication.value
+        finding.translationAttemptArtifact = make_translation_attempt_artifact(
+            fragment_id=_finding_experiment_identity(finding),
+            candidate_kind=finding.translationKind,
+            candidate_route=finding.preservationRoute,
+            candidate_replacement=finding.suggestedReplacement,
+            candidate_rule_name=finding.ruleName,
+            translation_outcome=outcome,
+            validation_outcome=status,
+            publication_outcome=publication,
+        )
+
+
 def _run_unified_phase8_validation(
     validation_runner: PipelineValidationRunner | None, *,
     finding: Finding, lift_result: object, ir_summary: object,
@@ -71,10 +165,20 @@ def _run_unified_phase8_validation(
             "unified translation validation runner is not configured; "
             "legacy verify() cannot authorize writeback"
         )
-    result = validation_runner(
-        finding=finding, lift_result=lift_result, ir_summary=ir_summary,
-        translation_result=translation_result,
-    )
+    try:
+        result = validation_runner(
+            finding=finding, lift_result=lift_result, ir_summary=ir_summary,
+            translation_result=translation_result,
+        )
+    except Exception as exc:
+        # An evaluation infrastructure failure must remain observable in the
+        # attempt report.  Converting it to FAILED preserves fail-closed
+        # publication while allowing the already-rendered candidate to be
+        # archived for research/debugging rather than aborting report output.
+        return None, ValidationStatus.FAILED, (
+            "unified translation validation runner raised "
+            f"{type(exc).__name__}: {exc}"
+        )
     if (
         not isinstance(result, WritebackValidationInput)
         or not isinstance(result.validation_result, TranslationValidationResult)
@@ -1769,6 +1873,12 @@ def run(
         else:
             f.ruleName = "phase6.lower_to_c"
 
+        # E0 evaluation authority: retain the rendered candidate before any
+        # validation or publication decision can clear the apply-time fields.
+        _record_candidate_attempt(
+            f, tr, replacement=replacement, rule_name=f.ruleName,
+        )
+
         # Phase 8: verify
         #
         # verify_enabled=False 仅用于集成链路测试、调试或分阶段部署。
@@ -1791,6 +1901,12 @@ def run(
             f.category = "NeedsAsmTranslation"
             f.suggestedReplacement = ""
             f.ruleName = ""
+            _finish_candidate_attempt(
+                f,
+                validation_outcome=ValidationStatus.NOT_VERIFIED.value,
+                publication_outcome=PublicationOutcome.WITHHELD,
+                reason_codes=("validation.explicitly-disabled",),
+            )
 
             _finalize_finding_privileged_manifest(
                 f, status="not_verified",
@@ -1821,6 +1937,11 @@ def run(
         )
 
         if admission.allowed:
+            _finish_candidate_attempt(
+                f,
+                validation_outcome=phase8_status.value,
+                publication_outcome=PublicationOutcome.ADMITTED,
+            )
             stats["verified"] += 1
 
         elif f.verificationStatus == ValidationStatus.INCONCLUSIVE.value:
@@ -1830,6 +1951,12 @@ def run(
             f.suggestedReplacement = ""
             f.ruleName = ""
             f.notes.append("phase8: replacement withheld: " + admission.reason_code)
+            _finish_candidate_attempt(
+                f,
+                validation_outcome=phase8_status.value,
+                publication_outcome=PublicationOutcome.WITHHELD,
+                reason_codes=(admission.reason_code,),
+            )
             stats["inconclusive"] += 1
 
         elif f.verificationStatus == ValidationStatus.FAILED.value:
@@ -1837,6 +1964,12 @@ def run(
             f.category = "NeedsAsmTranslation"
             f.suggestedReplacement = ""
             f.ruleName = ""
+            _finish_candidate_attempt(
+                f,
+                validation_outcome=phase8_status.value,
+                publication_outcome=PublicationOutcome.WITHHELD,
+                reason_codes=(admission.reason_code,),
+            )
             stats["failed"] += 1
 
         else:
@@ -1846,6 +1979,12 @@ def run(
             f.suggestedReplacement = ""
             f.ruleName = ""
             f.notes.append("phase8: replacement withheld: " + admission.reason_code)
+            _finish_candidate_attempt(
+                f,
+                validation_outcome=phase8_status.value,
+                publication_outcome=PublicationOutcome.WITHHELD,
+                reason_codes=(admission.reason_code,),
+            )
             if f.verificationStatus == ValidationStatus.UNSUPPORTED.value:
                 stats["unsupported"] += 1
             elif f.verificationStatus == ValidationStatus.NEEDS_ROUTE.value:
@@ -1867,5 +2006,6 @@ def run(
     if whole_function_findings:
         findings.extend(whole_function_findings)
         stats["whole_function_rewrites"] += len(whole_function_findings)
+    _complete_non_candidate_evaluation_states(findings)
     save_report(findings, out_json)
     return stats
