@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+from enum import Enum
+from hashlib import sha256
 from typing import List, Optional, Dict, Any, Tuple
 import json
 #from translation_runtime_facts import TranslationRuntimeFacts
@@ -9,6 +11,141 @@ from .runtime_facts import (
     translation_runtime_facts_to_dict,
     translation_runtime_facts_from_dict
 )
+
+
+TRANSLATION_ATTEMPT_ARTIFACT_SCHEMA = (
+    "riscv2x86.translation-attempt-artifact.v1"
+)
+
+
+class TranslationOutcome(str, Enum):
+    """Outcome of translation itself, independent of validation/publication."""
+
+    NOT_ATTEMPTED = "not_attempted"
+    EMITTED = "emitted"
+    STRENGTHENED = "strengthened"
+    FUNCTIONAL_FALLBACK = "functional_fallback"
+    KEEP = "keep"
+    NEEDS_ROUTE = "needs_route"
+    UNSUPPORTED = "unsupported"
+    FAILED = "failed"
+
+
+class ValidationOutcome(str, Enum):
+    """Evaluation conclusion, independent of translation and publication."""
+
+    NOT_RUN = "not_run"
+    NOT_VERIFIED = "not_verified"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    INCONCLUSIVE = "inconclusive"
+    NEEDS_ROUTE = "needs_route"
+    UNSUPPORTED = "unsupported"
+    KEEP = "keep"
+
+
+class PublicationOutcome(str, Enum):
+    """Whether an emitted candidate was admitted to the public rewrite field."""
+
+    NOT_REQUESTED = "not_requested"
+    PENDING = "pending"
+    ADMITTED = "admitted"
+    WITHHELD = "withheld"
+
+
+def _attempt_identity(payload: Dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + sha256(encoded).hexdigest()
+
+
+def make_translation_attempt_artifact(
+    *, fragment_id: str, candidate_kind: str, candidate_route: str,
+    candidate_replacement: str, candidate_rule_name: str,
+    translation_outcome: str | TranslationOutcome,
+    validation_outcome: str | ValidationOutcome = ValidationOutcome.NOT_VERIFIED,
+    publication_outcome: str | PublicationOutcome = PublicationOutcome.PENDING,
+    reason_codes: List[str] | Tuple[str, ...] = (),
+) -> Dict[str, Any]:
+    """Create the durable E0 record retained when public writeback is withheld."""
+    translation_value = (
+        translation_outcome.value
+        if isinstance(translation_outcome, TranslationOutcome)
+        else TranslationOutcome(str(translation_outcome)).value
+    )
+    publication_value = (
+        publication_outcome.value
+        if isinstance(publication_outcome, PublicationOutcome)
+        else PublicationOutcome(str(publication_outcome)).value
+    )
+    validation_value = (
+        validation_outcome.value
+        if isinstance(validation_outcome, ValidationOutcome)
+        else ValidationOutcome(str(validation_outcome)).value
+    )
+    if not fragment_id:
+        raise ValueError("translation attempt requires a fragment identity")
+    if translation_value in {
+        TranslationOutcome.EMITTED.value,
+        TranslationOutcome.STRENGTHENED.value,
+        TranslationOutcome.FUNCTIONAL_FALLBACK.value,
+    } and not candidate_replacement.strip():
+        raise ValueError("emitted translation attempt requires candidate text")
+    normalized_reasons = list(dict.fromkeys(
+        str(item) for item in reason_codes if str(item)
+    ))
+    payload: Dict[str, Any] = {
+        "schemaVersion": TRANSLATION_ATTEMPT_ARTIFACT_SCHEMA,
+        "fragmentId": fragment_id,
+        "candidateKind": candidate_kind,
+        "candidateRoute": candidate_route,
+        "candidateReplacement": candidate_replacement,
+        "candidateReplacementDigest": (
+            "sha256:" + sha256(candidate_replacement.encode("utf-8")).hexdigest()
+        ),
+        "candidateRuleName": candidate_rule_name,
+        "translationOutcome": translation_value,
+        "validationOutcome": validation_value,
+        "publicationOutcome": publication_value,
+        "reasonCodes": normalized_reasons,
+    }
+    payload["attemptIdentity"] = _attempt_identity(payload)
+    return payload
+
+
+def update_translation_attempt_outcomes(
+    artifact: Dict[str, Any], *,
+    validation_outcome: str | ValidationOutcome,
+    publication_outcome: str | PublicationOutcome,
+    reason_codes: List[str] | Tuple[str, ...] = (),
+) -> Dict[str, Any]:
+    """Update outcomes without altering the retained rendered candidate."""
+    if artifact.get("schemaVersion") != TRANSLATION_ATTEMPT_ARTIFACT_SCHEMA:
+        raise ValueError("translation attempt artifact schema is unsupported")
+    publication_value = (
+        publication_outcome.value
+        if isinstance(publication_outcome, PublicationOutcome)
+        else PublicationOutcome(str(publication_outcome)).value
+    )
+    validation_value = (
+        validation_outcome.value
+        if isinstance(validation_outcome, ValidationOutcome)
+        else ValidationOutcome(str(validation_outcome)).value
+    )
+    result = dict(artifact)
+    result["validationOutcome"] = validation_value
+    result["publicationOutcome"] = publication_value
+    existing = result.get("reasonCodes", [])
+    if not isinstance(existing, list):
+        raise ValueError("translation attempt reason codes are malformed")
+    result["reasonCodes"] = list(dict.fromkeys(
+        [*(str(item) for item in existing if str(item)),
+         *(str(item) for item in reason_codes if str(item))]
+    ))
+    result.pop("attemptIdentity", None)
+    result["attemptIdentity"] = _attempt_identity(result)
+    return result
 
 
 @dataclass
@@ -273,6 +410,14 @@ class Finding:
     # Phase 8：验证结果。
     verificationStatus: str = ""
     verificationDetail: str = ""
+
+    # Phase 10 E0: three orthogonal research/evaluation outcomes.  Validation
+    # may fail and publication may be withheld after translation emitted a
+    # candidate, so none of these may be inferred from category alone.
+    translationOutcome: str = TranslationOutcome.NOT_ATTEMPTED.value
+    validationOutcome: str = ValidationOutcome.NOT_RUN.value
+    publicationOutcome: str = PublicationOutcome.NOT_REQUESTED.value
+    translationAttemptArtifact: Dict[str, Any] = field(default_factory=dict)
 
     # 附加诊断信息。
     notes: List[str] = field(default_factory=list)
