@@ -232,6 +232,59 @@ class TranslationValidationResult:
         }
 
 
+def translation_validation_result_from_dict(
+    data: Mapping[str, object],
+) -> TranslationValidationResult:
+    """Strict parser for persisted validation authority."""
+    fields = {"schemaVersion", "status", "validationOutcome", "profile",
+              "completedLevels", "layers", "reasonCodes", "validationIdentity"}
+    _strict_fields(data, fields, "translation validation result")
+    if data.get("schemaVersion") != TRANSLATION_VALIDATION_VERSION:
+        raise ValueError("translation validation result schema is unsupported")
+    status = ValidationStatus(_required_string(data, "status", "translation validation result"))
+    if data.get("validationOutcome") != status.value:
+        raise ValueError("translation validation outcome/status mismatch")
+    raw_completed, raw_layers, raw_reasons = (
+        data.get("completedLevels"), data.get("layers"), data.get("reasonCodes"),
+    )
+    if not isinstance(raw_completed, list) or not all(isinstance(item, str) for item in raw_completed):
+        raise ValueError("translation validation completed levels are invalid")
+    completed = tuple(ValidationLevel(item) for item in raw_completed)
+    if completed != tuple(dict.fromkeys(completed)):
+        raise ValueError("translation validation completed levels are duplicated")
+    if not isinstance(raw_layers, list):
+        raise ValueError("translation validation layers are invalid")
+    layers = []
+    for raw in raw_layers:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "level", "status", "evidenceIdentity", "detail",
+        }:
+            raise ValueError("translation validation layer is malformed")
+        if not all(isinstance(raw.get(name), str) for name in raw):
+            raise ValueError("translation validation layer fields must be strings")
+        layers.append(ValidationLayerResult(
+            ValidationLevel(raw["level"]), ValidationStatus(raw["status"]),
+            raw["evidenceIdentity"], raw["detail"],
+        ))
+    if tuple(item.level for item in layers) != tuple(dict.fromkeys(item.level for item in layers)):
+        raise ValueError("translation validation layers are duplicated")
+    if not isinstance(raw_reasons, list) or not all(isinstance(item, str) and item for item in raw_reasons):
+        raise ValueError("translation validation reasons are invalid")
+    reasons = tuple(raw_reasons)
+    if reasons != tuple(sorted(set(reasons))):
+        raise ValueError("translation validation reasons are not canonical")
+    identity = _required_string(data, "validationIdentity", "translation validation result")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
+        raise ValueError("translation validation identity is invalid")
+    expected_completed = tuple(item.level for item in layers if item.status is ValidationStatus.VERIFIED)
+    if completed != expected_completed:
+        raise ValueError("translation validation completed-level evidence is inconsistent")
+    return TranslationValidationResult(
+        status, ValidationProfile(_required_string(data, "profile", "translation validation result")),
+        completed, tuple(layers), reasons, identity,
+    )
+
+
 LayerValidator = Callable[..., ValidationLayerResult]
 
 

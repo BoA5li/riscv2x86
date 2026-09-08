@@ -20,6 +20,7 @@ analysis = [
 riscv2x86-py = "riscv2x86_py.cli:main"
 riscv2x86-candidate-apply = "riscv2x86_py.candidate_apply_cli:main"
 riscv2x86-evaluate = "riscv2x86_py.evaluation_cli:main"
+riscv2x86-promote = "riscv2x86_py.writeback_promotion_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

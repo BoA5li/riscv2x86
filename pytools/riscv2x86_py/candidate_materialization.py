@@ -48,6 +48,14 @@ def _tree_digest(root: Path) -> str:
     return _identity({"files": entries})
 
 
+def candidate_tree_digest(root: str | Path) -> str:
+    """Public canonical tree hash used by evaluation-bound promotion."""
+    path = Path(root).resolve()
+    if not path.is_dir():
+        raise ValueError("candidate tree root is unavailable")
+    return _tree_digest(path)
+
+
 def _is_within(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())

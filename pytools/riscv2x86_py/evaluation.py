@@ -339,7 +339,8 @@ def run_evaluation(
             )
             per_attempt.append(_attempt_result(attempt, validation, validation.status,
                                                validation.reason_codes,
-                                               (str(registry_replay.relative_to(work)),)))
+                                               (str(registry_replay.relative_to(work)),),
+                                               translation))
         except Exception as exc:
             failure = replay / (attempt.artifact_id.replace(":", "-") + "-failure.json")
             failure.write_text(json.dumps({
@@ -354,12 +355,17 @@ def run_evaluation(
             ))
     overall = _overall(tuple(ValidationStatus(item["status"]) for item in per_attempt))
     reasons = tuple(sorted(set(reason for item in per_attempt for reason in item["reasonCodes"])))
-    return _result(request, work, commands, tuple(per_attempt), overall, reasons, candidate_manifest)
+    return _result(
+        request, work, commands, tuple(per_attempt), overall, reasons, candidate_manifest,
+        plan=plan, environment=environment,
+        source_program=source_program, target_program=target_program,
+    )
 
 
 def _attempt_result(attempt: object, validation: TranslationValidationResult | None,
                     status: ValidationStatus, reasons: Sequence[str],
-                    replay_artifacts: Sequence[str] = ()) -> dict[str, object]:
+                    replay_artifacts: Sequence[str] = (),
+                    translation: object | None = None) -> dict[str, object]:
     return {
         "findingId": getattr(attempt, "finding_id"),
         "fragmentId": getattr(attempt, "fragment_id"),
@@ -367,6 +373,21 @@ def _attempt_result(attempt: object, validation: TranslationValidationResult | N
         "translationOutcome": getattr(attempt, "translation_outcome").value,
         "status": status.value,
         "validation": None if validation is None else validation.to_dict(),
+        "translationArtifact": None if translation is None else {
+            "fragment_id": translation.fragment_id,
+            "source_model_identity": translation.source_model_identity,
+            "translation_plan_id": translation.translation_plan_id,
+            "constraint_id": translation.constraint_id,
+            "proof_identity": translation.proof_identity,
+            "preservation_mode": translation.preservation_mode.value,
+            "shell_facts_identity": translation.shell_facts_identity,
+            "runtime_contract_id": translation.runtime_contract_id,
+            "runtime_contract_version": translation.runtime_contract_version,
+            "recipe_id": translation.recipe_id,
+            "ignored_source_state": list(translation.ignored_source_state),
+            "semantic_class": translation.semantic_class,
+            "target_route": translation.target_route,
+        },
         "reasonCodes": list(sorted(set(reasons))),
         "replayArtifacts": list(replay_artifacts),
     }
@@ -390,7 +411,16 @@ def _request_identity(request: EvaluationRequest) -> str:
 
 def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRecord],
             attempts: Sequence[Mapping[str, object]], status: ValidationStatus,
-            reasons: Sequence[str], manifest: CandidateArtifactManifest | None) -> dict[str, object]:
+            reasons: Sequence[str], manifest: CandidateArtifactManifest | None, *,
+            plan: object | None = None, environment: object | None = None,
+            source_program: ProgramArtifact | None = None,
+            target_program: ProgramArtifact | None = None) -> dict[str, object]:
+    def program(value: ProgramArtifact | None) -> object:
+        return None if value is None else {
+            "artifact_id": value.artifact_id, "artifact_path": value.artifact_path,
+            "artifact_kind": value.artifact_kind, "artifact_digest": value.artifact_digest,
+            "build_identity": value.build_identity,
+        }
     payload: dict[str, object] = {
         "schemaVersion": EVALUATION_RESULT_SCHEMA,
         "requestIdentity": _request_identity(request), "status": status.value,
@@ -398,6 +428,18 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
         "candidateManifestId": "" if manifest is None else manifest.manifest_id,
         "attempts": list(attempts), "commands": [item.to_dict() for item in commands],
         "replayArtifact": "replay/evaluation-replay.json",
+        "validationPlan": None if plan is None else {
+            "schemaVersion": plan.schema_version, "planId": plan.plan_id,
+            "profile": plan.profile.value, "sourceRunner": plan.source_runner,
+            "targetRunner": plan.target_runner, "seed": plan.seed,
+            "timeoutSeconds": plan.timeout_seconds,
+            "runtimeRegistryVersion": plan.runtime_registry_version,
+            "experimentContractId": plan.experiment_contract_id,
+        },
+        "targetEnvironment": None if environment is None else environment.to_dict(),
+        "sourceProgramArtifact": program(source_program),
+        "targetProgramArtifact": program(target_program),
+        "comparisonPolicy": request.comparison_policy,
     }
     identity_payload = dict(payload); identity_payload.pop("replayArtifact")
     payload["evaluationIdentity"] = _digest_bytes(_canonical(identity_payload))
