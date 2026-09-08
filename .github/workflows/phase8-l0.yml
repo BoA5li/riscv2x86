@@ -15,6 +15,7 @@ on:
       - phase8-l2-concurrency-memory-model
       - phase8-l3-experiment-contracts
       - phase9-validation-writeback-gate
+      - phase10-staging-candidate-materialization
   pull_request:
 
 jobs:
