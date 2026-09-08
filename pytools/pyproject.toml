@@ -18,6 +18,7 @@ analysis = [
 
 [project.scripts]
 riscv2x86-py = "riscv2x86_py.cli:main"
+riscv2x86-candidate-apply = "riscv2x86_py.candidate_apply_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
