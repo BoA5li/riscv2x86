@@ -40,6 +40,7 @@ jobs:
           pytools/tests/test_translation_validation.py
           pytools/tests/test_validation_observation.py
           pytools/tests/test_validation_status.py
+          pytools/tests/test_evaluation_state_separation.py
           pytools/tests/test_validation_case.py
           pytools/tests/test_l1_differential.py
           pytools/tests/test_l2_operand_differential.py
