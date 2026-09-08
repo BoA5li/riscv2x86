@@ -662,6 +662,7 @@ def translate_one(
 
     raw_report = work_dir / "raw_report.json"
     translated_report = work_dir / "translated_report.json"
+    attempt_archive = Path(str(translated_report) + ".attempts.json")
     object_file = work_dir / f"{source_file.stem}.o"
 
     rewritten_file = get_output_source_path(
@@ -745,6 +746,11 @@ def translate_one(
 
     if not translated_report.exists():
         raise TranslationError("Python backend did not produce translated report: " f"{translated_report}")
+    if not attempt_archive.exists():
+        raise TranslationError(
+            "Python backend did not produce translation attempt archive: "
+            f"{attempt_archive}"
+        )
 
     translated = load_json(translated_report)
     summarize_report(translated, title="translated backend report")
@@ -816,12 +822,14 @@ def translate_one(
     print(f"rewritten source:  {rewritten_file}")
     print(f"raw report:        {raw_report}")
     print(f"translated report: {translated_report}")
+    print(f"attempt archive:   {attempt_archive}")
     print(f"compiled object:   {object_file}")
     return {
         "input": str(source_file),
         "rewritten": str(rewritten_file),
         "raw_report": str(raw_report),
         "translated_report": str(translated_report),
+        "translation_attempt_archive": str(attempt_archive),
         "object": str(object_file),
     }
 
@@ -907,7 +915,15 @@ def main() -> int:
             except Exception as exc:
                 message = f"{type(exc).__name__}: {exc}"
                 print(f"\n[BATCH FAILURE] {relative}: {message}", file=sys.stderr)
-                results.append({"input": str(source), "status": "failed", "error": message})
+                failure: dict[str, str] = {
+                    "input": str(source), "status": "failed", "error": message,
+                }
+                attempt_archive = Path(
+                    str(item_work_dir / "translated_report.json") + ".attempts.json"
+                )
+                if attempt_archive.is_file():
+                    failure["translation_attempt_archive"] = str(attempt_archive)
+                results.append(failure)
         summary = _write_batch_summary(work_dir, results)
         failed = [item for item in results if item["status"] == "failed"]
         print(f"\n[BATCH SUMMARY]\ntotal files: {len(results)}\nsucceeded:   {len(results) - len(failed)}\nfailed:      {len(failed)}\nsummary:     {summary}")
