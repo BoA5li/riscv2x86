@@ -12,6 +12,8 @@ from enum import Enum
 import re
 from typing import TYPE_CHECKING, Mapping
 
+from .schema import PublicationOutcome
+
 if TYPE_CHECKING:
     from .l0_artifact_manifest import L0ArtifactManifest
     from .translation_validation import (
@@ -55,6 +57,14 @@ class WritebackAdmission:
     allowed: bool
     status: ValidationStatus
     reason_code: str = ""
+
+    @property
+    def publication_outcome(self) -> PublicationOutcome:
+        """Publication is independent from the validation conclusion."""
+        return (
+            PublicationOutcome.ADMITTED
+            if self.allowed else PublicationOutcome.WITHHELD
+        )
 
 
 def normalize_validation_status(value: str | ValidationStatus) -> ValidationStatus:
