@@ -16,6 +16,7 @@ on:
       - phase8-l3-experiment-contracts
       - phase9-validation-writeback-gate
       - phase10-staging-candidate-materialization
+      - phase10-end-to-end-evaluation-runner
   pull_request:
 
 jobs:
@@ -44,6 +45,7 @@ jobs:
           pytools/tests/test_evaluation_state_separation.py
           pytools/tests/test_translation_attempt.py
           pytools/tests/test_candidate_materialization.py
+          pytools/tests/test_evaluation_runner.py
           pytools/tests/test_validation_case.py
           pytools/tests/test_l1_differential.py
           pytools/tests/test_l2_operand_differential.py
