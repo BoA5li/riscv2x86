@@ -18,6 +18,7 @@ on:
       - phase10-staging-candidate-materialization
       - phase10-end-to-end-evaluation-runner
       - phase10-evaluation-bound-writeback
+      - phase10-corpus-evaluation-metrics
   pull_request:
 
 jobs:
@@ -48,6 +49,7 @@ jobs:
           pytools/tests/test_candidate_materialization.py
           pytools/tests/test_evaluation_runner.py
           pytools/tests/test_writeback_promotion.py
+          pytools/tests/test_evaluation_aggregate.py
           pytools/tests/test_validation_case.py
           pytools/tests/test_l1_differential.py
           pytools/tests/test_l2_operand_differential.py
