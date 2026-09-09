@@ -397,6 +397,10 @@ class Finding:
 
     # Phase 6 / 7：翻译结果。
     translationKind: str = ""
+    # Structured Phase-6 diagnostics.  These are copied from TranslationOutput
+    # before any validation/publication branch mutates the public finding.
+    translationReasonCodes: List[str] = field(default_factory=list)
+    translationPlanAttempts: List[Dict[str, Any]] = field(default_factory=list)
     # Phase 6E/6F approved replacement provenance, consumed by C++ --apply.
     approvalArtifact: Dict[str, Any] = field(default_factory=dict)
 
@@ -429,6 +433,7 @@ class Finding:
     #   PureC / X86InlineAsm / HelperFunction / Deferred
     preservationLevel: str = ""
     preservationRoute: str = ""
+    buildFamily: str = ""
 
     # Phase 3 ~ Phase 6：
     #

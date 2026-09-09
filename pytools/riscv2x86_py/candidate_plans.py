@@ -302,6 +302,26 @@ def _has_global_fail_closed_state(
     )
 
 
+def candidate_generation_blockers(
+    source_model: SourceSemanticModel,
+) -> tuple[str, ...]:
+    """Project the typed Phase-6B global gate into stable diagnostics."""
+    facts = _facts_from(source_model)
+    checks = (
+        (not facts.model_is_consistent, "phase6b.source-model-inconsistent"),
+        (facts.has_global_fail_closed_state, "phase6b.global-fail-closed-state"),
+        (facts.has_opaque_semantics, "phase6b.opaque-semantics"),
+        (facts.has_unmodelled_semantics, "phase6b.unmodelled-semantics"),
+        (not facts.operand_bindings_are_authoritative,
+         "phase6b.operand-bindings-not-authoritative"),
+        (not facts.operand_widths_are_authoritative,
+         "phase6b.operand-widths-not-authoritative"),
+        (not facts.shell_semantics_are_known,
+         "phase6b.shell-semantics-unknown"),
+    )
+    return tuple(sorted(code for blocked, code in checks if blocked))
+
+
 def _plan(
     *,
     plan_id: str,
@@ -1241,7 +1261,14 @@ def generate_candidate_plans(
     # Privileged architectural state is an exclusive family.  It may never
     # compete with generic HELPER_CALL, register-only, or pure-C lowering.
     privileged = getattr(source_model, "privileged_state", None)
-    if privileged is not None:
+    # The ordinary CLI path deliberately supplies a typed ``present=False``
+    # privileged observation.  Absence must not claim the exclusive
+    # privileged candidate family and suppress normal add/shift/load plans.
+    if (
+        privileged is not None
+        and privileged.state is not None
+        and privileged.state.present
+    ):
         semantic_classes = frozenset(privileged.semantic_classes)
         if (
             not privileged.classification_complete

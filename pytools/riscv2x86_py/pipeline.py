@@ -157,6 +157,39 @@ def _complete_non_candidate_evaluation_states(findings: List[Finding]) -> None:
         )
 
 
+def _record_non_candidate_attempt(
+    finding: Finding, tr: object, *, outcome: TranslationOutcome,
+    validation_outcome: str, publication_outcome: PublicationOutcome,
+) -> None:
+    """Archive a terminal Phase-6 result without dropping rejection codes."""
+    metadata = getattr(tr, "metadata", {})
+    child_attempts = metadata.get("attempts", ()) if isinstance(metadata, dict) else ()
+    reasons = list(getattr(tr, "reasonCodes", ()) or ())
+    if isinstance(child_attempts, (tuple, list)):
+        for child in child_attempts:
+            if not isinstance(child, dict):
+                continue
+            values = child.get("reasonCodes", ())
+            if isinstance(values, (tuple, list)):
+                reasons.extend(code for code in values if isinstance(code, str) and code)
+    finding.translationOutcome = outcome.value
+    finding.validationOutcome = validation_outcome
+    finding.publicationOutcome = publication_outcome.value
+    finding.translationAttemptArtifact = make_translation_attempt_artifact(
+        fragment_id=_finding_experiment_identity(finding),
+        candidate_kind=str(getattr(tr, "kind", "")),
+        candidate_route=str(
+            getattr(tr, "route", "") or getattr(tr, "preservationRoute", "")
+        ),
+        candidate_replacement="",
+        candidate_rule_name=finding.ruleName,
+        translation_outcome=outcome,
+        validation_outcome=validation_outcome,
+        publication_outcome=publication_outcome,
+        reason_codes=tuple(sorted(set(reasons))),
+    )
+
+
 def _run_unified_phase8_validation(
     validation_runner: PipelineValidationRunner | None, *,
     finding: Finding, lift_result: object, ir_summary: object,
@@ -1691,7 +1724,26 @@ def run(
         translation_notes = list(getattr(tr, "notes", None) or [])
 
         f.translationKind = translation_kind
+        f.preservationLevel = str(getattr(tr, "preservationLevel", "") or "")
+        f.preservationRoute = str(
+            getattr(tr, "preservationRoute", "") or getattr(tr, "route", "") or ""
+        )
+        f.buildFamily = str(getattr(tr, "buildFamily", "") or "")
         translation_metadata = dict(getattr(tr, "metadata", {}) or {})
+        f.translationReasonCodes = list(dict.fromkeys(
+            str(code) for code in (getattr(tr, "reasonCodes", ()) or ())
+            if str(code)
+        ))
+        raw_plan_attempts = translation_metadata.get("attempts", ())
+        f.translationPlanAttempts = [
+            {
+                "planId": str(item.get("planId", "")),
+                "stage": str(item.get("stage", "")),
+                "reasonCodes": list(item.get("reasonCodes", ())),
+            }
+            for item in raw_plan_attempts
+            if isinstance(item, dict)
+        ] if isinstance(raw_plan_attempts, (tuple, list)) else []
         f.approvalArtifact = dict(
             translation_metadata.get("approvalArtifact", {}) or {}
         )
@@ -1736,6 +1788,12 @@ def run(
                 "fragment remains routed for further lowering"
             )
 
+            _record_non_candidate_attempt(
+                f, tr, outcome=TranslationOutcome.NEEDS_ROUTE,
+                validation_outcome=ValidationStatus.NEEDS_ROUTE.value,
+                publication_outcome=PublicationOutcome.NOT_REQUESTED,
+            )
+
             _finalize_finding_privileged_manifest(
                 f, status="needs_route",
                 detail=f.verificationDetail, accepted=True, stage="phase6e",
@@ -1777,6 +1835,12 @@ def run(
                 "; ".join(translation_notes)
                 if translation_notes
                 else "no translation strategy matched"
+            )
+
+            _record_non_candidate_attempt(
+                f, tr, outcome=TranslationOutcome.UNSUPPORTED,
+                validation_outcome=ValidationStatus.UNSUPPORTED.value,
+                publication_outcome=PublicationOutcome.NOT_REQUESTED,
             )
 
             _finalize_finding_privileged_manifest(
