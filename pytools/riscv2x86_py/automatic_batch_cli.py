@@ -130,8 +130,10 @@ def prepare_automatic_inventory(
         _write_json(case_dir / "validation-plan.json", plan)
         mode, link_kind = ("main", "executable") if has_main else ("scalar-functions", "shared_library")
         translation = [sys.executable, "-m", "riscv2x86_py.automatic_translation_command",
-                       "--frontend", str(frontend_path), "--source", "@INPUT_ROOT@/" + relative,
-                       "--source-root", "@INPUT_ROOT@", "--report", "${TRANSLATED_REPORT}"]
+                       "--frontend", str(frontend_path),
+                       "--source", "${SOURCE_ROOT}/" + relative,
+                       "--source-root", "${SOURCE_ROOT}",
+                       "--report", "${TRANSLATED_REPORT}"]
         if allow_functional_fallbacks:
             translation.append("--allow-functional-fallbacks")
         validators: dict[str, object] = {

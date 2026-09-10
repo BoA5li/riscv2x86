@@ -29,6 +29,9 @@ def test_inventory_generates_translation_and_registered_l0_l1(tmp_path, monkeypa
         "L1": "program", "translation": "fragment", "bootstrapCluster": "program",
     }
     assert request["translationCommand"]
+    assert "@INPUT_ROOT@" not in json.dumps(request["translationCommand"])
+    assert "${SOURCE_ROOT}/add.c" in request["translationCommand"]
+    assert "${SOURCE_ROOT}" in request["translationCommand"]
     assert request["translationArtifacts"] == {}
     assert request["targetBuild"]["artifactKind"] == "shared_library"
     assert set(request["runtimeRegistryTemplate"]["validators"]) == {"L0", "L1"}
