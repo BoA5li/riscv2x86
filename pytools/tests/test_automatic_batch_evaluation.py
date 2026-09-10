@@ -103,3 +103,23 @@ def test_typed_artifact_derives_validation_fields_from_legacy_phase6_binding():
     assert artifact.preservation_mode.value == "architecture_equivalent"
     assert artifact.runtime_contract_id == "riscv2x86.runtime.none"
     assert artifact.shell_facts_identity.startswith("sha256:")
+
+
+def test_evaluation_artifact_does_not_require_publication_complete_binding():
+    replacement = 'asm("nop");'
+    attempt = TranslationAttempt(
+        "finding:0:fragment", "fragment", "x86_inline_asm", "phase6f_rendered",
+        replacement, "sha256:2db1a8ef844cb56c5b93c72cb30123f85c20a946ec2d600b1dce8ab61ae8266d",
+        "rule", TranslationOutcome.EMITTED, ValidationOutcome.NOT_RUN,
+        PublicationOutcome.NOT_REQUESTED, (), "model", "", "plan", "constraints",
+        "approved", "sha256:" + "2" * 64, "", "renderer", "v1", "",
+        "", "", False,
+    )
+    approval = {"proofStatus": "approved", "sourceFragmentId": "fragment",
+                "sourceModelId": "model", "planId": "plan", "constraintsId": "constraints",
+                "rendererId": "renderer", "rendererVersion": "v1"}
+
+    assert attempt.evaluation_binding_complete
+    assert not attempt.binding_complete
+    artifact = translation_artifact_from_approval(attempt, approval)
+    assert artifact.recipe_id.startswith("sha256:")

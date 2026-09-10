@@ -183,6 +183,7 @@ def test_rv64_local_branch_select_is_proof_bound_and_renderable() -> None:
         )))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
     assert rendered.emitted_text is not None and "cmpq" in rendered.emitted_text and "je 1f" in rendered.emitted_text
+    assert rendered.renderer_contract_id == renderer_contract.contract_id
 
 
 def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -> None:

@@ -78,6 +78,15 @@ def test_emitted_attempt_binds_plan_proof_and_renderer():
     assert attempt.renderer_contract_id == "renderer-contract:1"
 
 
+def test_evaluation_and_publication_binding_are_distinct():
+    finding = _finding(TranslationOutcome.EMITTED)
+    finding.approvalArtifact["rendererContractId"] = ""
+    attempt = terminal_attempt_from_finding(finding, 0)
+
+    assert attempt.evaluation_binding_complete
+    assert not attempt.binding_complete
+
+
 def test_archive_round_trip_is_content_addressed(tmp_path):
     attempts = tuple(
         terminal_attempt_from_finding(_finding(outcome, index=index), index)

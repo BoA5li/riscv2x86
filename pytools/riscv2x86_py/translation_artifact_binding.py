@@ -25,20 +25,33 @@ def _identity(value: Mapping[str, object]) -> str:
 def translation_artifact_from_approval(
     attempt: TranslationAttempt, approval: Mapping[str, object],
 ) -> TranslationArtifact:
-    """Construct the typed artifact only when every archived binding agrees."""
-    if not attempt.binding_complete or attempt.proof_status != "approved":
-        raise ValueError("attempt does not contain a complete approved proof binding")
+    """Construct an evaluation artifact from an approved candidate binding.
+
+    Publication-only provenance remains guarded by ``attempt.binding_complete``
+    in the writeback path.  This constructor deliberately accepts the smaller
+    reproducible binding needed to measure L0/L1 candidates.
+    """
+    if not attempt.evaluation_binding_complete:
+        missing = ", ".join(attempt.evaluation_binding_missing_fields)
+        raise ValueError("attempt lacks evaluation binding: " + missing)
     bindings = {
         "sourceModelId": attempt.source_model_id,
         "planId": attempt.plan_id,
         "constraintsId": attempt.constraints_id,
-        "targetEnvironmentId": attempt.target_environment_id,
         "rendererId": attempt.renderer_id,
         "rendererVersion": attempt.renderer_version,
-        "rendererContractId": attempt.renderer_contract_id,
     }
     for name, expected in bindings.items():
         if approval.get(name) != expected:
+            raise ValueError(f"approval/attempt binding mismatch: {name}")
+    # Optional publication bindings, when present on the attempt, must still
+    # agree.  Their absence cannot silently weaken writeback because the
+    # publication gate continues to require binding_complete.
+    for name, expected in {
+        "targetEnvironmentId": attempt.target_environment_id,
+        "rendererContractId": attempt.renderer_contract_id,
+    }.items():
+        if expected and approval.get(name) != expected:
             raise ValueError(f"approval/attempt binding mismatch: {name}")
     if approval.get("proofStatus") != "approved":
         raise ValueError("approval proof status is not approved")
@@ -69,6 +82,15 @@ def translation_artifact_from_approval(
         raise ValueError("approval ignoredSourceState is not an array of strings")
     if ignored != sorted(set(ignored)):
         raise ValueError("approval ignoredSourceState is not canonical")
+    recipe_id = approval.get("recipeId") or attempt.renderer_contract_id
+    if not isinstance(recipe_id, str) or not recipe_id:
+        recipe_id = _identity({
+            "schemaVersion": "riscv2x86.evaluation-recipe-binding.v1",
+            "planId": attempt.plan_id,
+            "rendererId": attempt.renderer_id,
+            "rendererVersion": attempt.renderer_version,
+            "candidateReplacementDigest": attempt.candidate_replacement_digest,
+        })
     return TranslationArtifact(
         fragment_id=attempt.fragment_id,
         source_model_identity=attempt.source_model_id,
@@ -79,7 +101,7 @@ def translation_artifact_from_approval(
         shell_facts_identity=shell_identity,
         runtime_contract_id=_text(runtime_id, "runtimeContractId"),
         runtime_contract_version=_text(runtime_version, "runtimeContractVersion"),
-        recipe_id=_text(approval.get("recipeId", attempt.renderer_contract_id), "recipeId"),
+        recipe_id=recipe_id,
         ignored_source_state=tuple(ignored),
         semantic_class=_text(approval.get("semanticClass", attempt.candidate_kind), "semanticClass"),
         target_route=_text(approval.get("targetRoute", attempt.candidate_route), "targetRoute"),
@@ -107,7 +129,7 @@ def artifacts_from_report(
         if attempt is None:
             raise ValueError("translated report and attempt archive do not form a total join")
         approval = finding.get("approvalArtifact")
-        if attempt.binding_complete and (finding_ids is None or finding_id in finding_ids):
+        if attempt.evaluation_binding_complete and (finding_ids is None or finding_id in finding_ids):
             if not isinstance(approval, Mapping):
                 raise ValueError("approved attempt has no approval artifact")
             result[finding_id] = translation_artifact_from_approval(attempt, approval)

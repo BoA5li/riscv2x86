@@ -6,7 +6,7 @@ an explicit renderer contract registered for that exact plan id.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping
 
@@ -590,6 +590,11 @@ def render_approved_target_lowering(request: Phase6FRenderRequest) -> RenderedRe
     if contract.plan_id != request.approved_plan.plan.plan_id:return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
     if not contract.required_features.issubset(request.target_environment.available_features):return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
     rendered = _render_contract(request, contract)
+    # The registry-resolved contract is the authority for the rendering
+    # recipe.  Individual renderers must not have to copy this provenance
+    # field (and historically most non-privileged renderers did not).
+    if rendered.emitted_text is not None:
+        rendered = replace(rendered, renderer_contract_id=contract.contract_id)
     if rendered.emitted_text is not None and audit_translator_emitted_target_registers(rendered.emitted_text):
         return _failure(request, RenderReasonCode.HOST_STACK_FRAME_REGISTER_FORBIDDEN, internal=True)
     return rendered

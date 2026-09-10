@@ -115,6 +115,33 @@ class TranslationAttempt:
             raise ValueError("translation attempt artifact ID does not match content")
         object.__setattr__(self, "artifact_id", expected)
 
+    @property
+    def evaluation_binding_complete(self) -> bool:
+        """Whether this candidate has enough provenance for L0/L1 evaluation.
+
+        This is intentionally weaker than ``binding_complete``.  The latter
+        remains the publication/writeback contract and additionally requires
+        preservation, target-environment, renderer-contract, and registry
+        identities.  Build and functional experiments need an approved,
+        reproducible candidate binding, but must not be suppressed merely
+        because publication metadata is incomplete.
+        """
+        return not self.evaluation_binding_missing_fields
+
+    @property
+    def evaluation_binding_missing_fields(self) -> tuple[str, ...]:
+        required = {
+            "sourceModelId": self.source_model_id,
+            "planId": self.plan_id,
+            "constraintsId": self.constraints_id,
+            "proofStatus": self.proof_status if self.proof_status == "approved" else "",
+            "proofBindingIdentity": self.proof_binding_identity,
+            "rendererId": self.renderer_id,
+            "rendererVersion": self.renderer_version,
+            "candidateReplacementDigest": self.candidate_replacement_digest,
+        }
+        return tuple(name for name, value in required.items() if not value)
+
     def _payload(self, *, include_artifact_id: bool) -> dict[str, object]:
         payload: dict[str, object] = {
             "schemaVersion": self.schema_version,
