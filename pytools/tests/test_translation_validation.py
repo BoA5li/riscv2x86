@@ -76,24 +76,40 @@ def test_missing_layer_runner_is_inconclusive_and_stops_pipeline():
     assert result.reason_codes == ("validation.layer-runner-missing:L1",)
 
 
-def test_strict_architecture_claim_rejects_build_only_profile_before_runner():
+def test_architecture_candidate_can_be_measured_at_build_only_profile():
     result = run_translation_validation(
         _translation(PreservationMode.ARCHITECTURE_EQUIVALENT),
         _program("source"), _program("target"), _plan(ValidationProfile.BUILD), _environment(),
         _registry([], (ValidationLevel.L0,)),
     )
-    assert result.status is ValidationStatus.FAILED
-    assert result.reason_codes == ("validation.strict-profile-insufficient",)
+    assert result.status is ValidationStatus.VERIFIED
+    assert result.profile is ValidationProfile.BUILD
+    assert result.completed_levels == (ValidationLevel.L0,)
 
 
-def test_microarchitecture_claim_requires_microarch_profile_and_l3():
+def test_microarchitecture_candidate_can_be_measured_at_architectural_profile():
     result = run_translation_validation(
         _translation(PreservationMode.MICROARCHITECTURE_INTENT_PRESERVED),
         _program("source"), _program("target"), _plan(ValidationProfile.ARCHITECTURAL), _environment(),
         _registry([], (ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2)),
     )
+    assert result.status is ValidationStatus.VERIFIED
+    assert result.profile is ValidationProfile.ARCHITECTURAL
+    assert result.completed_levels == (
+        ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
+    )
+
+
+def test_functional_fallback_cannot_claim_architectural_validation():
+    result = run_translation_validation(
+        _translation(PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY),
+        _program("source"), _program("target"), _plan(ValidationProfile.ARCHITECTURAL),
+        _environment(), _registry([], (
+            ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
+        )),
+    )
     assert result.status is ValidationStatus.FAILED
-    assert result.reason_codes == ("validation.microarch-profile-insufficient",)
+    assert result.reason_codes == ("validation.profile-exceeds-preservation-claim",)
 
 
 def test_unavailable_declared_runner_is_inconclusive_before_layer_execution():

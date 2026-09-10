@@ -333,15 +333,18 @@ def _result(
 
 
 def _validate_profile(artifact: TranslationArtifact, plan: ValidationPlan) -> str | None:
-    if artifact.preservation_mode is PreservationMode.ARCHITECTURE_EQUIVALENT:
-        if plan.profile not in {ValidationProfile.ARCHITECTURAL, ValidationProfile.MICROARCH}:
-            return "validation.strict-profile-insufficient"
-    if artifact.preservation_mode is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY:
-        if plan.profile is ValidationProfile.BUILD:
-            return "validation.functional-profile-insufficient"
-    if artifact.preservation_mode is PreservationMode.MICROARCHITECTURE_INTENT_PRESERVED:
-        if plan.profile is not ValidationProfile.MICROARCH:
-            return "validation.microarch-profile-insufficient"
+    # A validation profile is the level measured by this run, not an implicit
+    # request to publish the artifact's strongest preservation claim.  It is
+    # therefore valid (and necessary for corpus evaluation) to run L0 or
+    # L0+L1 on an architecture/microarchitecture candidate.  The resulting
+    # TranslationValidationResult remains explicitly scoped to plan.profile;
+    # writeback separately requires evidence at the declared publication
+    # level.  Conversely, a functional-only fallback must not be made to look
+    # architectural merely by selecting a stronger runner profile.
+    if (artifact.preservation_mode is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY
+            and plan.profile in {ValidationProfile.ARCHITECTURAL,
+                                 ValidationProfile.MICROARCH}):
+        return "validation.profile-exceeds-preservation-claim"
     return None
 
 
