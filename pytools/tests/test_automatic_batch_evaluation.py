@@ -83,3 +83,23 @@ def test_typed_artifact_is_derived_only_from_matching_approval():
     broken = dict(approval); broken["planId"] = "other"
     with pytest.raises(ValueError, match="binding mismatch"):
         translation_artifact_from_approval(attempt, broken)
+
+
+def test_typed_artifact_derives_validation_fields_from_legacy_phase6_binding():
+    replacement = 'asm("nop");'
+    attempt = TranslationAttempt(
+        "finding:0:fragment", "fragment", "x86_inline_asm", "phase6f_rendered",
+        replacement, "sha256:2db1a8ef844cb56c5b93c72cb30123f85c20a946ec2d600b1dce8ab61ae8266d",
+        "rule", TranslationOutcome.EMITTED, ValidationOutcome.NOT_RUN,
+        PublicationOutcome.NOT_REQUESTED, (), "model", "decision", "plan", "constraints",
+        "approved", "sha256:" + "2" * 64, "environment", "renderer", "v1", "recipe",
+        "registry", "v1", True,
+    )
+    approval = {"proofStatus": "approved", "sourceFragmentId": "fragment",
+                "sourceModelId": "model", "planId": "plan", "constraintsId": "constraints",
+                "targetEnvironmentId": "environment", "rendererId": "renderer",
+                "rendererVersion": "v1", "rendererContractId": "recipe"}
+    artifact = translation_artifact_from_approval(attempt, approval)
+    assert artifact.preservation_mode.value == "architecture_equivalent"
+    assert artifact.runtime_contract_id == "riscv2x86.runtime.none"
+    assert artifact.shell_facts_identity.startswith("sha256:")

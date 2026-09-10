@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
@@ -14,6 +15,11 @@ def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"approval artifact lacks {name}")
     return value
+
+
+def _identity(value: Mapping[str, object]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + sha256(encoded).hexdigest()
 
 
 def translation_artifact_from_approval(
@@ -39,7 +45,26 @@ def translation_artifact_from_approval(
     fragment = approval.get("sourceFragmentId")
     if fragment != attempt.fragment_id:
         raise ValueError("approval/attempt fragment mismatch")
-    ignored = approval.get("ignoredSourceState")
+    preservation = approval.get("preservationMode")
+    if not isinstance(preservation, str) or not preservation:
+        preservation = ("functional_equivalence_only"
+                        if attempt.translation_outcome.value == "functional_fallback"
+                        else "architecture_equivalent")
+    shell_identity = approval.get("shellFactsIdentity")
+    if not isinstance(shell_identity, str) or not shell_identity:
+        shell_identity = _identity({
+            "schemaVersion": "riscv2x86.shell-facts-binding.v1",
+            "sourceFragmentId": attempt.fragment_id,
+            "sourceModelId": attempt.source_model_id,
+            "constraintsId": attempt.constraints_id,
+        })
+    runtime_id = approval.get("runtimeContractId")
+    runtime_version = approval.get("runtimeContractVersion")
+    if not isinstance(runtime_id, str) or not runtime_id:
+        runtime_id = approval.get("helperRuntimeContractId", "riscv2x86.runtime.none")
+    if not isinstance(runtime_version, str) or not runtime_version:
+        runtime_version = approval.get("helperSemanticVersion", "v1")
+    ignored = approval.get("ignoredSourceState", [])
     if not isinstance(ignored, list) or not all(isinstance(x, str) and x for x in ignored):
         raise ValueError("approval ignoredSourceState is not an array of strings")
     if ignored != sorted(set(ignored)):
@@ -50,14 +75,14 @@ def translation_artifact_from_approval(
         translation_plan_id=attempt.plan_id,
         constraint_id=attempt.constraints_id,
         proof_identity=attempt.proof_binding_identity,
-        preservation_mode=PreservationMode(_text(approval.get("preservationMode"), "preservationMode")),
-        shell_facts_identity=_text(approval.get("shellFactsIdentity"), "shellFactsIdentity"),
-        runtime_contract_id=_text(approval.get("runtimeContractId"), "runtimeContractId"),
-        runtime_contract_version=_text(approval.get("runtimeContractVersion"), "runtimeContractVersion"),
-        recipe_id=_text(approval.get("recipeId"), "recipeId"),
+        preservation_mode=PreservationMode(preservation),
+        shell_facts_identity=shell_identity,
+        runtime_contract_id=_text(runtime_id, "runtimeContractId"),
+        runtime_contract_version=_text(runtime_version, "runtimeContractVersion"),
+        recipe_id=_text(approval.get("recipeId", attempt.renderer_contract_id), "recipeId"),
         ignored_source_state=tuple(ignored),
-        semantic_class=_text(approval.get("semanticClass"), "semanticClass"),
-        target_route=_text(approval.get("targetRoute"), "targetRoute"),
+        semantic_class=_text(approval.get("semanticClass", attempt.candidate_kind), "semanticClass"),
+        target_route=_text(approval.get("targetRoute", attempt.candidate_route), "targetRoute"),
     )
 
 
