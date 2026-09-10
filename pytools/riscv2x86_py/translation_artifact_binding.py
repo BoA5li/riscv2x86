@@ -1,0 +1,89 @@
+"""Fail-closed construction of validation artifacts from archived approvals."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Mapping
+
+from .translation_attempt import TranslationAttempt, TranslationAttemptArchive
+from .translation_validation import TranslationArtifact
+from .validation_status import PreservationMode
+
+
+def _text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"approval artifact lacks {name}")
+    return value
+
+
+def translation_artifact_from_approval(
+    attempt: TranslationAttempt, approval: Mapping[str, object],
+) -> TranslationArtifact:
+    """Construct the typed artifact only when every archived binding agrees."""
+    if not attempt.binding_complete or attempt.proof_status != "approved":
+        raise ValueError("attempt does not contain a complete approved proof binding")
+    bindings = {
+        "sourceModelId": attempt.source_model_id,
+        "planId": attempt.plan_id,
+        "constraintsId": attempt.constraints_id,
+        "targetEnvironmentId": attempt.target_environment_id,
+        "rendererId": attempt.renderer_id,
+        "rendererVersion": attempt.renderer_version,
+        "rendererContractId": attempt.renderer_contract_id,
+    }
+    for name, expected in bindings.items():
+        if approval.get(name) != expected:
+            raise ValueError(f"approval/attempt binding mismatch: {name}")
+    if approval.get("proofStatus") != "approved":
+        raise ValueError("approval proof status is not approved")
+    fragment = approval.get("sourceFragmentId")
+    if fragment != attempt.fragment_id:
+        raise ValueError("approval/attempt fragment mismatch")
+    ignored = approval.get("ignoredSourceState")
+    if not isinstance(ignored, list) or not all(isinstance(x, str) and x for x in ignored):
+        raise ValueError("approval ignoredSourceState is not an array of strings")
+    if ignored != sorted(set(ignored)):
+        raise ValueError("approval ignoredSourceState is not canonical")
+    return TranslationArtifact(
+        fragment_id=attempt.fragment_id,
+        source_model_identity=attempt.source_model_id,
+        translation_plan_id=attempt.plan_id,
+        constraint_id=attempt.constraints_id,
+        proof_identity=attempt.proof_binding_identity,
+        preservation_mode=PreservationMode(_text(approval.get("preservationMode"), "preservationMode")),
+        shell_facts_identity=_text(approval.get("shellFactsIdentity"), "shellFactsIdentity"),
+        runtime_contract_id=_text(approval.get("runtimeContractId"), "runtimeContractId"),
+        runtime_contract_version=_text(approval.get("runtimeContractVersion"), "runtimeContractVersion"),
+        recipe_id=_text(approval.get("recipeId"), "recipeId"),
+        ignored_source_state=tuple(ignored),
+        semantic_class=_text(approval.get("semanticClass"), "semanticClass"),
+        target_route=_text(approval.get("targetRoute"), "targetRoute"),
+    )
+
+
+def artifacts_from_report(
+    report_path: str | Path, archive: TranslationAttemptArchive, *,
+    finding_ids: set[str] | None = None,
+) -> dict[str, TranslationArtifact]:
+    """Join findings to attempts by their stable finding index/fragment identity."""
+    raw = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    findings = raw.get("findings") if isinstance(raw, Mapping) else None
+    if not isinstance(findings, list):
+        raise ValueError("translated report findings are malformed")
+    attempts = {item.finding_id: item for item in archive.attempts}
+    result: dict[str, TranslationArtifact] = {}
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, Mapping):
+            raise ValueError("translated report finding is malformed")
+        fragment = finding.get("fragment")
+        fragment_id = fragment.get("id") if isinstance(fragment, Mapping) else ""
+        finding_id = f"finding:{index}:{fragment_id}"
+        attempt = attempts.get(finding_id)
+        if attempt is None:
+            raise ValueError("translated report and attempt archive do not form a total join")
+        approval = finding.get("approvalArtifact")
+        if attempt.binding_complete and (finding_ids is None or finding_id in finding_ids):
+            if not isinstance(approval, Mapping):
+                raise ValueError("approved attempt has no approval artifact")
+            result[finding_id] = translation_artifact_from_approval(attempt, approval)
+    return result

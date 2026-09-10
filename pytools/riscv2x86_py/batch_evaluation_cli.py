@@ -189,6 +189,17 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         result = _orchestration_failure(case, exc)
     result_path = case_root / "evaluation-result.json"
     persist_evaluation_result(result, result_path)
+    level_statuses: dict[str, list[str]] = {}
+    for attempt in result.get("attempts", []):
+        validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
+        layers = validation.get("layers", []) if isinstance(validation, Mapping) else []
+        for layer in layers:
+            if isinstance(layer, Mapping) and isinstance(layer.get("level"), str):
+                level_statuses.setdefault(str(layer["level"]), []).append(str(layer.get("status", "inconclusive")))
+    program_levels = {}
+    for level, statuses in sorted(level_statuses.items()):
+        program_levels[level] = ("failed" if "failed" in statuses else
+                                 "inconclusive" if "inconclusive" in statuses else "verified")
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -196,6 +207,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "evaluationIdentity": result.get("evaluationIdentity", ""),
         "resultPath": result_path.relative_to(output).as_posix(),
         "attempts": result.get("attempts", []),
+        "programValidationLevels": program_levels,
     }
 
 
@@ -243,6 +255,10 @@ def run_batch_evaluation(
             for item in completed for attempt in item["attempts"]
             if isinstance(attempt, Mapping)
         )
+        program_level_counts = Counter(
+            (level, status) for item in completed
+            for level, status in item.get("programValidationLevels", {}).items()
+        )
         payload: dict[str, object] = {
             "schemaVersion": BATCH_RESULT_SCHEMA,
             "batchIdentity": "", "caseCount": len(completed),
@@ -256,6 +272,14 @@ def run_batch_evaluation(
                 for category in sorted({key[0] for key in category_statuses})
             },
             "translationOutcomeCounts": dict(sorted(translation_outcomes.items())),
+            "programValidationCounts": {
+                level: {status: count for (item_level, status), count in sorted(program_level_counts.items())
+                        if item_level == level}
+                for level in sorted({item[0] for item in program_level_counts})
+            },
+            "statisticalUnits": {"translationCoverage": "fragment",
+                                 "validationRates": "program",
+                                 "bootstrapCluster": "program"},
             "reasonCodeCounts": dict(sorted(reasons.items())),
             "cases": [{key: value for key, value in item.items() if key != "attempts"}
                       for item in completed],

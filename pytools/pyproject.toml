@@ -25,6 +25,7 @@ riscv2x86-evaluation-aggregate = "riscv2x86_py.evaluation_aggregate:main"
 riscv2x86-paper-evaluation = "riscv2x86_py.paper_evaluation:main"
 riscv2x86-corpus-evaluate = "riscv2x86_py.corpus_evaluation_cli:main"
 riscv2x86-batch-evaluate = "riscv2x86_py.batch_evaluation_cli:main"
+riscv2x86-auto-evaluate = "riscv2x86_py.automatic_batch_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

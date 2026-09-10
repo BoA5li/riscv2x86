@@ -17,6 +17,7 @@ from .candidate_materialization import (
 )
 from .schema import TranslationOutcome
 from .translation_attempt import load_translation_attempt_archive
+from .translation_artifact_binding import artifacts_from_report
 from .translation_validation import (
     ProgramArtifact, TranslationValidationResult, load_target_environment,
     load_validation_plan, run_translation_validation,
@@ -369,6 +370,14 @@ def run_evaluation(
             variables[("SOURCE" if phase == "source-build" else "TARGET") + "_ARTIFACT_DIGEST"] = programs[-1].artifact_digest
     build_status = _overall(tuple(item.status for item in commands if item.phase.endswith("build")))
     archive = load_translation_attempt_archive(archive_path)
+    missing_artifact_ids = {
+        item.finding_id for item in archive.attempts
+        if item.translation_outcome in _EMITTED
+        and item.finding_id not in request.translation_artifacts
+    }
+    derived_artifacts = artifacts_from_report(
+        report, archive, finding_ids=missing_artifact_ids,
+    ) if missing_artifact_ids else {}
     if build_status is not ValidationStatus.VERIFIED:
         attempts = tuple(_attempt_result(item, None, build_status, ("evaluation.build-not-verified",))
                          for item in archive.attempts)
@@ -392,13 +401,15 @@ def run_evaluation(
             ))
             continue
         raw_artifact = request.translation_artifacts.get(attempt.finding_id)
-        if raw_artifact is None:
+        if raw_artifact is None and attempt.finding_id not in derived_artifacts:
             per_attempt.append(_attempt_result(
                 attempt, None, ValidationStatus.INCONCLUSIVE,
                 ("evaluation.translation-artifact-missing",),
             ))
             continue
-        translation = translation_artifact_from_dict(raw_artifact)
+        translation = (derived_artifacts[attempt.finding_id]
+                       if raw_artifact is None
+                       else translation_artifact_from_dict(raw_artifact))
         if translation.fragment_id != attempt.fragment_id:
             per_attempt.append(_attempt_result(
                 attempt, None, ValidationStatus.FAILED,
