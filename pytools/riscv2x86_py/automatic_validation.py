@@ -228,6 +228,84 @@ def _memory_object_observations(stdout: str) -> list[dict[str, object]]:
     return observations
 
 
+def _branch_domain_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
+    """Exercise four-argument branch selectors without an exponential product.
+
+    Arguments zero and one receive equality, inequality, ordering, and width-boundary
+    pairs.  Arguments two and three are distinct result sentinels.  This validates
+    functional branch selection; normalized branch-event traces remain an L2 concern.
+    """
+    lines = ["#include <stdint.h>", "#include <stdio.h>"]
+    for function in functions:
+        name = function.get("name")
+        return_type = function.get("returnType")
+        parameter_types = function.get("parameterTypes")
+        arity = function.get("arity")
+        if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name) is None
+                or not isinstance(return_type, str) or not return_type
+                or not isinstance(parameter_types, list)
+                or not all(isinstance(item, str) and item for item in parameter_types)
+                or isinstance(arity, bool) or not isinstance(arity, int)
+                or arity != len(parameter_types) or arity < 0 or arity > 4
+                or function.get("pointerParameters", []) != []):
+            raise ValueError("automatic branch-domain harness signature is invalid")
+        lines.append(f"{return_type} {name}({', '.join(parameter_types) or 'void'});")
+    lines.append("int main(void){")
+    branch_cases = (
+        ("0", "0", "UINT64_C(0x1111111111111111)", "UINT64_C(0x2222222222222222)"),
+        ("1", "1", "UINT64_C(0x3333333333333333)", "UINT64_C(0x4444444444444444)"),
+        ("0", "1", "UINT64_C(0x5555555555555555)", "UINT64_C(0xaaaaaaaaaaaaaaaa)"),
+        ("1", "0", "UINT64_C(0x0123456789abcdef)", "UINT64_C(0xfedcba9876543210)"),
+        ("UINT64_MAX", "0", "UINT64_C(0x13579bdf2468ace0)", "UINT64_C(0x02468ace13579bdf)"),
+        ("0", "UINT64_MAX", "UINT64_C(0x7fffffffffffffff)", "UINT64_C(0x8000000000000000)"),
+        ("UINT64_C(0x7fffffff)", "UINT64_C(0x80000000)", "3", "5"),
+        ("UINT64_C(0x80000000)", "UINT64_C(0x7fffffff)", "7", "11"),
+        ("UINT64_C(0x7fffffffffffffff)", "UINT64_C(0x8000000000000000)", "13", "17"),
+        ("UINT64_C(0x8000000000000000)", "UINT64_C(0x7fffffffffffffff)", "19", "23"),
+        ("UINT64_MAX", "UINT64_MAX", "29", "31"),
+    )
+    scalar_values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
+                     "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
+                     "UINT64_C(0x5a17d3e4c29b806f)",
+                     "UINT64_C(0xc4ceb9fe1a85ec53)")
+    if any(function.get("arity") != 4 for function in functions):
+        lines.append("static const uint64_t v[8]={" + ",".join(scalar_values) + "};")
+    for function in functions:
+        name = str(function["name"])
+        return_type = str(function["returnType"])
+        parameter_types = list(function["parameterTypes"])
+        arity = int(function["arity"])
+        if arity == 4:
+            for case_index, values in enumerate(branch_cases):
+                args = ",".join(
+                    f"({parameter_types[index]})({values[index]})" for index in range(4)
+                )
+                invocation = f"{name}({args})"
+                if return_type == "void":
+                    lines.append(invocation + ";")
+                    lines.append(f'printf("{name}:case={case_index}:completed\\n");')
+                else:
+                    lines.append(f'printf("{name}:case={case_index}:return=%016llx\\n",'
+                                 f'(unsigned long long){invocation});')
+            continue
+        indices = [f"i{index}" for index in range(arity)]
+        lines.append("{" + "".join(
+            f"for(unsigned {item}=0;{item}<8;++{item}){{" for item in indices
+        ))
+        args = ",".join(
+            f"({parameter_types[index]})v[{indices[index]}]" for index in range(arity)
+        )
+        invocation = f"{name}({args})"
+        if return_type == "void":
+            lines.append(invocation + ";")
+        else:
+            lines.append(f'printf("{name}:return=%016llx\\n",'
+                         f'(unsigned long long){invocation});')
+        lines.append("}" * len(indices) + "}")
+    lines.append("return 0;}")
+    return "\n".join(lines) + "\n"
+
+
 def build_auto_l1_validator(config: Mapping[str, object]):
     legacy = {"schemaVersion", "mode", "sourcePath", "sourceDigest", "targetPath",
                 "targetDigest", "functions", "workDirectory", "replayDirectory",
@@ -243,6 +321,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
         raise ValueError("automatic L1 config fields/schema are invalid")
     mode = config.get("mode")
     if mode not in {"main", "scalar-functions", "memory-object-functions",
+                    "branch-domain-functions",
                     "explicit-common-harness"}:
         raise ValueError("automatic L1 mode is unsupported")
     functions = config.get("functions")
@@ -297,10 +376,13 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                                          detail="automatic L1 source/target digest mismatch")
         try:
             source_units, target_units = [source], [target]
-            if mode in {"scalar-functions", "memory-object-functions"}:
+            if mode in {"scalar-functions", "memory-object-functions",
+                        "branch-domain-functions"}:
                 source_wrapper, target_wrapper = work / "source-harness.c", work / "target-harness.c"
                 wrapper = (_memory_object_wrapper(functions)
                            if mode == "memory-object-functions"
+                           else _branch_domain_wrapper(functions)
+                           if mode == "branch-domain-functions"
                            else _scalar_wrapper(functions))
                 source_wrapper.write_text(wrapper, encoding="utf-8")
                 target_wrapper.write_text(wrapper, encoding="utf-8")

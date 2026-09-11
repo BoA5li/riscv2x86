@@ -79,7 +79,7 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
         safe_scalar = (
             return_type != "void"
             and _INTEGER_TYPE.fullmatch(return_type)
-            and len(params) <= 3
+            and len(params) <= 4
             and all(_INTEGER_TYPE.fullmatch(item) for item in param_types)
         )
         pointer_parameters = [
@@ -200,9 +200,11 @@ def prepare_automatic_inventory(
                 "experimentContractId": ""}
         _write_json(case_dir / "validation-plan.json", plan)
         has_memory_objects = any(item.get("pointerParameters") for item in functions)
+        has_four_argument_function = any(item.get("arity") == 4 for item in functions)
         mode = ("explicit-common-harness" if explicit is not None else
                 "main" if has_main else
                 "memory-object-functions" if has_memory_objects else
+                "branch-domain-functions" if has_four_argument_function else
                 "scalar-functions")
         link_kind = "executable" if has_main else "shared_library"
         translation = [sys.executable, "-m", "riscv2x86_py.automatic_translation_command",
@@ -240,6 +242,11 @@ def prepare_automatic_inventory(
                 limitations = sorted(set(limitations) | {
                     "aliasing-and-overlap-not-observed-by-automatic-l1",
                     "unaligned-and-out-of-bounds-access-not-observed-by-automatic-l1",
+                })
+            elif mode == "branch-domain-functions":
+                input_domain = "branch-four-argument-boundaries-v1"
+                limitations = sorted(set(limitations) | {
+                    "control-flow-event-trace-not-observed-by-l1",
                 })
             validators["L1"] = {"type": "automatic-l1-functional-differential", "config": {
                 "schemaVersion": "riscv2x86.auto-l1-runner.v3", "mode": mode,

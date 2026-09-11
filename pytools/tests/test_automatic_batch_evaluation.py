@@ -9,7 +9,8 @@ import pytest
 
 from riscv2x86_py import automatic_batch_cli as auto
 from riscv2x86_py.automatic_validation import (
-    _memory_object_observations, _memory_object_wrapper, _scalar_wrapper,
+    _branch_domain_wrapper, _memory_object_observations, _memory_object_wrapper,
+    _scalar_wrapper,
 )
 from riscv2x86_py.translation_artifact_binding import translation_artifact_from_approval
 from riscv2x86_py.translation_attempt import TranslationAttempt
@@ -133,6 +134,37 @@ def test_pointer_inventory_registers_memory_object_l1_contract(tmp_path, monkeyp
         "aliasing-and-overlap-not-observed-by-automatic-l1",
         "unaligned-and-out-of-bounds-access-not-observed-by-automatic-l1",
     ]
+
+
+def test_four_argument_inventory_registers_branch_domain_l1_contract(tmp_path, monkeypatch):
+    source = tmp_path / "branch.c"
+    source.write_text("#include <stdint.h>\nuint64_t branch(uint64_t a,uint64_t b,uint64_t x,uint64_t y){return a==b?x:y;}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    function = {"name": "branch", "arity": 4, "returnType": "uint64_t",
+                "parameterTypes": ["uint64_t"] * 4, "pointerParameters": []}
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda source: (False, (function,)))
+
+    payload = auto.prepare_automatic_inventory(source, tmp_path / "inventory", frontend=frontend)
+    descriptor = next((tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json"))
+    config = json.loads(descriptor.read_text())["request"]["runtimeRegistryTemplate"]["validators"]["L1"]["config"]
+    assert payload["programs"][0]["harnessMode"] == "branch-domain-functions"
+    assert config["mode"] == "branch-domain-functions"
+    assert config["inputDomainId"] == "branch-four-argument-boundaries-v1"
+    assert config["semanticLimitations"] == [
+        "control-flow-event-trace-not-observed-by-l1",
+    ]
+
+
+def test_branch_domain_harness_covers_equal_unequal_and_width_boundaries():
+    wrapper = _branch_domain_wrapper([{
+        "name": "branch", "arity": 4, "returnType": "uint64_t",
+        "parameterTypes": ["uint64_t"] * 4, "pointerParameters": [],
+    }])
+    assert wrapper.count("branch((uint64_t)") == 11
+    assert "(uint64_t)(0),(uint64_t)(0)" in wrapper
+    assert "(uint64_t)(0),(uint64_t)(1)" in wrapper
+    assert "UINT64_C(0x8000000000000000)" in wrapper
+    assert "case=10:return=%016llx" in wrapper
 
 
 def test_explicit_harness_precedes_automatic_signature_limits(tmp_path, monkeypatch):
