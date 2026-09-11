@@ -64,7 +64,7 @@ def build_l0_reference_manifest(
     libs = tuple("-l" + item for item in dependencies.libraries)
     source_compiler = "riscv64-linux-gnu-gcc"
     source_flags = ("-march=rv64gc", "-mabi=lp64d")
-    target_flags = ("-Wall", "-Wextra", *includes)
+    target_flags = ("-Wall", "-Wextra")
     source_obj = output_directory / "source.rv64.o"
     source_full_flags = (*source_flags, "-Werror")
     _checked((source_compiler, *source_full_flags, "-c", str(source_path), "-o", str(source_obj)),
@@ -91,7 +91,7 @@ def build_l0_reference_manifest(
                 flags += ("-Werror",)
                 obj = output_directory / (ident + ".o")
                 out = canonical_target if ident == "gcc-O0-none" else output_directory / (ident + suffix)
-                _checked((compiler, "-c", *flags, str(target_path), "-o", str(obj)), output_directory, timeout)
+                _checked((compiler, "-c", *flags, *includes, str(target_path), "-o", str(obj)), output_directory, timeout)
                 sanitizer_flags = (() if sanitizer == "none" else
                                    ("-fsanitize=" + {"asan": "address", "ubsan": "undefined"}[sanitizer],))
                 mode = ("-shared",) if link_kind == "shared_library" else ()
