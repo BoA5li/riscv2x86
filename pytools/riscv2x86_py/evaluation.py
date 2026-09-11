@@ -32,6 +32,7 @@ EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v2"
 LEGACY_EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v1"
 EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v2"
 EVALUATION_REPLAY_SCHEMA = "riscv2x86.evaluation-replay.v1"
+TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v1"
 _EMITTED = {
     TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
     TranslationOutcome.FUNCTIONAL_FALLBACK,
@@ -519,6 +520,7 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
             "artifact_kind": value.artifact_kind, "artifact_digest": value.artifact_digest,
             "build_identity": value.build_identity,
         }
+    linkage = _translation_evaluation_linkage(request, work, attempts)
     payload: dict[str, object] = {
         "schemaVersion": EVALUATION_RESULT_SCHEMA,
         "requestIdentity": _request_identity(request), "status": status.value,
@@ -542,6 +544,7 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
         "validationGroupId": request.validation_group_id,
         "selectedAttemptIds": list(request.selected_attempt_ids),
         "environmentProvenance": _environment_provenance(request, commands, environment),
+        "translationEvaluationLink": linkage,
     }
     identity_payload = dict(payload); identity_payload.pop("replayArtifact")
     payload["evaluationIdentity"] = _digest_bytes(_canonical(identity_payload))
@@ -558,6 +561,86 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
         json.dumps(replay_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8",
     )
     return payload
+
+
+def _translation_evaluation_linkage(
+    request: EvaluationRequest, work: Path, attempts: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Bind immutable translation-stage facts to final evaluation outcomes.
+
+    The translated report remains historical evidence.  This joined view is
+    the authoritative place to read the later L0-L3 result and avoids
+    rewriting a translation-stage ``verificationDetail`` after the fact.
+    """
+    report_path = _path(request.translated_report, work)
+    archive_path = _path(request.attempt_archive, work)
+    final_by_finding = {
+        str(item.get("findingId")): item for item in attempts
+        if isinstance(item.get("findingId"), str)
+    }
+    findings: list[dict[str, object]] = []
+    raw: object = {}
+    if report_path.is_file():
+        raw = json.loads(report_path.read_text(encoding="utf-8"))
+    report_findings = raw.get("findings", []) if isinstance(raw, Mapping) else []
+    if isinstance(report_findings, list):
+        for index, finding in enumerate(report_findings):
+            if not isinstance(finding, Mapping):
+                continue
+            fragment = finding.get("fragment")
+            fragment_id = (
+                str(fragment.get("id", "")) if isinstance(fragment, Mapping) else ""
+            )
+            finding_id = f"finding:{index}:{fragment_id}"
+            final = final_by_finding.get(finding_id, {})
+            validation = final.get("validation") if isinstance(final, Mapping) else None
+            completed = (
+                validation.get("completedLevels", [])
+                if isinstance(validation, Mapping) else []
+            )
+            layers = validation.get("layers", []) if isinstance(validation, Mapping) else []
+            level_status = {
+                str(layer.get("level")): str(layer.get("status", "inconclusive"))
+                for layer in layers
+                if isinstance(layer, Mapping) and isinstance(layer.get("level"), str)
+            }
+            for level in ("L0", "L1", "L2", "L3"):
+                level_status.setdefault(level, "not_run")
+            findings.append({
+                "findingId": finding_id,
+                "fragmentId": fragment_id,
+                "translationOutcome": finding.get("translationOutcome", ""),
+                "translationKind": finding.get("translationKind", ""),
+                "translationStageVerificationStatus": finding.get("verificationStatus", ""),
+                "translationStageVerificationDetail": finding.get("verificationDetail", ""),
+                "candidateArchived": bool(
+                    isinstance(final, Mapping)
+                    and final.get("translationOutcome") in {
+                        "emitted", "strengthened", "functional_fallback"
+                    }
+                ),
+                "publicationReplacementPresent": bool(finding.get("suggestedReplacement")),
+                "finalEvaluationStatus": final.get("status", "not_run"),
+                "completedLevels": completed,
+                "levelStatus": level_status,
+                "validationProfile": (
+                    validation.get("profile", "")
+                    if isinstance(validation, Mapping) else ""
+                ),
+                "validationIdentity": (
+                    validation.get("validationIdentity", "")
+                    if isinstance(validation, Mapping) else ""
+                ),
+                "reasonCodes": final.get("reasonCodes", []),
+            })
+    return {
+        "schemaVersion": TRANSLATION_EVALUATION_LINK_SCHEMA,
+        "translatedReportPath": request.translated_report,
+        "translatedReportDigest": _digest_file(report_path) if report_path.is_file() else "",
+        "attemptArchivePath": request.attempt_archive,
+        "attemptArchiveDigest": _digest_file(archive_path) if archive_path.is_file() else "",
+        "findings": findings,
+    }
 
 
 def persist_evaluation_result(result: Mapping[str, object], output: str | Path) -> None:

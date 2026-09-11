@@ -18,6 +18,7 @@ from .validation_status import ValidationStatus
 AUTO_L0_SCHEMA = "riscv2x86.auto-l0-runner.v1"
 AUTO_L1_SCHEMA = "riscv2x86.auto-l1-runner.v1"
 AUTO_L1_SCHEMA_V2 = "riscv2x86.auto-l1-runner.v2"
+AUTO_L1_SCHEMA_V3 = "riscv2x86.auto-l1-runner.v3"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -109,7 +110,10 @@ def _scalar_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
         if isinstance(arity, bool) or not isinstance(arity, int) or arity < 0 or arity > 3:
             raise ValueError("automatic scalar harness supports zero to three arguments")
         if arity == 0:
-            lines.append(f'printf("{name}=%llu\\n",(unsigned long long){name}());')
+            if function.get("returnType") == "void":
+                lines.append(f'{name}(); printf("{name}=completed\\n");')
+            else:
+                lines.append(f'printf("{name}=%llu\\n",(unsigned long long){name}());')
         else:
             indices = [f"i{n}" for n in range(arity)]
             loops = "".join(f"for(unsigned {i}=0;{i}<8;++{i}){{" for i in indices)
@@ -127,9 +131,12 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 "timeoutSeconds", "qemuBinary", "seed"}
     additions = {"harnessPath", "harnessDigest", "harnessManifestPath",
                  "harnessManifestDigest", "inputDomainId"}
+    claim_fields = {"observationContract", "observableDimensions", "semanticLimitations"}
     schema = config.get("schemaVersion")
     if not ((schema == AUTO_L1_SCHEMA and set(config) == legacy)
-            or (schema == AUTO_L1_SCHEMA_V2 and set(config) == legacy | additions)):
+            or (schema == AUTO_L1_SCHEMA_V2 and set(config) == legacy | additions)
+            or (schema == AUTO_L1_SCHEMA_V3
+                and set(config) == legacy | additions | claim_fields)):
         raise ValueError("automatic L1 config fields/schema are invalid")
     mode = config.get("mode")
     if mode not in {"main", "scalar-functions", "explicit-common-harness"}:
@@ -148,14 +155,29 @@ def build_auto_l1_validator(config: Mapping[str, object]):
     harness_manifest_path = str(config.get("harnessManifestPath", ""))
     harness_manifest_digest = str(config.get("harnessManifestDigest", ""))
     input_domain_id = str(config.get("inputDomainId", "boundary-and-fixed-random-v1"))
+    observation_contract = str(config.get(
+        "observationContract", "legacy-process-observation-v1"
+    ))
+    dimensions = config.get(
+        "observableDimensions", ["exit_code", "stderr", "stdout", "termination"]
+    )
+    limitations = config.get("semanticLimitations", [])
+    if (not observation_contract
+            or not isinstance(dimensions, list) or not dimensions
+            or dimensions != sorted(set(dimensions))
+            or not all(isinstance(item, str) and item for item in dimensions)
+            or not isinstance(limitations, list)
+            or limitations != sorted(set(limitations))
+            or not all(isinstance(item, str) and item for item in limitations)):
+        raise ValueError("automatic L1 observation claim is invalid")
     if mode == "explicit-common-harness":
         if (not harness_path or not harness_manifest_path
                 or _SHA.fullmatch(harness_digest) is None
                 or _SHA.fullmatch(harness_manifest_digest) is None or not input_domain_id):
             raise ValueError("explicit common harness binding is incomplete")
-    elif schema == AUTO_L1_SCHEMA_V2 and any((harness_path, harness_digest,
-                                               harness_manifest_path,
-                                               harness_manifest_digest)):
+    elif schema in {AUTO_L1_SCHEMA_V2, AUTO_L1_SCHEMA_V3} and any((
+            harness_path, harness_digest, harness_manifest_path,
+            harness_manifest_digest)):
         raise ValueError("automatic L1 mode cannot carry an explicit harness")
 
     def validate(**kwargs: object) -> ValidationLayerResult:
@@ -213,6 +235,9 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             right = _run((str(target_exe),), work, timeout)
             observation = {"schemaVersion": "riscv2x86.auto-l1-observation.v1",
                            "mode": mode, "seed": seed, "inputDomain": input_domain_id,
+                           "observationContract": observation_contract,
+                           "observableDimensions": dimensions,
+                           "semanticLimitations": limitations,
                            "harnessDigest": harness_digest,
                            "harnessManifestDigest": harness_manifest_digest,
                            "source": {"exitCode": left.returncode,

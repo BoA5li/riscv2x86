@@ -79,11 +79,18 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
 
     assert result["caseCount"] == 2
     assert result["statusCounts"] == {"inconclusive": 2}
+    assert result["programValidationDenominators"] == {
+        "L0": 2, "L1": 2, "L2": 2, "L3": 2,
+    }
+    assert result["programValidationCounts"]["L2"] == {"not_run": 2}
+    assert result["programValidationCounts"]["L3"] == {"not_run": 2}
     assert [item["caseId"] for item in result["cases"]] == ["add-001", "shift-001"]
     assert (output / "cases/add-001/evaluation-result.json").is_file()
     assert (output / "cases/shift-001/evaluation-result.json").is_file()
     assert (output / "batch-evaluation.json").is_file()
     assert (output / "batch-summary.csv").is_file()
+    header = (output / "batch-summary.csv").read_text().splitlines()[0]
+    assert header == "case_id,category,status,translation_outcomes,l0,l1,l2,l3,evaluation_identity,reason_codes"
 
 
 def test_case_orchestration_failure_does_not_drop_other_results(tmp_path):

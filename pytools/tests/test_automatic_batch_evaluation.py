@@ -60,6 +60,30 @@ def test_scalar_harness_links_separate_translation_unit():
     assert "jump((uint64_t)v[i0],(uint64_t)v[i1])" in wrapper
 
 
+def test_zero_argument_void_function_has_explicit_termination_observation():
+    wrapper = _scalar_wrapper([{"name": "fence_call", "arity": 0,
+                                "returnType": "void", "parameterTypes": []}])
+    assert "void fence_call(void);" in wrapper
+    assert 'fence_call(); printf("fence_call=completed\\n");' in wrapper
+
+
+def test_zero_argument_void_inventory_registers_bounded_l1_claim(tmp_path, monkeypatch):
+    source = tmp_path / "fence.c"; source.write_text("void fence_call(void){}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda source: (
+        False, ({"name": "fence_call", "arity": 0, "returnType": "void",
+                 "parameterTypes": []},),
+    ))
+    auto.prepare_automatic_inventory(source, tmp_path / "inventory", frontend=frontend)
+    descriptor = next((tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json"))
+    config = json.loads(descriptor.read_text())["request"]["runtimeRegistryTemplate"]["validators"]["L1"]["config"]
+    assert config["observationContract"] == "process-and-declared-return-values-v1"
+    assert config["semanticLimitations"] == [
+        "memory-order-and-microarchitecture-not-observed-by-l1",
+        "undeclared-memory-and-global-side-effects-not-observed-by-l1",
+    ]
+
+
 def test_explicit_harness_precedes_automatic_signature_limits(tmp_path, monkeypatch):
     corpus = tmp_path / "corpus"; corpus.mkdir()
     source = corpus / "branch.c"
@@ -86,11 +110,12 @@ def test_explicit_harness_precedes_automatic_signature_limits(tmp_path, monkeypa
     config = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L1"]["config"]
     assert payload["programs"][0]["validationProfile"] == "functional"
     assert payload["programs"][0]["harnessMode"] == "explicit-common-harness"
-    assert config["schemaVersion"] == "riscv2x86.auto-l1-runner.v2"
+    assert config["schemaVersion"] == "riscv2x86.auto-l1-runner.v3"
     assert config["mode"] == "explicit-common-harness"
     assert config["harnessPath"] == str(harness.resolve())
     assert config["harnessDigest"].startswith("sha256:")
     assert config["harnessManifestDigest"].startswith("sha256:")
+    assert config["observableDimensions"] == ["exit_code", "stderr", "stdout", "termination"]
 
 
 def test_explicit_harness_cannot_escape_manifest_directory(tmp_path, monkeypatch):

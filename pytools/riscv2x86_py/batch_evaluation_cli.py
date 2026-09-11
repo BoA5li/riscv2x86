@@ -200,6 +200,8 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
     for level, statuses in sorted(level_statuses.items()):
         program_levels[level] = ("failed" if "failed" in statuses else
                                  "inconclusive" if "inconclusive" in statuses else "verified")
+    for level in ("L0", "L1", "L2", "L3"):
+        program_levels.setdefault(level, "not_run")
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -207,6 +209,10 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "evaluationIdentity": result.get("evaluationIdentity", ""),
         "resultPath": result_path.relative_to(output).as_posix(),
         "attempts": result.get("attempts", []),
+        "translationOutcomes": sorted({
+            str(item.get("translationOutcome", "unknown"))
+            for item in result.get("attempts", []) if isinstance(item, Mapping)
+        }),
         "programValidationLevels": program_levels,
     }
 
@@ -214,10 +220,16 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
 def _write_csv(output: Path, cases: list[dict[str, object]]) -> None:
     with (output / "batch-summary.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
-        writer.writerow(("case_id", "category", "status", "evaluation_identity", "reason_codes"))
+        writer.writerow(("case_id", "category", "status", "translation_outcomes",
+                         "l0", "l1", "l2", "l3", "evaluation_identity", "reason_codes"))
         for item in cases:
-            writer.writerow((item["caseId"], item["category"], item["status"],
-                             item["evaluationIdentity"], ";".join(item["reasonCodes"])))
+            levels = item.get("programValidationLevels", {})
+            writer.writerow((
+                item["caseId"], item["category"], item["status"],
+                ";".join(item.get("translationOutcomes", [])),
+                *(levels.get(level, "not_run") for level in ("L0", "L1", "L2", "L3")),
+                item["evaluationIdentity"], ";".join(item["reasonCodes"]),
+            ))
 
 
 def run_batch_evaluation(
@@ -276,6 +288,9 @@ def run_batch_evaluation(
                 level: {status: count for (item_level, status), count in sorted(program_level_counts.items())
                         if item_level == level}
                 for level in sorted({item[0] for item in program_level_counts})
+            },
+            "programValidationDenominators": {
+                level: len(completed) for level in ("L0", "L1", "L2", "L3")
             },
             "statisticalUnits": {"translationCoverage": "fragment",
                                  "validationRates": "program",

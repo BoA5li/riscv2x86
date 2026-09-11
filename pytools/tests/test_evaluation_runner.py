@@ -121,6 +121,18 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert result["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
     assert result["attempts"][0]["reasonCodes"] == ["validation.layer-runner-missing:L0"]
     assert (work / result["replayArtifact"]).is_file()
+    linkage = result["translationEvaluationLink"]
+    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v1"
+    assert linkage["translatedReportDigest"].startswith("sha256:")
+    assert linkage["attemptArchiveDigest"].startswith("sha256:")
+    joined = linkage["findings"][0]
+    assert joined["findingId"] == attempt.finding_id
+    assert joined["translationOutcome"] == "emitted"
+    assert joined["finalEvaluationStatus"] == "inconclusive"
+    assert joined["completedLevels"] == []
+    assert joined["levelStatus"] == {
+        "L0": "inconclusive", "L1": "not_run", "L2": "not_run", "L3": "not_run",
+    }
 
 
 def test_unavailable_build_tool_is_persisted_as_inconclusive(tmp_path):

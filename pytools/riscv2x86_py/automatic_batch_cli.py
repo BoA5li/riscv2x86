@@ -73,8 +73,14 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
         params = [child for child in node.get("inner", [])
                   if isinstance(child, Mapping) and child.get("kind") == "ParmVarDecl"]
         param_types = [str(child.get("type", {}).get("qualType", "")) for child in params]
-        if (return_type != "void" and _INTEGER_TYPE.fullmatch(return_type)
-                and len(params) <= 3 and all(_INTEGER_TYPE.fullmatch(item) for item in param_types)):
+        safe_scalar = (
+            return_type != "void"
+            and _INTEGER_TYPE.fullmatch(return_type)
+            and len(params) <= 3
+            and all(_INTEGER_TYPE.fullmatch(item) for item in param_types)
+        )
+        safe_void_call = return_type == "void" and not params
+        if safe_scalar or safe_void_call:
             functions.append({"name": name, "arity": len(params),
                               "returnType": return_type, "parameterTypes": param_types})
     if not has_main and not functions:
@@ -195,8 +201,16 @@ def prepare_automatic_inventory(
                 "linkKind": link_kind, "timeoutSeconds": timeout}},
         }
         if explicit is not None or not inspection_error:
+            limitations = (
+                [
+                    "memory-order-and-microarchitecture-not-observed-by-l1",
+                    "undeclared-memory-and-global-side-effects-not-observed-by-l1",
+                ]
+                if any(item.get("returnType") == "void" for item in functions)
+                else []
+            )
             validators["L1"] = {"type": "automatic-l1-functional-differential", "config": {
-                "schemaVersion": "riscv2x86.auto-l1-runner.v2", "mode": mode,
+                "schemaVersion": "riscv2x86.auto-l1-runner.v3", "mode": mode,
                 "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
                 "targetPath": "${TARGET_PATH}", "targetDigest": "${TARGET_DIGEST}",
                 "functions": list(functions), "workDirectory": "${WORK_DIR}/automatic-l1/${ATTEMPT_ID}",
@@ -208,7 +222,10 @@ def prepare_automatic_inventory(
                 "harnessManifestPath": "" if explicit is None else explicit["manifestPath"],
                 "harnessManifestDigest": "" if explicit is None else explicit["manifestDigest"],
                 "inputDomainId": ("boundary-and-fixed-random-v1" if explicit is None
-                                  else explicit["inputDomainId"])} }
+                                  else explicit["inputDomainId"]),
+                "observationContract": "process-and-declared-return-values-v1",
+                "observableDimensions": ["exit_code", "stderr", "stdout", "termination"],
+                "semanticLimitations": limitations} }
         request = {"schemaVersion": "riscv2x86.evaluation-request.v2",
                    "sourceRoot": str(source_root), "sourceRelativePath": relative,
                    "targetRelativePath": relative,
