@@ -21,6 +21,7 @@ from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
 from .helper_runtime_manifest import (
     RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL, MONOTONIC_TIME_NS_V1,
+    TSC_TICKS_V1,
 )
 from .target_register_policy import audit_translator_emitted_target_registers
 from .abi_effects import TargetAbiWrapperRegistry
@@ -1212,6 +1213,7 @@ def run(
     if allow_functional_fallbacks:
         default_features.add("runtime:" + INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id)
         default_features.add("runtime:" + MONOTONIC_TIME_NS_V1.runtime_contract_id)
+        default_features.add("runtime:" + TSC_TICKS_V1.runtime_contract_id)
     if privileged_runtime_registry is not None:
         default_features.update(
             privileged_runtime_registry.required_target_capabilities
@@ -1232,6 +1234,8 @@ def run(
                 INSTRUCTION_STREAM_SYNC_LOCAL.required_environment_capability,
                 MONOTONIC_TIME_NS_V1.runtime_contract_id,
                 MONOTONIC_TIME_NS_V1.required_environment_capability,
+                TSC_TICKS_V1.runtime_contract_id,
+                TSC_TICKS_V1.required_environment_capability,
             } if allow_functional_fallbacks else set()),
         },
     )

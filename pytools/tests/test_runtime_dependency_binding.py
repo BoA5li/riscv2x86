@@ -94,3 +94,19 @@ def test_monotonic_time_adapter_resolves_to_versioned_csr_runtime(tmp_path):
     resolved = dependencies_from_translated_report(report, root=tmp_path)
     assert resolved.headers == ("riscv2x86_csr_runtime.h",)
     assert resolved.libraries == ("riscv2x86_runtime",)
+
+
+def test_tsc_cycle_adapter_resolves_to_versioned_csr_runtime(tmp_path):
+    _runtime_tree(tmp_path)
+    value = _report(
+        headers=["riscv2x86_csr_runtime.h"],
+        libraries=["libriscv2x86_runtime"],
+    )
+    value["findings"][0]["approvalArtifact"]["runtimeContractId"] = (
+        "riscv2x86_rt_tsc_ticks@v1"
+    )
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(value))
+    resolved = dependencies_from_translated_report(report, root=tmp_path)
+    assert resolved.headers == ("riscv2x86_csr_runtime.h",)
+    assert resolved.libraries == ("riscv2x86_runtime",)

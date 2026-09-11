@@ -16,6 +16,8 @@ uint64_t rv2x86_read_counter(const struct rv2x86_counter_context *, enum rv2x86_
  * rollover behaviour is architecturally identical to the RISC-V time CSR.
  */
 uint64_t riscv2x86_rt_monotonic_time_ns_v1(void);
+/* x86 TSC observation-domain adapter; not an architectural cycle equivalence. */
+uint64_t riscv2x86_rt_tsc_ticks_v1(void);
 struct rv2x86_csr_context { uint32_t version; uint32_t profile; uint64_t values[4096]; };
 uint64_t rv2x86_csr_read(const struct rv2x86_csr_context *, uint16_t);
 uint64_t rv2x86_csr_write(struct rv2x86_csr_context *, uint16_t, uint64_t);

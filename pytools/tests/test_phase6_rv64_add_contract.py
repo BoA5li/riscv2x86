@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from types import SimpleNamespace
 
 from riscv2x86_py.candidate_plans import generate_candidate_plans
 from riscv2x86_py.cfg import CFGNode, CFGResult
@@ -36,7 +37,7 @@ from riscv2x86_py.phase6f_renderer import (
     render_approved_target_lowering,
 )
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
-from riscv2x86_py.helper_runtime_manifest import MONOTONIC_TIME_NS_V1
+from riscv2x86_py.helper_runtime_manifest import MONOTONIC_TIME_NS_V1, TSC_TICKS_V1
 from riscv2x86_py.privileged_execution_sidecar import (
     AddressSpaceIdentityFacts, CsrAccessPolicyFacts, DelegationModelFacts,
     InterruptModelFacts, PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
@@ -49,7 +50,7 @@ from riscv2x86_py.helper_runtime_manifest import INSTRUCTION_STREAM_SYNC_LOCAL
 from riscv2x86_py.schema import AsmFragment, AsmOperand
 from riscv2x86_py.shell_model import SourceShellModel
 from riscv2x86_py.source_model import build_source_semantic_model
-from riscv2x86_py.translate import translate
+from riscv2x86_py.translate import translate, _render_counter_csr_functional_fallback
 
 
 class _IngressLiftInsn:
@@ -422,6 +423,56 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
     assert artifact["observationDomainContractId"] == (
         "riscv2x86.time.monotonic-observation.v1"
     )
+
+
+def test_counter_functional_adapters_are_domain_and_width_specific() -> None:
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
+        helper_contract_capabilities={
+            MONOTONIC_TIME_NS_V1.required_environment_capability,
+            TSC_TICKS_V1.required_environment_capability,
+        },
+    )
+    rv64 = SimpleNamespace(
+        fragment=AsmFragment(
+            id="cycle-rv64",
+            outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        ),
+        xlen=64,
+        decision=None,
+        instruction_count=1,
+        blocks=[],
+        sourceModel=None,
+    )
+    cycle = _render_counter_csr_functional_fallback(
+        context=rv64, csr_name="cycle", result_operand_index=0,
+        width_bits=64, target_environment=environment,
+    )
+    assert cycle is not None
+    assert cycle.replacement == "out = (uint64_t)riscv2x86_rt_tsc_ticks_v1();"
+    assert cycle.metadata["approvalArtifact"]["counterProjection"] == "full64"
+
+    rv32 = SimpleNamespace(
+        fragment=rv64.fragment, xlen=32, decision=None,
+        instruction_count=1, blocks=[], sourceModel=None,
+    )
+    timeh = _render_counter_csr_functional_fallback(
+        context=rv32, csr_name="timeh", result_operand_index=0,
+        width_bits=32, target_environment=environment,
+    )
+    assert timeh is not None
+    assert timeh.replacement == (
+        "out = (uint32_t)((uint64_t)riscv2x86_rt_monotonic_time_ns_v1() >> 32);"
+    )
+    assert timeh.metadata["approvalArtifact"]["counterProjection"] == "high32"
+
+    assert _render_counter_csr_functional_fallback(
+        context=rv64, csr_name="instret", result_operand_index=0,
+        width_bits=64, target_environment=environment,
+    ) is None
+    assert _render_counter_csr_functional_fallback(
+        context=rv64, csr_name="cycleh", result_operand_index=0,
+        width_bits=64, target_environment=environment,
+    ) is None
 
 
 def test_instruction_stream_barrier_requires_explicit_route() -> None:

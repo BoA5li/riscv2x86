@@ -79,7 +79,7 @@ from .phase6f_contract_registry import (
     GPR_INTEGER_RENDERER_CONTRACT_REGISTRY, RendererContractRegistry,
 )
 from .helper_runtime_manifest import (
-    DEFAULT_RUNTIME_HELPER_CONTRACTS, MONOTONIC_TIME_NS_V1,
+    DEFAULT_RUNTIME_HELPER_CONTRACTS, MONOTONIC_TIME_NS_V1, TSC_TICKS_V1,
     RUNTIME_HELPER_MANIFEST_VERSION,
 )
 from .instruction_stream_sync_contracts import (
@@ -2907,13 +2907,33 @@ def _render_counter_csr_functional_fallback(
     must opt in to this documented semantic downgrade.  The registry is keyed
     by structured Phase-6A CSR facts, never by an asm mnemonic or source text.
 
-    Only RV64 ``time`` is registered.  ``cycle``/``instret`` do not have the
-    same observation domain, while RV32 high-half CSRs need a separate
-    width/rollover contract.  Returning ``None`` preserves fail-closed routing
-    for every unregistered family.
+    ``time`` and ``cycle`` use distinct target observation domains.  RV32
+    low/high CSR forms are explicit projections of the same 64-bit adapter.
+    ``instret`` remains unregistered because an ordinary x86 user process has
+    no unconditional retired-instruction counter interface.
     """
-    contract = MONOTONIC_TIME_NS_V1
-    if (csr_name != "time" or width_bits != 64 or
+    base_name = csr_name[:-1] if csr_name.endswith("h") else csr_name
+    high_half = csr_name.endswith("h")
+    contracts = {
+        "time": (
+            MONOTONIC_TIME_NS_V1,
+            "riscv.readonly-counter-csr.time.v1",
+            "posix.clock-monotonic.nanoseconds.v1",
+            "riscv2x86.time.monotonic-observation.v1",
+        ),
+        "cycle": (
+            TSC_TICKS_V1,
+            "riscv.readonly-counter-csr.cycle.v1",
+            "x86.tsc-ticks.observation.v1",
+            "riscv2x86.cycle.tsc-observation.v1",
+        ),
+    }
+    registration = contracts.get(base_name)
+    if registration is None:
+        return None
+    contract, source_contract, target_contract, domain_contract = registration
+    valid_width = width_bits == context.xlen and (not high_half or context.xlen == 32)
+    if (not valid_width or
             target_environment.architecture.value != "x86_64" or
             contract.required_environment_capability not in
             target_environment.helper_contract_capabilities):
@@ -2923,9 +2943,15 @@ def _render_counter_csr_functional_fallback(
     if not binding:
         return None
 
-    source_contract = "riscv.readonly-counter-csr.time.rv64.v1"
-    target_contract = "posix.clock-monotonic.nanoseconds.v1"
-    replacement = f"{binding} = (uint64_t){contract.helper_symbol}();"
+    projection = "high32" if high_half else ("low32" if width_bits == 32 else "full64")
+    call = f"(uint64_t){contract.helper_symbol}()"
+    if projection == "high32":
+        value = f"(uint32_t)({call} >> 32)"
+    elif projection == "low32":
+        value = f"(uint32_t){call}"
+    else:
+        value = call
+    replacement = f"{binding} = {value};"
     artifact = {
         "artifactVersion": "phase6-functional-fallback-v1",
         "proofStatus": "functional_approved",
@@ -2939,7 +2965,7 @@ def _render_counter_csr_functional_fallback(
             "phase6a-functional-fallback:" + context.fragment.id
         ),
         "planId": "functional-fallback:" + source_contract,
-        "constraintsId": "functional-fallback:monotonic-time-ns-v1",
+        "constraintsId": f"functional-fallback:{base_name}:{projection}:v1",
         "targetEnvironmentId": "phase6:" + ":".join((
             target_environment.architecture.value,
             target_environment.abi.value,
@@ -2947,11 +2973,11 @@ def _render_counter_csr_functional_fallback(
             target_environment.compiler_family,
             target_environment.compiler_version,
         )),
-        "targetCatalogVersion": "functional-time-adapter-registry-v1",
+        "targetCatalogVersion": "functional-counter-adapter-registry-v2",
         "selectionPolicyId": "explicit-functional-fallback",
         "selectionPolicyVersion": "v1",
         "selectionTier": "functional_fallback",
-        "rendererId": "monotonic-time-runtime-renderer",
+        "rendererId": f"{base_name}-observation-runtime-renderer",
         "rendererVersion": "v1",
         "replacementKind": "helper_call",
         "replacementDigest": _approval_digest(replacement),
@@ -2965,17 +2991,18 @@ def _render_counter_csr_functional_fallback(
         "helperRequiredHeader": contract.required_header,
         "helperRuntimeLibrary": contract.runtime_library,
         "helperRuntimeManifestVersion": RUNTIME_HELPER_MANIFEST_VERSION,
-        "observationDomainContractId": "riscv2x86.time.monotonic-observation.v1",
+        "observationDomainContractId": domain_contract,
+        "counterProjection": projection,
         "architectureSemanticsPreserved": False,
         "shellSemanticsPreserved": False,
         "microarchitectureSemanticsPreserved": False,
         "ignoredSourceState": [
-            "csr:time:absolute-value", "csr:time:epoch",
-            "csr:time:frequency", "csr:time:resolution",
+            f"csr:{base_name}:absolute-value", f"csr:{base_name}:epoch",
+            f"csr:{base_name}:frequency", f"csr:{base_name}:resolution",
         ],
         "knownNonEquivalences": [
             "absolute values are not cross-ISA comparable",
-            "epoch, frequency, resolution, and rollover are target-defined",
+            "epoch, frequency, resolution, serialization, migration, and rollover are target-defined",
         ],
     }
     return _output(
@@ -2984,11 +3011,15 @@ def _render_counter_csr_functional_fallback(
         context=context,
         route="explicit_functional_counter_fallback",
         notes=[
-            "functional fallback enabled: RISC-V time CSR is rendered through "
-            "the versioned monotonic-time runtime adapter; only the declared "
-            "monotonic observation domain is preserved"
+            f"functional fallback enabled: RISC-V {csr_name} CSR is rendered "
+            f"through the versioned {base_name} observation adapter; only "
+            f"the declared {projection} observation-domain relation is preserved"
         ],
-        reason_codes=["TR_FUNCTIONAL_TIME_CSR_MONOTONIC_ADAPTER"],
+        reason_codes=[
+            "TR_FUNCTIONAL_TIME_CSR_MONOTONIC_ADAPTER"
+            if base_name == "time"
+            else "TR_FUNCTIONAL_CYCLE_CSR_TSC_ADAPTER"
+        ],
         build_family="x86_runtime_helper",
         requires_build_check=True,
         metadata={"approvalArtifact": artifact},
@@ -3468,9 +3499,17 @@ def translate(
             # counter-adapter route, while the decision itself still came
             # from the mandatory CSR pipeline above.
             reason_code=(
-                "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED"
-                if source_model.read_only_csr is not None
-                else "TR_CSR_PIPELINE_NEEDS_ROUTE"
+                "TR_INSTRET_OBSERVATION_RUNNER_REQUIRED"
+                if (
+                    source_model.read_only_csr is not None
+                    and source_model.read_only_csr.csr_name
+                    in {"instret", "instreth"}
+                )
+                else (
+                    "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED"
+                    if source_model.read_only_csr is not None
+                    else "TR_CSR_PIPELINE_NEEDS_ROUTE"
+                )
             ),
             metadata={
                 "csrPipelineReasonCodes": csr_result.reason_codes,

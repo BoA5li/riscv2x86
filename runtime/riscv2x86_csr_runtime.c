@@ -7,6 +7,15 @@ uint64_t riscv2x86_rt_monotonic_time_ns_v1(void) {
   if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0;
   return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
 }
+uint64_t riscv2x86_rt_tsc_ticks_v1(void) {
+#if defined(__x86_64__) || defined(__i386__)
+  uint32_t lo, hi;
+  __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi) : : "memory");
+  return ((uint64_t)hi << 32) | (uint64_t)lo;
+#else
+  return 0;
+#endif
+}
 uint64_t rv2x86_read_counter(const struct rv2x86_counter_context *c, enum rv2x86_counter_id id) {
   if (!c || id != RV2X86_COUNTER_MONOTONIC_NS) return 0;
   return riscv2x86_rt_monotonic_time_ns_v1();
