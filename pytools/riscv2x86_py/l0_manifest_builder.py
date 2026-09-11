@@ -8,6 +8,7 @@ import subprocess
 
 from .l0_artifact_manifest import ExpectedArtifact, ExpectedElf, L0_ARTIFACT_MANIFEST_SCHEMA
 from .l0_build_matrix import L0BuildMatrix, _inspect_elf, _run
+from .runtime_dependency_binding import resolve_runtime_contracts
 from .translation_validation import ProgramArtifact, TranslationArtifact
 
 COMPILERS = ("gcc", "clang")
@@ -57,9 +58,13 @@ def build_l0_reference_manifest(
 ) -> tuple[L0BuildMatrix, ProgramArtifact, ProgramArtifact]:
     """Build all declared cells first, then freeze their hashes as the oracle."""
     output_directory.mkdir(parents=True, exist_ok=False)
+    dependencies = resolve_runtime_contracts((translation.runtime_contract_id,))
+    includes = tuple("-I" + item for item in dependencies.include_directories)
+    libdirs = tuple("-L" + item for item in dependencies.library_directories)
+    libs = tuple("-l" + item for item in dependencies.libraries)
     source_compiler = "riscv64-linux-gnu-gcc"
     source_flags = ("-march=rv64gc", "-mabi=lp64d")
-    target_flags = ("-Wall", "-Wextra")
+    target_flags = ("-Wall", "-Wextra", *includes)
     source_obj = output_directory / "source.rv64.o"
     source_full_flags = (*source_flags, "-Werror")
     _checked((source_compiler, *source_full_flags, "-c", str(source_path), "-o", str(source_obj)),
@@ -90,10 +95,12 @@ def build_l0_reference_manifest(
                 sanitizer_flags = (() if sanitizer == "none" else
                                    ("-fsanitize=" + {"asan": "address", "ubsan": "undefined"}[sanitizer],))
                 mode = ("-shared",) if link_kind == "shared_library" else ()
-                _checked((compiler, *sanitizer_flags, *mode, str(obj), "-o", str(out)), output_directory, timeout)
+                _checked((compiler, *sanitizer_flags, *mode, str(obj), *libdirs, *libs,
+                          "-o", str(out)), output_directory, timeout)
                 targets[ident] = ExpectedArtifact(
-                    _digest(out), _digest(obj), link_kind, compiler, triple, flags, (),
-                    _elf(out, output_directory, timeout), _elf(obj, output_directory, timeout),
+                    _digest(out), _digest(obj), link_kind, compiler, triple, flags,
+                    dependencies.libraries, _elf(out, output_directory, timeout),
+                    _elf(obj, output_directory, timeout),
                 )
     manifest_path = output_directory / "l0-artifact-manifest.json"
     manifest = {"schemaVersion": L0_ARTIFACT_MANIFEST_SCHEMA,
@@ -103,8 +110,10 @@ def build_l0_reference_manifest(
                 "runtimeContractId": translation.runtime_contract_id,
                 "runtimeContractVersion": translation.runtime_contract_version,
                 "recipeIdentity": translation.recipe_id,
-                "runtimeHeaders": [], "includeDirectories": [],
-                "libraryDirectories": [], "libraries": [],
+                "runtimeHeaders": list(dependencies.headers),
+                "includeDirectories": list(dependencies.include_directories),
+                "libraryDirectories": list(dependencies.library_directories),
+                "libraries": list(dependencies.libraries),
                 "source": _artifact_dict(source_expected),
                 "targets": {key: _artifact_dict(value) for key, value in sorted(targets.items())}}
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")),
@@ -112,8 +121,12 @@ def build_l0_reference_manifest(
     matrix = L0BuildMatrix(
         str(source_path), source_compiler, source_flags, str(target_path), COMPILERS,
         target_flags, OPTIMIZATIONS, SANITIZERS, str(output_directory / "verify"),
-        str(manifest_path), _digest(manifest_path), link_kind=link_kind,
-        runtime_timeout_seconds=timeout,
+        str(manifest_path), _digest(manifest_path),
+        runtime_headers=dependencies.headers,
+        include_directories=dependencies.include_directories,
+        library_directories=dependencies.library_directories,
+        libraries=dependencies.libraries,
+        link_kind=link_kind, runtime_timeout_seconds=timeout,
     )
     return (matrix,
             ProgramArtifact("source", str(source_obj), "object", _digest(source_obj)),

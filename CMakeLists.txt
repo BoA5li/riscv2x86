@@ -28,7 +28,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_definitions(${LLVM_DEFINITIONS})
 
-# 只列出当前仓库中真实存在的源码
 set(R2X_SOURCES
   src/main.cpp
   src/Classifier.cpp
@@ -45,44 +44,24 @@ message(STATUS "R2X sources: ${R2X_SOURCES}")
 
 add_executable(riscv2x86 ${R2X_SOURCES})
 
-# Versioned Phase-6 helper runtime.  Translation output may reference a
-# helper only when its manifest/capability/proof contract is approved.
 add_library(riscv2x86_runtime STATIC
   runtime/riscv2x86_runtime_helpers.c
   runtime/riscv2x86_csr_runtime.c
 )
+set_target_properties(riscv2x86_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(riscv2x86_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
 )
 
 if(TARGET clang-cpp AND TARGET LLVM)
   message(STATUS "Link mode: monolithic imported targets (clang-cpp + LLVM)")
-  target_link_libraries(riscv2x86
-    PRIVATE
-    clang-cpp
-    LLVM
-  )
+  target_link_libraries(riscv2x86 PRIVATE clang-cpp LLVM)
 else()
   message(STATUS "Link mode: component libraries (clang* + LLVMSupport)")
-
-  llvm_map_components_to_libnames(LLVM_LIBS
-    support
-  )
-
-  target_link_libraries(riscv2x86
-    PRIVATE
-    clangTooling
-    clangFrontend
-    clangSerialization
-    clangDriver
-    clangParse
-    clangSema
-    clangAnalysis
-    clangEdit
-    clangASTMatchers
-    clangAST
-    clangLex
-    clangBasic
-    ${LLVM_LIBS}
+  llvm_map_components_to_libnames(LLVM_LIBS support)
+  target_link_libraries(riscv2x86 PRIVATE
+    clangTooling clangFrontend clangSerialization clangDriver clangParse
+    clangSema clangAnalysis clangEdit clangASTMatchers clangAST clangLex
+    clangBasic ${LLVM_LIBS}
   )
 endif()
