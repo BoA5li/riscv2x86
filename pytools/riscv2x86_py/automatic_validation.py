@@ -192,11 +192,19 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 replay_harness.write_bytes(harness.read_bytes())
                 (replay / "explicit-harness-manifest.json").write_bytes(manifest.read_bytes())
                 source_units, target_units = [harness, source], [harness, target]
-            dependencies = resolve_runtime_contracts(\n                (kwargs["translation_artifact"].runtime_contract_id,)\n            )\n            runtime_includes = tuple("-I" + item for item in dependencies.include_directories)\n            source_exe, target_exe = work / "source.rv64", work / "target.x86_64"\n            source_build = _run(("riscv64-linux-gnu-gcc", "-std=gnu11", "-O2", "-Wall",
+            dependencies = resolve_runtime_contracts(
+                (kwargs["translation_artifact"].runtime_contract_id,)
+            )
+            runtime_includes = tuple("-I" + item for item in dependencies.include_directories)
+            source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
+            source_build = _run(("riscv64-linux-gnu-gcc", "-std=gnu11", "-O2", "-Wall",
                                  "-Wextra", "-Werror", "-march=rv64gc", "-mabi=lp64d",
                                  "-static", *(str(item) for item in source_units),
                                  "-o", str(source_exe)), work, timeout)
-            target_build = _run(("gcc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",\n                                 *runtime_includes, *(str(item) for item in target_units),\n                                 *dependencies.library_paths, "-o", str(target_exe)),\n                                work, timeout)
+            target_build = _run(("gcc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",
+                                 *runtime_includes, *(str(item) for item in target_units),
+                                 *dependencies.library_paths, "-o", str(target_exe)),
+                                work, timeout)
             if source_build.returncode or target_build.returncode:
                 detail = {"sourceBuild": source_build.stderr, "targetBuild": target_build.stderr}
                 return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
