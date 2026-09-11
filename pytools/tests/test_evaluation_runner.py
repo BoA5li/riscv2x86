@@ -75,7 +75,7 @@ def _setup(tmp_path: Path, *, target_build_success=True):
     if not target_build_success:
         target_command = ["definitely-unavailable-e3-compiler", "${TARGET_PATH}"]
     else:
-        target_command = ["python", "-c", pycopy.replace("SOURCE_PATH", "TARGET_PATH")]
+        target_command = [\n            sys.executable,\n            "-c",\n            pycopy.replace("SOURCE_PATH", "TARGET_PATH"),\n        ]
     request = evaluation_request_from_dict({
         "schemaVersion": EVALUATION_REQUEST_SCHEMA, "sourceRoot": str(source),
         "sourceRelativePath": "case.c", "targetRelativePath": "case.c",
@@ -97,7 +97,7 @@ def _setup(tmp_path: Path, *, target_build_success=True):
         }},
         "sourceBuild": {"artifactId": "source", "artifactKind": "object",
                         "outputRelativePath": "build/source.o",
-                        "command": ["python", "-c", pycopy]},
+                        "command": [sys.executable, "-c", pycopy]},
         "targetBuild": {"artifactId": "target", "artifactKind": "executable",
                         "outputRelativePath": "build/target", "command": target_command},
         "translationCommand": [],
