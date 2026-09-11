@@ -11,6 +11,7 @@ from riscv2x86_py.runtime_dependency_binding import dependencies_from_translated
 def _runtime_tree(tmp_path):
     (tmp_path / "runtime/include").mkdir(parents=True)
     (tmp_path / "runtime/include/riscv2x86_runtime_helpers.h").write_text("void h(void);\n")
+    (tmp_path / "runtime/include/riscv2x86_csr_runtime.h").write_text("unsigned long t(void);\n")
     (tmp_path / "build").mkdir()
     (tmp_path / "build/libriscv2x86_runtime.a").write_bytes(b"archive")
 
@@ -77,3 +78,19 @@ def test_conflicting_canonical_and_legacy_dependencies_fail_closed(tmp_path):
     report.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="declarations conflict"):
         dependencies_from_translated_report(report, root=tmp_path)
+
+
+def test_monotonic_time_adapter_resolves_to_versioned_csr_runtime(tmp_path):
+    _runtime_tree(tmp_path)
+    value = _report(
+        headers=["riscv2x86_csr_runtime.h"],
+        libraries=["libriscv2x86_runtime"],
+    )
+    value["findings"][0]["approvalArtifact"]["runtimeContractId"] = (
+        "riscv2x86_rt_monotonic_time_ns@v1"
+    )
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(value))
+    resolved = dependencies_from_translated_report(report, root=tmp_path)
+    assert resolved.headers == ("riscv2x86_csr_runtime.h",)
+    assert resolved.libraries == ("riscv2x86_runtime",)

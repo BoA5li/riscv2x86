@@ -78,7 +78,10 @@ from .phase6f_renderer import (
 from .phase6f_contract_registry import (
     GPR_INTEGER_RENDERER_CONTRACT_REGISTRY, RendererContractRegistry,
 )
-from .helper_runtime_manifest import DEFAULT_RUNTIME_HELPER_CONTRACTS, RUNTIME_HELPER_MANIFEST_VERSION
+from .helper_runtime_manifest import (
+    DEFAULT_RUNTIME_HELPER_CONTRACTS, MONOTONIC_TIME_NS_V1,
+    RUNTIME_HELPER_MANIFEST_VERSION,
+)
 from .instruction_stream_sync_contracts import (
     INSTRUCTION_STREAM_SYNC_REGISTRY_VERSION,
     NOOP_ELISION_CONTRACT_ID,
@@ -2904,24 +2907,25 @@ def _render_counter_csr_functional_fallback(
     must opt in to this documented semantic downgrade.  The registry is keyed
     by structured Phase-6A CSR facts, never by an asm mnemonic or source text.
 
-    ``time`` and ``cycle`` are the only 64-bit counter families currently
-    registered.  ``instret`` has no matching x86 counter contract, while the
-    high-half RV32 CSRs need a separate width/rollover contract.  Returning
-    ``None`` preserves fail-closed routing for every unregistered family.
+    Only RV64 ``time`` is registered.  ``cycle``/``instret`` do not have the
+    same observation domain, while RV32 high-half CSRs need a separate
+    width/rollover contract.  Returning ``None`` preserves fail-closed routing
+    for every unregistered family.
     """
-    if (csr_name not in {"time", "cycle"} or width_bits != 64 or
+    contract = MONOTONIC_TIME_NS_V1
+    if (csr_name != "time" or width_bits != 64 or
             target_environment.architecture.value != "x86_64" or
-            "x86:rdtsc" not in target_environment.available_features or
-            "compiler:x86-rdtsc-builtin" not in target_environment.builtin_capabilities):
+            contract.required_environment_capability not in
+            target_environment.helper_contract_capabilities):
         return None
 
     binding = _output_operand_expr(context, result_operand_index)
     if not binding:
         return None
 
-    source_contract = f"riscv.readonly-counter-csr.{csr_name}.u64.v1"
-    target_contract = "x86.builtin.rdtsc.u64.v1"
-    replacement = f"{binding} = (uint64_t)__builtin_ia32_rdtsc();"
+    source_contract = "riscv.readonly-counter-csr.time.rv64.v1"
+    target_contract = "posix.clock-monotonic.nanoseconds.v1"
+    replacement = f"{binding} = (uint64_t){contract.helper_symbol}();"
     artifact = {
         "artifactVersion": "phase6-functional-fallback-v1",
         "proofStatus": "functional_approved",
@@ -2935,7 +2939,7 @@ def _render_counter_csr_functional_fallback(
             "phase6a-functional-fallback:" + context.fragment.id
         ),
         "planId": "functional-fallback:" + source_contract,
-        "constraintsId": "functional-fallback:x86-rdtsc-u64",
+        "constraintsId": "functional-fallback:monotonic-time-ns-v1",
         "targetEnvironmentId": "phase6:" + ":".join((
             target_environment.architecture.value,
             target_environment.abi.value,
@@ -2943,15 +2947,36 @@ def _render_counter_csr_functional_fallback(
             target_environment.compiler_family,
             target_environment.compiler_version,
         )),
-        "targetCatalogVersion": "functional-counter-registry-v1",
+        "targetCatalogVersion": "functional-time-adapter-registry-v1",
         "selectionPolicyId": "explicit-functional-fallback",
         "selectionPolicyVersion": "v1",
         "selectionTier": "functional_fallback",
-        "rendererId": "x86-rdtsc-builtin-renderer",
+        "rendererId": "monotonic-time-runtime-renderer",
         "rendererVersion": "v1",
-        "replacementKind": "c_builtin",
+        "replacementKind": "helper_call",
         "replacementDigest": _approval_digest(replacement),
         "sourceSliceDigest": "",
+        "runtimeContractId": contract.runtime_contract_id,
+        "runtimeContractVersion": contract.semantic_version,
+        "requiredHeaders": [contract.required_header],
+        "requiredLibraries": [contract.runtime_library],
+        "helperRuntimeContractId": contract.runtime_contract_id,
+        "helperSemanticVersion": contract.semantic_version,
+        "helperRequiredHeader": contract.required_header,
+        "helperRuntimeLibrary": contract.runtime_library,
+        "helperRuntimeManifestVersion": RUNTIME_HELPER_MANIFEST_VERSION,
+        "observationDomainContractId": "riscv2x86.time.monotonic-observation.v1",
+        "architectureSemanticsPreserved": False,
+        "shellSemanticsPreserved": False,
+        "microarchitectureSemanticsPreserved": False,
+        "ignoredSourceState": [
+            "csr:time:absolute-value", "csr:time:epoch",
+            "csr:time:frequency", "csr:time:resolution",
+        ],
+        "knownNonEquivalences": [
+            "absolute values are not cross-ISA comparable",
+            "epoch, frequency, resolution, and rollover are target-defined",
+        ],
     }
     return _output(
         kind="functional_c",
@@ -2959,12 +2984,12 @@ def _render_counter_csr_functional_fallback(
         context=context,
         route="explicit_functional_counter_fallback",
         notes=[
-            f"functional fallback enabled: RISC-V {csr_name} CSR is rendered "
-            "through the registered x86 rdtsc counter adapter; architecture "
-            "time-domain equivalence is intentionally not claimed"
+            "functional fallback enabled: RISC-V time CSR is rendered through "
+            "the versioned monotonic-time runtime adapter; only the declared "
+            "monotonic observation domain is preserved"
         ],
-        reason_codes=["TR_FUNCTIONAL_COUNTER_CSR_FALLBACK"],
-        build_family="x86_gnu_c_builtin",
+        reason_codes=["TR_FUNCTIONAL_TIME_CSR_MONOTONIC_ADAPTER"],
+        build_family="x86_runtime_helper",
         requires_build_check=True,
         metadata={"approvalArtifact": artifact},
     )
@@ -3410,6 +3435,28 @@ def translate(
                     },
                 },
             )
+        # The strict CSR production chain remains authoritative.  Only after
+        # it has declined to claim architectural equivalence may an explicit
+        # functional policy select the registered time observation adapter.
+        # The adapter consumes the structured Phase-6A read-only CSR model;
+        # it never recognizes a mnemonic or rescans the asm template.
+        if allow_functional_fallbacks and source_model.read_only_csr is not None:
+            counter = source_model.read_only_csr
+            fallback = _render_counter_csr_functional_fallback(
+                context=context,
+                csr_name=counter.csr_name,
+                result_operand_index=counter.result_operand_index,
+                width_bits=counter.width_bits,
+                target_environment=target_environment,
+            )
+            if fallback is not None:
+                fallback.metadata["csrPipeline"] = {
+                    "strictRoute": csr_result.route,
+                    "strictReasonCodes": csr_result.reason_codes,
+                    "strictProofInvoked": csr_result.proof_invoked,
+                    "fallbackPolicy": "explicit-functional-only-v1",
+                }
+                return fallback
         return _needs_route(
             context,
             route=csr_result.route,

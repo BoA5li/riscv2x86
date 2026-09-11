@@ -8,6 +8,14 @@ enum rv2x86_counter_id { RV2X86_COUNTER_MONOTONIC_NS, RV2X86_COUNTER_LOGICAL_CYC
 struct rv2x86_counter_context { uint32_t version; uint32_t flags; uint64_t frequency_hz; uint64_t resolution_ns; uint8_t per_thread, migration_safe, serialized, virtualized; };
 /* Domain is declared by context; this function never equates RDTSC with cycle. */
 uint64_t rv2x86_read_counter(const struct rv2x86_counter_context *, enum rv2x86_counter_id);
+/*
+ * Functional time-observation adapter v1.
+ *
+ * The returned value is CLOCK_MONOTONIC expressed in nanoseconds.  This ABI
+ * deliberately does not claim that the value, epoch, rate, resolution, or
+ * rollover behaviour is architecturally identical to the RISC-V time CSR.
+ */
+uint64_t riscv2x86_rt_monotonic_time_ns_v1(void);
 struct rv2x86_csr_context { uint32_t version; uint32_t profile; uint64_t values[4096]; };
 uint64_t rv2x86_csr_read(const struct rv2x86_csr_context *, uint16_t);
 uint64_t rv2x86_csr_write(struct rv2x86_csr_context *, uint16_t, uint64_t);

@@ -19,7 +19,9 @@ from .translate import translate, _replacement_has_early_clobber_output_constrai
 from .runtime_facts import build_translation_runtime_facts
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
-from .helper_runtime_manifest import RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL
+from .helper_runtime_manifest import (
+    RV64_MULHU_U64, INSTRUCTION_STREAM_SYNC_LOCAL, MONOTONIC_TIME_NS_V1,
+)
 from .target_register_policy import audit_translator_emitted_target_registers
 from .abi_effects import TargetAbiWrapperRegistry
 from .abi_sidecar import AbiCallSidecar
@@ -1208,9 +1210,8 @@ def run(
     default_features = {"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id}
     default_builtins = {"c_builtin:atomic", "c_builtin:compiler_barrier"}
     if allow_functional_fallbacks:
-        default_features.add("x86:rdtsc")
-        default_builtins.add("compiler:x86-rdtsc-builtin")
         default_features.add("runtime:" + INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id)
+        default_features.add("runtime:" + MONOTONIC_TIME_NS_V1.runtime_contract_id)
     if privileged_runtime_registry is not None:
         default_features.update(
             privileged_runtime_registry.required_target_capabilities
@@ -1229,6 +1230,8 @@ def run(
             *({
                 INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id,
                 INSTRUCTION_STREAM_SYNC_LOCAL.required_environment_capability,
+                MONOTONIC_TIME_NS_V1.runtime_contract_id,
+                MONOTONIC_TIME_NS_V1.required_environment_capability,
             } if allow_functional_fallbacks else set()),
         },
     )

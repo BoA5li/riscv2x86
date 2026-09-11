@@ -36,6 +36,7 @@ from riscv2x86_py.phase6f_renderer import (
     render_approved_target_lowering,
 )
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
+from riscv2x86_py.helper_runtime_manifest import MONOTONIC_TIME_NS_V1
 from riscv2x86_py.privileged_execution_sidecar import (
     AddressSpaceIdentityFacts, CsrAccessPolicyFacts, DelegationModelFacts,
     InterruptModelFacts, PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
@@ -396,8 +397,10 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
     assert "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
 
     functional_environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
-        available_features={"x86:gpr_inline_asm", "x86:rdtsc"},
-        builtin_capabilities={"compiler:x86-rdtsc-builtin"},
+        available_features={"x86:gpr_inline_asm"},
+        helper_contract_capabilities={
+            MONOTONIC_TIME_NS_V1.required_environment_capability,
+        },
     )
     functional = translate(
         frag=fragment, lift=_IngressLift(), summary=summary,
@@ -408,11 +411,17 @@ def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
         target_environment=functional_environment,
         allow_functional_fallbacks=True,
     )
-    # Policy is permission, not proof authority.  Without an exact versioned
-    # privileged functional registry entry, even a complete counter model
-    # remains fail-closed and must not reach the legacy direct renderer.
-    assert functional.kind == "needs_route"
-    assert "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED" in functional.reasonCodes
+    assert functional.kind == "functional_c"
+    assert functional.replacement == (
+        "time_val = (uint64_t)riscv2x86_rt_monotonic_time_ns_v1();"
+    )
+    artifact = functional.metadata["approvalArtifact"]
+    assert artifact["runtimeContractId"] == MONOTONIC_TIME_NS_V1.runtime_contract_id
+    assert artifact["preservationMode"] == "functional_equivalence_only"
+    assert artifact["architectureSemanticsPreserved"] is False
+    assert artifact["observationDomainContractId"] == (
+        "riscv2x86.time.monotonic-observation.v1"
+    )
 
 
 def test_instruction_stream_barrier_requires_explicit_route() -> None:
