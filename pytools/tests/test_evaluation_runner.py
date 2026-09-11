@@ -30,9 +30,10 @@ SOURCE = b'int f(int a){int out; asm("addi %0,%1,1"); return out;}\n'
 ASM = b'asm("addi %0,%1,1")'
 
 
-def _setup(tmp_path: Path, *, target_build_success=True):
+def _setup(tmp_path: Path, *, target_build_success=True,
+           translation_outcome=TranslationOutcome.EMITTED):
     source = tmp_path / "source"
-    source.mkdir()
+    source.mkdir(parents=True)
     (source / "case.c").write_bytes(SOURCE)
     begin, end = SOURCE.index(ASM), SOURCE.index(ASM) + len(ASM)
     finding = Finding(
@@ -40,14 +41,21 @@ def _setup(tmp_path: Path, *, target_build_success=True):
         rewriteEndOffset=end, rawSourceText=ASM.decode(), suggestedReplacement="",
         fragment=AsmFragment(id="fragment:0", fileName="case.c", beginOffset=begin,
                              endOffset=end, rawAsmText="addi %0,%1,1"),
-        translationOutcome=TranslationOutcome.EMITTED.value,
+        translationOutcome=translation_outcome.value,
         validationOutcome=ValidationOutcome.FAILED.value,
         publicationOutcome=PublicationOutcome.WITHHELD.value,
     )
     finding.translationAttemptArtifact = make_translation_attempt_artifact(
-        fragment_id="fragment:0", candidate_kind="c", candidate_route="phase6f_rendered",
-        candidate_replacement="out = a + 1;", candidate_rule_name="integer.addi",
-        translation_outcome=TranslationOutcome.EMITTED,
+        fragment_id="fragment:0",
+        candidate_kind=("c" if translation_outcome is TranslationOutcome.EMITTED
+                        else translation_outcome.value),
+        candidate_route=("phase6f_rendered"
+                         if translation_outcome is TranslationOutcome.EMITTED else ""),
+        candidate_replacement=("out = a + 1;"
+                               if translation_outcome is TranslationOutcome.EMITTED else ""),
+        candidate_rule_name=("integer.addi"
+                             if translation_outcome is TranslationOutcome.EMITTED else ""),
+        translation_outcome=translation_outcome,
         validation_outcome=ValidationOutcome.FAILED,
         publication_outcome=PublicationOutcome.WITHHELD,
         reason_codes=("publication.validation-failed",),
@@ -148,11 +156,47 @@ def test_unavailable_build_tool_is_persisted_as_inconclusive(tmp_path):
     restored = json.loads(output.read_text())
 
     assert restored["status"] == "inconclusive"
-    assert restored["reasonCodes"] == ["evaluation.build-not-verified"]
+    assert restored["reasonCodes"] == ["evaluation.target-build-inconclusive"]
     assert restored["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
     assert restored["attempts"][0]["validation"] is None
     assert restored["commands"][-1]["status"] == "inconclusive"
     assert (work / "replay" / "evaluation-replay.json").is_file()
+
+
+def test_needs_route_skips_target_build_and_is_not_a_build_failure(tmp_path):
+    request, _source, attempt = _setup(
+        tmp_path, translation_outcome=TranslationOutcome.NEEDS_ROUTE,
+    )
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["status"] == "needs_route"
+    assert result["reasonCodes"] == ["evaluation.translation-outcome-needs-route"]
+    assert [item["phase"] for item in result["commands"]] == ["source-build"]
+    assert result["sourceProgramArtifact"] is not None
+    assert result["targetProgramArtifact"] is None
+    assert len(result["attempts"]) == 1
+    assert result["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
+    assert result["attempts"][0]["status"] == "needs_route"
+    assert result["attempts"][0]["validation"] is None
+    assert result["attempts"][0]["reasonCodes"] == [
+        "evaluation.translation-outcome-needs-route",
+    ]
+
+
+def test_real_target_build_failure_is_distinct_from_missing_tool(tmp_path):
+    request, _source, _attempt = _setup(tmp_path)
+    request = replace(
+        request,
+        target_build=replace(
+            request.target_build,
+            command=(sys.executable, "-c", "raise SystemExit(1)"),
+        ),
+    )
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["status"] == "failed"
+    assert result["reasonCodes"] == ["evaluation.target-build-failed"]
+    assert result["attempts"][0]["status"] == "failed"
 
 
 def test_translation_command_produces_report_and_archive_in_one_run(tmp_path):

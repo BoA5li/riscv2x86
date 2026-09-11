@@ -202,6 +202,27 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
                                  "inconclusive" if "inconclusive" in statuses else "verified")
     for level in ("L0", "L1", "L2", "L3"):
         program_levels.setdefault(level, "not_run")
+    outcomes = sorted({
+        str(item.get("translationOutcome", "unknown"))
+        for item in result.get("attempts", []) if isinstance(item, Mapping)
+    })
+    emitted = {"emitted", "strengthened", "functional_fallback"}
+    command_status = {
+        str(item.get("phase")): str(item.get("status"))
+        for item in result.get("commands", []) if isinstance(item, Mapping)
+    }
+    if command_status.get("source-build") == "failed":
+        disposition = "source_build_failed"
+    elif command_status.get("source-build") == "inconclusive":
+        disposition = "source_build_inconclusive"
+    elif not any(item in emitted for item in outcomes):
+        disposition = "translation_no_candidate"
+    elif command_status.get("target-build") == "failed":
+        disposition = "target_build_failed"
+    elif command_status.get("target-build") == "inconclusive":
+        disposition = "target_build_inconclusive"
+    else:
+        disposition = "candidate_evaluated"
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -209,10 +230,8 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "evaluationIdentity": result.get("evaluationIdentity", ""),
         "resultPath": result_path.relative_to(output).as_posix(),
         "attempts": result.get("attempts", []),
-        "translationOutcomes": sorted({
-            str(item.get("translationOutcome", "unknown"))
-            for item in result.get("attempts", []) if isinstance(item, Mapping)
-        }),
+        "translationOutcomes": outcomes,
+        "evaluationDisposition": disposition,
         "programValidationLevels": program_levels,
     }
 
@@ -221,12 +240,14 @@ def _write_csv(output: Path, cases: list[dict[str, object]]) -> None:
     with (output / "batch-summary.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow(("case_id", "category", "status", "translation_outcomes",
+                         "evaluation_disposition",
                          "l0", "l1", "l2", "l3", "evaluation_identity", "reason_codes"))
         for item in cases:
             levels = item.get("programValidationLevels", {})
             writer.writerow((
                 item["caseId"], item["category"], item["status"],
                 ";".join(item.get("translationOutcomes", [])),
+                item["evaluationDisposition"],
                 *(levels.get(level, "not_run") for level in ("L0", "L1", "L2", "L3")),
                 item["evaluationIdentity"], ";".join(item["reasonCodes"]),
             ))
@@ -267,6 +288,9 @@ def run_batch_evaluation(
             for item in completed for attempt in item["attempts"]
             if isinstance(attempt, Mapping)
         )
+        evaluation_dispositions = Counter(
+            str(item["evaluationDisposition"]) for item in completed
+        )
         program_level_counts = Counter(
             (level, status) for item in completed
             for level, status in item.get("programValidationLevels", {}).items()
@@ -284,6 +308,7 @@ def run_batch_evaluation(
                 for category in sorted({key[0] for key in category_statuses})
             },
             "translationOutcomeCounts": dict(sorted(translation_outcomes.items())),
+            "evaluationDispositionCounts": dict(sorted(evaluation_dispositions.items())),
             "programValidationCounts": {
                 level: {status: count for (item_level, status), count in sorted(program_level_counts.items())
                         if item_level == level}

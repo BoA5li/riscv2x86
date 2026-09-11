@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -13,6 +14,7 @@ from riscv2x86_py.batch_evaluation_cli import (
     run_batch_evaluation,
 )
 from tests.test_evaluation_runner import _setup
+from riscv2x86_py.schema import TranslationOutcome
 
 
 def _request_value(request) -> dict[str, object]:
@@ -90,7 +92,34 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     assert (output / "batch-evaluation.json").is_file()
     assert (output / "batch-summary.csv").is_file()
     header = (output / "batch-summary.csv").read_text().splitlines()[0]
-    assert header == "case_id,category,status,translation_outcomes,l0,l1,l2,l3,evaluation_identity,reason_codes"
+    assert header == ("case_id,category,status,translation_outcomes,evaluation_disposition,"
+                      "l0,l1,l2,l3,evaluation_identity,reason_codes")
+
+
+def test_batch_separates_no_candidate_from_target_build_failure(tmp_path):
+    needs_route, _source, _attempt = _setup(
+        tmp_path / "route-fixture", translation_outcome=TranslationOutcome.NEEDS_ROUTE,
+    )
+    failed, _source, _attempt = _setup(tmp_path / "build-fixture")
+    failed = replace(
+        failed,
+        target_build=replace(
+            failed.target_build,
+            command=(sys.executable, "-c", "raise SystemExit(1)"),
+        ),
+    )
+    corpus = tmp_path / "corpus"
+    _descriptor(corpus / "route", "route", needs_route)
+    _descriptor(corpus / "build", "build", failed)
+
+    result = run_batch_evaluation(corpus, tmp_path / "run")
+
+    assert result["statusCounts"] == {"failed": 1, "needs_route": 1}
+    assert result["evaluationDispositionCounts"] == {
+        "target_build_failed": 1,
+        "translation_no_candidate": 1,
+    }
+    assert result["translationOutcomeCounts"] == {"emitted": 1, "needs_route": 1}
 
 
 def test_case_orchestration_failure_does_not_drop_other_results(tmp_path):

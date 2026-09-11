@@ -37,6 +37,11 @@ _EMITTED = {
     TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
     TranslationOutcome.FUNCTIONAL_FALLBACK,
 }
+_NON_CANDIDATE_STATUS = {
+    TranslationOutcome.NEEDS_ROUTE: ValidationStatus.NEEDS_ROUTE,
+    TranslationOutcome.UNSUPPORTED: ValidationStatus.UNSUPPORTED,
+    TranslationOutcome.KEEP: ValidationStatus.KEEP,
+}
 
 
 def _canonical(value: object) -> bytes:
@@ -251,7 +256,20 @@ def _overall(statuses: Sequence[ValidationStatus]) -> ValidationStatus:
         return ValidationStatus.FAILED
     if any(item is ValidationStatus.INCONCLUSIVE for item in statuses):
         return ValidationStatus.INCONCLUSIVE
+    for status in (ValidationStatus.NEEDS_ROUTE, ValidationStatus.UNSUPPORTED,
+                   ValidationStatus.KEEP, ValidationStatus.NOT_VERIFIED):
+        if any(item is status for item in statuses):
+            return status
     return ValidationStatus.VERIFIED
+
+
+def _non_candidate_result(attempt: object) -> dict[str, object]:
+    outcome = getattr(attempt, "translation_outcome")
+    status = _NON_CANDIDATE_STATUS.get(outcome, ValidationStatus.INCONCLUSIVE)
+    return _attempt_result(
+        attempt, None, status,
+        ("evaluation.translation-outcome-" + outcome.value.replace("_", "-"),),
+    )
 
 
 def _tool_version(executable: str) -> str:
@@ -354,8 +372,19 @@ def run_evaluation(
         "CANDIDATE_MANIFEST": str(candidate_manifest_path),
         "CANDIDATE_MANIFEST_ID": candidate_manifest.manifest_id,
     })
+    archive = load_translation_attempt_archive(archive_path)
+    attributable_archive = tuple(
+        item for item in archive.attempts
+        if not request.selected_attempt_ids or item.artifact_id in request.selected_attempt_ids
+    )
+    emitted_archive = tuple(
+        item for item in attributable_archive if item.translation_outcome in _EMITTED
+    )
     programs = []
-    for phase, spec in (("source-build", request.source_build), ("target-build", request.target_build)):
+    build_specs = [("source-build", request.source_build)]
+    if emitted_archive:
+        build_specs.append(("target-build", request.target_build))
+    for phase, spec in build_specs:
         output = work / _safe_relative(spec.output_relative_path, phase + " output")
         output.parent.mkdir(parents=True, exist_ok=True)
         local = dict(variables); local["OUTPUT"] = str(output)
@@ -369,8 +398,29 @@ def run_evaluation(
         variables[("SOURCE" if phase == "source-build" else "TARGET") + "_ARTIFACT_PATH"] = str(output)
         if programs[-1] is not None:
             variables[("SOURCE" if phase == "source-build" else "TARGET") + "_ARTIFACT_DIGEST"] = programs[-1].artifact_digest
-    build_status = _overall(tuple(item.status for item in commands if item.phase.endswith("build")))
-    archive = load_translation_attempt_archive(archive_path)
+    source_record = next(item for item in commands if item.phase == "source-build")
+    target_record = next((item for item in commands if item.phase == "target-build"), None)
+    if not emitted_archive:
+        per_attempt = tuple(
+            _non_candidate_result(item)
+            if item in attributable_archive else _attempt_result(
+                item, None, ValidationStatus.INCONCLUSIVE,
+                ("evaluation.attempt-not-in-validation-group",),
+            )
+            for item in archive.attempts
+        )
+        attributable = [item for item in per_attempt if not request.selected_attempt_ids
+                        or item["attemptArtifactId"] in request.selected_attempt_ids]
+        status = _overall(tuple(ValidationStatus(item["status"]) for item in attributable))
+        reasons = tuple(sorted({reason for item in attributable for reason in item["reasonCodes"]}))
+        if source_record.status is not ValidationStatus.VERIFIED:
+            status = source_record.status
+            reasons = tuple(sorted(set(reasons) | {"evaluation.source-build-not-verified"}))
+        return _result(
+            request, work, commands, per_attempt, status, reasons, candidate_manifest,
+            plan=plan, environment=environment,
+            source_program=programs[0] if programs else None, target_program=None,
+        )
     missing_artifact_ids = {
         item.finding_id for item in archive.attempts
         if item.translation_outcome in _EMITTED
@@ -379,11 +429,26 @@ def run_evaluation(
     derived_artifacts = artifacts_from_report(
         report, archive, finding_ids=missing_artifact_ids,
     ) if missing_artifact_ids else {}
+    build_status = _overall(tuple(item.status for item in commands if item.phase.endswith("build")))
     if build_status is not ValidationStatus.VERIFIED:
-        attempts = tuple(_attempt_result(item, None, build_status, ("evaluation.build-not-verified",))
-                         for item in archive.attempts)
+        if source_record.status is not ValidationStatus.VERIFIED:
+            reason = "evaluation.source-build-not-verified"
+            failing_status = source_record.status
+        else:
+            assert target_record is not None
+            reason = ("evaluation.target-build-failed"
+                      if target_record.status is ValidationStatus.FAILED
+                      else "evaluation.target-build-inconclusive")
+            failing_status = target_record.status
+        attempts = tuple(
+            _attempt_result(item, None, failing_status, (reason,))
+            if item.translation_outcome in _EMITTED else _non_candidate_result(item)
+            for item in archive.attempts
+        )
         return _result(request, work, commands, attempts, build_status,
-                       ("evaluation.build-not-verified",), candidate_manifest)
+                       (reason,), candidate_manifest, plan=plan, environment=environment,
+                       source_program=programs[0] if programs else None,
+                       target_program=programs[1] if len(programs) > 1 else None)
     source_program, target_program = programs
     assert source_program is not None and target_program is not None
     per_attempt = []
