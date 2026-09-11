@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from riscv2x86_py import automatic_batch_cli as auto
+from riscv2x86_py.automatic_validation import _scalar_wrapper
 from riscv2x86_py.translation_artifact_binding import translation_artifact_from_approval
 from riscv2x86_py.translation_attempt import TranslationAttempt
 from riscv2x86_py.schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
@@ -47,6 +48,62 @@ def test_inventory_main_uses_executable_process_contract(tmp_path, monkeypatch):
     request = json.loads(descriptor.read_text())["request"]
     assert request["targetBuild"]["artifactKind"] == "executable"
     assert request["runtimeRegistryTemplate"]["validators"]["L1"]["config"]["mode"] == "main"
+
+
+def test_scalar_harness_links_separate_translation_unit():
+    wrapper = _scalar_wrapper([{"name": "jump", "arity": 2,
+                                "returnType": "uint64_t",
+                                "parameterTypes": ["uint64_t", "uint64_t"]}])
+    assert '#include "' not in wrapper
+    assert "uint64_t jump(uint64_t, uint64_t);" in wrapper
+    assert "jump((uint64_t)v[i0],(uint64_t)v[i1])" in wrapper
+
+
+def test_explicit_harness_precedes_automatic_signature_limits(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"; corpus.mkdir()
+    source = corpus / "branch.c"
+    source.write_text("unsigned long branch(unsigned long a,unsigned long b,unsigned long c,unsigned long d);\n")
+    harness_root = tmp_path / "harnesses"; harness_root.mkdir()
+    harness = harness_root / "branch.harness.c"
+    harness.write_text("int main(void){return 0;}\n")
+    manifest = harness_root / "branch.harness.json"
+    manifest.write_text(json.dumps({
+        "schemaVersion": "riscv2x86.explicit-harness.v1",
+        "sourceRelativePath": "branch.c",
+        "harnessPath": "branch.harness.c",
+        "inputDomainId": "branch-four-argument-boundaries-v1",
+    }))
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda source: (_ for _ in ()).throw(
+        ValueError("automatic scalar harness arity exceeded")))
+
+    payload = auto.prepare_automatic_inventory(
+        corpus, tmp_path / "inventory", frontend=frontend,
+        harness_directory=harness_root,
+    )
+    descriptor = json.loads((tmp_path / "inventory/cases/branch/riscv2x86-evaluation.json").read_text())
+    config = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L1"]["config"]
+    assert payload["programs"][0]["validationProfile"] == "functional"
+    assert payload["programs"][0]["harnessMode"] == "explicit-common-harness"
+    assert config["schemaVersion"] == "riscv2x86.auto-l1-runner.v2"
+    assert config["mode"] == "explicit-common-harness"
+    assert config["harnessPath"] == str(harness.resolve())
+    assert config["harnessDigest"].startswith("sha256:")
+    assert config["harnessManifestDigest"].startswith("sha256:")
+
+
+def test_explicit_harness_cannot_escape_manifest_directory(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"; corpus.mkdir()
+    (corpus / "case.c").write_text("int f(void){return 0;}\n")
+    outside = tmp_path / "outside.c"; outside.write_text("int main(void){return 0;}\n")
+    (corpus / "case.harness.json").write_text(json.dumps({
+        "schemaVersion": "riscv2x86.explicit-harness.v1",
+        "sourceRelativePath": "case.c", "harnessPath": "../outside.c",
+        "inputDomainId": "domain-v1",
+    }))
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    with pytest.raises(ValueError, match="escapes"):
+        auto.prepare_automatic_inventory(corpus, tmp_path / "inventory", frontend=frontend)
 
 
 def test_no_safe_function_stops_at_build_profile(tmp_path, monkeypatch):

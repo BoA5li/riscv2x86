@@ -16,6 +16,7 @@ from .validation_status import ValidationStatus
 
 AUTO_L0_SCHEMA = "riscv2x86.auto-l0-runner.v1"
 AUTO_L1_SCHEMA = "riscv2x86.auto-l1-runner.v1"
+AUTO_L1_SCHEMA_V2 = "riscv2x86.auto-l1-runner.v2"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -83,9 +84,20 @@ def _run(argv: Sequence[str], cwd: Path, timeout: int) -> subprocess.CompletedPr
                           timeout=timeout, check=False)
 
 
-def _scalar_wrapper(source: Path, functions: Sequence[Mapping[str, object]]) -> str:
-    lines = ["#include <stdint.h>", "#include <stdio.h>", f'#include "{source}"',
-             "int main(void){"]
+def _scalar_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
+    lines = ["#include <stdint.h>", "#include <stdio.h>"]
+    for function in functions:
+        name = function.get("name")
+        return_type = function.get("returnType")
+        parameter_types = function.get("parameterTypes")
+        if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name) is None
+                or not isinstance(return_type, str) or not return_type
+                or not isinstance(parameter_types, list)
+                or not all(isinstance(item, str) and item for item in parameter_types)):
+            raise ValueError("automatic scalar harness function signature is invalid")
+        params = ", ".join(parameter_types) if parameter_types else "void"
+        lines.append(f"{return_type} {name}({params});")
+    lines.append("int main(void){")
     values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
               "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
               "UINT64_C(0x5a17d3e4c29b806f)", "UINT64_C(0xc4ceb9fe1a85ec53)")
@@ -109,13 +121,17 @@ def _scalar_wrapper(source: Path, functions: Sequence[Mapping[str, object]]) -> 
 
 
 def build_auto_l1_validator(config: Mapping[str, object]):
-    expected = {"schemaVersion", "mode", "sourcePath", "sourceDigest", "targetPath",
+    legacy = {"schemaVersion", "mode", "sourcePath", "sourceDigest", "targetPath",
                 "targetDigest", "functions", "workDirectory", "replayDirectory",
                 "timeoutSeconds", "qemuBinary", "seed"}
-    if set(config) != expected or config.get("schemaVersion") != AUTO_L1_SCHEMA:
+    additions = {"harnessPath", "harnessDigest", "harnessManifestPath",
+                 "harnessManifestDigest", "inputDomainId"}
+    schema = config.get("schemaVersion")
+    if not ((schema == AUTO_L1_SCHEMA and set(config) == legacy)
+            or (schema == AUTO_L1_SCHEMA_V2 and set(config) == legacy | additions)):
         raise ValueError("automatic L1 config fields/schema are invalid")
     mode = config.get("mode")
-    if mode not in {"main", "scalar-functions"}:
+    if mode not in {"main", "scalar-functions", "explicit-common-harness"}:
         raise ValueError("automatic L1 mode is unsupported")
     functions = config.get("functions")
     if not isinstance(functions, list):
@@ -126,6 +142,20 @@ def build_auto_l1_validator(config: Mapping[str, object]):
     seed = config.get("seed")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("automatic L1 seed is invalid")
+    harness_path = str(config.get("harnessPath", ""))
+    harness_digest = str(config.get("harnessDigest", ""))
+    harness_manifest_path = str(config.get("harnessManifestPath", ""))
+    harness_manifest_digest = str(config.get("harnessManifestDigest", ""))
+    input_domain_id = str(config.get("inputDomainId", "boundary-and-fixed-random-v1"))
+    if mode == "explicit-common-harness":
+        if (not harness_path or not harness_manifest_path
+                or _SHA.fullmatch(harness_digest) is None
+                or _SHA.fullmatch(harness_manifest_digest) is None or not input_domain_id):
+            raise ValueError("explicit common harness binding is incomplete")
+    elif schema == AUTO_L1_SCHEMA_V2 and any((harness_path, harness_digest,
+                                               harness_manifest_path,
+                                               harness_manifest_digest)):
+        raise ValueError("automatic L1 mode cannot carry an explicit harness")
 
     def validate(**kwargs: object) -> ValidationLayerResult:
         if kwargs.get("level") is not ValidationLevel.L1:
@@ -139,20 +169,36 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
                                          detail="automatic L1 source/target digest mismatch")
         try:
-            source_unit, target_unit = source, target
+            source_units, target_units = [source], [target]
             if mode == "scalar-functions":
                 source_wrapper, target_wrapper = work / "source-harness.c", work / "target-harness.c"
-                source_wrapper.write_text(_scalar_wrapper(source, functions), encoding="utf-8")
-                target_wrapper.write_text(_scalar_wrapper(target, functions), encoding="utf-8")
-                source_unit, target_unit = source_wrapper, target_wrapper
+                wrapper = _scalar_wrapper(functions)
+                source_wrapper.write_text(wrapper, encoding="utf-8")
+                target_wrapper.write_text(wrapper, encoding="utf-8")
+                source_units, target_units = [source_wrapper, source], [target_wrapper, target]
                 (replay / "source-harness.c").write_text(source_wrapper.read_text(), encoding="utf-8")
                 (replay / "target-harness.c").write_text(target_wrapper.read_text(), encoding="utf-8")
+            elif mode == "explicit-common-harness":
+                harness = Path(harness_path)
+                manifest = Path(harness_manifest_path)
+                if (not harness.is_file()
+                        or "sha256:" + sha256(harness.read_bytes()).hexdigest() != harness_digest
+                        or not manifest.is_file()
+                        or "sha256:" + sha256(manifest.read_bytes()).hexdigest() != harness_manifest_digest):
+                    return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
+                                                 detail="explicit harness manifest/content binding mismatch")
+                replay_harness = replay / "explicit-common-harness.c"
+                replay_harness.write_bytes(harness.read_bytes())
+                (replay / "explicit-harness-manifest.json").write_bytes(manifest.read_bytes())
+                source_units, target_units = [harness, source], [harness, target]
             source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
             source_build = _run(("riscv64-linux-gnu-gcc", "-std=gnu11", "-O2", "-Wall",
                                  "-Wextra", "-Werror", "-march=rv64gc", "-mabi=lp64d",
-                                 "-static", str(source_unit), "-o", str(source_exe)), work, timeout)
+                                 "-static", *(str(item) for item in source_units),
+                                 "-o", str(source_exe)), work, timeout)
             target_build = _run(("gcc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",
-                                 str(target_unit), "-o", str(target_exe)), work, timeout)
+                                 *(str(item) for item in target_units),
+                                 "-o", str(target_exe)), work, timeout)
             if source_build.returncode or target_build.returncode:
                 detail = {"sourceBuild": source_build.stderr, "targetBuild": target_build.stderr}
                 return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
@@ -160,7 +206,9 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             left = _run((str(config["qemuBinary"]), str(source_exe)), work, timeout)
             right = _run((str(target_exe),), work, timeout)
             observation = {"schemaVersion": "riscv2x86.auto-l1-observation.v1",
-                           "mode": mode, "seed": seed, "inputDomain": "boundary-and-fixed-random-v1",
+                           "mode": mode, "seed": seed, "inputDomain": input_domain_id,
+                           "harnessDigest": harness_digest,
+                           "harnessManifestDigest": harness_manifest_digest,
                            "source": {"exitCode": left.returncode,
                            "stdout": left.stdout, "stderr": left.stderr},
                            "target": {"exitCode": right.returncode,

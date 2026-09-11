@@ -14,6 +14,7 @@ from typing import Mapping
 from .batch_evaluation_cli import BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, run_batch_evaluation
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
+EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
 _INTEGER_TYPE = re.compile(
     r"^(?:(?:const|volatile) )*(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$"
 )
@@ -86,13 +87,59 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _explicit_harness(
+    source: Path, source_root: Path, harness_root: Path | None,
+) -> dict[str, str] | None:
+    """Resolve one strict, content-bound common harness sidecar."""
+    relative = source.relative_to(source_root)
+    candidates = [source.with_suffix(".harness.json")]
+    if harness_root is not None:
+        candidates.insert(0, harness_root / relative.with_suffix(".harness.json"))
+    manifests = [item.resolve() for item in candidates if item.is_file()]
+    if len(manifests) > 1:
+        raise ValueError("more than one explicit harness manifest applies to " + relative.as_posix())
+    if not manifests:
+        return None
+    manifest = manifests[0]
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    expected = {"schemaVersion", "sourceRelativePath", "harnessPath", "inputDomainId"}
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError("explicit harness fields are invalid: " + str(manifest))
+    if value.get("schemaVersion") != EXPLICIT_HARNESS_SCHEMA:
+        raise ValueError("explicit harness schema is unsupported: " + str(manifest))
+    for name in ("sourceRelativePath", "harnessPath", "inputDomainId"):
+        if not isinstance(value.get(name), str) or not str(value[name]).strip():
+            raise ValueError("explicit harness " + name + " is invalid: " + str(manifest))
+    if value["sourceRelativePath"] != relative.as_posix():
+        raise ValueError("explicit harness sourceRelativePath does not match corpus source")
+    raw_harness = Path(str(value["harnessPath"]))
+    harness = (manifest.parent / raw_harness).resolve()
+    if raw_harness.is_absolute() or not harness.is_file():
+        raise ValueError("explicit harness path is unsafe or unavailable: " + str(manifest))
+    try:
+        harness.relative_to(manifest.parent.resolve())
+    except ValueError as exc:
+        raise ValueError("explicit harness escapes its manifest directory") from exc
+    return {
+        "manifestPath": str(manifest), "manifestDigest": _digest(manifest),
+        "harnessPath": str(harness), "harnessDigest": _digest(harness),
+        "inputDomainId": str(value["inputDomainId"]),
+    }
+
+
 def prepare_automatic_inventory(
     input_path: str | Path, inventory_directory: str | Path, *, frontend: str | Path,
     timeout: int = 60, allow_functional_fallbacks: bool = False,
+    harness_directory: str | Path | None = None,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
-    sources = [root] if root.is_file() else sorted(root.rglob("*.c"))
+    sources = ([root] if root.is_file() else
+               sorted(item for item in root.rglob("*.c")
+                      if not item.name.endswith(".harness.c")))
     source_root = root.parent if root.is_file() else root
+    harness_root = None if harness_directory is None else Path(harness_directory).resolve()
+    if harness_root is not None and not harness_root.is_dir():
+        raise ValueError("explicit harness directory is unavailable")
     if not sources:
         raise ValueError("automatic evaluation found no C sources")
     if inventory.exists():
@@ -116,19 +163,22 @@ def prepare_automatic_inventory(
         relative = source.relative_to(source_root).as_posix()
         case_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", relative[:-2].replace("/", "--")).strip("-")
         case_dir = inventory / "cases" / case_id
+        explicit = _explicit_harness(source, source_root, harness_root)
         try:
             has_main, functions = inspect_entry_points(source)
             inspection_error = ""
         except ValueError as exc:
             has_main, functions, inspection_error = False, (), str(exc)
-        profile = "functional" if not inspection_error else "build"
+        profile = "functional" if explicit is not None or not inspection_error else "build"
         plan = {"schemaVersion": "riscv2x86.validation-plan.v1",
                 "planId": f"auto-{case_id}-{profile}-v1", "profile": profile,
                 "sourceRunner": "qemu", "targetRunner": "native", "seed": 20260910,
                 "timeoutSeconds": timeout, "runtimeRegistryVersion": "auto-registry-v1",
                 "experimentContractId": ""}
         _write_json(case_dir / "validation-plan.json", plan)
-        mode, link_kind = ("main", "executable") if has_main else ("scalar-functions", "shared_library")
+        mode = ("explicit-common-harness" if explicit is not None else
+                "main" if has_main else "scalar-functions")
+        link_kind = "executable" if has_main else "shared_library"
         translation = [sys.executable, "-m", "riscv2x86_py.automatic_translation_command",
                        "--frontend", str(frontend_path),
                        "--source", "${SOURCE_ROOT}/" + relative,
@@ -144,15 +194,21 @@ def prepare_automatic_inventory(
                 "workDirectory": "${WORK_DIR}/automatic-l0/${ATTEMPT_ID}",
                 "linkKind": link_kind, "timeoutSeconds": timeout}},
         }
-        if not inspection_error:
+        if explicit is not None or not inspection_error:
             validators["L1"] = {"type": "automatic-l1-functional-differential", "config": {
-                "schemaVersion": "riscv2x86.auto-l1-runner.v1", "mode": mode,
+                "schemaVersion": "riscv2x86.auto-l1-runner.v2", "mode": mode,
                 "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
                 "targetPath": "${TARGET_PATH}", "targetDigest": "${TARGET_DIGEST}",
                 "functions": list(functions), "workDirectory": "${WORK_DIR}/automatic-l1/${ATTEMPT_ID}",
                 "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l1",
                 "timeoutSeconds": timeout, "seed": 20260910,
-                "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}}
+                "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64",
+                "harnessPath": "" if explicit is None else explicit["harnessPath"],
+                "harnessDigest": "" if explicit is None else explicit["harnessDigest"],
+                "harnessManifestPath": "" if explicit is None else explicit["manifestPath"],
+                "harnessManifestDigest": "" if explicit is None else explicit["manifestDigest"],
+                "inputDomainId": ("boundary-and-fixed-random-v1" if explicit is None
+                                  else explicit["inputDomainId"])} }
         request = {"schemaVersion": "riscv2x86.evaluation-request.v2",
                    "sourceRoot": str(source_root), "sourceRelativePath": relative,
                    "targetRelativePath": relative,
@@ -182,6 +238,9 @@ def prepare_automatic_inventory(
         entries.append({"caseId": case_id, "sourceRelativePath": relative,
                         "sourceDigest": _digest(source), "hasMain": has_main,
                         "harnessFunctions": list(functions), "inspectionError": inspection_error,
+                        "harnessMode": mode,
+                        "explicitHarnessManifest": "" if explicit is None else explicit["manifestPath"],
+                        "explicitHarnessDigest": "" if explicit is None else explicit["harnessDigest"],
                         "validationProfile": profile})
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
@@ -199,13 +258,16 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=int, default=60)
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
+    parser.add_argument("--harness-directory",
+                        help="directory containing <source>.harness.json sidecars")
     args = parser.parse_args()
     output = Path(args.output_directory).resolve()
     inventory = output.with_name(output.name + "-inventory")
     try:
         prepare_automatic_inventory(args.input, inventory, frontend=args.frontend,
                                     timeout=args.timeout_seconds,
-                                    allow_functional_fallbacks=args.allow_functional_fallbacks)
+                                    allow_functional_fallbacks=args.allow_functional_fallbacks,
+                                    harness_directory=args.harness_directory)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
         print(json.dumps({"status": "inconclusive", "reasonCode": "automatic.configuration-error",
