@@ -20,6 +20,12 @@ AUTO_L1_SCHEMA = "riscv2x86.auto-l1-runner.v1"
 AUTO_L1_SCHEMA_V2 = "riscv2x86.auto-l1-runner.v2"
 AUTO_L1_SCHEMA_V3 = "riscv2x86.auto-l1-runner.v3"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
+_COUNTER_DOMAIN_CONTRACTS = {
+    "riscv2x86_rt_monotonic_time_ns@v1":
+        "riscv2x86.time.monotonic-observation.v1",
+    "riscv2x86_rt_tsc_ticks@v1":
+        "riscv2x86.cycle.tsc-observation.v1",
+}
 
 
 def _evidence(payload: Mapping[str, object]) -> str:
@@ -123,6 +129,68 @@ def _scalar_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
             lines.append("}" * arity + "}")
     lines.append("return 0;}")
     return "\n".join(lines) + "\n"
+
+
+def _counter_domain_wrapper(function: Mapping[str, object]) -> str:
+    """Observe a nondeterministic counter through a relational L1 contract.
+
+    Absolute source and target values are intentionally never compared.  The
+    wrapper records enough raw summary for replay while the comparator checks
+    only non-decreasing order, progress, and successful termination.
+    """
+    name = function.get("name")
+    return_type = function.get("returnType")
+    parameter_types = function.get("parameterTypes")
+    if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name) is None
+            or return_type == "void" or not isinstance(return_type, str)
+            or parameter_types != [] or function.get("arity") != 0):
+        raise ValueError(
+            "counter-domain L1 requires exactly one zero-argument value function"
+        )
+    return "\n".join((
+        "#define _POSIX_C_SOURCE 200809L",
+        "#include <stdint.h>",
+        "#include <stdio.h>",
+        "#include <time.h>",
+        f"{return_type} {name}(void);",
+        "int main(void){",
+        "  const unsigned samples=16;",
+        f"  uint64_t first=(uint64_t){name}(), previous=first, current=first;",
+        "  int monotonic=1, advanced=0;",
+        "  const struct timespec delay={0,1000000};",
+        "  for(unsigned i=1;i<samples;++i){",
+        "    (void)nanosleep(&delay,0);",
+        f"    current=(uint64_t){name}();",
+        "    if(current<previous) monotonic=0;",
+        "    if(current>previous) advanced=1;",
+        "    previous=current;",
+        "  }",
+        f'  printf("counter={name};samples=%u;first=%llu;last=%llu;monotonic=%d;advanced=%d\\n",',
+        "    samples,(unsigned long long)first,(unsigned long long)current,monotonic,advanced);",
+        "  return 0;",
+        "}",
+    )) + "\n"
+
+
+def _counter_domain_observation(stdout: str) -> dict[str, object] | None:
+    pattern = re.compile(
+        r"^counter=(?P<function>[A-Za-z_]\w*);samples=(?P<samples>[0-9]+);"
+        r"first=(?P<first>[0-9]+);last=(?P<last>[0-9]+);"
+        r"monotonic=(?P<monotonic>[01]);advanced=(?P<advanced>[01])$"
+    )
+    lines = [match for line in stdout.splitlines()
+             if (match := pattern.fullmatch(line)) is not None]
+    if len(lines) != 1:
+        return None
+    match = lines[0]
+    return {
+        "function": match.group("function"),
+        "samples": int(match.group("samples")),
+        "first": int(match.group("first")),
+        "last": int(match.group("last")),
+        "monotonic": match.group("monotonic") == "1",
+        "advanced": match.group("advanced") == "1",
+    }
 
 
 def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
@@ -375,11 +443,34 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
                                          detail="automatic L1 source/target digest mismatch")
         try:
+            translation = kwargs["translation_artifact"]
+            counter_contract = _COUNTER_DOMAIN_CONTRACTS.get(
+                translation.runtime_contract_id
+            )
+            counter_function: Mapping[str, object] | None = None
+            if counter_contract is not None:
+                eligible = [item for item in functions
+                            if item.get("arity") == 0
+                            and item.get("returnType") != "void"
+                            and item.get("parameterTypes") == []]
+                if mode != "scalar-functions" or len(functions) != 1 or len(eligible) != 1:
+                    detail = {
+                        "runtimeContractId": translation.runtime_contract_id,
+                        "requiredHarnessShape": "one-zero-argument-value-function",
+                        "declaredFunctions": functions,
+                    }
+                    return ValidationLayerResult(
+                        ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,
+                        _evidence(detail), json.dumps(detail, sort_keys=True),
+                    )
+                counter_function = eligible[0]
             source_units, target_units = [source], [target]
             if mode in {"scalar-functions", "memory-object-functions",
                         "branch-domain-functions"}:
                 source_wrapper, target_wrapper = work / "source-harness.c", work / "target-harness.c"
-                wrapper = (_memory_object_wrapper(functions)
+                wrapper = (_counter_domain_wrapper(counter_function)
+                           if counter_function is not None
+                           else _memory_object_wrapper(functions)
                            if mode == "memory-object-functions"
                            else _branch_domain_wrapper(functions)
                            if mode == "branch-domain-functions"
@@ -402,9 +493,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 replay_harness.write_bytes(harness.read_bytes())
                 (replay / "explicit-harness-manifest.json").write_bytes(manifest.read_bytes())
                 source_units, target_units = [harness, source], [harness, target]
-            dependencies = resolve_runtime_contracts(
-                (kwargs["translation_artifact"].runtime_contract_id,)
-            )
+            dependencies = resolve_runtime_contracts((translation.runtime_contract_id,))
             runtime_includes = tuple("-I" + item for item in dependencies.include_directories)
             source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
             source_build = _run(("riscv64-linux-gnu-gcc", "-std=gnu11", "-O2", "-Wall",
@@ -428,11 +517,30 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             if mode == "memory-object-functions":
                 source_observation["memoryObjects"] = _memory_object_observations(left.stdout)
                 target_observation["memoryObjects"] = _memory_object_observations(right.stdout)
+            effective_contract = observation_contract
+            effective_dimensions = dimensions
+            effective_limitations = limitations
+            counter_source = counter_target = None
+            if counter_contract is not None:
+                counter_source = _counter_domain_observation(left.stdout)
+                counter_target = _counter_domain_observation(right.stdout)
+                source_observation["counterDomain"] = counter_source
+                target_observation["counterDomain"] = counter_target
+                effective_contract = counter_contract
+                effective_dimensions = [
+                    "counter_monotonicity", "counter_progress", "exit_code",
+                    "stderr", "termination",
+                ]
+                effective_limitations = sorted(set(limitations) | {
+                    "absolute-counter-values-not-cross-isa-comparable",
+                    "counter-epoch-frequency-resolution-and-rollover-not-equated",
+                })
             observation = {"schemaVersion": "riscv2x86.auto-l1-observation.v1",
                            "mode": mode, "seed": seed, "inputDomain": input_domain_id,
-                           "observationContract": observation_contract,
-                           "observableDimensions": dimensions,
-                           "semanticLimitations": limitations,
+                           "configuredObservationContract": observation_contract,
+                           "observationContract": effective_contract,
+                           "observableDimensions": effective_dimensions,
+                           "semanticLimitations": effective_limitations,
                            "harnessDigest": harness_digest,
                            "harnessManifestDigest": harness_manifest_digest,
                            "source": source_observation,
@@ -447,10 +555,30 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 or (bool(source_observation.get("memoryObjects"))
                     and bool(target_observation.get("memoryObjects")))
             )
-            status = (ValidationStatus.VERIFIED
-                      if generated_harness_completed and memory_observations_complete
-                      and source_observation == target_observation
-                      else ValidationStatus.FAILED)
+            if counter_contract is not None:
+                counter_complete = counter_source is not None and counter_target is not None
+                adapter_unavailable = bool(
+                    counter_complete
+                    and ((counter_source["first"] == counter_source["last"] == 0)
+                         or (counter_target["first"] == counter_target["last"] == 0))
+                )
+                relation_holds = bool(
+                    counter_complete
+                    and counter_source["samples"] == counter_target["samples"] == 16
+                    and counter_source["function"] == counter_target["function"]
+                    and counter_source["monotonic"] and counter_target["monotonic"]
+                    and counter_source["advanced"] and counter_target["advanced"]
+                    and left.returncode == right.returncode == 0
+                    and left.stderr == right.stderr == ""
+                )
+                status = (ValidationStatus.INCONCLUSIVE if adapter_unavailable
+                          else ValidationStatus.VERIFIED if relation_holds
+                          else ValidationStatus.FAILED)
+            else:
+                status = (ValidationStatus.VERIFIED
+                          if generated_harness_completed and memory_observations_complete
+                          and source_observation == target_observation
+                          else ValidationStatus.FAILED)
             return ValidationLayerResult(ValidationLevel.L1, status,
                                          _evidence(observation), json.dumps(observation, sort_keys=True))
         except subprocess.TimeoutExpired as exc:

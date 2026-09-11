@@ -4,14 +4,22 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from riscv2x86_py import automatic_batch_cli as auto
+from riscv2x86_py import automatic_validation as automatic_validation
 from riscv2x86_py.automatic_validation import (
-    _branch_domain_wrapper, _memory_object_observations, _memory_object_wrapper,
-    _scalar_wrapper,
+    _branch_domain_wrapper, _counter_domain_observation,
+    _counter_domain_wrapper, _memory_object_observations,
+    _memory_object_wrapper, _scalar_wrapper, build_auto_l1_validator,
 )
+from riscv2x86_py.runtime_dependency_binding import RuntimeBuildDependencies
+from riscv2x86_py.translation_validation import (
+    ProgramArtifact, TranslationArtifact, ValidationLevel,
+)
+from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 from riscv2x86_py.translation_artifact_binding import translation_artifact_from_approval
 from riscv2x86_py.translation_attempt import TranslationAttempt
 from riscv2x86_py.schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
@@ -68,6 +76,89 @@ def test_zero_argument_void_function_has_explicit_termination_observation():
                                 "returnType": "void", "parameterTypes": []}])
     assert "void fence_call(void);" in wrapper
     assert 'fence_call(); printf("fence_call=completed\\n");' in wrapper
+
+
+def test_counter_domain_harness_compares_relation_not_absolute_value():
+    function = {"name": "read_time", "arity": 0,
+                "returnType": "uint64_t", "parameterTypes": []}
+    wrapper = _counter_domain_wrapper(function)
+    assert "read_time(void);" in wrapper
+    assert "current<previous" in wrapper
+    assert "current>previous" in wrapper
+    assert "first=%llu;last=%llu;monotonic=%d;advanced=%d" in wrapper
+    source = _counter_domain_observation(
+        "counter=read_time;samples=16;first=100;last=200;monotonic=1;advanced=1\n"
+    )
+    target = _counter_domain_observation(
+        "counter=read_time;samples=16;first=9000;last=12000;monotonic=1;advanced=1\n"
+    )
+    assert source is not None and target is not None
+    assert source["first"] != target["first"]
+    assert source["monotonic"] == target["monotonic"] is True
+    assert source["advanced"] == target["advanced"] is True
+
+
+def test_counter_domain_observation_rejects_missing_or_duplicate_trace():
+    line = "counter=f;samples=16;first=1;last=2;monotonic=1;advanced=1\n"
+    assert _counter_domain_observation("") is None
+    assert _counter_domain_observation(line + line) is None
+
+
+def test_counter_domain_validator_accepts_relationally_equal_different_values(
+        tmp_path, monkeypatch):
+    source = tmp_path / "source.c"; source.write_text("source")
+    target = tmp_path / "target.c"; target.write_text("target")
+    digest = lambda path: "sha256:" + sha256(path.read_bytes()).hexdigest()
+    config = {
+        "schemaVersion": "riscv2x86.auto-l1-runner.v3",
+        "mode": "scalar-functions", "sourcePath": str(source),
+        "sourceDigest": digest(source), "targetPath": str(target),
+        "targetDigest": digest(target),
+        "functions": [{"name": "read_time", "arity": 0,
+                       "returnType": "uint64_t", "parameterTypes": []}],
+        "workDirectory": str(tmp_path / "work"),
+        "replayDirectory": str(tmp_path / "replay"),
+        "timeoutSeconds": 10, "qemuBinary": "qemu-riscv64", "seed": 7,
+        "harnessPath": "", "harnessDigest": "",
+        "harnessManifestPath": "", "harnessManifestDigest": "",
+        "inputDomainId": "counter-sampling-v1",
+        "observationContract": "process-and-declared-return-values-v1",
+        "observableDimensions": ["exit_code", "stderr", "stdout", "termination"],
+        "semanticLimitations": [],
+    }
+    outputs = iter((
+        subprocess.CompletedProcess([], 0, "", ""),
+        subprocess.CompletedProcess([], 0, "", ""),
+        subprocess.CompletedProcess([], 0,
+            "counter=read_time;samples=16;first=100;last=200;monotonic=1;advanced=1\n", ""),
+        subprocess.CompletedProcess([], 0,
+            "counter=read_time;samples=16;first=9000;last=12000;monotonic=1;advanced=1\n", ""),
+    ))
+    monkeypatch.setattr(automatic_validation, "_run", lambda *args: next(outputs))
+    monkeypatch.setattr(
+        automatic_validation, "resolve_runtime_contracts",
+        lambda ids: RuntimeBuildDependencies(),
+    )
+    translation = TranslationArtifact(
+        "fragment", "model", "plan", "constraints", "proof",
+        PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY, "shell",
+        "riscv2x86_rt_monotonic_time_ns@v1", "v1", "recipe",
+        (), "counter", "functional-runtime",
+    )
+    program = ProgramArtifact("program", str(tmp_path / "unused"), "executable", "sha256:" + "0" * 64)
+    result = build_auto_l1_validator(config)(
+        level=ValidationLevel.L1, translation_artifact=translation,
+        source_program_artifact=program, target_program_artifact=program,
+    )
+    assert result.status is ValidationStatus.VERIFIED
+    detail = json.loads(result.detail)
+    assert detail["observationContract"] == "riscv2x86.time.monotonic-observation.v1"
+    assert detail["source"]["counterDomain"]["first"] == 100
+    assert detail["target"]["counterDomain"]["first"] == 9000
+    assert detail["semanticLimitations"] == [
+        "absolute-counter-values-not-cross-isa-comparable",
+        "counter-epoch-frequency-resolution-and-rollover-not-equated",
+    ]
 
 
 def test_zero_argument_void_inventory_registers_bounded_l1_claim(tmp_path, monkeypatch):
