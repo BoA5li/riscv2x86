@@ -3072,6 +3072,11 @@ def _render_instruction_stream_functional_helper(
         "replacementKind": "helper_call",
         "replacementDigest": _approval_digest(replacement),
         "sourceSliceDigest": "",
+        "runtimeContractId": contract.semantic_contract_id,
+        "runtimeContractVersion": "v1",
+        "requiredHeaders": [contract.required_header],
+        "requiredLibraries": [contract.runtime_library],
+        # Retained for backward-compatible reading of archived Phase-6 artifacts.
         "helperRuntimeContractId": contract.semantic_contract_id,
         "helperSemanticVersion": "v1",
         "helperRequiredHeader": contract.required_header,

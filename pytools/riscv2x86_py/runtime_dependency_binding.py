@@ -91,8 +91,28 @@ def dependencies_from_translated_report(
             raise ValueError("runtime contract id must be a string")
         if contract_id in _NO_RUNTIME:
             continue
-        headers = _string_array(approval.get("requiredHeaders"), "requiredHeaders")
-        libraries = _string_array(approval.get("requiredLibraries"), "requiredLibraries")
+        canonical_present = ("requiredHeaders" in approval or "requiredLibraries" in approval)
+        legacy_present = ("helperRequiredHeader" in approval or "helperRuntimeLibrary" in approval)
+        if canonical_present:
+            headers = _string_array(approval.get("requiredHeaders"), "requiredHeaders")
+            libraries = _string_array(approval.get("requiredLibraries"), "requiredLibraries")
+        elif legacy_present:
+            legacy_header = approval.get("helperRequiredHeader")
+            legacy_library = approval.get("helperRuntimeLibrary")
+            if (not isinstance(legacy_header, str) or not legacy_header
+                    or not isinstance(legacy_library, str) or not legacy_library):
+                raise ValueError("legacy helper runtime dependency binding is incomplete")
+            headers, libraries = (legacy_header,), (legacy_library,)
+        else:
+            raise ValueError("runtime-bearing approval lacks dependency declarations")
+        if legacy_present:
+            legacy_header = approval.get("helperRequiredHeader")
+            legacy_library = approval.get("helperRuntimeLibrary")
+            if (not isinstance(legacy_header, str) or not legacy_header
+                    or not isinstance(legacy_library, str) or not legacy_library):
+                raise ValueError("legacy helper runtime dependency binding is incomplete")
+            if headers != (legacy_header,) or libraries != (legacy_library,):
+                raise ValueError("canonical/legacy runtime dependency declarations conflict")
         contract_ids.add(contract_id)
         declarations.append((contract_id, headers, libraries))
     resolved = resolve_runtime_contracts(contract_ids, root=root)

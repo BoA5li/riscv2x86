@@ -50,3 +50,30 @@ def test_unregistered_runtime_contract_fails_closed(tmp_path):
     report.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="unregistered runtime contract"):
         dependencies_from_translated_report(report, root=tmp_path)
+
+
+def test_legacy_helper_dependency_schema_is_normalized(tmp_path):
+    _runtime_tree(tmp_path)
+    value = _report()
+    approval = value["findings"][0]["approvalArtifact"]
+    approval.pop("requiredHeaders")
+    approval.pop("requiredLibraries")
+    approval["helperRequiredHeader"] = "riscv2x86_runtime_helpers.h"
+    approval["helperRuntimeLibrary"] = "libriscv2x86_runtime"
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(value))
+    resolved = dependencies_from_translated_report(report, root=tmp_path)
+    assert resolved.headers == ("riscv2x86_runtime_helpers.h",)
+    assert resolved.libraries == ("riscv2x86_runtime",)
+
+
+def test_conflicting_canonical_and_legacy_dependencies_fail_closed(tmp_path):
+    _runtime_tree(tmp_path)
+    value = _report()
+    approval = value["findings"][0]["approvalArtifact"]
+    approval["helperRequiredHeader"] = "wrong.h"
+    approval["helperRuntimeLibrary"] = "libriscv2x86_runtime"
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="declarations conflict"):
+        dependencies_from_translated_report(report, root=tmp_path)
