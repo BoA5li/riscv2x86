@@ -842,6 +842,7 @@ def analyze_privileged_state(
     reasons: list[str | PrivilegedStateReasonCode] = []
     csr = []; traps = []; returns = []; interrupts = []; mmu = []; virt = []; debug = []
     typed_sites = set(); typed_instruction_sites = set(); callother_sites = set()
+    nonprivileged_intrinsic_sites = set()
 
     for block in sorted(blocks, key=lambda item: item.addr):
         index_by_address = {}
@@ -853,6 +854,14 @@ def analyze_privileged_state(
             operation_index = index_by_address.get(
                 instruction.addr, instruction_index
             )
+            # A decoder-owned barrier contract classifies the CALLOTHER at
+            # this instruction as the carrier for an ordinary memory or
+            # instruction barrier.  It is not missing privileged metadata.
+            # Keep unknown/untyped CALLOTHER operations fail-closed.
+            if getattr(instruction, "barrier_info", None) is not None:
+                nonprivileged_intrinsic_sites.add(
+                    (block.addr, instruction.addr)
+                )
             if instruction.privileged_metadata_invalid:
                 typed_instruction_sites.add((block.addr, instruction.addr))
                 reasons.append(
@@ -913,7 +922,9 @@ def analyze_privileged_state(
         for effect in values:
             reasons.extend(effect.missing_fact_codes)
 
-    unclassified = callother_sites - typed_instruction_sites
+    unclassified = (
+        callother_sites - typed_instruction_sites - nonprivileged_intrinsic_sites
+    )
     present = bool(
         csr or traps or returns or interrupts or mmu or virt or debug
         or unclassified or reasons

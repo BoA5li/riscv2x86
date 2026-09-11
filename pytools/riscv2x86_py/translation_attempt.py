@@ -130,11 +130,18 @@ class TranslationAttempt:
 
     @property
     def evaluation_binding_missing_fields(self) -> tuple[str, ...]:
+        accepted_proof_statuses = {"approved"}
+        if self.translation_outcome is TranslationOutcome.FUNCTIONAL_FALLBACK:
+            accepted_proof_statuses.add("functional_approved")
         required = {
             "sourceModelId": self.source_model_id,
             "planId": self.plan_id,
             "constraintsId": self.constraints_id,
-            "proofStatus": self.proof_status if self.proof_status == "approved" else "",
+            "proofStatus": (
+                self.proof_status
+                if self.proof_status in accepted_proof_statuses
+                else ""
+            ),
             "proofBindingIdentity": self.proof_binding_identity,
             "rendererId": self.renderer_id,
             "rendererVersion": self.renderer_version,

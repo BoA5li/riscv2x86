@@ -53,8 +53,13 @@ def translation_artifact_from_approval(
     }.items():
         if expected and approval.get(name) != expected:
             raise ValueError(f"approval/attempt binding mismatch: {name}")
-    if approval.get("proofStatus") != "approved":
-        raise ValueError("approval proof status is not approved")
+    expected_proof_status = (
+        "functional_approved"
+        if attempt.translation_outcome.value == "functional_fallback"
+        else "approved"
+    )
+    if approval.get("proofStatus") != expected_proof_status:
+        raise ValueError("approval proof status does not match translation outcome")
     fragment = approval.get("sourceFragmentId")
     if fragment != attempt.fragment_id:
         raise ValueError("approval/attempt fragment mismatch")
@@ -63,6 +68,13 @@ def translation_artifact_from_approval(
         preservation = ("functional_equivalence_only"
                         if attempt.translation_outcome.value == "functional_fallback"
                         else "architecture_equivalent")
+    expected_preservation = (
+        "functional_equivalence_only"
+        if attempt.translation_outcome.value == "functional_fallback"
+        else "architecture_equivalent"
+    )
+    if preservation != expected_preservation:
+        raise ValueError("approval preservation mode does not match translation outcome")
     shell_identity = approval.get("shellFactsIdentity")
     if not isinstance(shell_identity, str) or not shell_identity:
         shell_identity = _identity({

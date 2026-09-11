@@ -1,6 +1,7 @@
 """Contract tests for zero-configuration corpus evaluation."""
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from pathlib import Path
 
@@ -180,3 +181,47 @@ def test_evaluation_artifact_does_not_require_publication_complete_binding():
     assert not attempt.binding_complete
     artifact = translation_artifact_from_approval(attempt, approval)
     assert artifact.recipe_id.startswith("sha256:")
+
+
+def test_functional_fallback_has_evaluation_binding_without_publication_approval():
+    replacement = "riscv2x86_rt_instruction_stream_sync_local();"
+    digest = "sha256:" + sha256(replacement.encode()).hexdigest()
+    attempt = TranslationAttempt(
+        "finding:0:fragment", "fragment", "functional_c", "runtime-helper",
+        replacement, digest, "rule", TranslationOutcome.FUNCTIONAL_FALLBACK,
+        ValidationOutcome.NOT_RUN, PublicationOutcome.NOT_REQUESTED, (),
+        "model", "decision", "plan", "constraints", "functional_approved",
+        "sha256:" + "2" * 64, "", "renderer", "v1", "", "", "", False,
+    )
+    approval = {
+        "proofStatus": "functional_approved", "sourceFragmentId": "fragment",
+        "sourceModelId": "model", "planId": "plan", "constraintsId": "constraints",
+        "rendererId": "renderer", "rendererVersion": "v1",
+        "preservationMode": "functional_equivalence_only",
+        "runtimeContractId": "runtime", "runtimeContractVersion": "v1",
+    }
+
+    assert attempt.evaluation_binding_complete
+    assert not attempt.binding_complete
+    artifact = translation_artifact_from_approval(attempt, approval)
+    assert artifact.preservation_mode.value == "functional_equivalence_only"
+
+
+def test_functional_fallback_cannot_claim_architecture_preservation():
+    replacement = "helper();"
+    digest = "sha256:" + sha256(replacement.encode()).hexdigest()
+    attempt = TranslationAttempt(
+        "finding:0:fragment", "fragment", "functional_c", "runtime-helper",
+        replacement, digest, "rule", TranslationOutcome.FUNCTIONAL_FALLBACK,
+        ValidationOutcome.NOT_RUN, PublicationOutcome.NOT_REQUESTED, (),
+        "model", "decision", "plan", "constraints", "functional_approved",
+        "sha256:" + "2" * 64, "", "renderer", "v1", "", "", "", False,
+    )
+    approval = {
+        "proofStatus": "functional_approved", "sourceFragmentId": "fragment",
+        "sourceModelId": "model", "planId": "plan", "constraintsId": "constraints",
+        "rendererId": "renderer", "rendererVersion": "v1",
+        "preservationMode": "architecture_equivalent",
+    }
+    with pytest.raises(ValueError, match="preservation mode"):
+        translation_artifact_from_approval(attempt, approval)

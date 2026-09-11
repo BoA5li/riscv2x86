@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 from riscv2x86_py.cfg import CFGNode, CFGResult
 from riscv2x86_py.pcode_ir import (
+    BarrierInfo,
+    BarrierKind,
     Block,
     CanonicalCsrFieldEffect,
     CanonicalCsrOperationKind,
@@ -11,6 +13,7 @@ from riscv2x86_py.pcode_ir import (
     Op,
     Var,
     VarKind,
+    FenceSet,
     canonicalize_lifted_instruction,
 )
 from riscv2x86_py.privileged_execution_sidecar import (
@@ -321,6 +324,27 @@ def test_incomplete_execution_facts_and_cfg_are_propagated_only_for_present_priv
         execution_facts=default_user_process_execution_facts("frag"),
     )
     assert not ordinary_model.present and ordinary_model.complete
+
+
+def test_typed_memory_fence_callother_is_not_privileged_state():
+    """A typed fence intrinsic must not trigger the privileged fail-closed gate."""
+    fence = BarrierInfo(
+        kind=BarrierKind.MEMORY_FENCE,
+        pred_mask=FenceSet.R | FenceSet.W,
+        succ_mask=FenceSet.R | FenceSet.W,
+        semantics_complete=True,
+    )
+    block = Block(
+        0x2000,
+        ops=[Op(0x2000, "CALLOTHER", None, [])],
+        instructions=[CanonicalInsn(0x2000, 4, barrier_info=fence)],
+    )
+    model = analyze_privileged_state(
+        fragment_id="frag", blocks=(block,), cfg=_cfg(block),
+        execution_facts=default_user_process_execution_facts("frag"),
+    )
+    assert not model.present
+    assert model.complete
 
 
 def test_privileged_return_without_typed_kind_is_rejected():
