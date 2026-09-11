@@ -18,6 +18,9 @@ EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
 _INTEGER_TYPE = re.compile(
     r"^(?:(?:const|volatile) )*(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$"
 )
+_INTEGER_POINTER_TYPE = re.compile(
+    r"^(?:(?:const|volatile) )*(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)(?: (?:const|volatile))* \*$"
+)
 
 
 def _digest(path: Path) -> str:
@@ -79,10 +82,24 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
             and len(params) <= 3
             and all(_INTEGER_TYPE.fullmatch(item) for item in param_types)
         )
+        pointer_parameters = [
+            index for index, item in enumerate(param_types)
+            if _INTEGER_POINTER_TYPE.fullmatch(item)
+        ]
+        safe_memory_object = (
+            len(params) <= 3
+            and len(pointer_parameters) == 1
+            and (return_type == "void" or _INTEGER_TYPE.fullmatch(return_type))
+            and all(
+                _INTEGER_TYPE.fullmatch(item) or _INTEGER_POINTER_TYPE.fullmatch(item)
+                for item in param_types
+            )
+        )
         safe_void_call = return_type == "void" and not params
-        if safe_scalar or safe_void_call:
+        if safe_scalar or safe_memory_object or safe_void_call:
             functions.append({"name": name, "arity": len(params),
-                              "returnType": return_type, "parameterTypes": param_types})
+                              "returnType": return_type, "parameterTypes": param_types,
+                              "pointerParameters": pointer_parameters})
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
     return has_main, tuple(sorted(functions, key=lambda item: str(item["name"])))
@@ -182,8 +199,11 @@ def prepare_automatic_inventory(
                 "timeoutSeconds": timeout, "runtimeRegistryVersion": "auto-registry-v1",
                 "experimentContractId": ""}
         _write_json(case_dir / "validation-plan.json", plan)
+        has_memory_objects = any(item.get("pointerParameters") for item in functions)
         mode = ("explicit-common-harness" if explicit is not None else
-                "main" if has_main else "scalar-functions")
+                "main" if has_main else
+                "memory-object-functions" if has_memory_objects else
+                "scalar-functions")
         link_kind = "executable" if has_main else "shared_library"
         translation = [sys.executable, "-m", "riscv2x86_py.automatic_translation_command",
                        "--frontend", str(frontend_path),
@@ -209,6 +229,18 @@ def prepare_automatic_inventory(
                 if any(item.get("returnType") == "void" for item in functions)
                 else []
             )
+            observation_contract = "process-and-declared-return-values-v1"
+            dimensions = ["exit_code", "stderr", "stdout", "termination"]
+            input_domain = "boundary-and-fixed-random-v1"
+            if mode == "memory-object-functions":
+                observation_contract = "process-declared-return-and-memory-objects-v1"
+                dimensions = ["declared_memory_objects", "exit_code", "stderr", "stdout",
+                              "termination"]
+                input_domain = "aligned-memory-object-boundary-v1"
+                limitations = sorted(set(limitations) | {
+                    "aliasing-and-overlap-not-observed-by-automatic-l1",
+                    "unaligned-and-out-of-bounds-access-not-observed-by-automatic-l1",
+                })
             validators["L1"] = {"type": "automatic-l1-functional-differential", "config": {
                 "schemaVersion": "riscv2x86.auto-l1-runner.v3", "mode": mode,
                 "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
@@ -221,10 +253,10 @@ def prepare_automatic_inventory(
                 "harnessDigest": "" if explicit is None else explicit["harnessDigest"],
                 "harnessManifestPath": "" if explicit is None else explicit["manifestPath"],
                 "harnessManifestDigest": "" if explicit is None else explicit["manifestDigest"],
-                "inputDomainId": ("boundary-and-fixed-random-v1" if explicit is None
+                "inputDomainId": (input_domain if explicit is None
                                   else explicit["inputDomainId"]),
-                "observationContract": "process-and-declared-return-values-v1",
-                "observableDimensions": ["exit_code", "stderr", "stdout", "termination"],
+                "observationContract": observation_contract,
+                "observableDimensions": dimensions,
                 "semanticLimitations": limitations} }
         request = {"schemaVersion": "riscv2x86.evaluation-request.v2",
                    "sourceRoot": str(source_root), "sourceRelativePath": relative,

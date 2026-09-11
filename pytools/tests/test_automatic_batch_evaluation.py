@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from riscv2x86_py import automatic_batch_cli as auto
-from riscv2x86_py.automatic_validation import _scalar_wrapper
+from riscv2x86_py.automatic_validation import (
+    _memory_object_observations, _memory_object_wrapper, _scalar_wrapper,
+)
 from riscv2x86_py.translation_artifact_binding import translation_artifact_from_approval
 from riscv2x86_py.translation_attempt import TranslationAttempt
 from riscv2x86_py.schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
@@ -81,6 +83,55 @@ def test_zero_argument_void_inventory_registers_bounded_l1_claim(tmp_path, monke
     assert config["semanticLimitations"] == [
         "memory-order-and-microarchitecture-not-observed-by-l1",
         "undeclared-memory-and-global-side-effects-not-observed-by-l1",
+    ]
+
+
+def test_memory_object_harness_observes_return_and_complete_post_state():
+    wrapper = _memory_object_wrapper([
+        {"name": "load_offset", "arity": 1, "returnType": "uint64_t",
+         "parameterTypes": ["const uint64_t *"], "pointerParameters": [0]},
+        {"name": "store_offset", "arity": 2, "returnType": "void",
+         "parameterTypes": ["uint64_t *", "uint64_t"], "pointerParameters": [0]},
+    ])
+    assert "uint64_t load_offset(const uint64_t *);" in wrapper
+    assert "void store_offset(uint64_t *, uint64_t);" in wrapper
+    assert "load_offset((const uint64_t *)object)" in wrapper
+    assert "store_offset((uint64_t *)object,(uint64_t)v[i0]);" in wrapper
+    assert 'dump_object("load_offset:object",object);' in wrapper
+    assert 'dump_object("store_offset:object",object);' in wrapper
+    observations = _memory_object_observations(
+        "store_offset:return=0000000000000000\n"
+        "store_offset:object=[1122334455667788,8877665544332211,"
+        "0000000000000001,fedcba9876543210]\n"
+    )
+    assert observations == [{
+        "objectId": "store_offset:arg-object", "order": 1,
+        "values": ["0x1122334455667788", "0x8877665544332211",
+                   "0x0000000000000001", "0xfedcba9876543210"],
+    }]
+
+
+def test_pointer_inventory_registers_memory_object_l1_contract(tmp_path, monkeypatch):
+    source = tmp_path / "load.c"
+    source.write_text("#include <stdint.h>\nuint64_t load(const uint64_t *p){return p[1];}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    function = {"name": "load", "arity": 1, "returnType": "uint64_t",
+                "parameterTypes": ["const uint64_t *"], "pointerParameters": [0]}
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda source: (False, (function,)))
+
+    payload = auto.prepare_automatic_inventory(source, tmp_path / "inventory", frontend=frontend)
+    descriptor = next((tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json"))
+    config = json.loads(descriptor.read_text())["request"]["runtimeRegistryTemplate"]["validators"]["L1"]["config"]
+    assert payload["programs"][0]["harnessMode"] == "memory-object-functions"
+    assert config["mode"] == "memory-object-functions"
+    assert config["inputDomainId"] == "aligned-memory-object-boundary-v1"
+    assert config["observationContract"] == "process-declared-return-and-memory-objects-v1"
+    assert config["observableDimensions"] == [
+        "declared_memory_objects", "exit_code", "stderr", "stdout", "termination",
+    ]
+    assert config["semanticLimitations"] == [
+        "aliasing-and-overlap-not-observed-by-automatic-l1",
+        "unaligned-and-out-of-bounds-access-not-observed-by-automatic-l1",
     ]
 
 

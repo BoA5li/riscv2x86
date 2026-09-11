@@ -125,6 +125,109 @@ def _scalar_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
+    """Build a bounded L1 harness for one declared integer-pointer object.
+
+    The object is deliberately larger than the currently supported fixed load/store
+    offsets.  Its entire post-call state is serialized, so stores cannot pass merely
+    because the function returned successfully.
+    """
+    lines = ["#include <stdint.h>", "#include <stdio.h>"]
+    for function in functions:
+        name = function.get("name")
+        return_type = function.get("returnType")
+        parameter_types = function.get("parameterTypes")
+        pointer_parameters = function.get("pointerParameters")
+        if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name) is None
+                or not isinstance(return_type, str) or not return_type
+                or not isinstance(parameter_types, list)
+                or not all(isinstance(item, str) and item for item in parameter_types)
+                or not isinstance(pointer_parameters, list)
+                or len(pointer_parameters) > 1
+                or any(isinstance(item, bool) or not isinstance(item, int)
+                       or item < 0 or item >= len(parameter_types)
+                       for item in pointer_parameters)):
+            raise ValueError("automatic memory-object harness signature is invalid")
+        params = ", ".join(parameter_types) if parameter_types else "void"
+        lines.append(f"{return_type} {name}({params});")
+    lines.append("static void dump_object(const char *name,const uint64_t *p){")
+    lines.append('printf("%s=[%016llx,%016llx,%016llx,%016llx]\\n",name,')
+    lines.append("(unsigned long long)p[0],(unsigned long long)p[1],")
+    lines.append("(unsigned long long)p[2],(unsigned long long)p[3]);}")
+    lines.append("int main(void){")
+    values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
+              "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
+              "UINT64_C(0x5a17d3e4c29b806f)", "UINT64_C(0xc4ceb9fe1a85ec53)")
+    lines.append("static const uint64_t v[8]={" + ",".join(values) + "};")
+    for function in functions:
+        name = str(function["name"])
+        return_type = str(function["returnType"])
+        parameter_types = list(function["parameterTypes"])
+        pointer_parameters = list(function["pointerParameters"])
+        if not pointer_parameters:
+            arity = len(parameter_types)
+            indices = [f"i{index}" for index in range(arity)]
+            loops = "".join(f"for(unsigned {item}=0;{item}<8;++{item}){{"
+                            for item in indices)
+            args = ",".join(
+                f"({parameter_types[index]})v[{indices[index]}]"
+                for index in range(arity)
+            )
+            lines.append("{" + loops)
+            invocation = f"{name}({args})"
+            if return_type == "void":
+                lines.append(invocation + ";")
+            else:
+                lines.append(f'printf("{name}:return=%016llx\\n",'
+                             f'(unsigned long long){invocation});')
+            lines.append("}" * len(indices) + "}")
+            continue
+        pointer_index = int(pointer_parameters[0])
+        scalar_indices = [index for index in range(len(parameter_types))
+                          if index != pointer_index]
+        loop_names = [f"i{index}" for index in range(len(scalar_indices))]
+        loops = "".join(f"for(unsigned {item}=0;{item}<8;++{item}){{"
+                        for item in loop_names)
+        lines.append("{" + loops)
+        lines.append("uint64_t object[4]={UINT64_C(0x1122334455667788),"
+                     "UINT64_C(0x8877665544332211),UINT64_C(0x0123456789abcdef),"
+                     "UINT64_C(0xfedcba9876543210)};")
+        scalar_by_param = dict(zip(scalar_indices, loop_names))
+        args = []
+        for index, parameter_type in enumerate(parameter_types):
+            if index == pointer_index:
+                args.append(f"({parameter_type})object")
+            else:
+                args.append(f"({parameter_type})v[{scalar_by_param[index]}]")
+        invocation = f"{name}({','.join(args)})"
+        if return_type == "void":
+            lines.append(invocation + ";")
+        else:
+            lines.append(f'printf("{name}:return=%016llx\\n",'
+                         f'(unsigned long long){invocation});')
+        lines.append(f'dump_object("{name}:object",object);')
+        lines.append("}" * len(loop_names) + "}")
+    lines.append("return 0;}")
+    return "\n".join(lines) + "\n"
+
+
+def _memory_object_observations(stdout: str) -> list[dict[str, object]]:
+    pattern = re.compile(
+        r"^(?P<function>[A-Za-z_]\w*):object=\["
+        r"(?P<values>[0-9a-f]{16}(?:,[0-9a-f]{16}){3})\]$"
+    )
+    observations = []
+    for order, line in enumerate(stdout.splitlines()):
+        match = pattern.fullmatch(line)
+        if match is not None:
+            observations.append({
+                "objectId": match.group("function") + ":arg-object",
+                "order": order,
+                "values": ["0x" + item for item in match.group("values").split(",")],
+            })
+    return observations
+
+
 def build_auto_l1_validator(config: Mapping[str, object]):
     legacy = {"schemaVersion", "mode", "sourcePath", "sourceDigest", "targetPath",
                 "targetDigest", "functions", "workDirectory", "replayDirectory",
@@ -139,7 +242,8 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 and set(config) == legacy | additions | claim_fields)):
         raise ValueError("automatic L1 config fields/schema are invalid")
     mode = config.get("mode")
-    if mode not in {"main", "scalar-functions", "explicit-common-harness"}:
+    if mode not in {"main", "scalar-functions", "memory-object-functions",
+                    "explicit-common-harness"}:
         raise ValueError("automatic L1 mode is unsupported")
     functions = config.get("functions")
     if not isinstance(functions, list):
@@ -193,9 +297,11 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                                          detail="automatic L1 source/target digest mismatch")
         try:
             source_units, target_units = [source], [target]
-            if mode == "scalar-functions":
+            if mode in {"scalar-functions", "memory-object-functions"}:
                 source_wrapper, target_wrapper = work / "source-harness.c", work / "target-harness.c"
-                wrapper = _scalar_wrapper(functions)
+                wrapper = (_memory_object_wrapper(functions)
+                           if mode == "memory-object-functions"
+                           else _scalar_wrapper(functions))
                 source_wrapper.write_text(wrapper, encoding="utf-8")
                 target_wrapper.write_text(wrapper, encoding="utf-8")
                 source_units, target_units = [source_wrapper, source], [target_wrapper, target]
@@ -233,6 +339,13 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                                              _evidence(detail), json.dumps(detail, sort_keys=True))
             left = _run((str(config["qemuBinary"]), str(source_exe)), work, timeout)
             right = _run((str(target_exe),), work, timeout)
+            source_observation = {"exitCode": left.returncode,
+                                  "stdout": left.stdout, "stderr": left.stderr}
+            target_observation = {"exitCode": right.returncode,
+                                  "stdout": right.stdout, "stderr": right.stderr}
+            if mode == "memory-object-functions":
+                source_observation["memoryObjects"] = _memory_object_observations(left.stdout)
+                target_observation["memoryObjects"] = _memory_object_observations(right.stdout)
             observation = {"schemaVersion": "riscv2x86.auto-l1-observation.v1",
                            "mode": mode, "seed": seed, "inputDomain": input_domain_id,
                            "observationContract": observation_contract,
@@ -240,15 +353,21 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                            "semanticLimitations": limitations,
                            "harnessDigest": harness_digest,
                            "harnessManifestDigest": harness_manifest_digest,
-                           "source": {"exitCode": left.returncode,
-                           "stdout": left.stdout, "stderr": left.stderr},
-                           "target": {"exitCode": right.returncode,
-                           "stdout": right.stdout, "stderr": right.stderr}}
+                           "source": source_observation,
+                           "target": target_observation}
             (replay / "l1-observation.json").write_text(
                 json.dumps(observation, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            generated_harness_completed = (
+                mode == "main" or (left.returncode == 0 and right.returncode == 0)
+            )
+            memory_observations_complete = (
+                mode != "memory-object-functions"
+                or (bool(source_observation.get("memoryObjects"))
+                    and bool(target_observation.get("memoryObjects")))
+            )
             status = (ValidationStatus.VERIFIED
-                      if (left.returncode, left.stdout, left.stderr) ==
-                         (right.returncode, right.stdout, right.stderr)
+                      if generated_harness_completed and memory_observations_complete
+                      and source_observation == target_observation
                       else ValidationStatus.FAILED)
             return ValidationLayerResult(ValidationLevel.L1, status,
                                          _evidence(observation), json.dumps(observation, sort_keys=True))
