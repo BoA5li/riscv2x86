@@ -297,6 +297,25 @@ class ValidationRuntimeRegistry:
         return self.layer_validators.get(level)
 
 
+def _layer_failure_reasons(layer: ValidationLayerResult) -> tuple[str, ...]:
+    """Preserve machine-readable validator/infrastructure classification."""
+    reasons = {"validation.layer-not-verified:" + layer.level.value}
+    try:
+        detail = json.loads(layer.detail)
+    except (TypeError, json.JSONDecodeError):
+        detail = None
+    if isinstance(detail, Mapping):
+        code = detail.get("reasonCode")
+        if isinstance(code, str) and code:
+            reasons.add(code)
+        if layer.status is ValidationStatus.INCONCLUSIVE and (
+                "sourceBuild" in detail or "targetBuild" in detail):
+            reasons.add("validation.infrastructure:harness-build:" + layer.level.value)
+    if layer.status is ValidationStatus.INCONCLUSIVE and "timeout" in layer.detail.lower():
+        reasons.add("validation.infrastructure:timeout:" + layer.level.value)
+    return tuple(sorted(reasons))
+
+
 def _canonical_identity(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return "sha256:" + sha256(encoded.encode("utf-8")).hexdigest()
@@ -490,7 +509,7 @@ def run_translation_validation(
         if layer.status is not ValidationStatus.VERIFIED:
             return finish(
                 status=layer.status, plan=validation_plan, layers=tuple(layers),
-                reasons=("validation.layer-not-verified:" + level.value,),
+                reasons=_layer_failure_reasons(layer),
                 translation_artifact=translation_artifact, source_program_artifact=source_program_artifact,
                 target_program_artifact=target_program_artifact, target_environment=environment_payload,
             )

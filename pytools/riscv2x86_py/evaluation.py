@@ -643,6 +643,35 @@ def _translation_evaluation_linkage(
         str(item.get("findingId")): item for item in attempts
         if isinstance(item.get("findingId"), str)
     }
+    emitted_attempt_ids = sorted(
+        str(item.get("attemptArtifactId")) for item in attempts
+        if item.get("translationOutcome") in {
+            "emitted", "strengthened", "functional_fallback"
+        } and isinstance(item.get("attemptArtifactId"), str)
+    )
+    group_payload = {
+        "schemaVersion": "riscv2x86.program-validation-group.v1",
+        "sourceRelativePath": request.source_relative_path,
+        "memberAttemptIds": emitted_attempt_ids,
+    }
+    validation_group_id = (
+        _digest_bytes(_canonical(group_payload)) if emitted_attempt_ids else ""
+    )
+    l1_layers = []
+    for item in attempts:
+        validation = item.get("validation")
+        layers = validation.get("layers", []) if isinstance(validation, Mapping) else []
+        for layer in layers:
+            if isinstance(layer, Mapping) and layer.get("level") == "L1":
+                l1_layers.append(layer)
+    group_evidence = sorted({
+        str(item.get("evidenceIdentity")) for item in l1_layers
+        if isinstance(item.get("evidenceIdentity"), str) and item.get("evidenceIdentity")
+    })
+    group_status = (
+        _overall(tuple(ValidationStatus(str(item.get("status"))) for item in l1_layers)).value
+        if l1_layers else "not_run"
+    )
     findings: list[dict[str, object]] = []
     raw: object = {}
     if report_path.is_file():
@@ -674,6 +703,10 @@ def _translation_evaluation_linkage(
             findings.append({
                 "findingId": finding_id,
                 "fragmentId": fragment_id,
+                "attemptId": final.get("attemptArtifactId", ""),
+                "validationGroupId": (
+                    validation_group_id if final.get("attemptArtifactId") in emitted_attempt_ids else ""
+                ),
                 "translationOutcome": finding.get("translationOutcome", ""),
                 "translationKind": finding.get("translationKind", ""),
                 "translationStageVerificationStatus": finding.get("verificationStatus", ""),
@@ -705,6 +738,13 @@ def _translation_evaluation_linkage(
         "attemptArchivePath": request.attempt_archive,
         "attemptArchiveDigest": _digest_file(archive_path) if archive_path.is_file() else "",
         "findings": findings,
+        "validationGroups": ([] if not emitted_attempt_ids else [{
+            **group_payload,
+            "validationGroupId": validation_group_id,
+            "level": "L1",
+            "status": group_status,
+            "evidenceIdentities": group_evidence,
+        }]),
     }
 
 

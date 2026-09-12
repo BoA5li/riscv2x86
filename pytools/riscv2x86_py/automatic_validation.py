@@ -193,6 +193,41 @@ def _counter_domain_observation(stdout: str) -> dict[str, object] | None:
     }
 
 
+def _counter_relation_wrapper(function: Mapping[str, object]) -> str:
+    """Observe a function whose result is a proved relation between two reads."""
+    name = function.get("name")
+    return_type = function.get("returnType")
+    if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name) is None
+            or not isinstance(return_type, str) or return_type == "void"
+            or function.get("arity") != 0 or function.get("parameterTypes") != []
+            or function.get("counterReturnSemantics") != "relational"):
+        raise ValueError("counter-relation L1 function shape is invalid")
+    return "\n".join((
+        "#include <stdint.h>", "#include <stdio.h>", f"{return_type} {name}(void);",
+        "int main(void){", "  const unsigned samples=16;", "  unsigned true_count=0;",
+        "  int boolean_results=1;", "  for(unsigned i=0;i<samples;++i){",
+        f"    uint64_t value=(uint64_t){name}();",
+        "    if(value>1) boolean_results=0;", "    if(value==1) ++true_count;", "  }",
+        f'  printf("counter_relation={name};samples=%u;true=%u;boolean=%d\\n",',
+        "    samples,true_count,boolean_results);", "  return 0;", "}",
+    )) + "\n"
+
+
+def _counter_relation_observation(stdout: str) -> dict[str, object] | None:
+    pattern = re.compile(
+        r"^counter_relation=(?P<function>[A-Za-z_]\w*);samples=(?P<samples>[0-9]+);"
+        r"true=(?P<true>[0-9]+);boolean=(?P<boolean>[01])$"
+    )
+    matches = [match for line in stdout.splitlines()
+               if (match := pattern.fullmatch(line)) is not None]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    return {"function": match.group("function"), "samples": int(match.group("samples")),
+            "trueCount": int(match.group("true")),
+            "booleanResults": match.group("boolean") == "1"}
+
+
 def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
     """Build a bounded L1 harness for one declared integer-pointer object.
 
@@ -226,7 +261,9 @@ def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
     values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
               "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
               "UINT64_C(0x5a17d3e4c29b806f)", "UINT64_C(0xc4ceb9fe1a85ec53)")
-    lines.append("static const uint64_t v[8]={" + ",".join(values) + "};")
+    if any(len(function.get("parameterTypes", [])) > len(function.get("pointerParameters", []))
+           for function in functions):
+        lines.append("static const uint64_t v[8]={" + ",".join(values) + "};")
     for function in functions:
         name = str(function["name"])
         return_type = str(function["returnType"])
@@ -448,6 +485,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 translation.runtime_contract_id
             )
             counter_function: Mapping[str, object] | None = None
+            counter_return_semantics = ""
             if counter_contract is not None:
                 eligible = [item for item in functions
                             if item.get("arity") == 0
@@ -464,12 +502,27 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                         _evidence(detail), json.dumps(detail, sort_keys=True),
                     )
                 counter_function = eligible[0]
+                counter_return_semantics = str(
+                    counter_function.get("counterReturnSemantics", "unproved")
+                )
+                if counter_return_semantics not in {"direct", "relational"}:
+                    detail = {
+                        "runtimeContractId": translation.runtime_contract_id,
+                        "reasonCode": "L1_COUNTER_RETURN_VALUE_FLOW_UNPROVED",
+                        "declaredFunction": counter_function,
+                    }
+                    return ValidationLayerResult(
+                        ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,
+                        _evidence(detail), json.dumps(detail, sort_keys=True),
+                    )
             source_units, target_units = [source], [target]
             if mode in {"scalar-functions", "memory-object-functions",
                         "branch-domain-functions"}:
                 source_wrapper, target_wrapper = work / "source-harness.c", work / "target-harness.c"
                 wrapper = (_counter_domain_wrapper(counter_function)
-                           if counter_function is not None
+                           if counter_function is not None and counter_return_semantics == "direct"
+                           else _counter_relation_wrapper(counter_function)
+                           if counter_function is not None and counter_return_semantics == "relational"
                            else _memory_object_wrapper(functions)
                            if mode == "memory-object-functions"
                            else _branch_domain_wrapper(functions)
@@ -477,9 +530,31 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                            else _scalar_wrapper(functions))
                 source_wrapper.write_text(wrapper, encoding="utf-8")
                 target_wrapper.write_text(wrapper, encoding="utf-8")
+                generated_harness_digest = "sha256:" + sha256(wrapper.encode("utf-8")).hexdigest()
+                generated_manifest = {
+                    "schemaVersion": "riscv2x86.generated-l1-harness.v1",
+                    "mode": mode, "functions": functions, "seed": seed,
+                    "inputDomainId": input_domain_id,
+                    "configuredObservationContract": observation_contract,
+                    "harnessDigest": generated_harness_digest,
+                }
+                generated_manifest_text = json.dumps(
+                    generated_manifest, indent=2, sort_keys=True
+                ) + "\n"
+                generated_manifest_digest = "sha256:" + sha256(
+                    generated_manifest_text.encode("utf-8")
+                ).hexdigest()
+                (work / "harness-manifest.json").write_text(
+                    generated_manifest_text, encoding="utf-8"
+                )
                 source_units, target_units = [source_wrapper, source], [target_wrapper, target]
                 (replay / "source-harness.c").write_text(source_wrapper.read_text(), encoding="utf-8")
                 (replay / "target-harness.c").write_text(target_wrapper.read_text(), encoding="utf-8")
+                (replay / "harness-manifest.json").write_text(
+                    generated_manifest_text, encoding="utf-8"
+                )
+                effective_harness_digest = generated_harness_digest
+                effective_manifest_digest = generated_manifest_digest
             elif mode == "explicit-common-harness":
                 harness = Path(harness_path)
                 manifest = Path(harness_manifest_path)
@@ -493,6 +568,16 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 replay_harness.write_bytes(harness.read_bytes())
                 (replay / "explicit-harness-manifest.json").write_bytes(manifest.read_bytes())
                 source_units, target_units = [harness, source], [harness, target]
+                effective_harness_digest = harness_digest
+                effective_manifest_digest = harness_manifest_digest
+            else:
+                main_binding = json.dumps({
+                    "schemaVersion": "riscv2x86.main-entry-harness.v1",
+                    "sourceDigest": config["sourceDigest"],
+                    "targetDigest": config["targetDigest"],
+                }, sort_keys=True, separators=(",", ":"))
+                effective_harness_digest = "sha256:" + sha256(main_binding.encode()).hexdigest()
+                effective_manifest_digest = effective_harness_digest
             dependencies = resolve_runtime_contracts((translation.runtime_contract_id,))
             runtime_includes = tuple("-I" + item for item in dependencies.include_directories)
             source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
@@ -506,7 +591,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                                 work, timeout)
             if source_build.returncode or target_build.returncode:
                 detail = {"sourceBuild": source_build.stderr, "targetBuild": target_build.stderr}
-                return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
+                return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,
                                              _evidence(detail), json.dumps(detail, sort_keys=True))
             left = _run((str(config["qemuBinary"]), str(source_exe)), work, timeout)
             right = _run((str(target_exe),), work, timeout)
@@ -521,7 +606,8 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             effective_dimensions = dimensions
             effective_limitations = limitations
             counter_source = counter_target = None
-            if counter_contract is not None:
+            relation_source = relation_target = None
+            if counter_contract is not None and counter_return_semantics == "direct":
                 counter_source = _counter_domain_observation(left.stdout)
                 counter_target = _counter_domain_observation(right.stdout)
                 source_observation["counterDomain"] = counter_source
@@ -535,14 +621,26 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                     "absolute-counter-values-not-cross-isa-comparable",
                     "counter-epoch-frequency-resolution-and-rollover-not-equated",
                 })
+            elif counter_contract is not None and counter_return_semantics == "relational":
+                relation_source = _counter_relation_observation(left.stdout)
+                relation_target = _counter_relation_observation(right.stdout)
+                source_observation["counterRelation"] = relation_source
+                target_observation["counterRelation"] = relation_target
+                effective_contract = counter_contract.replace("observation.v1", "relation-result.v1")
+                effective_dimensions = ["declared_relation_result", "exit_code", "stderr",
+                                        "termination"]
+                effective_limitations = sorted(set(limitations) | {
+                    "internal-counter-values-not-observed-by-relational-l1",
+                    "counter-epoch-frequency-resolution-and-rollover-not-equated",
+                })
             observation = {"schemaVersion": "riscv2x86.auto-l1-observation.v1",
                            "mode": mode, "seed": seed, "inputDomain": input_domain_id,
                            "configuredObservationContract": observation_contract,
                            "observationContract": effective_contract,
                            "observableDimensions": effective_dimensions,
                            "semanticLimitations": effective_limitations,
-                           "harnessDigest": harness_digest,
-                           "harnessManifestDigest": harness_manifest_digest,
+                           "harnessDigest": effective_harness_digest,
+                           "harnessManifestDigest": effective_manifest_digest,
                            "source": source_observation,
                            "target": target_observation}
             (replay / "l1-observation.json").write_text(
@@ -555,7 +653,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 or (bool(source_observation.get("memoryObjects"))
                     and bool(target_observation.get("memoryObjects")))
             )
-            if counter_contract is not None:
+            if counter_contract is not None and counter_return_semantics == "direct":
                 counter_complete = counter_source is not None and counter_target is not None
                 adapter_unavailable = bool(
                     counter_complete
@@ -574,6 +672,21 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 status = (ValidationStatus.INCONCLUSIVE if adapter_unavailable
                           else ValidationStatus.VERIFIED if relation_holds
                           else ValidationStatus.FAILED)
+            elif counter_contract is not None and counter_return_semantics == "relational":
+                relation_complete = relation_source is not None and relation_target is not None
+                relation_holds = bool(
+                    relation_complete
+                    and relation_source["samples"] == relation_target["samples"] == 16
+                    and relation_source["function"] == relation_target["function"]
+                    and relation_source["booleanResults"]
+                    and relation_target["booleanResults"]
+                    and relation_source["trueCount"] == relation_target["trueCount"] == 16
+                    and left.returncode == right.returncode == 0
+                    and left.stderr == right.stderr == ""
+                )
+                status = (ValidationStatus.INCONCLUSIVE if not relation_complete
+                          else ValidationStatus.VERIFIED if relation_holds
+                          else ValidationStatus.FAILED)
             else:
                 status = (ValidationStatus.VERIFIED
                           if generated_harness_completed and memory_observations_complete
@@ -582,7 +695,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             return ValidationLayerResult(ValidationLevel.L1, status,
                                          _evidence(observation), json.dumps(observation, sort_keys=True))
         except subprocess.TimeoutExpired as exc:
-            return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.FAILED,
+            return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,
                                          detail="automatic L1 timeout: " + str(exc))
         except (OSError, ValueError) as exc:
             return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,

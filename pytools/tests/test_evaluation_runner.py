@@ -139,12 +139,21 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert linkage["attemptArchiveDigest"].startswith("sha256:")
     joined = linkage["findings"][0]
     assert joined["findingId"] == attempt.finding_id
+    assert joined["attemptId"] == attempt.artifact_id
+    assert joined["validationGroupId"].startswith("sha256:")
     assert joined["translationOutcome"] == "emitted"
     assert joined["finalEvaluationStatus"] == "inconclusive"
     assert joined["completedLevels"] == []
     assert joined["levelStatus"] == {
         "L0": "inconclusive", "L1": "not_run", "L2": "not_run", "L3": "not_run",
     }
+    assert linkage["validationGroups"] == [{
+        "schemaVersion": "riscv2x86.program-validation-group.v1",
+        "sourceRelativePath": "case.c",
+        "memberAttemptIds": [attempt.artifact_id],
+        "validationGroupId": joined["validationGroupId"],
+        "level": "L1", "status": "not_run", "evidenceIdentities": [],
+    }]
 
 
 def test_unavailable_build_tool_is_persisted_as_inconclusive(tmp_path):

@@ -12,7 +12,8 @@ from riscv2x86_py import automatic_batch_cli as auto
 from riscv2x86_py import automatic_validation as automatic_validation
 from riscv2x86_py.automatic_validation import (
     _branch_domain_wrapper, _counter_domain_observation,
-    _counter_domain_wrapper, _memory_object_observations,
+    _counter_domain_wrapper, _counter_relation_observation,
+    _counter_relation_wrapper, _memory_object_observations,
     _memory_object_wrapper, _scalar_wrapper, build_auto_l1_validator,
 )
 from riscv2x86_py.runtime_dependency_binding import RuntimeBuildDependencies
@@ -80,7 +81,8 @@ def test_zero_argument_void_function_has_explicit_termination_observation():
 
 def test_counter_domain_harness_compares_relation_not_absolute_value():
     function = {"name": "read_time", "arity": 0,
-                "returnType": "uint64_t", "parameterTypes": []}
+                "returnType": "uint64_t", "parameterTypes": [],
+                "counterReturnSemantics": "direct", "counterRelationOperator": ""}
     wrapper = _counter_domain_wrapper(function)
     assert "read_time(void);" in wrapper
     assert "current<previous" in wrapper
@@ -115,7 +117,9 @@ def test_counter_domain_validator_accepts_relationally_equal_different_values(
         "sourceDigest": digest(source), "targetPath": str(target),
         "targetDigest": digest(target),
         "functions": [{"name": "read_time", "arity": 0,
-                       "returnType": "uint64_t", "parameterTypes": []}],
+                       "returnType": "uint64_t", "parameterTypes": [],
+                       "counterReturnSemantics": "direct",
+                       "counterRelationOperator": ""}],
         "workDirectory": str(tmp_path / "work"),
         "replayDirectory": str(tmp_path / "replay"),
         "timeoutSeconds": 10, "qemuBinary": "qemu-riscv64", "seed": 7,
@@ -159,6 +163,135 @@ def test_counter_domain_validator_accepts_relationally_equal_different_values(
         "absolute-counter-values-not-cross-isa-comparable",
         "counter-epoch-frequency-resolution-and-rollover-not-equated",
     ]
+
+
+def test_counter_relation_harness_observes_boolean_relation_result():
+    function = {"name": "counter_progress", "arity": 0,
+                "returnType": "uint64_t", "parameterTypes": [],
+                "counterReturnSemantics": "relational",
+                "counterRelationOperator": ">"}
+    wrapper = _counter_relation_wrapper(function)
+    assert "value>1" in wrapper
+    assert "true_count" in wrapper
+    assert _counter_relation_observation(
+        "counter_relation=counter_progress;samples=16;true=16;boolean=1\n"
+    ) == {"function": "counter_progress", "samples": 16,
+          "trueCount": 16, "booleanResults": True}
+
+
+def test_counter_relation_validator_accepts_proved_true_relation(tmp_path, monkeypatch):
+    source = tmp_path / "source.c"; source.write_text("source")
+    target = tmp_path / "target.c"; target.write_text("target")
+    digest = lambda path: "sha256:" + sha256(path.read_bytes()).hexdigest()
+    config = {
+        "schemaVersion": "riscv2x86.auto-l1-runner.v3",
+        "mode": "scalar-functions", "sourcePath": str(source),
+        "sourceDigest": digest(source), "targetPath": str(target),
+        "targetDigest": digest(target),
+        "functions": [{"name": "progress", "arity": 0, "returnType": "uint64_t",
+                       "parameterTypes": [], "counterReturnSemantics": "relational",
+                       "counterRelationOperator": ">"}],
+        "workDirectory": str(tmp_path / "work"), "replayDirectory": str(tmp_path / "replay"),
+        "timeoutSeconds": 10, "qemuBinary": "qemu-riscv64", "seed": 7,
+        "harnessPath": "", "harnessDigest": "", "harnessManifestPath": "",
+        "harnessManifestDigest": "", "inputDomainId": "counter-relation-v1",
+        "observationContract": "process-and-declared-return-values-v1",
+        "observableDimensions": ["exit_code", "stderr", "stdout", "termination"],
+        "semanticLimitations": [],
+    }
+    line = "counter_relation=progress;samples=16;true=16;boolean=1\n"
+    outputs = iter((subprocess.CompletedProcess([], 0, "", ""),
+                    subprocess.CompletedProcess([], 0, "", ""),
+                    subprocess.CompletedProcess([], 0, line, ""),
+                    subprocess.CompletedProcess([], 0, line, "")))
+    monkeypatch.setattr(automatic_validation, "_run", lambda *args: next(outputs))
+    monkeypatch.setattr(automatic_validation, "resolve_runtime_contracts",
+                        lambda ids: RuntimeBuildDependencies())
+    translation = TranslationArtifact(
+        "fragment", "model", "plan", "constraints", "proof",
+        PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY, "shell",
+        "riscv2x86_rt_tsc_ticks@v1", "v1", "recipe", (), "counter", "runtime",
+    )
+    program = ProgramArtifact("program", str(tmp_path / "unused"), "executable",
+                              "sha256:" + "0" * 64)
+    result = build_auto_l1_validator(config)(
+        level=ValidationLevel.L1, translation_artifact=translation,
+        source_program_artifact=program, target_program_artifact=program,
+    )
+    assert result.status is ValidationStatus.VERIFIED
+    detail = json.loads(result.detail)
+    assert detail["source"]["counterRelation"]["trueCount"] == 16
+    assert detail["harnessDigest"].startswith("sha256:")
+    assert detail["harnessManifestDigest"].startswith("sha256:")
+
+
+def test_counter_contract_without_direct_value_flow_is_inconclusive(tmp_path):
+    source = tmp_path / "source.c"; source.write_text("source")
+    target = tmp_path / "target.c"; target.write_text("target")
+    digest = lambda path: "sha256:" + sha256(path.read_bytes()).hexdigest()
+    config = {
+        "schemaVersion": "riscv2x86.auto-l1-runner.v3", "mode": "scalar-functions",
+        "sourcePath": str(source), "sourceDigest": digest(source),
+        "targetPath": str(target), "targetDigest": digest(target),
+        "functions": [{"name": "derived", "arity": 0, "returnType": "uint64_t",
+                       "parameterTypes": [], "counterReturnSemantics": "unproved",
+                       "counterRelationOperator": ""}],
+        "workDirectory": str(tmp_path / "work"), "replayDirectory": str(tmp_path / "replay"),
+        "timeoutSeconds": 10, "qemuBinary": "qemu-riscv64", "seed": 7,
+        "harnessPath": "", "harnessDigest": "", "harnessManifestPath": "",
+        "harnessManifestDigest": "", "inputDomainId": "domain-v1",
+        "observationContract": "process-and-declared-return-values-v1",
+        "observableDimensions": ["exit_code", "stderr", "stdout", "termination"],
+        "semanticLimitations": [],
+    }
+    translation = TranslationArtifact(
+        "fragment", "model", "plan", "constraints", "proof",
+        PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY, "shell",
+        "riscv2x86_rt_monotonic_time_ns@v1", "v1", "recipe", (), "counter", "runtime",
+    )
+    program = ProgramArtifact("program", str(tmp_path / "unused"), "executable",
+                              "sha256:" + "0" * 64)
+    result = build_auto_l1_validator(config)(
+        level=ValidationLevel.L1, translation_artifact=translation,
+        source_program_artifact=program, target_program_artifact=program,
+    )
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert json.loads(result.detail)["reasonCode"] == "L1_COUNTER_RETURN_VALUE_FLOW_UNPROVED"
+
+
+def test_pure_pointer_load_harness_has_no_unused_scalar_vector():
+    wrapper = _memory_object_wrapper([{
+        "name": "load", "arity": 1, "returnType": "uint64_t",
+        "parameterTypes": ["const uint64_t *"], "pointerParameters": [0],
+    }])
+    assert "static const uint64_t v[8]" not in wrapper
+
+
+def test_compiler_ast_counter_return_classification_is_fail_closed():
+    decl0 = {"kind": "DeclRefExpr", "referencedDecl": {"id": "v0"}}
+    direct = {"kind": "FunctionDecl", "inner": [
+        {"kind": "GCCAsmStmt", "inner": [decl0]},
+        {"kind": "ReturnStmt", "inner": [decl0]},
+    ]}
+    assert auto._counter_return_semantics(direct) == {
+        "counterReturnSemantics": "direct", "counterRelationOperator": "",
+    }
+    decl1 = {"kind": "DeclRefExpr", "referencedDecl": {"id": "v1"}}
+    relational = {"kind": "FunctionDecl", "inner": [
+        {"kind": "GCCAsmStmt", "inner": [decl0]},
+        {"kind": "GCCAsmStmt", "inner": [decl1]},
+        {"kind": "ReturnStmt", "inner": [{"kind": "BinaryOperator", "opcode": ">",
+                                             "inner": [decl1, decl0]}]},
+    ]}
+    assert auto._counter_return_semantics(relational) == {
+        "counterReturnSemantics": "relational", "counterRelationOperator": ">",
+    }
+    transformed = {"kind": "FunctionDecl", "inner": [
+        {"kind": "GCCAsmStmt", "inner": [decl0]},
+        {"kind": "ReturnStmt", "inner": [{"kind": "BinaryOperator", "opcode": "+",
+                                             "inner": [decl0, {"kind": "IntegerLiteral"}]}]},
+    ]}
+    assert auto._counter_return_semantics(transformed)["counterReturnSemantics"] == "unproved"
 
 
 def test_zero_argument_void_inventory_registers_bounded_l1_claim(tmp_path, monkeypatch):

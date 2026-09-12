@@ -44,6 +44,62 @@ def _walk_ast(node: object):
         yield from _walk_ast(child)
 
 
+def _unwrap_expression(node: object) -> Mapping[str, object] | None:
+    """Remove AST wrappers which do not change a returned value's provenance."""
+    wrappers = {"ImplicitCastExpr", "ParenExpr", "CStyleCastExpr", "ExprWithCleanups"}
+    current = node
+    while isinstance(current, Mapping) and current.get("kind") in wrappers:
+        children = [item for item in current.get("inner", []) if isinstance(item, Mapping)]
+        if len(children) != 1:
+            return None
+        current = children[0]
+    return current if isinstance(current, Mapping) else None
+
+
+def _decl_identity(node: object) -> str:
+    current = _unwrap_expression(node)
+    if current is None or current.get("kind") != "DeclRefExpr":
+        return ""
+    referenced = current.get("referencedDecl")
+    if not isinstance(referenced, Mapping):
+        return ""
+    return str(referenced.get("id") or referenced.get("name") or "")
+
+
+def _asm_output_identity(node: Mapping[str, object]) -> str:
+    """Return Clang's first authoritative GNU asm output expression identity.
+
+    Clang orders GCCAsmStmt expression children as outputs followed by inputs.
+    A missing identity is deliberately treated as unproved rather than guessed.
+    """
+    children = [item for item in node.get("inner", []) if isinstance(item, Mapping)]
+    return _decl_identity(children[0]) if children else ""
+
+
+def _counter_return_semantics(function: Mapping[str, object]) -> dict[str, str]:
+    """Conservatively classify counter-to-return value flow from compiler AST."""
+    asm_nodes = [item for item in _walk_ast(function) if item.get("kind") == "GCCAsmStmt"]
+    returns = [item for item in _walk_ast(function) if item.get("kind") == "ReturnStmt"]
+    outputs = [_asm_output_identity(item) for item in asm_nodes]
+    if len(returns) != 1 or not outputs or any(not item for item in outputs):
+        return {"counterReturnSemantics": "unproved", "counterRelationOperator": ""}
+    return_children = [item for item in returns[0].get("inner", []) if isinstance(item, Mapping)]
+    if len(return_children) != 1:
+        return {"counterReturnSemantics": "unproved", "counterRelationOperator": ""}
+    expression = _unwrap_expression(return_children[0])
+    if expression is None:
+        return {"counterReturnSemantics": "unproved", "counterRelationOperator": ""}
+    if len(outputs) == 1 and _decl_identity(expression) == outputs[0]:
+        return {"counterReturnSemantics": "direct", "counterRelationOperator": ""}
+    operator = str(expression.get("opcode", ""))
+    operands = [item for item in expression.get("inner", []) if isinstance(item, Mapping)]
+    operand_ids = [_decl_identity(item) for item in operands]
+    if (len(outputs) == 2 and operator in {">", ">=", "<", "<=", "==", "!="}
+            and len(operand_ids) == 2 and set(operand_ids) == set(outputs)):
+        return {"counterReturnSemantics": "relational", "counterRelationOperator": operator}
+    return {"counterReturnSemantics": "unproved", "counterRelationOperator": ""}
+
+
 def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tuple[dict[str, object], ...]]:
     """Use the compiler AST, never textual `main`/signature guessing."""
     command = (clang, "--target=riscv64-linux-gnu", "--sysroot=" + _sysroot(),
@@ -97,9 +153,11 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
         )
         safe_void_call = return_type == "void" and not params
         if safe_scalar or safe_memory_object or safe_void_call:
-            functions.append({"name": name, "arity": len(params),
+            function = {"name": name, "arity": len(params),
                               "returnType": return_type, "parameterTypes": param_types,
-                              "pointerParameters": pointer_parameters})
+                              "pointerParameters": pointer_parameters}
+            function.update(_counter_return_semantics(node))
+            functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
     return has_main, tuple(sorted(functions, key=lambda item: str(item["name"])))
