@@ -40,7 +40,8 @@ def test_inventory_generates_translation_and_registered_l0_l1(tmp_path, monkeypa
     request = descriptor["request"]
 
     assert payload["statisticsUnits"] == {
-        "L1": "program", "translation": "fragment", "bootstrapCluster": "program",
+        "L1": "program", "L2Requirements": "fragment",
+        "translation": "fragment", "bootstrapCluster": "program",
     }
     assert request["translationCommand"]
     assert "@INPUT_ROOT@" not in json.dumps(request["translationCommand"])

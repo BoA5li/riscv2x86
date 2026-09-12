@@ -223,6 +223,16 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         disposition = "target_build_inconclusive"
     else:
         disposition = "candidate_evaluated"
+    linkage = result.get("translationEvaluationLink")
+    l2_manifest = linkage.get("l2Requirements") if isinstance(linkage, Mapping) else None
+    l2_dispositions = (
+        dict(l2_manifest.get("dispositionCounts", {}))
+        if isinstance(l2_manifest, Mapping) else {}
+    )
+    l2_dimensions = (
+        dict(l2_manifest.get("requiredDimensionCounts", {}))
+        if isinstance(l2_manifest, Mapping) else {}
+    )
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -233,6 +243,8 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "translationOutcomes": outcomes,
         "evaluationDisposition": disposition,
         "programValidationLevels": program_levels,
+        "l2RequirementDispositionCounts": l2_dispositions,
+        "l2RequiredDimensionCounts": l2_dimensions,
     }
 
 
@@ -295,6 +307,11 @@ def run_batch_evaluation(
             (level, status) for item in completed
             for level, status in item.get("programValidationLevels", {}).items()
         )
+        l2_requirement_dispositions = Counter()
+        l2_required_dimensions = Counter()
+        for item in completed:
+            l2_requirement_dispositions.update(item.get("l2RequirementDispositionCounts", {}))
+            l2_required_dimensions.update(item.get("l2RequiredDimensionCounts", {}))
         payload: dict[str, object] = {
             "schemaVersion": BATCH_RESULT_SCHEMA,
             "batchIdentity": "", "caseCount": len(completed),
@@ -317,7 +334,11 @@ def run_batch_evaluation(
             "programValidationDenominators": {
                 level: len(completed) for level in ("L0", "L1", "L2", "L3")
             },
+            "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
+            "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),
+            "l2RequirementDenominator": sum(l2_requirement_dispositions.values()),
             "statisticalUnits": {"translationCoverage": "fragment",
+                                 "l2RequirementCoverage": "fragment",
                                  "validationRates": "program",
                                  "bootstrapCluster": "program"},
             "reasonCodeCounts": dict(sorted(reasons.items())),

@@ -1,4 +1,4 @@
-"""Zero-configuration translation and L0/L1 corpus evaluation entry point."""
+"""Zero-configuration translation, L0/L1 evaluation, and L2 planning entry point."""
 from __future__ import annotations
 
 import argparse
@@ -358,7 +358,8 @@ def prepare_automatic_inventory(
                         "validationProfile": profile})
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
-               "statisticsUnits": {"L1": "program", "translation": "fragment",
+               "statisticsUnits": {"L1": "program", "L2Requirements": "fragment",
+                                    "translation": "fragment",
                                     "bootstrapCluster": "program"}}
     _write_json(inventory / "automatic-inventory.json", payload)
     return payload

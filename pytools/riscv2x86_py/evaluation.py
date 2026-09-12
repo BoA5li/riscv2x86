@@ -639,6 +639,11 @@ def _translation_evaluation_linkage(
     """
     report_path = _path(request.translated_report, work)
     archive_path = _path(request.attempt_archive, work)
+    l2_path = report_path.with_name(report_path.name + ".l2-requirements.json")
+    l2_requirements: object = None
+    if l2_path.is_file():
+        from .l2_eligibility import load_l2_requirement_manifest
+        l2_requirements = load_l2_requirement_manifest(l2_path)
     final_by_finding = {
         str(item.get("findingId")): item for item in attempts
         if isinstance(item.get("findingId"), str)
@@ -737,6 +742,11 @@ def _translation_evaluation_linkage(
         "translatedReportDigest": _digest_file(report_path) if report_path.is_file() else "",
         "attemptArchivePath": request.attempt_archive,
         "attemptArchiveDigest": _digest_file(archive_path) if archive_path.is_file() else "",
+        "l2RequirementManifestPath": (
+            l2_path.relative_to(work).as_posix() if l2_path.is_file() else ""
+        ),
+        "l2RequirementManifestDigest": _digest_file(l2_path) if l2_path.is_file() else "",
+        "l2Requirements": l2_requirements,
         "findings": findings,
         "validationGroups": ([] if not emitted_attempt_ids else [{
             **group_payload,

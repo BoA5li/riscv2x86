@@ -86,6 +86,9 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     }
     assert result["programValidationCounts"]["L2"] == {"not_run": 2}
     assert result["programValidationCounts"]["L3"] == {"not_run": 2}
+    assert result["l2RequirementDispositionCounts"] == {}
+    assert result["l2RequiredDimensionCounts"] == {}
+    assert result["l2RequirementDenominator"] == 0
     assert [item["caseId"] for item in result["cases"]] == ["add-001", "shift-001"]
     assert (output / "cases/add-001/evaluation-result.json").is_file()
     assert (output / "cases/shift-001/evaluation-result.json").is_file()

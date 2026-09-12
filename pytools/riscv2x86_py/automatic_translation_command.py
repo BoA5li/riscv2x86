@@ -5,6 +5,9 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
+import json
+
+from .l2_eligibility import classify_l2_requirements
 
 
 def main() -> int:
@@ -43,6 +46,18 @@ def main() -> int:
     (report.parent / "backend.stderr").write_text(back.stderr, encoding="utf-8")
     if back.returncode:
         print(back.stderr, file=sys.stderr)
+    elif report.is_file():
+        try:
+            translated = json.loads(report.read_text(encoding="utf-8"))
+            if not isinstance(translated, dict):
+                raise ValueError("translated report root must be an object")
+            manifest = classify_l2_requirements(translated)
+            report.with_name(report.name + ".l2-requirements.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print("L2 requirement classification failed: " + str(exc), file=sys.stderr)
+            return 2
     return back.returncode
 
 
