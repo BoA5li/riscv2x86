@@ -64,6 +64,31 @@ def test_inventory_main_uses_executable_process_contract(tmp_path, monkeypatch):
     assert request["runtimeRegistryTemplate"]["validators"]["L1"]["config"]["mode"] == "main"
 
 
+def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path, monkeypatch):
+    source = tmp_path / "add.c"; source.write_text("unsigned long add(unsigned long a){return a;}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    boundary = {"schemaVersion": "riscv2x86.compiler-operand-boundary.v1",
+                "complete": True, "parameterDeclarationIds": ["a"],
+                "asmOperandDeclarationIds": ["out", "a"], "returnDeclarationId": "out",
+                "declarations": {"a": {"name": "a", "type": "unsigned long"},
+                                 "out": {"name": "out", "type": "unsigned long"}},
+                "declarationReferenceCounts": {"a": 1, "out": 2}}
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda source: (
+        False, ({"name": "add", "arity": 1, "returnType": "unsigned long",
+                 "parameterTypes": ["unsigned long"], "pointerParameters": [],
+                 "l2OperandBoundary": boundary},),
+    ))
+    auto.prepare_automatic_inventory(source, tmp_path / "inventory", frontend=frontend)
+    descriptor = next((tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json"))
+    request = json.loads(descriptor.read_text())["request"]
+    plan = json.loads(Path(request["validationPlan"]).read_text())
+    assert plan["profile"] == "architectural"
+    assert request["comparisonPolicy"] == "riscv2x86.architectural-observation-comparison.v1"
+    assert request["runtimeRegistryTemplate"]["validators"]["L2"]["type"] == (
+        "automatic-l2-operand-differential"
+    )
+
+
 def test_scalar_harness_links_separate_translation_unit():
     wrapper = _scalar_wrapper([{"name": "jump", "arity": 2,
                                 "returnType": "uint64_t",

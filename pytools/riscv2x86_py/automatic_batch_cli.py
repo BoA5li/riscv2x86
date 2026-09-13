@@ -100,6 +100,56 @@ def _counter_return_semantics(function: Mapping[str, object]) -> dict[str, str]:
     return {"counterReturnSemantics": "unproved", "counterRelationOperator": ""}
 
 
+def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, object]:
+    """Export compiler-AST identities needed for bounded automatic L2-A.
+
+    The report-side GNU constraints are joined later.  Here we only establish
+    declaration identities and the direct function-boundary value flow.
+    """
+    params = [item for item in function.get("inner", [])
+              if isinstance(item, Mapping) and item.get("kind") == "ParmVarDecl"]
+    asm_nodes = [item for item in _walk_ast(function) if item.get("kind") == "GCCAsmStmt"]
+    returns = [item for item in _walk_ast(function) if item.get("kind") == "ReturnStmt"]
+    declarations = {
+        str(item.get("id") or item.get("name") or ""): {
+            "name": str(item.get("name") or ""),
+            "type": str(item.get("type", {}).get("qualType", ""))
+            if isinstance(item.get("type"), Mapping) else "",
+        }
+        for item in _walk_ast(function)
+        if item.get("kind") in {"ParmVarDecl", "VarDecl"}
+    }
+    reference_counts: dict[str, int] = {}
+    for item in _walk_ast(function):
+        identity = _decl_identity(item)
+        if identity:
+            reference_counts[identity] = reference_counts.get(identity, 0) + 1
+    parameter_ids = [str(item.get("id") or item.get("name") or "") for item in params]
+    asm_ids: list[str] = []
+    if len(asm_nodes) == 1:
+        asm_ids = [_decl_identity(item) for item in asm_nodes[0].get("inner", [])
+                   if isinstance(item, Mapping)]
+    return_id = ""
+    if len(returns) == 1:
+        children = [item for item in returns[0].get("inner", []) if isinstance(item, Mapping)]
+        if len(children) == 1:
+            return_id = _decl_identity(children[0])
+    complete = bool(
+        len(asm_nodes) == 1 and asm_ids and all(asm_ids) and return_id
+        and all(parameter_ids) and all(item in declarations for item in asm_ids)
+        and return_id in declarations
+    )
+    return {
+        "schemaVersion": "riscv2x86.compiler-operand-boundary.v1",
+        "complete": complete,
+        "parameterDeclarationIds": parameter_ids,
+        "asmOperandDeclarationIds": asm_ids,
+        "returnDeclarationId": return_id,
+        "declarations": declarations,
+        "declarationReferenceCounts": reference_counts,
+    }
+
+
 def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tuple[dict[str, object], ...]]:
     """Use the compiler AST, never textual `main`/signature guessing."""
     command = (clang, "--target=riscv64-linux-gnu", "--sysroot=" + _sysroot(),
@@ -157,6 +207,7 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
                               "returnType": return_type, "parameterTypes": param_types,
                               "pointerParameters": pointer_parameters}
             function.update(_counter_return_semantics(node))
+            function["l2OperandBoundary"] = _l2_operand_boundary_facts(node)
             functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
@@ -256,7 +307,6 @@ def prepare_automatic_inventory(
                 "sourceRunner": "qemu", "targetRunner": "native", "seed": 20260910,
                 "timeoutSeconds": timeout, "runtimeRegistryVersion": "auto-registry-v1",
                 "experimentContractId": ""}
-        _write_json(case_dir / "validation-plan.json", plan)
         has_memory_objects = any(item.get("pointerParameters") for item in functions)
         has_four_argument_function = any(item.get("arity") == 4 for item in functions)
         mode = ("explicit-common-harness" if explicit is not None else
@@ -323,6 +373,30 @@ def prepare_automatic_inventory(
                 "observationContract": observation_contract,
                 "observableDimensions": dimensions,
                 "semanticLimitations": limitations} }
+            l2_auto_possible = bool(
+                mode == "scalar-functions" and functions
+                and all(
+                    isinstance(item.get("arity"), int) and 1 <= int(item["arity"]) <= 3
+                    and isinstance(item.get("l2OperandBoundary"), Mapping)
+                    and item["l2OperandBoundary"].get("complete") is True
+                    for item in functions
+                )
+            )
+            if l2_auto_possible:
+                validators["L2"] = {"type": "automatic-l2-operand-differential", "config": {
+                    "schemaVersion": "riscv2x86.auto-l2-operand-runner.v1",
+                    "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
+                    "targetPath": "${TARGET_PATH}", "targetDigest": "${TARGET_DIGEST}",
+                    "translatedReport": "${TRANSLATED_REPORT}",
+                    "functions": list(functions),
+                    "workDirectory": "${WORK_DIR}/automatic-l2/${ATTEMPT_ID}",
+                    "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2",
+                    "timeoutSeconds": timeout, "seed": 20260910,
+                    "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"} }
+                profile = "architectural"
+                plan["profile"] = profile
+                plan["planId"] = f"auto-{case_id}-{profile}-v1"
+        _write_json(case_dir / "validation-plan.json", plan)
         request = {"schemaVersion": "riscv2x86.evaluation-request.v2",
                    "sourceRoot": str(source_root), "sourceRelativePath": relative,
                    "targetRelativePath": relative,
@@ -344,7 +418,10 @@ def prepare_automatic_inventory(
                                                "--target", "${TARGET_PATH}", "--output", "${OUTPUT}",
                                                "--kind", link_kind]},
                    "translationCommand": translation,
-                   "comparisonPolicy": "riscv2x86.l1-observable-comparison.v1",
+                   "comparisonPolicy": (
+                       "riscv2x86.architectural-observation-comparison.v1"
+                       if "L2" in validators else "riscv2x86.l1-observable-comparison.v1"
+                   ),
                    "validationUnit": "program", "validationGroupId": "", "selectedAttemptIds": []}
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,

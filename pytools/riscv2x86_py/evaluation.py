@@ -662,21 +662,14 @@ def _translation_evaluation_linkage(
     validation_group_id = (
         _digest_bytes(_canonical(group_payload)) if emitted_attempt_ids else ""
     )
-    l1_layers = []
+    grouped_layers: dict[str, list[Mapping[str, object]]] = {"L1": [], "L2": []}
     for item in attempts:
         validation = item.get("validation")
         layers = validation.get("layers", []) if isinstance(validation, Mapping) else []
         for layer in layers:
-            if isinstance(layer, Mapping) and layer.get("level") == "L1":
-                l1_layers.append(layer)
-    group_evidence = sorted({
-        str(item.get("evidenceIdentity")) for item in l1_layers
-        if isinstance(item.get("evidenceIdentity"), str) and item.get("evidenceIdentity")
-    })
-    group_status = (
-        _overall(tuple(ValidationStatus(str(item.get("status"))) for item in l1_layers)).value
-        if l1_layers else "not_run"
-    )
+            level = str(layer.get("level")) if isinstance(layer, Mapping) else ""
+            if level in grouped_layers:
+                grouped_layers[level].append(layer)
     findings: list[dict[str, object]] = []
     raw: object = {}
     if report_path.is_file():
@@ -748,13 +741,24 @@ def _translation_evaluation_linkage(
         "l2RequirementManifestDigest": _digest_file(l2_path) if l2_path.is_file() else "",
         "l2Requirements": l2_requirements,
         "findings": findings,
-        "validationGroups": ([] if not emitted_attempt_ids else [{
-            **group_payload,
-            "validationGroupId": validation_group_id,
-            "level": "L1",
-            "status": group_status,
-            "evidenceIdentities": group_evidence,
-        }]),
+        "validationGroups": ([] if not emitted_attempt_ids else [
+            {
+                **group_payload,
+                "validationGroupId": validation_group_id,
+                "level": level,
+                "status": (
+                    _overall(tuple(ValidationStatus(str(item.get("status")))
+                                   for item in grouped_layers[level])).value
+                    if grouped_layers[level] else "not_run"
+                ),
+                "evidenceIdentities": sorted({
+                    str(item.get("evidenceIdentity")) for item in grouped_layers[level]
+                    if isinstance(item.get("evidenceIdentity"), str)
+                    and item.get("evidenceIdentity")
+                }),
+            }
+            for level in ("L1", "L2")
+        ]),
     }
 
 

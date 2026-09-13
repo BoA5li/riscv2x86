@@ -153,6 +153,12 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
         "memberAttemptIds": [attempt.artifact_id],
         "validationGroupId": joined["validationGroupId"],
         "level": "L1", "status": "not_run", "evidenceIdentities": [],
+    }, {
+        "schemaVersion": "riscv2x86.program-validation-group.v1",
+        "sourceRelativePath": "case.c",
+        "memberAttemptIds": [attempt.artifact_id],
+        "validationGroupId": joined["validationGroupId"],
+        "level": "L2", "status": "not_run", "evidenceIdentities": [],
     }]
 
 
