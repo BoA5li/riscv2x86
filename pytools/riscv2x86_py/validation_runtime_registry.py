@@ -45,6 +45,11 @@ def _automatic_l2_operand_factory(config: Mapping[str, object]) -> LayerValidato
     return build_auto_l2_operand_validator(config)
 
 
+def _automatic_l2_effect_factory(config: Mapping[str, object]) -> LayerValidator:
+    from .automatic_l2_effect import build_auto_l2_effect_validator
+    return build_auto_l2_effect_validator(config)
+
+
 def _l2_operand_differential_factory(config: Mapping[str, object]) -> LayerValidator:
     from .l2_operand_differential import build_l2_operand_validator, load_l2_operand_runner_config
     return build_l2_operand_validator(load_l2_operand_runner_config(config))
@@ -74,6 +79,7 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "automatic-l0-build-matrix": _automatic_l0_factory,
     "automatic-l1-functional-differential": _automatic_l1_factory,
     "automatic-l2-operand-differential": _automatic_l2_operand_factory,
+    "automatic-l2-effect-differential": _automatic_l2_effect_factory,
     "l0-build-matrix": _l0_build_matrix_factory,
     "l1-functional-differential": _l1_differential_factory,
     "l2-logical-operand-differential": _l2_operand_differential_factory,

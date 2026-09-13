@@ -84,9 +84,12 @@ def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path,
     plan = json.loads(Path(request["validationPlan"]).read_text())
     assert plan["profile"] == "architectural"
     assert request["comparisonPolicy"] == "riscv2x86.architectural-observation-comparison.v1"
-    assert request["runtimeRegistryTemplate"]["validators"]["L2"]["type"] == (
-        "automatic-l2-operand-differential"
-    )
+    l2 = request["runtimeRegistryTemplate"]["validators"]["L2"]
+    assert l2["type"] == "composite"
+    assert [(item["dimension"], item["type"]) for item in l2["validators"]] == [
+        ("effects", "automatic-l2-effect-differential"),
+        ("operands", "automatic-l2-operand-differential"),
+    ]
 
 
 def test_scalar_harness_links_separate_translation_unit():

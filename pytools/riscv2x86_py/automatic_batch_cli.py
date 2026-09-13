@@ -382,8 +382,7 @@ def prepare_automatic_inventory(
                     for item in functions
                 )
             )
-            if l2_auto_possible:
-                validators["L2"] = {"type": "automatic-l2-operand-differential", "config": {
+            operand_config = {
                     "schemaVersion": "riscv2x86.auto-l2-operand-runner.v1",
                     "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
                     "targetPath": "${TARGET_PATH}", "targetDigest": "${TARGET_DIGEST}",
@@ -392,7 +391,38 @@ def prepare_automatic_inventory(
                     "workDirectory": "${WORK_DIR}/automatic-l2/${ATTEMPT_ID}",
                     "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2",
                     "timeoutSeconds": timeout, "seed": 20260910,
-                    "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"} }
+                    "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
+            effect_mode = (
+                mode if mode in {"memory-object-functions", "branch-domain-functions"}
+                else "fence-functions" if mode == "scalar-functions" and functions
+                and all(item.get("arity") == 0 and item.get("returnType") == "void"
+                        for item in functions)
+                else "scalar-effect-functions" if l2_auto_possible else ""
+            )
+            effect_config = {
+                "schemaVersion": "riscv2x86.auto-l2-effect-runner.v1",
+                "mode": effect_mode,
+                "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
+                "targetPath": "${TARGET_PATH}", "targetDigest": "${TARGET_DIGEST}",
+                "translatedReport": "${TRANSLATED_REPORT}", "functions": list(functions),
+                "workDirectory": "${WORK_DIR}/automatic-l2-effects/${ATTEMPT_ID}",
+                "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-effects",
+                "timeoutSeconds": timeout,
+                "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
+            if l2_auto_possible and effect_mode:
+                validators["L2"] = {"type": "composite", "validators": [
+                    {"dimension": "effects", "type": "automatic-l2-effect-differential",
+                     "config": effect_config},
+                    {"dimension": "operands", "type": "automatic-l2-operand-differential",
+                     "config": operand_config},
+                ]}
+            elif l2_auto_possible:
+                validators["L2"] = {"type": "automatic-l2-operand-differential",
+                                    "config": operand_config}
+            elif effect_mode:
+                validators["L2"] = {"type": "automatic-l2-effect-differential",
+                                    "config": effect_config}
+            if "L2" in validators:
                 profile = "architectural"
                 plan["profile"] = profile
                 plan["planId"] = f"auto-{case_id}-{profile}-v1"
