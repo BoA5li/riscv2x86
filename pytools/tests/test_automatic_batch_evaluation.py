@@ -83,7 +83,7 @@ def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path,
     request = json.loads(descriptor.read_text())["request"]
     plan = json.loads(Path(request["validationPlan"]).read_text())
     assert plan["profile"] == "architectural"
-    assert request["comparisonPolicy"] == "riscv2x86.architectural-observation-comparison.v1"
+    assert request["comparisonPolicy"] == "riscv2x86.comparison-policy.architectural.v1"
     l2 = request["runtimeRegistryTemplate"]["validators"]["L2"]
     assert l2["type"] == "composite"
     assert [(item["dimension"], item["type"]) for item in l2["validators"]] == [

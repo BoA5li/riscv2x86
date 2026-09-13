@@ -22,7 +22,8 @@ from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
 
 
-PRIVILEGED_RUNNER_SCHEMA = "riscv2x86.l2-privileged-runner.v1"
+LEGACY_PRIVILEGED_RUNNER_SCHEMA = "riscv2x86.l2-privileged-runner.v1"
+PRIVILEGED_RUNNER_SCHEMA = "riscv2x86.l2-privileged-runner.v2"
 PRIVILEGED_OBSERVATION_SCHEMA = "riscv2x86.privileged-observation.v1"
 PRIVILEGED_MANIFEST_SCHEMA = "riscv2x86.privileged-validation-manifest.v1"
 PRIVILEGED_INITIAL_STATE_SCHEMA = "riscv2x86.privileged-initial-state.v1"
@@ -160,13 +161,23 @@ class L2PrivilegedRunnerConfig:
     csr_route_contract_path: str
     timeout_seconds: int
     comparison_policy: str = ARCHITECTURAL_COMPARISON_POLICY
-    schema_version: str = PRIVILEGED_RUNNER_SCHEMA
+    required_environment_id: str = ""
+    schema_version: str = LEGACY_PRIVILEGED_RUNNER_SCHEMA
 
     def __post_init__(self) -> None:
-        if (self.schema_version != PRIVILEGED_RUNNER_SCHEMA or self.comparison_policy != ARCHITECTURAL_COMPARISON_POLICY or
+        if (self.schema_version not in {LEGACY_PRIVILEGED_RUNNER_SCHEMA,
+                                        PRIVILEGED_RUNNER_SCHEMA}
+                or self.comparison_policy != ARCHITECTURAL_COMPARISON_POLICY or
                 not all((self.initial_state_path, self.privileged_manifest_path, self.csr_route_contract_path)) or
                 isinstance(self.timeout_seconds, bool) or self.timeout_seconds <= 0):
             raise ValueError("privileged runner configuration is invalid")
+        if self.schema_version == PRIVILEGED_RUNNER_SCHEMA and not self.required_environment_id:
+            raise ValueError("privileged runner v2 requires an environment identity")
+        if (self.schema_version == LEGACY_PRIVILEGED_RUNNER_SCHEMA
+                and self.target_runner.target_execution_mode in {
+                    "system-adapter", "vmm-adapter", "debug-adapter"
+                }):
+            raise ValueError("legacy privileged runner cannot claim an isolated target adapter")
 
 
 @dataclass(frozen=True)
@@ -202,9 +213,14 @@ def _runner(value: object, label: str) -> PrivilegedRunnerSpec:
 
 
 def load_l2_privileged_runner_config(value: Mapping[str, object]) -> L2PrivilegedRunnerConfig:
-    _fields(value, {"schemaVersion", "comparisonPolicy", "baseEffectRunner", "sourceRunner", "targetRunner",
-                    "initialStatePath", "privilegedManifestPath", "csrRouteContractPath", "timeoutSeconds"},
-            "L2 privileged runner")
+    schema = value.get("schemaVersion")
+    fields = {"schemaVersion", "comparisonPolicy", "baseEffectRunner", "sourceRunner", "targetRunner",
+              "initialStatePath", "privilegedManifestPath", "csrRouteContractPath", "timeoutSeconds"}
+    if schema == PRIVILEGED_RUNNER_SCHEMA:
+        fields.add("requiredEnvironmentId")
+    elif schema != LEGACY_PRIVILEGED_RUNNER_SCHEMA:
+        raise ValueError("L2 privileged runner schema is unsupported")
+    _fields(value, fields, "L2 privileged runner")
     base = value.get("baseEffectRunner")
     if not isinstance(base, Mapping): raise ValueError("baseEffectRunner must be an object")
     from .l2_effect_trace_differential import load_l2_effect_runner_config
@@ -217,8 +233,51 @@ def load_l2_privileged_runner_config(value: Mapping[str, object]) -> L2Privilege
         _string(value, "privilegedManifestPath", "L2 privileged runner"),
         _string(value, "csrRouteContractPath", "L2 privileged runner"), timeout,
         _string(value, "comparisonPolicy", "L2 privileged runner"),
+        (_string(value, "requiredEnvironmentId", "L2 privileged runner")
+         if schema == PRIVILEGED_RUNNER_SCHEMA else ""),
         _string(value, "schemaVersion", "L2 privileged runner"),
     )
+
+
+def validate_runner_environment(
+    config: L2PrivilegedRunnerConfig, environment: object,
+) -> tuple[str, ...]:
+    """Bind declared runner isolation to the evaluator's typed environment."""
+    if config.schema_version == LEGACY_PRIVILEGED_RUNNER_SCHEMA:
+        return ()
+    if not isinstance(environment, Mapping):
+        return ("privileged-environment:typed-environment-missing",)
+    environment_id = environment.get("environmentId")
+    if (config.required_environment_id
+            and environment_id != config.required_environment_id):
+        return ("privileged-environment:identity-mismatch",)
+    source_caps = environment.get("sourceRunnerCapabilities")
+    target_caps = environment.get("targetRunnerCapabilities")
+    if not isinstance(source_caps, list) or not isinstance(target_caps, list):
+        return ("privileged-environment:capability-set-invalid",)
+    source_required = {
+        "spike": "spike", "qemu-system": "qemu-system",
+        "controlled-linux-guest": "controlled-linux-guest",
+        "real-riscv": "real-riscv",
+    }[config.source_runner.runner_kind]
+    target_required = {
+        ("x86-logical-runtime", "ordinary-user-process"): "native",
+        ("x86-logical-runtime", "logical-csr-runtime"): "logical-csr-runtime",
+        ("x86-system-adapter", "system-adapter"): "system-adapter",
+        ("x86-vmm-adapter", "vmm-adapter"): "vmm-adapter",
+        ("x86-debug-adapter", "debug-adapter"): "debug-adapter",
+        ("emulator-only", "emulator-only"): "emulator-only",
+    }.get((config.target_runner.runner_kind,
+           config.target_runner.target_execution_mode))
+    reasons = []
+    if source_required not in source_caps:
+        reasons.append("privileged-environment:source-capability-missing:" + source_required)
+    if target_required is None or target_required not in target_caps:
+        reasons.append("privileged-environment:target-capability-missing:" + str(target_required))
+    if (config.target_runner.target_execution_mode in {"system-adapter", "vmm-adapter"}
+            and "native" in target_caps and target_required not in target_caps):
+        reasons.append("privileged-environment:ordinary-user-process-cannot-claim-isolated-route")
+    return tuple(sorted(set(reasons)))
 
 
 def load_csr_route_contract(path: str | Path) -> CsrRouteContract:
@@ -388,6 +447,14 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
     if base.status is not ValidationStatus.VERIFIED: return base
     if kwargs.get("comparison_policy") != config.comparison_policy:
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C policy mismatch")
+    environment_reasons = validate_runner_environment(
+        config, kwargs.get("target_environment"),
+    )
+    if environment_reasons:
+        return ValidationLayerResult(
+            ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+            _digest(environment_reasons), json.dumps(environment_reasons),
+        )
     for spec in (config.source_runner, config.target_runner):
         binary = spec.command[0]
         if not (Path(binary).is_file() or shutil.which(binary)):
@@ -424,7 +491,7 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
     if route_reasons:
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, _digest(route_reasons),
                                      json.dumps(route_reasons, separators=(",", ":")))
-    request = {"schemaVersion": PRIVILEGED_RUNNER_SCHEMA, "initialState": initial,
+    request = {"schemaVersion": config.schema_version, "initialState": initial,
                "initialStateIdentity": initial_identity, "preservationMode": manifest.preservation_mode.value,
                "runtimeOldNewRelationId": manifest.runtime_old_new_relation_id,
                "routeContractIdentity": routes.identity,
@@ -456,15 +523,43 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
     def binary_identity(spec: PrivilegedRunnerSpec) -> str:
         resolved = Path(spec.command[0]) if Path(spec.command[0]).is_file() else Path(str(shutil.which(spec.command[0])))
         return "sha256:" + sha256(resolved.read_bytes()).hexdigest()
-    evidence = _digest({"baseEvidence": base.evidence_identity, "privilegedValidation": result.validation_identity,
-                        "sourceRunner": config.source_runner.__dict__, "targetRunner": config.target_runner.__dict__,
-                        "sourceRunnerBinary": binary_identity(config.source_runner),
-                        "targetRunnerBinary": binary_identity(config.target_runner),
-                        "routeContract": routes.identity, "initialState": initial_identity,
-                        "runtimeContractId": manifest.runtime_contract_id,
-                        "runtimeContractVersion": manifest.runtime_contract_version})
-    return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.VERIFIED if result.approved else ValidationStatus.FAILED,
-                                 evidence, "privileged state matches" if result.approved else json.dumps(result.mismatch_codes))
+    detail = {
+        "schemaVersion": "riscv2x86.l2-privileged-result.v2",
+        "status": "verified" if result.approved else "failed",
+        "claimBoundary": (
+            "architectural-privileged-state-equivalence"
+            if manifest.preservation_mode is DifferentialPreservationMode.STRICT
+            else "functional-privileged-observable-projection"
+        ),
+        "preservationMode": manifest.preservation_mode.value,
+        "architectureSemanticsPreserved": manifest.architecture_semantics_preserved,
+        "sourceRunner": config.source_runner.__dict__,
+        "targetRunner": config.target_runner.__dict__,
+        "requiredEnvironmentId": config.required_environment_id,
+        "routeContractIdentity": routes.identity,
+        "routeCategories": sorted(set(item.category for item in routes.routes)),
+        "initialStateIdentity": initial_identity,
+        "runtimeContractId": manifest.runtime_contract_id,
+        "runtimeContractVersion": manifest.runtime_contract_version,
+        "ignoredSourceState": list(manifest.ignored_source_state),
+        "observableEffects": list(manifest.observable_effects),
+        "sourceObservationIdentity": _digest(source.__dict__),
+        "targetObservationIdentity": _digest(target.__dict__),
+        "differentialValidationIdentity": result.validation_identity,
+        "mismatchCodes": list(result.mismatch_codes),
+    }
+    evidence = _digest({
+        **detail,
+        "baseEvidence": base.evidence_identity,
+        "sourceRunnerBinary": binary_identity(config.source_runner),
+        "targetRunnerBinary": binary_identity(config.target_runner),
+    })
+    detail["evidenceIdentity"] = evidence
+    return ValidationLayerResult(
+        ValidationLevel.L2,
+        ValidationStatus.VERIFIED if result.approved else ValidationStatus.FAILED,
+        evidence, json.dumps(detail, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def build_l2_privileged_validator(config: L2PrivilegedRunnerConfig):

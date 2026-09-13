@@ -265,6 +265,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         ) if isinstance(l2_group, Mapping) else 0,
         "l2ProgramExecutionSampleCount": int(l2_group.get("executionSampleCount", 0))
         if isinstance(l2_group, Mapping) else 0,
+        "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
     }
@@ -285,6 +286,42 @@ def _write_csv(output: Path, cases: list[dict[str, object]]) -> None:
                 *(levels.get(level, "not_run") for level in ("L0", "L1", "L2", "L3")),
                 item["evaluationIdentity"], ";".join(item["reasonCodes"]),
             ))
+
+
+def _privileged_claim_counts(attempts: object) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    if not isinstance(attempts, list):
+        return {}
+    for attempt in attempts:
+        validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
+        layers = validation.get("layers", []) if isinstance(validation, Mapping) else []
+        for layer in layers:
+            if not isinstance(layer, Mapping) or layer.get("level") != "L2":
+                continue
+            detail = layer.get("detail")
+            try:
+                payload = json.loads(detail) if isinstance(detail, str) else None
+            except json.JSONDecodeError:
+                payload = None
+            candidates = []
+            if isinstance(payload, Mapping):
+                if payload.get("schemaVersion") == "riscv2x86.l2-privileged-result.v2":
+                    candidates.append(payload)
+                dimensions = payload.get("dimensions")
+                privileged = dimensions.get("privileged") if isinstance(dimensions, Mapping) else None
+                nested = privileged.get("detail") if isinstance(privileged, Mapping) else None
+                try:
+                    nested_payload = json.loads(nested) if isinstance(nested, str) else None
+                except json.JSONDecodeError:
+                    nested_payload = None
+                if (isinstance(nested_payload, Mapping)
+                        and nested_payload.get("schemaVersion") == "riscv2x86.l2-privileged-result.v2"):
+                    candidates.append(nested_payload)
+            for item in candidates:
+                claim = item.get("claimBoundary")
+                if isinstance(claim, str) and claim:
+                    counts[claim] += 1
+    return dict(sorted(counts.items()))
 
 
 def run_batch_evaluation(
@@ -331,9 +368,11 @@ def run_batch_evaluation(
         )
         l2_requirement_dispositions = Counter()
         l2_required_dimensions = Counter()
+        l2_privileged_claims = Counter()
         for item in completed:
             l2_requirement_dispositions.update(item.get("l2RequirementDispositionCounts", {}))
             l2_required_dimensions.update(item.get("l2RequiredDimensionCounts", {}))
+            l2_privileged_claims.update(item.get("l2PrivilegedFragmentClaimCounts", {}))
         payload: dict[str, object] = {
             "schemaVersion": BATCH_RESULT_SCHEMA,
             "batchIdentity": "", "caseCount": len(completed),
@@ -371,6 +410,7 @@ def run_batch_evaluation(
             "l2ProgramExecutionSampleCount": sum(
                 int(item.get("l2ProgramExecutionSampleCount", 0)) for item in completed
             ),
+            "l2PrivilegedFragmentClaimCounts": dict(sorted(l2_privileged_claims.items())),
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),
             "l2RequirementDenominator": sum(l2_requirement_dispositions.values()),

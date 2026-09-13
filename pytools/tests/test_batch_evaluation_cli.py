@@ -89,6 +89,7 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     }
     assert result["l2MemberCounts"] == {"required": 0, "verified": 0}
     assert result["l2ProgramExecutionSampleCount"] == 0
+    assert result["l2PrivilegedFragmentClaimCounts"] == {}
     assert result["programValidationCounts"]["L2"] == {"not_run": 2}
     assert result["programValidationCounts"]["L3"] == {"not_run": 2}
     assert result["l2RequirementDispositionCounts"] == {}

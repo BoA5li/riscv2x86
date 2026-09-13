@@ -8,6 +8,7 @@ import re
 import subprocess
 from typing import Mapping, Sequence
 
+from .l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from .runtime_dependency_binding import resolve_runtime_contracts
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
@@ -16,9 +17,6 @@ from .validation_status import PreservationMode, ValidationStatus
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
 AUTO_L2_AUTHORITY_SCHEMA = "riscv2x86.auto-logical-operand-authority.v1"
 AUTO_L2_OBSERVATION_SCHEMA = "riscv2x86.auto-logical-operand-observation.v1"
-ARCHITECTURAL_COMPARISON_POLICY = (
-    "riscv2x86.architectural-observation-comparison.v1"
-)
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _VALUES = (0, 1, 0xFFFFFFFFFFFFFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF,

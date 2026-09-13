@@ -255,6 +255,7 @@ def test_runtime_registry_exposes_composite_l2c_as_the_single_l2_runner(tmp_path
             "sourceRunner": runner(True), "targetRunner": runner(False),
             "initialStatePath": str(paths[0]), "privilegedManifestPath": str(paths[1]),
             "csrRouteContractPath": str(paths[2]), "timeoutSeconds": 10,
+            "requiredEnvironmentId": "test-privileged-environment",
         }}},
     })
     assert registry.validator_for(ValidationLevel.L2) is not None

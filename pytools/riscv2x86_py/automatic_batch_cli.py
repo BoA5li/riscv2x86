@@ -15,6 +15,7 @@ from .batch_evaluation_cli import BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, run_
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
 EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
+PRIVILEGED_BINDING_SCHEMA = "riscv2x86.privileged-evaluation-binding.v1"
 _INTEGER_TYPE = re.compile(
     r"^(?:(?:const|volatile) )*(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$"
 )
@@ -25,6 +26,11 @@ _INTEGER_POINTER_TYPE = re.compile(
 
 def _digest(path: Path) -> str:
     return "sha256:" + sha256(path.read_bytes()).hexdigest()
+
+
+def _identity(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + sha256(encoded).hexdigest()
 
 
 def _sysroot() -> str:
@@ -259,10 +265,91 @@ def _explicit_harness(
     }
 
 
+def _privileged_binding(
+    source: Path, source_root: Path, binding_root: Path | None,
+    environment_id: str,
+) -> dict[str, object] | None:
+    """Load one content-addressed L2-C binding; never infer a privileged route."""
+    if binding_root is None:
+        return None
+    relative = source.relative_to(source_root).as_posix()
+    path = (binding_root / (relative + ".privileged.json")).resolve()
+    if not path.is_file():
+        return None
+    try:
+        path.relative_to(binding_root)
+    except ValueError as exc:
+        raise ValueError("privileged binding escapes its configuration directory") from exc
+    value = json.loads(path.read_text(encoding="utf-8"))
+    fields = {"schemaVersion", "sourceRelativePath", "sourceCapability",
+              "targetCapability", "runnerConfig", "bindingIdentity"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError("privileged binding fields are incomplete or unknown: " + relative)
+    payload = dict(value); identity = payload.pop("bindingIdentity")
+    if (value.get("schemaVersion") != PRIVILEGED_BINDING_SCHEMA
+            or value.get("sourceRelativePath") != relative
+            or identity != _identity(payload)):
+        raise ValueError("privileged binding identity/source association is invalid: " + relative)
+    source_cap = value.get("sourceCapability")
+    target_cap = value.get("targetCapability")
+    if source_cap not in {"spike", "qemu-system", "controlled-linux-guest", "real-riscv"}:
+        raise ValueError("privileged source capability is invalid: " + relative)
+    if target_cap not in {"native", "logical-csr-runtime", "system-adapter",
+                          "vmm-adapter", "debug-adapter", "emulator-only"}:
+        raise ValueError("privileged target capability is invalid: " + relative)
+    raw_config = value.get("runnerConfig")
+    if not isinstance(raw_config, Mapping):
+        raise ValueError("privileged runner config is missing: " + relative)
+    config = dict(raw_config)
+    declared_environment = config.get("requiredEnvironmentId")
+    if declared_environment not in {None, environment_id}:
+        raise ValueError("privileged binding environment identity is inconsistent: " + relative)
+    config["schemaVersion"] = "riscv2x86.l2-privileged-runner.v2"
+    config["requiredEnvironmentId"] = environment_id
+    for name in ("initialStatePath", "privilegedManifestPath", "csrRouteContractPath"):
+        item = config.get(name)
+        if not isinstance(item, str) or not item:
+            raise ValueError("privileged runner path is missing: " + name)
+        raw_path = Path(item)
+        resolved = raw_path.resolve() if raw_path.is_absolute() else (path.parent / raw_path).resolve()
+        if not resolved.is_file():
+            raise ValueError("privileged runner input is unavailable: " + str(resolved))
+        config[name] = str(resolved)
+    base = config.get("baseEffectRunner")
+    if not isinstance(base, Mapping):
+        raise ValueError("privileged base effect runner is missing")
+    base = dict(base)
+    for name in ("operandAuthoritySidecarPath", "effectAuthoritySidecarPath"):
+        item = base.get(name)
+        if not isinstance(item, str) or not item:
+            raise ValueError("privileged effect sidecar path is missing: " + name)
+        raw_path = Path(item)
+        base[name] = str(raw_path.resolve() if raw_path.is_absolute()
+                         else (path.parent / raw_path).resolve())
+    config["baseEffectRunner"] = base
+    from .l2_privileged_runner import load_l2_privileged_runner_config
+    parsed = load_l2_privileged_runner_config(config)
+    source_kind_capability = {
+        "spike": "spike", "qemu-system": "qemu-system",
+        "controlled-linux-guest": "controlled-linux-guest", "real-riscv": "real-riscv",
+    }[parsed.source_runner.runner_kind]
+    target_mode_capability = {
+        "ordinary-user-process": "native", "logical-csr-runtime": "logical-csr-runtime",
+        "system-adapter": "system-adapter", "vmm-adapter": "vmm-adapter",
+        "debug-adapter": "debug-adapter", "emulator-only": "emulator-only",
+    }[parsed.target_runner.target_execution_mode]
+    if source_kind_capability != source_cap or target_mode_capability != target_cap:
+        raise ValueError("privileged binding capability does not match runner kind/mode: " + relative)
+    return {"identity": identity, "config": config,
+            "sourceCapability": source_cap, "targetCapability": target_cap,
+            "path": str(path)}
+
+
 def prepare_automatic_inventory(
     input_path: str | Path, inventory_directory: str | Path, *, frontend: str | Path,
     timeout: int = 60, allow_functional_fallbacks: bool = False,
     harness_directory: str | Path | None = None,
+    privileged_config_directory: str | Path | None = None,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
     sources = ([root] if root.is_file() else
@@ -272,6 +359,10 @@ def prepare_automatic_inventory(
     harness_root = None if harness_directory is None else Path(harness_directory).resolve()
     if harness_root is not None and not harness_root.is_dir():
         raise ValueError("explicit harness directory is unavailable")
+    privileged_root = (None if privileged_config_directory is None
+                       else Path(privileged_config_directory).resolve())
+    if privileged_root is not None and not privileged_root.is_dir():
+        raise ValueError("privileged configuration directory is unavailable")
     if not sources:
         raise ValueError("automatic evaluation found no C sources")
     if inventory.exists():
@@ -280,12 +371,27 @@ def prepare_automatic_inventory(
     if not frontend_path.is_file() or not frontend_path.stat().st_mode & 0o111:
         raise ValueError("riscv2x86 frontend is unavailable")
     inventory.mkdir(parents=True)
+    privileged_environment_id = "auto-rv64gc-privileged-x86-v2"
+    privileged_bindings = {
+        source: _privileged_binding(source, source_root, privileged_root,
+                                    privileged_environment_id)
+        for source in sources
+    }
+    source_capabilities = {"qemu"}
+    target_capabilities = {"native"}
+    for binding in privileged_bindings.values():
+        if binding is not None:
+            source_capabilities.add(str(binding["sourceCapability"]))
+            target_capabilities.add(str(binding["targetCapability"]))
+    environment_id = (privileged_environment_id
+                      if any(item is not None for item in privileged_bindings.values())
+                      else "auto-rv64gc-qemu-x86-native-v1")
     environment = {"schemaVersion": "riscv2x86.target-environment.v1",
-                   "environmentId": "auto-rv64gc-qemu-x86-native-v1",
+                   "environmentId": environment_id,
                    "sourceIsa": "rv64gc", "sourceAbi": "lp64d",
                    "targetIsa": "x86_64", "targetAbi": "sysv_amd64",
-                   "sourceRunnerCapabilities": ["qemu"],
-                   "targetRunnerCapabilities": ["native"],
+                   "sourceRunnerCapabilities": sorted(source_capabilities),
+                   "targetRunnerCapabilities": sorted(target_capabilities),
                    "sanitizerCapabilities": ["asan", "none", "ubsan"],
                    "runtimeIdentity": "riscv2x86-runtime-v1",
                    "loaderIdentity": "linux-elf-loader-v1"}
@@ -296,6 +402,7 @@ def prepare_automatic_inventory(
         case_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", relative[:-2].replace("/", "--")).strip("-")
         case_dir = inventory / "cases" / case_id
         explicit = _explicit_harness(source, source_root, harness_root)
+        privileged_binding = privileged_bindings[source]
         try:
             has_main, functions = inspect_entry_points(source)
             inspection_error = ""
@@ -409,19 +516,32 @@ def prepare_automatic_inventory(
                 "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-effects",
                 "timeoutSeconds": timeout,
                 "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
+            l2_validators = []
             if l2_auto_possible and effect_mode:
-                validators["L2"] = {"type": "composite", "validators": [
+                l2_validators.extend([
                     {"dimension": "effects", "type": "automatic-l2-effect-differential",
                      "config": effect_config},
                     {"dimension": "operands", "type": "automatic-l2-operand-differential",
                      "config": operand_config},
-                ]}
+                ])
             elif l2_auto_possible:
-                validators["L2"] = {"type": "automatic-l2-operand-differential",
-                                    "config": operand_config}
+                l2_validators.append({"dimension": "operands",
+                                      "type": "automatic-l2-operand-differential",
+                                      "config": operand_config})
             elif effect_mode:
-                validators["L2"] = {"type": "automatic-l2-effect-differential",
-                                    "config": effect_config}
+                l2_validators.append({"dimension": "effects",
+                                      "type": "automatic-l2-effect-differential",
+                                      "config": effect_config})
+            if privileged_binding is not None:
+                l2_validators.append({"dimension": "privileged",
+                                      "type": "l2-privileged-real-runner",
+                                      "config": privileged_binding["config"]})
+            l2_validators.sort(key=lambda item: str(item["dimension"]))
+            if len(l2_validators) == 1:
+                only = l2_validators[0]
+                validators["L2"] = {"type": only["type"], "config": only["config"]}
+            elif l2_validators:
+                validators["L2"] = {"type": "composite", "validators": l2_validators}
             if "L2" in validators:
                 profile = "architectural"
                 plan["profile"] = profile
@@ -449,7 +569,7 @@ def prepare_automatic_inventory(
                                                "--kind", link_kind]},
                    "translationCommand": translation,
                    "comparisonPolicy": (
-                       "riscv2x86.architectural-observation-comparison.v1"
+                       "riscv2x86.comparison-policy.architectural.v1"
                        if "L2" in validators else "riscv2x86.l1-observable-comparison.v1"
                    ),
                    "validationUnit": "program", "validationGroupId": "", "selectedAttemptIds": []}
@@ -462,6 +582,10 @@ def prepare_automatic_inventory(
                         "harnessMode": mode,
                         "explicitHarnessManifest": "" if explicit is None else explicit["manifestPath"],
                         "explicitHarnessDigest": "" if explicit is None else explicit["harnessDigest"],
+                        "privilegedBindingIdentity": ("" if privileged_binding is None
+                                                       else privileged_binding["identity"]),
+                        "privilegedBindingPath": ("" if privileged_binding is None
+                                                   else privileged_binding["path"]),
                         "validationProfile": profile})
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
@@ -482,6 +606,8 @@ def main() -> int:
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--harness-directory",
                         help="directory containing <source>.harness.json sidecars")
+    parser.add_argument("--privileged-config-directory",
+                        help="directory containing <source>.c.privileged.json bindings")
     args = parser.parse_args()
     output = Path(args.output_directory).resolve()
     inventory = output.with_name(output.name + "-inventory")
@@ -489,7 +615,8 @@ def main() -> int:
         prepare_automatic_inventory(args.input, inventory, frontend=args.frontend,
                                     timeout=args.timeout_seconds,
                                     allow_functional_fallbacks=args.allow_functional_fallbacks,
-                                    harness_directory=args.harness_directory)
+                                    harness_directory=args.harness_directory,
+                                    privileged_config_directory=args.privileged_config_directory)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
         print(json.dumps({"status": "inconclusive", "reasonCode": "automatic.configuration-error",

@@ -80,6 +80,19 @@ def test_target_environment_requires_rv64_x86_64_abi_and_capabilities():
             target_environment_from_dict(malformed)
 
 
+def test_target_environment_accepts_explicit_privileged_isolation_capabilities():
+    value = _environment()
+    value["sourceRunnerCapabilities"] = ["controlled-linux-guest", "qemu-system"]
+    value["targetRunnerCapabilities"] = ["logical-csr-runtime", "vmm-adapter"]
+    environment = target_environment_from_dict(value)
+    assert environment.source_runner_capabilities == (
+        "controlled-linux-guest", "qemu-system",
+    )
+    assert environment.target_runner_capabilities == (
+        "logical-csr-runtime", "vmm-adapter",
+    )
+
+
 def test_runtime_registry_uses_only_registered_versioned_layer_factories():
     calls = []
 

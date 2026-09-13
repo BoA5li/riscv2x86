@@ -8,6 +8,7 @@ import re
 import subprocess
 from typing import Mapping, Sequence
 
+from .l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from .automatic_validation import _branch_domain_wrapper, _memory_object_wrapper, _scalar_wrapper
 from .automatic_l2_operand import _wrapper as _operand_trace_wrapper
 from .runtime_dependency_binding import resolve_runtime_contracts
@@ -17,7 +18,6 @@ from .validation_status import PreservationMode, ValidationStatus
 
 AUTO_L2_EFFECT_SCHEMA = "riscv2x86.auto-l2-effect-runner.v1"
 AUTO_L2_EFFECT_OBSERVATION_SCHEMA = "riscv2x86.auto-l2-effect-observation.v1"
-ARCHITECTURAL_COMPARISON_POLICY = "riscv2x86.architectural-observation-comparison.v1"
 _INITIAL_OBJECT = (0x1122334455667788, 0x8877665544332211,
                    0x0123456789ABCDEF, 0xFEDCBA9876543210)
 _BRANCH_CASES = (

@@ -65,12 +65,18 @@ class TargetEnvironment:
         if self.target_isa != "x86_64" or self.target_abi != "sysv_amd64":
             raise ValueError("initial validation environment requires x86-64 SysV")
         self._validate_capabilities(
-            self.source_runner_capabilities, {"spike", "qemu", "custom"},
+            self.source_runner_capabilities, {
+                "spike", "qemu", "qemu-system", "controlled-linux-guest",
+                "real-riscv", "custom",
+            },
             "source runner",
         )
         self._validate_capabilities(
             self.target_runner_capabilities,
-            {"native", "logical-csr-runtime", "custom"}, "target runner",
+            {
+                "native", "logical-csr-runtime", "system-adapter",
+                "vmm-adapter", "debug-adapter", "emulator-only", "custom",
+            }, "target runner",
         )
         self._validate_capabilities(
             self.sanitizer_capabilities, {"none", "asan", "ubsan"},
