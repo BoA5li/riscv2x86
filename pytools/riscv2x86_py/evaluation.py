@@ -32,7 +32,7 @@ EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v2"
 LEGACY_EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v1"
 EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v2"
 EVALUATION_REPLAY_SCHEMA = "riscv2x86.evaluation-replay.v1"
-TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v1"
+TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v2"
 _EMITTED = {
     TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
     TranslationOutcome.FUNCTIONAL_FALLBACK,
@@ -644,6 +644,13 @@ def _translation_evaluation_linkage(
     if l2_path.is_file():
         from .l2_eligibility import load_l2_requirement_manifest
         l2_requirements = load_l2_requirement_manifest(l2_path)
+    requirement_by_finding = {
+        str(item.get("findingId")): item
+        for item in (l2_requirements.get("requirements", [])
+                     if isinstance(l2_requirements, Mapping) else [])
+        if isinstance(item, Mapping) and isinstance(item.get("findingId"), str)
+    }
+    has_l2_requirement_manifest = isinstance(l2_requirements, Mapping)
     final_by_finding = {
         str(item.get("findingId")): item for item in attempts
         if isinstance(item.get("findingId"), str)
@@ -655,7 +662,7 @@ def _translation_evaluation_linkage(
         } and isinstance(item.get("attemptArtifactId"), str)
     )
     group_payload = {
-        "schemaVersion": "riscv2x86.program-validation-group.v1",
+        "schemaVersion": "riscv2x86.program-validation-group.v2",
         "sourceRelativePath": request.source_relative_path,
         "memberAttemptIds": emitted_attempt_ids,
     }
@@ -670,7 +677,14 @@ def _translation_evaluation_linkage(
             level = str(layer.get("level")) if isinstance(layer, Mapping) else ""
             if level in grouped_layers:
                 grouped_layers[level].append(layer)
+    shared_program_execution_evidence = sorted({
+        str(item.get("evidenceIdentity")) for item in grouped_layers["L1"]
+        if item.get("status") == "verified"
+        and isinstance(item.get("evidenceIdentity"), str)
+        and item.get("evidenceIdentity")
+    })
     findings: list[dict[str, object]] = []
+    l2_member_results: list[dict[str, object]] = []
     raw: object = {}
     if report_path.is_file():
         raw = json.loads(report_path.read_text(encoding="utf-8"))
@@ -698,6 +712,61 @@ def _translation_evaluation_linkage(
             }
             for level in ("L0", "L1", "L2", "L3"):
                 level_status.setdefault(level, "not_run")
+            requirement = requirement_by_finding.get(finding_id)
+            required_dimensions = (
+                list(requirement.get("requiredDimensions", []))
+                if isinstance(requirement, Mapping) else []
+            )
+            requirement_disposition = (
+                str(requirement.get("disposition", "inconclusive"))
+                if isinstance(requirement, Mapping) else "inconclusive"
+            )
+            candidate_outcome = str(finding.get("translationOutcome", "")) in {
+                "emitted", "strengthened", "functional_fallback"
+            }
+            l2_layer = next((
+                layer for layer in layers
+                if isinstance(layer, Mapping) and layer.get("level") == "L2"
+            ), None)
+            if has_l2_requirement_manifest:
+                # A stale/incomplete requirement manifest must not silently remove
+                # a translated fragment from the program-level L2 denominator.
+                l2_required = candidate_outcome and requirement_disposition != "not_applicable"
+                if not isinstance(requirement, Mapping) or requirement_disposition == "inconclusive":
+                    l2_status = "inconclusive"
+                elif not l2_required:
+                    l2_status = "not_applicable"
+                elif isinstance(l2_layer, Mapping):
+                    l2_status = str(l2_layer.get("status", "inconclusive"))
+                else:
+                    l2_status = "not_run"
+            else:
+                l2_required = l2_layer is not None
+                l2_status = (
+                    str(l2_layer.get("status", "inconclusive"))
+                    if isinstance(l2_layer, Mapping) else "not_run"
+                )
+            l2_evidence = (
+                str(l2_layer.get("evidenceIdentity", ""))
+                if isinstance(l2_layer, Mapping) else ""
+            )
+            member = {
+                "findingId": finding_id,
+                "fragmentId": fragment_id,
+                "attemptId": final.get("attemptArtifactId", ""),
+                "required": l2_required,
+                "requiredDimensions": required_dimensions,
+                "requirementIdentity": (
+                    str(requirement.get("requirementIdentity", ""))
+                    if isinstance(requirement, Mapping) else ""
+                ),
+                "status": l2_status,
+                "evidenceIdentity": l2_evidence,
+                "programExecutionEvidenceIdentities": (
+                    shared_program_execution_evidence if l2_required else []
+                ),
+            }
+            l2_member_results.append(member)
             findings.append({
                 "findingId": finding_id,
                 "fragmentId": fragment_id,
@@ -728,7 +797,32 @@ def _translation_evaluation_linkage(
                     if isinstance(validation, Mapping) else ""
                 ),
                 "reasonCodes": final.get("reasonCodes", []),
+                "l2Requirement": requirement,
+                "l2Result": member,
             })
+    required_l2_members = [item for item in l2_member_results if item["required"]]
+    if not required_l2_members and has_l2_requirement_manifest:
+        l2_group_status = "not_applicable"
+    elif not required_l2_members:
+        l2_group_status = "not_run"
+    else:
+        required_statuses = [str(item["status"]) for item in required_l2_members]
+        l2_group_status = (
+            "failed" if "failed" in required_statuses else
+            "inconclusive" if "inconclusive" in required_statuses else
+            "not_run" if "not_run" in required_statuses else
+            "verified" if all(item == "verified" for item in required_statuses)
+            else "inconclusive"
+        )
+    default_group_status = {
+        level: (
+            _overall(tuple(ValidationStatus(str(item.get("status")))
+                           for item in grouped_layers[level])).value
+            if grouped_layers[level] else "not_run"
+        )
+        for level in ("L1", "L2")
+    }
+    default_group_status["L2"] = l2_group_status
     return {
         "schemaVersion": TRANSLATION_EVALUATION_LINK_SCHEMA,
         "translatedReportPath": request.translated_report,
@@ -747,15 +841,25 @@ def _translation_evaluation_linkage(
                 "validationGroupId": validation_group_id,
                 "level": level,
                 "status": (
-                    _overall(tuple(ValidationStatus(str(item.get("status")))
-                                   for item in grouped_layers[level])).value
-                    if grouped_layers[level] else "not_run"
+                    default_group_status[level]
                 ),
                 "evidenceIdentities": sorted({
                     str(item.get("evidenceIdentity")) for item in grouped_layers[level]
                     if isinstance(item.get("evidenceIdentity"), str)
                     and item.get("evidenceIdentity")
                 }),
+                "requiredMemberAttemptIds": (
+                    sorted(str(item["attemptId"]) for item in required_l2_members
+                           if item["attemptId"])
+                    if level == "L2" else emitted_attempt_ids
+                ),
+                "memberResults": l2_member_results if level == "L2" else [],
+                "programExecutionEvidenceIdentities": (
+                    shared_program_execution_evidence if level == "L2" else []
+                ),
+                "executionSampleCount": (
+                    len(shared_program_execution_evidence) if level == "L2" else 0
+                ),
             }
             for level in ("L1", "L2")
         ]),

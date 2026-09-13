@@ -21,7 +21,7 @@ from .evaluation import (
 
 
 BATCH_CASE_SCHEMA = "riscv2x86.batch-evaluation-case.v1"
-BATCH_RESULT_SCHEMA = "riscv2x86.batch-evaluation-result.v1"
+BATCH_RESULT_SCHEMA = "riscv2x86.batch-evaluation-result.v2"
 BATCH_TEMPLATE_SCHEMA = "riscv2x86.batch-evaluation-template.v1"
 BATCH_DESCRIPTOR_NAME = "riscv2x86-evaluation.json"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.-]+")
@@ -224,6 +224,19 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
     else:
         disposition = "candidate_evaluated"
     linkage = result.get("translationEvaluationLink")
+    validation_groups = (
+        linkage.get("validationGroups", []) if isinstance(linkage, Mapping) else []
+    )
+    for group in validation_groups:
+        if (isinstance(group, Mapping) and group.get("level") in {"L1", "L2"}
+                and group.get("status") in {
+                    "verified", "failed", "inconclusive", "not_run", "not_applicable"
+                }):
+            program_levels[str(group["level"])] = str(group["status"])
+    l2_group = next((
+        item for item in validation_groups
+        if isinstance(item, Mapping) and item.get("level") == "L2"
+    ), {})
     l2_manifest = linkage.get("l2Requirements") if isinstance(linkage, Mapping) else None
     l2_dispositions = (
         dict(l2_manifest.get("dispositionCounts", {}))
@@ -243,6 +256,15 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "translationOutcomes": outcomes,
         "evaluationDisposition": disposition,
         "programValidationLevels": program_levels,
+        "l2RequiredMemberCount": len(l2_group.get("requiredMemberAttemptIds", []))
+        if isinstance(l2_group, Mapping) else 0,
+        "l2VerifiedMemberCount": sum(
+            1 for item in l2_group.get("memberResults", [])
+            if isinstance(item, Mapping) and item.get("required") is True
+            and item.get("status") == "verified"
+        ) if isinstance(l2_group, Mapping) else 0,
+        "l2ProgramExecutionSampleCount": int(l2_group.get("executionSampleCount", 0))
+        if isinstance(l2_group, Mapping) else 0,
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
     }
@@ -334,6 +356,21 @@ def run_batch_evaluation(
             "programValidationDenominators": {
                 level: len(completed) for level in ("L0", "L1", "L2", "L3")
             },
+            "programValidationApplicableDenominators": {
+                level: sum(
+                    1 for item in completed
+                    if item.get("programValidationLevels", {}).get(level)
+                    not in {"not_applicable"}
+                )
+                for level in ("L0", "L1", "L2", "L3")
+            },
+            "l2MemberCounts": {
+                "required": sum(int(item.get("l2RequiredMemberCount", 0)) for item in completed),
+                "verified": sum(int(item.get("l2VerifiedMemberCount", 0)) for item in completed),
+            },
+            "l2ProgramExecutionSampleCount": sum(
+                int(item.get("l2ProgramExecutionSampleCount", 0)) for item in completed
+            ),
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),
             "l2RequirementDenominator": sum(l2_requirement_dispositions.values()),

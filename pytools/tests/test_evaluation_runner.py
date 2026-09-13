@@ -134,7 +134,7 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert result["attempts"][0]["reasonCodes"] == ["validation.layer-runner-missing:L0"]
     assert (work / result["replayArtifact"]).is_file()
     linkage = result["translationEvaluationLink"]
-    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v1"
+    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v2"
     assert linkage["translatedReportDigest"].startswith("sha256:")
     assert linkage["attemptArchiveDigest"].startswith("sha256:")
     joined = linkage["findings"][0]
@@ -148,17 +148,34 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
         "L0": "inconclusive", "L1": "not_run", "L2": "not_run", "L3": "not_run",
     }
     assert linkage["validationGroups"] == [{
-        "schemaVersion": "riscv2x86.program-validation-group.v1",
+        "schemaVersion": "riscv2x86.program-validation-group.v2",
         "sourceRelativePath": "case.c",
         "memberAttemptIds": [attempt.artifact_id],
         "validationGroupId": joined["validationGroupId"],
         "level": "L1", "status": "not_run", "evidenceIdentities": [],
+        "requiredMemberAttemptIds": [attempt.artifact_id],
+        "memberResults": [], "programExecutionEvidenceIdentities": [],
+        "executionSampleCount": 0,
     }, {
-        "schemaVersion": "riscv2x86.program-validation-group.v1",
+        "schemaVersion": "riscv2x86.program-validation-group.v2",
         "sourceRelativePath": "case.c",
         "memberAttemptIds": [attempt.artifact_id],
         "validationGroupId": joined["validationGroupId"],
         "level": "L2", "status": "not_run", "evidenceIdentities": [],
+        "requiredMemberAttemptIds": [],
+        "memberResults": [{
+            "findingId": attempt.finding_id,
+            "fragmentId": attempt.fragment_id,
+            "attemptId": attempt.artifact_id,
+            "required": False,
+            "requiredDimensions": [],
+            "requirementIdentity": "",
+            "status": "not_run",
+            "evidenceIdentity": "",
+            "programExecutionEvidenceIdentities": [],
+        }],
+        "programExecutionEvidenceIdentities": [],
+        "executionSampleCount": 0,
     }]
 
 
