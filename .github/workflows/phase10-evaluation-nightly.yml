@@ -81,6 +81,46 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  l2-concurrency-real-campaign:
+    if: vars.CONCURRENCY_RUNNER_ENABLED == 'true'
+    runs-on: [self-hosted, l2-concurrency]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run versioned atomic and weak-memory campaign
+        env:
+          PYTHONPATH: pytools
+          EVALUATION_REQUEST: ${{ vars.CONCURRENCY_EVALUATION_REQUEST_PATH }}
+        run: |
+          set -euo pipefail
+          test -n "$EVALUATION_REQUEST" && test -f "$EVALUATION_REQUEST"
+          python -m riscv2x86_py.evaluation_cli \
+            --request "$EVALUATION_REQUEST" \
+            --work-directory concurrency-evaluation-work \
+            --evaluation-output concurrency-evaluation-result.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path("concurrency-evaluation-result.json").read_text())
+          if result.get("status") != "verified":
+              raise SystemExit("real concurrency campaign was not verified")
+          layers = [layer for attempt in result.get("attempts", [])
+                    for layer in (attempt.get("validation") or {}).get("layers", [])]
+          if not any(layer.get("level") == "L2" and layer.get("status") == "verified"
+                     and "claimBoundary" in layer.get("detail", "") for layer in layers):
+              raise SystemExit("no contract-bound L2 concurrency evidence was produced")
+          PY
+      - name: Preserve real concurrency evidence and replay inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-l2-concurrency-${{ github.run_id }}
+          path: |
+            concurrency-evaluation-result.json
+            concurrency-evaluation-work/
+          if-no-files-found: error
+          retention-days: 30
+
   privileged-real-evaluation:
     if: vars.PRIVILEGED_RUNNER_ENABLED == 'true'
     runs-on: [self-hosted, riscv-privileged]

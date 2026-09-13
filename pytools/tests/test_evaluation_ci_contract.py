@@ -38,9 +38,11 @@ def test_nightly_declares_full_matrix_expanded_domain_and_controlled_routes():
     assert "--random-cases 256" in workflow
     assert "test_l2_concurrency_runner.py" in workflow
     assert "test_l2_privileged_runner.py" in workflow
+    assert "CONCURRENCY_RUNNER_ENABLED" in workflow
+    assert "CONCURRENCY_EVALUATION_REQUEST_PATH" in workflow
     assert "PRIVILEGED_RUNNER_ENABLED" in workflow
     assert "L3_CONTROLLED_RUNNER_ENABLED" in workflow
-    assert workflow.count("riscv2x86_py.evaluation_cli") == 2
+    assert workflow.count("riscv2x86_py.evaluation_cli") == 3
     assert "--source-program-artifact" not in workflow
     assert "nightly.controlled-runner-not-configured" in workflow
     assert "if-no-files-found: error" in workflow

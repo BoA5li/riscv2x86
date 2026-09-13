@@ -23,9 +23,9 @@ from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
 
 
-CONCURRENCY_CONTRACT_SCHEMA = "riscv2x86.concurrency-memory-model-contract.v1"
-CONCURRENCY_RUNNER_SCHEMA = "riscv2x86.l2-concurrency-runner.v1"
-CONCURRENCY_OBSERVATION_SCHEMA = "riscv2x86.concurrency-observation.v1"
+CONCURRENCY_CONTRACT_SCHEMA = "riscv2x86.concurrency-memory-model-contract.v2"
+CONCURRENCY_RUNNER_SCHEMA = "riscv2x86.l2-concurrency-runner.v2"
+CONCURRENCY_OBSERVATION_SCHEMA = "riscv2x86.concurrency-observation.v2"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _OPERATIONS = {"atomic_load", "atomic_store", "atomic_rmw", "compare_exchange", "lr_sc", "fence"}
 _ORDERS = {"relaxed", "acquire", "release", "acq_rel", "seq_cst", "compiler", "hardware"}
@@ -79,13 +79,17 @@ class ConcurrencyScenario:
     test_id: str
     kind: str
     minimum_iterations: int
+    minimum_independent_runs: int
     allowed_final_states: tuple[str, ...]
     forbidden_outcomes: tuple[str, ...]
     required_ordering_observations: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if not self.test_id or self.kind not in _SCENARIO_KINDS or self.minimum_iterations <= 0:
+        if (not self.test_id or self.kind not in _SCENARIO_KINDS
+                or self.minimum_iterations <= 0 or self.minimum_independent_runs <= 0):
             raise ValueError("concurrency scenario identity/kind/iterations are invalid")
+        if self.kind in {"stress", "litmus"} and self.minimum_independent_runs < 2:
+            raise ValueError("stress and litmus require multiple independent runs")
         if not self.allowed_final_states or set(self.allowed_final_states) & set(self.forbidden_outcomes):
             raise ValueError("allowed and forbidden outcomes are incomplete or overlap")
 
@@ -103,6 +107,7 @@ class AtomicMemoryModelContract:
     required_atomic_width_bits: int
     required_alignment_bytes: int
     allowed_target_strengthening: bool
+    strengthening_proof_identity: str
     retry_failure_behavior: str
     retry_shape_policy: str
     scenarios: tuple[ConcurrencyScenario, ...]
@@ -132,6 +137,12 @@ class AtomicMemoryModelContract:
         ids = tuple(item.test_id for item in self.scenarios)
         if ids != tuple(sorted(set(ids))) or {item.kind for item in self.scenarios} != _SCENARIO_KINDS:
             raise ValueError("contract requires unique single-thread, stress and litmus scenarios")
+        strengthening = (self.target_ordering != self.required_ordering or
+                         self.target_failure_ordering != self.required_failure_ordering)
+        if strengthening != bool(self.strengthening_proof_identity):
+            raise ValueError("memory-order strengthening proof applicability is inconsistent")
+        if self.strengthening_proof_identity and not _SHA256.fullmatch(self.strengthening_proof_identity):
+            raise ValueError("memory-order strengthening proof identity is invalid")
 
     @property
     def identity(self) -> str: return _digest(self.payload)
@@ -155,6 +166,7 @@ class L2ConcurrencyRunnerConfig:
     contract_digest: str
     runners: tuple[ScenarioRunner, ...]
     timeout_seconds: int
+    campaign_class: str
     comparison_policy: str = ARCHITECTURAL_COMPARISON_POLICY
     schema_version: str = CONCURRENCY_RUNNER_SCHEMA
 
@@ -169,6 +181,8 @@ class L2ConcurrencyRunnerConfig:
             raise ValueError("concurrency contract/timeout is invalid")
         ids = tuple(item.test_id for item in self.runners)
         if ids != tuple(sorted(set(ids))): raise ValueError("scenario runners must be unique and sorted")
+        if self.campaign_class != "nightly":
+            raise ValueError("verified concurrency campaigns must use the nightly execution class")
 
 
 @dataclass(frozen=True)
@@ -177,6 +191,8 @@ class ConcurrencyObservation:
     runner_id: str
     contract_identity: str
     iterations_completed: int
+    independent_runs_completed: int
+    seeds_executed: tuple[int, ...]
     outcome_counts: tuple[tuple[str, int], ...]
     ordering_observations: tuple[str, ...]
     atomic_widths_observed: tuple[int, ...]
@@ -215,7 +231,8 @@ def load_concurrency_contract(path: str | Path) -> AtomicMemoryModelContract:
     fields = {"schemaVersion", "contractId", "translationPlanId", "proofIdentity", "sourceOperation",
               "requiredOrdering", "targetOrdering", "requiredFailureOrdering", "targetFailureOrdering",
               "requiredAtomicWidthBits", "requiredAlignmentBytes",
-              "allowedTargetStrengthening", "retryFailureBehavior", "retryShapePolicy", "scenarios"}
+              "allowedTargetStrengthening", "strengtheningProofIdentity",
+              "retryFailureBehavior", "retryShapePolicy", "scenarios"}
     _fields(value, fields, "concurrency contract")
     if value.get("schemaVersion") != CONCURRENCY_CONTRACT_SCHEMA: raise ValueError("concurrency contract schema unsupported")
     raw_scenarios = value.get("scenarios")
@@ -223,11 +240,13 @@ def load_concurrency_contract(path: str | Path) -> AtomicMemoryModelContract:
     scenarios = []
     for raw in raw_scenarios:
         if not isinstance(raw, Mapping): raise ValueError("concurrency scenario must be an object")
-        _fields(raw, {"testId", "kind", "minimumIterations", "allowedFinalStates", "forbiddenOutcomes",
+        _fields(raw, {"testId", "kind", "minimumIterations", "minimumIndependentRuns",
+                      "allowedFinalStates", "forbiddenOutcomes",
                       "requiredOrderingObservations"}, "concurrency scenario")
         scenarios.append(ConcurrencyScenario(
             _string(raw, "testId", "scenario"), _string(raw, "kind", "scenario"),
             _integer(raw, "minimumIterations", "scenario"),
+            _integer(raw, "minimumIndependentRuns", "scenario"),
             _strings(raw.get("allowedFinalStates"), "allowed final states"),
             _strings(raw.get("forbiddenOutcomes"), "forbidden outcomes"),
             _strings(raw.get("requiredOrderingObservations"), "required ordering observations"),
@@ -241,6 +260,7 @@ def load_concurrency_contract(path: str | Path) -> AtomicMemoryModelContract:
         _integer(value, "requiredAtomicWidthBits", "contract"),
         _integer(value, "requiredAlignmentBytes", "contract"),
         _boolean(value, "allowedTargetStrengthening", "contract"),
+        _string(value, "strengtheningProofIdentity", "contract", empty=True),
         _string(value, "retryFailureBehavior", "contract"),
         _string(value, "retryShapePolicy", "contract"), tuple(scenarios), dict(value),
     )
@@ -248,7 +268,7 @@ def load_concurrency_contract(path: str | Path) -> AtomicMemoryModelContract:
 
 def load_l2_concurrency_runner_config(value: Mapping[str, object]) -> L2ConcurrencyRunnerConfig:
     fields = {"schemaVersion", "comparisonPolicy", "baseL2Kind", "baseL2Runner", "contractPath",
-              "contractDigest", "scenarioRunners", "timeoutSeconds"}
+              "contractDigest", "scenarioRunners", "timeoutSeconds", "campaignClass"}
     _fields(value, fields, "L2 concurrency runner")
     base_kind = _string(value, "baseL2Kind", "runner")
     base_raw = value.get("baseL2Runner")
@@ -275,7 +295,8 @@ def load_l2_concurrency_runner_config(value: Mapping[str, object]) -> L2Concurre
         base_kind, load_l2_effect_runner_config(base_raw) if base_kind == "effect" else None,
         load_l2_privileged_runner_config(base_raw) if base_kind == "privileged" else None,
         _string(value, "contractPath", "runner"), _string(value, "contractDigest", "runner"),
-        tuple(runners), timeout, _string(value, "comparisonPolicy", "runner"),
+        tuple(runners), timeout, _string(value, "campaignClass", "runner"),
+        _string(value, "comparisonPolicy", "runner"),
         _string(value, "schemaVersion", "runner"),
     )
 
@@ -292,6 +313,7 @@ def _order_strengthens(required: str, target: str) -> bool:
 def parse_concurrency_observation(value: Mapping[str, object], *, test_id: str,
                                   runner_id: str, contract_identity: str) -> ConcurrencyObservation:
     fields = {"schemaVersion", "testId", "runnerId", "contractIdentity", "iterationsCompleted",
+              "independentRunsCompleted", "seedsExecuted",
               "outcomeCounts", "orderingObservations", "atomicWidthsObserved", "alignmentsObserved",
               "successCount", "failureCount", "retryCount", "completed"}
     _fields(value, fields, "concurrency observation")
@@ -316,7 +338,8 @@ def parse_concurrency_observation(value: Mapping[str, object], *, test_id: str,
     if not isinstance(completed, bool): raise ValueError("completed must be boolean")
     result = ConcurrencyObservation(
         test_id, runner_id, contract_identity,
-        _integer(value, "iterationsCompleted", "observation"), counts,
+        _integer(value, "iterationsCompleted", "observation"),
+        _integer(value, "independentRunsCompleted", "observation"), integers("seedsExecuted"), counts,
         _strings(value.get("orderingObservations"), "ordering observations"),
         integers("atomicWidthsObserved"), integers("alignmentsObserved"),
         _integer(value, "successCount", "observation"), _integer(value, "failureCount", "observation"),
@@ -324,6 +347,8 @@ def parse_concurrency_observation(value: Mapping[str, object], *, test_id: str,
     )
     if sum(count for _, count in counts) != result.iterations_completed:
         raise ValueError("outcome counts do not equal completed iterations")
+    if len(result.seeds_executed) != result.independent_runs_completed:
+        raise ValueError("seed identities do not equal independent run count")
     return result
 
 
@@ -334,6 +359,8 @@ def compare_concurrency_observation(observation: ConcurrencyObservation, scenari
     observed = {name for name, count in counts.items() if count}
     if not observation.completed or observation.iterations_completed < scenario.minimum_iterations:
         reasons.append("iterations-or-completion-insufficient")
+    if observation.independent_runs_completed < scenario.minimum_independent_runs:
+        reasons.append("independent-runs-insufficient")
     if not observed <= set(scenario.allowed_final_states): reasons.append("outcome-outside-source-contract")
     if any(counts.get(item, 0) for item in scenario.forbidden_outcomes): reasons.append("forbidden-outcome-observed")
     if not set(scenario.required_ordering_observations) <= set(observation.ordering_observations):
@@ -357,8 +384,8 @@ def _execute(command: Sequence[str], request: Mapping[str, object], timeout: int
              contract_identity: str) -> tuple[ConcurrencyObservation | None, str, ValidationStatus]:
     try: result = command_runner(command, json.dumps(request, sort_keys=True), timeout)
     except OSError as exc: return None, "runner unavailable: " + str(exc), ValidationStatus.INCONCLUSIVE
-    if result.timed_out: return None, "concurrency runner timed out", ValidationStatus.FAILED
-    if result.returncode: return None, "concurrency runner failed: " + result.stderr, ValidationStatus.FAILED
+    if result.timed_out: return None, "concurrency runner timed out", ValidationStatus.INCONCLUSIVE
+    if result.returncode: return None, "concurrency runner failed: " + result.stderr, ValidationStatus.INCONCLUSIVE
     try:
         raw = json.loads(result.stdout)
         if not isinstance(raw, Mapping): raise ValueError("observation root must be an object")
@@ -367,7 +394,7 @@ def _execute(command: Sequence[str], request: Mapping[str, object], timeout: int
             contract_identity=contract_identity,
         ), "", ValidationStatus.VERIFIED
     except (ValueError, json.JSONDecodeError) as exc:
-        return None, "concurrency observation invalid: " + str(exc), ValidationStatus.FAILED
+        return None, "concurrency observation invalid: " + str(exc), ValidationStatus.INCONCLUSIVE
 
 
 def run_l2_concurrency_differential(config: L2ConcurrencyRunnerConfig, **kwargs: object) -> ValidationLayerResult:
@@ -418,12 +445,15 @@ def run_l2_concurrency_differential(config: L2ConcurrencyRunnerConfig, **kwargs:
         request = {"schemaVersion": CONCURRENCY_RUNNER_SCHEMA, "testId": test_id,
                    "contractIdentity": contract.identity, "scenarioKind": scenario.kind,
                    "minimumIterations": scenario.minimum_iterations, "requiredOrdering": contract.required_ordering,
+                   "minimumIndependentRuns": scenario.minimum_independent_runs,
+                   "campaignClass": config.campaign_class,
                    "targetOrdering": contract.target_ordering, "atomicWidthBits": contract.required_atomic_width_bits,
                    "alignmentBytes": contract.required_alignment_bytes,
                    "requiredFailureOrdering": contract.required_failure_ordering,
                    "targetFailureOrdering": contract.target_failure_ordering,
                    "retryFailureBehavior": contract.retry_failure_behavior}
         pair = []
+        pair_observations = []
         for side, runner_id, command in (
                 ("source", runner.source_runner_id, runner.source_command),
                 ("target", runner.target_runner_id, runner.target_command)):
@@ -434,17 +464,39 @@ def run_l2_concurrency_differential(config: L2ConcurrencyRunnerConfig, **kwargs:
             if observation is None: return ValidationLayerResult(ValidationLevel.L2, status, detail=side + ": " + detail)
             reasons = compare_concurrency_observation(observation, scenario, contract)
             if reasons:
-                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, observation.identity,
+                insufficient = set(reasons) <= {
+                    "iterations-or-completion-insufficient", "independent-runs-insufficient",
+                }
+                status = (ValidationStatus.INCONCLUSIVE if insufficient
+                          else ValidationStatus.FAILED)
+                return ValidationLayerResult(ValidationLevel.L2, status, observation.identity,
                                              side + ": " + json.dumps(reasons, separators=(",", ":")))
+            pair_observations.append(observation)
             pair.append({"side": side, "observation": observation.identity,
+                         "iterationsCompleted": observation.iterations_completed,
+                         "independentRunsCompleted": observation.independent_runs_completed,
+                         "outcomeCounts": dict(observation.outcome_counts),
+                         "orderingObservations": list(observation.ordering_observations),
                          "runnerId": runner_id, "runnerCommand": _digest(list(command)),
                          "runnerBinary": _file_digest(Path(command[0]) if Path(command[0]).is_file() else Path(str(shutil.which(command[0]))))})
+        if (scenario.kind == "single_thread"
+                and pair_observations[0].outcome_counts != pair_observations[1].outcome_counts):
+            return ValidationLayerResult(
+                ValidationLevel.L2, ValidationStatus.FAILED,
+                _digest({"source": pair_observations[0].identity,
+                         "target": pair_observations[1].identity}),
+                "single-thread-functional-outcome-mismatch",
+            )
         evidence_runs.append({"testId": test_id, "runs": pair})
-    evidence = _digest({"schemaVersion": CONCURRENCY_RUNNER_SCHEMA, "baseEvidence": base.evidence_identity,
+    evidence_payload = {"schemaVersion": CONCURRENCY_RUNNER_SCHEMA, "baseEvidence": base.evidence_identity,
                         "contractIdentity": contract.identity, "contractDigest": config.contract_digest,
-                        "runs": evidence_runs})
+                        "campaignClass": config.campaign_class,
+                        "strengtheningProofIdentity": contract.strengthening_proof_identity,
+                        "runs": evidence_runs,
+                        "claimBoundary": "outcome-set-and-ordering-contract;not-schedule-equivalence"}
+    evidence = _digest(evidence_payload)
     return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.VERIFIED, evidence,
-                                 "single-thread, stress and litmus outcomes satisfy the source memory-model contract")
+                                 json.dumps(evidence_payload, sort_keys=True, separators=(",", ":")))
 
 
 def build_l2_concurrency_validator(config: L2ConcurrencyRunnerConfig):
