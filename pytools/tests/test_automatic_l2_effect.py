@@ -5,12 +5,35 @@ from types import SimpleNamespace
 from riscv2x86_py.automatic_l2_effect import (
     _branch_events, _memory_events, _scalar_events, _shell_relation,
 )
+from riscv2x86_py.effect_relation import ApprovedEffectRelation
+from riscv2x86_py.l2_authority import L2AuthorityProducer, L2AuthoritySidecar
+from hashlib import sha256
+
+
+def _digest(value):
+    return "sha256:" + sha256(value.encode()).hexdigest()
 
 
 def _artifact():
-    return SimpleNamespace(fragment_id="fragment", recipe_id="recipe",
-                           proof_identity="proof", target_route="x86-fence",
-                           runtime_contract_id="riscv2x86.runtime.none")
+    relation = ApprovedEffectRelation(
+        "relation:fence:0", "source-effect:0", ("target-effect:0",),
+        "strengthened", ("compiler_ordering", "hardware_ordering", "kind"),
+        (), "", True,
+    )
+    sidecar = L2AuthoritySidecar(
+        "fragment", L2AuthorityProducer(
+            "translation-proof-sidecar", "phase6d", "v1", _digest("producer"),
+        ), _digest("shell"), (), (), ({"eventId": "source-effect:0"},),
+        (relation.to_dict(),), (), (), True,
+    )
+    return SimpleNamespace(
+        fragment_id="fragment", recipe_id="recipe", proof_identity=_digest("proof"),
+        target_route="x86-fence", runtime_contract_id="riscv2x86.runtime.none",
+        runtime_contract_version="v1", shell_facts_identity=_digest("shell"),
+        l2_authority_identity=sidecar.authority_identity,
+        effect_relation_set_identity=sidecar.effect_relation_set_identity,
+        sidecar=sidecar,
+    )
 
 
 def test_memory_trace_is_object_relative_and_records_value_and_order():
@@ -58,12 +81,25 @@ def test_scalar_continuation_trace_preserves_repeated_order():
 
 
 def test_shell_relation_requires_approved_typed_recipe():
+    artifact = _artifact()
     finding = {"fragment":{"id":"fragment","isVolatile":True,"clobbers":["memory"]},
-               "approvalArtifact":{"proofStatus":"approved",
+               "approvalArtifact":{"proofStatus":"approved", "proofIdentity":artifact.proof_identity,
                                    "architectureSemanticsPreserved":True,
-                                   "shellSemanticsPreserved":True},
+                                   "shellSemanticsPreserved":True,
+                                   "l2AuthoritySidecar":artifact.sidecar.to_dict()},
                "translationOutcome":"strengthened"}
-    relation, reason = _shell_relation(finding, _artifact())
+    relation, reason = _shell_relation(finding, artifact)
     assert reason == "" and relation is not None
-    assert relation["source"] == {"volatile":True,"memoryClobber":True,"ccClobber":False}
-    assert relation["relationKind"] == "strengthened"
+    assert relation["relations"][0]["relationKind"] == "strengthened"
+
+
+def test_route_and_helper_text_never_create_an_approved_relation():
+    artifact = _artifact()
+    artifact.target_route = "looks-like-strengthened-fence-runtime-helper"
+    relation, reason = _shell_relation({
+        "fragment": {"id": "fragment"},
+        "approvalArtifact": {"proofStatus": "approved"},
+        "translationOutcome": "strengthened",
+    }, artifact)
+    assert relation is None
+    assert reason == "L2_EFFECT_APPROVED_RELATION_MISSING"

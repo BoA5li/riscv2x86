@@ -14,6 +14,7 @@ from riscv2x86_py.l2_validator_resolution import L2FragmentRequirement
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
+from riscv2x86_py.effect_relation import ApprovedEffectRelation
 
 
 def _digest(text):
@@ -21,13 +22,17 @@ def _digest(text):
 
 
 def _sidecar(*, fragment="fragment:1", shell=None, width=64, relation="exact", complete=True):
+    approved = ApprovedEffectRelation(
+        "relation:effect:0", "effect:0", ("target-effect:0",), relation,
+        ("kind", "subject", "value"), (), "", complete,
+    )
     return L2AuthoritySidecar(
         fragment, L2AuthorityProducer(
             "frontend-compiler-sidecar", "clang-plugin", "1", _digest("producer"),
         ), shell or _digest("shell"),
         ({"index": 0, "name": "out", "width": width, "signedness": "unsigned"},),
         (), ({"effectId": "effect:0", "kind": "WriteOperand"},),
-        ({"sourceEffectId": "effect:0", "relationKind": relation},),
+        (approved.to_dict(),),
         (), (), complete,
     )
 

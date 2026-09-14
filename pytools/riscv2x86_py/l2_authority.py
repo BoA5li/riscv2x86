@@ -26,6 +26,16 @@ def _identity(value: object) -> str:
     return "sha256:" + sha256(encoded).hexdigest()
 
 
+def effect_relation_set_identity(
+    fragment_id: str, relations: Sequence[Mapping[str, object]],
+) -> str:
+    return _identity({
+        "schemaVersion": L2_EFFECT_RELATION_SET_SCHEMA,
+        "fragmentId": fragment_id,
+        "approvedEffectRelations": [dict(item) for item in relations],
+    })
+
+
 def _objects(value: object, label: str) -> tuple[Mapping[str, object], ...]:
     if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
         raise ValueError("L2 authority " + label + " must be an array of objects")
@@ -40,7 +50,7 @@ class L2AuthorityProducer:
     producer_binary_digest: str
 
     def __post_init__(self) -> None:
-        if self.kind != "frontend-compiler-sidecar":
+        if self.kind not in {"frontend-compiler-sidecar", "translation-proof-sidecar"}:
             raise ValueError("L2 authority producer kind is unsupported")
         if not self.producer_id or not self.producer_version:
             raise ValueError("L2 authority producer identity is incomplete")
@@ -77,6 +87,16 @@ class L2AuthoritySidecar:
             raise ValueError("L2 authority fragment identity is missing")
         if _SHA256.fullmatch(self.shell_fact_identity) is None:
             raise ValueError("L2 authority shell fact identity is invalid")
+        from .effect_relation import approved_effect_relation_from_dict
+        relations = tuple(
+            approved_effect_relation_from_dict(item)
+            for item in self.approved_effect_relations
+        )
+        relation_ids = tuple(item.relation_id for item in relations)
+        source_ids = tuple(item.source_effect_id for item in relations)
+        if (relation_ids != tuple(sorted(set(relation_ids)))
+                or len(source_ids) != len(set(source_ids))):
+            raise ValueError("approved effect relations are not canonical and unique")
         expected = _identity(self._payload(False))
         if self.authority_identity and self.authority_identity != expected:
             raise ValueError("L2 authority identity does not match content (stale sidecar)")
@@ -84,11 +104,9 @@ class L2AuthoritySidecar:
 
     @property
     def effect_relation_set_identity(self) -> str:
-        return _identity({
-            "schemaVersion": L2_EFFECT_RELATION_SET_SCHEMA,
-            "fragmentId": self.fragment_id,
-            "approvedEffectRelations": [dict(item) for item in self.approved_effect_relations],
-        })
+        return effect_relation_set_identity(
+            self.fragment_id, self.approved_effect_relations,
+        )
 
     def _payload(self, include_identity: bool) -> dict[str, object]:
         value: dict[str, object] = {

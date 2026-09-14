@@ -14,6 +14,8 @@ from .automatic_l2_operand import _wrapper as _operand_trace_wrapper
 from .runtime_dependency_binding import resolve_runtime_contracts
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
+from .effect_relation import approved_effect_relation_from_dict
+from .l2_authority import l2_authority_sidecar_from_dict
 
 
 AUTO_L2_EFFECT_SCHEMA = "riscv2x86.auto-l2-effect-runner.v1"
@@ -69,39 +71,55 @@ def _function_for(finding: Mapping[str, object], functions: list[object]) -> Map
     return matches[0] if len(matches) == 1 else None
 
 
-def _shell_relation(finding: Mapping[str, object], artifact: object) -> tuple[dict[str, object] | None, str]:
-    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
-    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
-        return None, "L2_EFFECT_SHELL_AUTHORITY_MISSING"
-    if approval.get("proofStatus") != "approved":
-        return None, "L2_EFFECT_ARCHITECTURAL_PROOF_NOT_APPROVED"
-    if approval.get("architectureSemanticsPreserved") is not True:
-        return None, "L2_EFFECT_ARCHITECTURE_CLAIM_MISSING"
-    if approval.get("shellSemanticsPreserved") is not True:
-        return None, "L2_EFFECT_SHELL_CLAIM_MISSING"
-    clobbers = fragment.get("clobbers")
-    if not isinstance(clobbers, list) or not all(isinstance(item, str) for item in clobbers):
-        return None, "L2_EFFECT_CLOBBER_FACTS_INVALID"
-    runtime = str(getattr(artifact, "runtime_contract_id", ""))
-    route = str(getattr(artifact, "target_route", ""))
-    relation = "runtime-mediated" if runtime != "riscv2x86.runtime.none" else "exact"
-    if "strength" in str(finding.get("translationOutcome", "")) or "fence" in route.lower():
-        relation = "strengthened" if relation == "exact" else relation
-    payload = {
-        "schemaVersion": "riscv2x86.auto-shell-effect-relation.v1",
-        "fragmentId": getattr(artifact, "fragment_id", ""),
-        "source": {"volatile": fragment.get("isVolatile") is True,
-                   "memoryClobber": "memory" in clobbers,
-                   "ccClobber": "cc" in clobbers},
-        "target": {"recipeId": getattr(artifact, "recipe_id", ""),
-                   "targetRoute": route, "runtimeContractId": runtime,
-                   "proofIdentity": getattr(artifact, "proof_identity", "")},
-        "relationKind": relation,
-    }
-    if not payload["target"]["recipeId"] or not payload["target"]["proofIdentity"]:
-        return None, "L2_EFFECT_TARGET_RECIPE_BINDING_MISSING"
-    payload["identity"] = _identity(payload)
-    return payload, ""
+def _approved_relations(
+    finding: Mapping[str, object], artifact: object,
+) -> tuple[dict[str, object] | None, str]:
+    """Read proof authority; never manufacture a relation from translation text."""
+    approval = finding.get("approvalArtifact")
+    if not isinstance(approval, Mapping):
+        return None, "L2_EFFECT_AUTHORITY_MISSING"
+    raw = approval.get("l2AuthoritySidecar")
+    if not isinstance(raw, Mapping):
+        return None, "L2_EFFECT_APPROVED_RELATION_MISSING"
+    try:
+        authority = l2_authority_sidecar_from_dict(
+            raw, expected_fragment_id=str(getattr(artifact, "fragment_id", "")),
+            expected_shell_fact_identity=str(getattr(artifact, "shell_facts_identity", "")),
+        )
+        if (authority.authority_identity != getattr(artifact, "l2_authority_identity", "")
+                or authority.effect_relation_set_identity
+                != getattr(artifact, "effect_relation_set_identity", "")):
+            return None, "L2_EFFECT_AUTHORITY_IDENTITY_MISMATCH"
+        if approval.get("proofIdentity") != getattr(artifact, "proof_identity", ""):
+            return None, "L2_EFFECT_PROOF_IDENTITY_MISMATCH"
+        relations = tuple(
+            approved_effect_relation_from_dict(item)
+            for item in authority.approved_effect_relations
+        )
+    except ValueError:
+        return None, "L2_EFFECT_APPROVED_RELATION_INVALID"
+    if not authority.complete or not relations:
+        return None, "L2_EFFECT_APPROVED_RELATION_MISSING"
+    runtime_id = str(getattr(artifact, "runtime_contract_id", ""))
+    runtime_version = str(getattr(artifact, "runtime_contract_version", ""))
+    contracts = tuple(authority.runtime_contracts)
+    for relation in relations:
+        if not relation.authority_complete:
+            return None, "L2_EFFECT_APPROVED_RELATION_INCOMPLETE"
+        if relation.relation_kind == "runtime_mediated":
+            matches = [item for item in contracts if item.get("runtimeContractId") == runtime_id
+                       and item.get("runtimeContractVersion") == runtime_version]
+            if relation.runtime_contract_id != runtime_id or len(matches) != 1:
+                return None, "L2_EFFECT_RUNTIME_CONTRACT_MISMATCH"
+    return {
+        "authorityIdentity": authority.authority_identity,
+        "effectRelationSetIdentity": authority.effect_relation_set_identity,
+        "relations": [item.to_dict() for item in relations],
+    }, ""
+
+
+# Compatibility name retained for callers; semantics are now strictly authority-driven.
+_shell_relation = _approved_relations
 
 
 def _memory_events(stdout: str, function: Mapping[str, object]) -> list[dict[str, object]] | None:
@@ -190,17 +208,60 @@ def _scalar_events(stdout: str, function: Mapping[str, object]) -> list[dict[str
     return events if len(events) == 8 ** arity else None
 
 
-def _fence_events(stdout: str, function: Mapping[str, object], shell: Mapping[str, object]) -> list[dict[str, object]] | None:
+def _fence_events(stdout: str, function: Mapping[str, object], authority: Mapping[str, object],
+                  *, side: str) -> list[dict[str, object]] | None:
     name = str(function["name"])
     if stdout.splitlines().count(name + "=completed") != 1:
         return None
-    relation = str(shell["relationKind"])
-    target = shell["target"]
-    return [{"eventId": "fence:0", "order": 0, "eventKind": "fence",
-             "logicalSubject": "compiler-and-memory-order", "memoryOrder": "seq_cst",
-             "relationKind": relation, "targetEffectIds": ["target:fence:0"],
-             "runtimeContractId": target["runtimeContractId"],
+    relations = authority.get("relations")
+    if not isinstance(relations, list) or len(relations) != 1:
+        return None
+    relation = approved_effect_relation_from_dict(relations[0])
+    event_id = (relation.source_effect_id if side == "source"
+                else relation.target_effect_ids[0])
+    memory_order = ("compiler" if side == "source"
+                    and relation.relation_kind == "strengthened" else "seq_cst")
+    return [{"eventId": event_id, "order": 0, "eventKind": "fence",
+             "logicalSubject": "compiler-and-memory-order", "memoryOrder": memory_order,
+             "relationKind": relation.relation_kind,
+             "runtimeContractId": relation.runtime_contract_id,
              "orderingPredecessors": []}]
+
+
+def _approved_fence_matches(
+    source: list[dict[str, object]], target: list[dict[str, object]],
+    authority: Mapping[str, object],
+) -> bool:
+    relations = authority.get("relations")
+    if len(source) != 1 or len(target) != 1 or not isinstance(relations, list) or len(relations) != 1:
+        return False
+    relation = approved_effect_relation_from_dict(relations[0])
+    left, right = source[0], target[0]
+    if (left.get("eventId") != relation.source_effect_id
+            or right.get("eventId") not in relation.target_effect_ids
+            or left.get("eventKind") != right.get("eventKind")):
+        return False
+    if relation.relation_kind == "exact":
+        return left.get("memoryOrder") == right.get("memoryOrder")
+    if relation.relation_kind == "strengthened":
+        allowed = {"compiler": {"hardware", "seq_cst"}, "hardware": {"seq_cst"}}
+        source_order, target_order = str(left.get("memoryOrder")), str(right.get("memoryOrder"))
+        return source_order == target_order or target_order in allowed.get(source_order, set())
+    return False
+
+
+def _approved_effect_ids_match(
+    source: list[dict[str, object]], target: list[dict[str, object]],
+    authority: Mapping[str, object],
+) -> bool:
+    relations = authority.get("relations")
+    if not isinstance(relations, list):
+        return False
+    approved = tuple(approved_effect_relation_from_dict(item) for item in relations)
+    return ({str(item.get("eventId")) for item in source}
+            == {item.source_effect_id for item in approved}
+            and {str(item.get("eventId")) for item in target}
+            == {target_id for item in approved for target_id in item.target_effect_ids})
 
 
 def build_auto_l2_effect_validator(config: Mapping[str, object]):
@@ -244,11 +305,23 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             if function is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                              detail=json.dumps({"reasonCode":"L2_EFFECT_FUNCTION_BINDING_AMBIGUOUS"}))
-            shell, reason = _shell_relation(finding, artifact)
-            if shell is None:
+            relation_authority, reason = _approved_relations(finding, artifact)
+            if relation_authority is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                              detail=json.dumps({"reasonCode":reason}))
             mode = str(config["mode"])
+            approved = tuple(
+                approved_effect_relation_from_dict(item)
+                for item in relation_authority["relations"]
+            )
+            if (mode != "fence-functions"
+                    and any(item.relation_kind != "exact" for item in approved)):
+                return ValidationLayerResult(
+                    ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                    detail=json.dumps({
+                        "reasonCode": "L2_EFFECT_EXPLICIT_NORMALIZED_TRACE_REQUIRED",
+                    }),
+                )
             wrapper = (_memory_object_wrapper([function]) if mode == "memory-object-functions" else
                        _branch_domain_wrapper([function]) if mode == "branch-domain-functions" else
                        _operand_trace_wrapper(function) if mode == "scalar-effect-functions" else
@@ -268,11 +341,11 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             parser = (_memory_events if mode == "memory-object-functions" else
                       _branch_events if mode == "branch-domain-functions" else
                       _scalar_events if mode == "scalar-effect-functions" else None)
-            source_events = (_fence_events(left.stdout,function,shell) if parser is None else parser(left.stdout,function))
-            target_events = (_fence_events(right.stdout,function,shell) if parser is None else parser(right.stdout,function))
+            source_events = (_fence_events(left.stdout,function,relation_authority,side="source") if parser is None else parser(left.stdout,function))
+            target_events = (_fence_events(right.stdout,function,relation_authority,side="target") if parser is None else parser(right.stdout,function))
             observation={"schemaVersion":AUTO_L2_EFFECT_OBSERVATION_SCHEMA,
                          "fragmentId":getattr(artifact,"fragment_id",""),
-                         "attemptId":work.name,"mode":mode,"shellRelation":shell,
+                         "attemptId":work.name,"mode":mode,"approvedRelationAuthority":relation_authority,
                          "harnessDigest":"sha256:"+sha256(wrapper.encode()).hexdigest(),
                          "source":{"exitCode":left.returncode,"stderr":left.stderr,"events":source_events},
                          "target":{"exitCode":right.returncode,"stderr":right.stderr,"events":target_events}}
@@ -280,7 +353,13 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 status=ValidationStatus.INCONCLUSIVE; reason="L2_EFFECT_TRACE_INCOMPLETE"
             elif left.returncode or right.returncode or left.stderr or right.stderr:
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_EXECUTION_FAILED"
-            elif source_events != target_events:
+            elif not _approved_effect_ids_match(
+                    source_events, target_events, relation_authority):
+                status=ValidationStatus.FAILED; reason="L2_EFFECT_APPROVED_TARGET_EFFECT_MISSING"
+            elif parser is None and not _approved_fence_matches(
+                    source_events, target_events, relation_authority):
+                status=ValidationStatus.FAILED; reason="L2_EFFECT_APPROVED_RELATION_NOT_SATISFIED"
+            elif parser is not None and source_events != target_events:
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_TRACE_MISMATCH"
             else:
                 status=ValidationStatus.VERIFIED; reason=""
@@ -292,7 +371,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             summary={"schemaVersion":"riscv2x86.auto-l2-effect-result.v1","status":status.value,
                      "reasonCode":reason,"fragmentId":observation["fragmentId"],
                      "attemptId":observation["attemptId"],"mode":mode,
-                     "eventCount":len(source_events or []),"shellRelationIdentity":shell["identity"],
+                     "eventCount":len(source_events or []),
+                     "effectRelationSetIdentity":relation_authority["effectRelationSetIdentity"],
                      "observationEvidenceIdentity":evidence,"replayArtifact":"effect-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:

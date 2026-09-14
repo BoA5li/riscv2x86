@@ -10,6 +10,8 @@ from riscv2x86_py.l2_effect_trace_differential import (
     compare_effect_traces, effect_trace_authority_from_dict,
     run_l2_effect_trace_differential, validate_shell_contract,
 )
+from riscv2x86_py.effect_relation import ApprovedEffectRelation, EffectOrderingRequirement
+from riscv2x86_py.l2_authority import effect_relation_set_identity
 from riscv2x86_py.l2_operand_differential import (
     LOGICAL_OPERAND_AUTHORITY_SCHEMA, logical_operand_authority_from_dict,
 )
@@ -66,12 +68,22 @@ def _declaration(event):
     }
 
 
-def _relation(source_id, target_ids, kind="exact", obligations=None):
-    return {
-        "sourceEffectId": source_id, "targetEffectIds": sorted(target_ids), "relationKind": kind,
-        "observableRequirements": sorted(obligations or ["kind", "memory-coordinates", "memory-order", "subject", "value"]),
-        "orderingRequirements": ["preserve-predecessors", "preserve-program-order"], "complete": True,
-    }
+def _relation(source_id, target_ids, kind="exact", obligations=None, ordering=(),
+              runtime_contract_id=""):
+    aliases = {"memory-coordinates": "memory_coordinates", "memory-order": "memory_order",
+               "branch-outcome": "branch_outcome", "trap-detail": "trap_detail",
+               "external-detail": "external_detail", "csr-value": "csr_value",
+               "privilege-state": "privilege_state"}
+    canonical = [aliases.get(item, item) for item in
+                 (obligations or ["kind", "memory_coordinates", "memory_order", "subject", "value"])]
+    if kind == "runtime-mediated":
+        kind = "runtime_mediated"
+        runtime_contract_id = runtime_contract_id or "runtime-1"
+    return ApprovedEffectRelation(
+        "relation:" + source_id, source_id, tuple(sorted(target_ids)), kind,
+        tuple(sorted(canonical)), tuple(EffectOrderingRequirement(*item) for item in ordering),
+        runtime_contract_id, True,
+    ).to_dict()
 
 
 def _effect_sidecar(shell_identity, source_events, relations, *, memory_carrier="compiler-barrier"):
@@ -147,7 +159,10 @@ def test_strengthened_fence_is_allowed_only_by_approved_relation():
     assert compare_effect_traces(source=_observation(operand.identity, "source", [source]),
                                  target=_observation(operand.identity, "target", [target]),
                                  authority=authority, fragment_id="fragment-1") == ()
-    exact = deepcopy(authority.payload); exact["fragments"][0]["relations"][0]["relationKind"] = "exact"
+    exact = deepcopy(authority.payload)
+    exact["fragments"][0]["relations"] = [
+        _relation("source:0", ["target:0"], "exact", ["kind", "memory_order", "subject"])
+    ]
     exact_authority = effect_trace_authority_from_dict(exact)
     assert any("observable-effect-mismatch" in item for item in compare_effect_traces(
         source=_observation(operand.identity, "source", [source]),
@@ -170,12 +185,13 @@ def test_uncovered_extra_effect_and_reversed_predecessor_fail_closed():
     operand = logical_operand_authority_from_dict(_operand_sidecar())
     source0, source1 = _memory("source:0", 0), _memory("source:1", 1, predecessors=("source:0",))
     target1, target0 = _memory("target:1", 0), _memory("target:0", 1)
-    relations = [_relation("source:0", ["target:0"]), _relation("source:1", ["target:1"])]
+    relations = [_relation("source:0", ["target:0"]),
+                 _relation("source:1", ["target:1"], ordering=(("source:0", "source:1"),))]
     authority = effect_trace_authority_from_dict(_effect_sidecar(operand.identity, [source0, source1], relations))
     reasons = compare_effect_traces(source=_observation(operand.identity, "source", [source0, source1]),
                                     target=_observation(operand.identity, "target", [target1, target0]),
                                     authority=authority, fragment_id="fragment-1")
-    assert any("ordering-predecessor" in item or "program-order" in item for item in reasons)
+    assert any("ordering-requirement" in item for item in reasons)
 
     extra = SemanticEvent("target:extra", 2, "fragment-1", "external", "debug-write", None,
                           "", None, 0, 0, "", "", None, "", "visible", ())
@@ -225,14 +241,8 @@ def test_effect_authority_must_be_complete_proof_output_with_source_locations():
         lambda value: value["fragments"][0]["sourceEvents"][0].pop("sourceLocation"),
     ):
         raw = deepcopy(base); mutate(raw)
-        if raw["fragments"][0]["relations"][0]["observableRequirements"] == []:
-            authority = effect_trace_authority_from_dict(raw)
-            reasons = compare_effect_traces(source=_observation(operand.identity, "source", [source]),
-                                            target=_observation(operand.identity, "target", [_memory("target:0", 0)]),
-                                            authority=authority, fragment_id="fragment-1")
-            assert any("observable-requirements-incomplete" in item for item in reasons)
-        else:
-            with pytest.raises(ValueError): effect_trace_authority_from_dict(raw)
+        with pytest.raises(ValueError):
+            effect_trace_authority_from_dict(raw)
 
 
 def test_composite_l2_runner_requires_l2a_shell_effect_proof_and_runtime_bindings(tmp_path):
@@ -247,6 +257,9 @@ def test_composite_l2_runner_requires_l2a_shell_effect_proof_and_runtime_binding
     artifact = SimpleNamespace(
         fragment_id="fragment-1", shell_facts_identity=operand.identity, proof_identity=effect.identity,
         runtime_contract_id="runtime-1", runtime_contract_version="v1", recipe_id="recipe-1",
+        effect_relation_set_identity=effect_relation_set_identity(
+            "fragment-1", effect_raw["fragments"][0]["relations"],
+        ),
     )
     result = run_l2_effect_trace_differential(
         config, level=ValidationLevel.L2, translation_artifact=artifact,
@@ -261,7 +274,7 @@ def test_composite_l2_runner_requires_l2a_shell_effect_proof_and_runtime_binding
         source_observation=_observation(operand.identity, "source", [source_event]),
         target_observation=_observation(operand.identity, "target", [target_event]),
         comparison_policy="riscv2x86.comparison-policy.architectural.v1",
-    ).status is ValidationStatus.FAILED
+    ).status is ValidationStatus.INCONCLUSIVE
 
     registry = validation_runtime_registry_from_dict({
         "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-v1",
@@ -273,3 +286,77 @@ def test_composite_l2_runner_requires_l2a_shell_effect_proof_and_runtime_binding
         }}},
     })
     assert registry.validator_for(ValidationLevel.L2) is not None
+
+
+def _run_authority_case(tmp_path, relations, target_events, *, artifact_runtime="runtime-1",
+                        artifact_version="v1", proof_matches=True):
+    operand_raw = _operand_sidecar()
+    operand = logical_operand_authority_from_dict(operand_raw)
+    source_event = _memory("source:0", 0)
+    effect_raw = _effect_sidecar(operand.identity, [source_event], relations)
+    effect = effect_trace_authority_from_dict(effect_raw)
+    operand_path, effect_path = tmp_path / "operands.json", tmp_path / "effects.json"
+    operand_path.write_text(json.dumps(operand_raw), encoding="utf-8")
+    effect_path.write_text(json.dumps(effect_raw), encoding="utf-8")
+    artifact = SimpleNamespace(
+        fragment_id="fragment-1", shell_facts_identity=operand.identity,
+        proof_identity=(effect.identity if proof_matches else _digest("wrong-proof")),
+        runtime_contract_id=artifact_runtime, runtime_contract_version=artifact_version,
+        recipe_id="recipe-1", effect_relation_set_identity=effect_relation_set_identity(
+            "fragment-1", effect_raw["fragments"][0]["relations"],
+        ),
+    )
+    return run_l2_effect_trace_differential(
+        L2EffectRunnerConfig(str(operand_path), str(effect_path)),
+        level=ValidationLevel.L2, translation_artifact=artifact,
+        source_observation=_observation(operand.identity, "source", [source_event]),
+        target_observation=_observation(operand.identity, "target", target_events),
+        comparison_policy="riscv2x86.comparison-policy.architectural.v1",
+    )
+
+
+def test_missing_approved_relation_is_inconclusive(tmp_path):
+    result = _run_authority_case(tmp_path, [], [_memory("target:0", 0)])
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert "missingSourceEffectIds" in result.detail
+
+
+def test_runtime_relation_without_contract_is_inconclusive(tmp_path):
+    relation = ApprovedEffectRelation(
+        "relation:runtime:0", "source:0", ("target:call", "target:effect"),
+        "runtime_mediated", ("kind", "memory_coordinates", "memory_order", "subject", "value"),
+        (), "", True,
+    ).to_dict()
+    result = _run_authority_case(
+        tmp_path, [relation], [_call("target:call", 0), _memory("target:effect", 1)],
+    )
+    assert result.status is ValidationStatus.INCONCLUSIVE
+
+
+def test_claimed_target_effect_missing_is_failed(tmp_path):
+    relation = _relation("source:0", ["target:0"])
+    result = _run_authority_case(tmp_path, [relation], [])
+    assert result.status is ValidationStatus.FAILED
+    assert "target-trace-relation-coverage-mismatch" in result.detail
+
+
+def test_incomplete_relation_is_inconclusive(tmp_path):
+    relation = ApprovedEffectRelation(
+        "relation:source:0", "source:0", ("target:0",), "exact",
+        ("kind", "memory_coordinates", "memory_order", "subject", "value"),
+        (), "", False,
+    ).to_dict()
+    result = _run_authority_case(tmp_path, [relation], [_memory("target:0", 0)])
+    assert result.status is ValidationStatus.INCONCLUSIVE
+
+
+@pytest.mark.parametrize("change", ("proof", "runtime", "version"))
+def test_proof_runtime_or_version_mismatch_is_inconclusive(tmp_path, change):
+    relation = _relation("source:0", ["target:0"])
+    result = _run_authority_case(
+        tmp_path, [relation], [_memory("target:0", 0)],
+        proof_matches=change != "proof",
+        artifact_runtime=("wrong-runtime" if change == "runtime" else "runtime-1"),
+        artifact_version=("v2" if change == "version" else "v1"),
+    )
+    assert result.status is ValidationStatus.INCONCLUSIVE

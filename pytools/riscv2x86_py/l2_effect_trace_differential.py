@@ -16,15 +16,13 @@ from .l2_operand_differential import (
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_observation import ExecutionObservation, SemanticEvent
 from .validation_status import ValidationStatus
+from .effect_relation import ApprovedEffectRelation, approved_effect_relation_from_dict
+from .l2_authority import effect_relation_set_identity
 
 
 EFFECT_TRACE_AUTHORITY_SCHEMA = "riscv2x86.effect-trace-authority.v1"
 L2_EFFECT_RUNNER_SCHEMA = "riscv2x86.l2-effect-trace-differential-runner.v1"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
-_RELATIONS = {"exact", "strengthened", "runtime-mediated"}
-_OBLIGATIONS = {"kind", "subject", "value", "memory-coordinates", "memory-order", "branch-outcome",
-                "target", "trap-detail", "external-detail", "csr-value", "privilege-state"}
-_ORDERING = {"preserve-predecessors", "preserve-program-order"}
 _MEMORY_KINDS = {"read_memory", "write_memory", "atomic"}
 
 
@@ -88,26 +86,6 @@ class SourceEffectDeclaration:
 
 
 @dataclass(frozen=True)
-class ApprovedEffectRelation:
-    source_effect_id: str
-    target_effect_ids: tuple[str, ...]
-    relation_kind: str
-    observable_requirements: tuple[str, ...]
-    ordering_requirements: tuple[str, ...]
-    complete: bool
-
-    def __post_init__(self) -> None:
-        if not self.source_effect_id or not self.target_effect_ids or self.relation_kind not in _RELATIONS:
-            raise ValueError("effect relation is incomplete")
-        if self.target_effect_ids != tuple(sorted(set(self.target_effect_ids))):
-            raise ValueError("target effect IDs must be unique and sorted")
-        if not self.complete or set(self.ordering_requirements) != _ORDERING:
-            raise ValueError("approved effect relation must be complete and preserve dependency/program order")
-        if self.relation_kind == "exact" and len(self.target_effect_ids) != 1:
-            raise ValueError("exact relation requires one target effect")
-
-
-@dataclass(frozen=True)
 class SourceShellContract:
     volatile: bool
     memory_clobber: bool
@@ -152,8 +130,10 @@ class FragmentEffectAuthority:
     def __post_init__(self) -> None:
         source_ids = tuple(item.event_id for item in self.source_events)
         relation_ids = tuple(item.source_effect_id for item in self.relations)
-        if source_ids != tuple(sorted(set(source_ids))) or relation_ids != source_ids:
-            raise ValueError("effect relations must completely and canonically cover source effects")
+        if source_ids != tuple(sorted(set(source_ids))):
+            raise ValueError("source effects must be unique and canonically ordered")
+        if relation_ids != tuple(sorted(set(relation_ids))):
+            raise ValueError("effect relations must be unique and canonically ordered")
         if any(item.fragment_id != self.fragment_id for item in self.source_events):
             raise ValueError("source effect references another fragment")
         target_ids = [item for relation in self.relations for item in relation.target_effect_ids]
@@ -278,16 +258,7 @@ def effect_trace_authority_from_dict(value: Mapping[str, object]) -> EffectTrace
         relations = []
         for relation in raw_relations:
             if not isinstance(relation, Mapping): raise ValueError("effect relation must be an object")
-            _fields(relation, {"sourceEffectId", "targetEffectIds", "relationKind", "observableRequirements",
-                               "orderingRequirements", "complete"}, "effect relation")
-            relations.append(ApprovedEffectRelation(
-                _string(relation, "sourceEffectId", "effect relation"),
-                _strings(relation.get("targetEffectIds"), "target effect IDs"),
-                _string(relation, "relationKind", "effect relation"),
-                _strings(relation.get("observableRequirements"), "observable requirements", allowed=_OBLIGATIONS),
-                _strings(relation.get("orderingRequirements"), "ordering requirements", allowed=_ORDERING),
-                _boolean(relation, "complete", "effect relation"),
-            ))
+            relations.append(approved_effect_relation_from_dict(relation))
         source_shell, target_shell = _parse_shell(raw.get("sourceShell"), raw.get("targetShellRecipe"))
         fragments.append(FragmentEffectAuthority(fragment_id, tuple(events), tuple(relations), source_shell, target_shell))
     return EffectTraceAuthoritySidecar(
@@ -319,15 +290,15 @@ def load_l2_effect_runner_config(value: Mapping[str, object]) -> L2EffectRunnerC
 
 def _required_obligations(event: SemanticEvent) -> set[str]:
     required = {"kind", "subject"}
-    if event.kind in _MEMORY_KINDS: required |= {"value", "memory-coordinates", "memory-order"}
-    if event.kind == "fence": required.add("memory-order")
+    if event.kind in _MEMORY_KINDS: required |= {"value", "memory_coordinates", "memory_order"}
+    if event.kind == "fence": required.add("memory_order")
     if event.kind in {"read_operand", "write_operand", "return"}: required.add("value")
-    if event.kind == "branch": required.add("branch-outcome")
+    if event.kind == "branch": required.add("branch_outcome")
     if event.kind in {"call", "return"}: required.add("target")
-    if event.kind == "trap": required.add("trap-detail")
-    if event.kind == "external": required.add("external-detail")
-    if event.kind in {"csr_read", "csr_write"}: required.add("csr-value")
-    if event.kind == "privilege_transition": required.add("privilege-state")
+    if event.kind == "trap": required.add("trap_detail")
+    if event.kind == "external": required.add("external_detail")
+    if event.kind in {"csr_read", "csr_write"}: required.add("csr_value")
+    if event.kind == "privilege_transition": required.add("privilege_state")
     return required
 
 
@@ -336,16 +307,18 @@ def _obligations_match(source: SemanticEvent, target: SemanticEvent, obligations
         "kind": source.kind == target.kind,
         "subject": source.subject_id == target.subject_id,
         "value": source.value == target.value,
-        "memory-coordinates": (source.object_id, source.offset, source.access_size, source.alignment,
+        "memory_coordinates": (source.object_id, source.offset, source.access_size, source.alignment,
                                source.atomicity) == (target.object_id, target.offset, target.access_size,
                                                       target.alignment, target.atomicity),
-        "memory-order": source.memory_order == target.memory_order,
-        "branch-outcome": source.branch_taken == target.branch_taken,
+        "memory_order": source.memory_order == target.memory_order,
+        "compiler_ordering": source.memory_order == target.memory_order,
+        "hardware_ordering": source.memory_order == target.memory_order,
+        "branch_outcome": source.branch_taken == target.branch_taken,
         "target": source.target_id == target.target_id,
-        "trap-detail": source.detail == target.detail,
-        "external-detail": source.detail == target.detail,
-        "csr-value": source.value == target.value,
-        "privilege-state": (source.subject_id, source.value, source.detail) ==
+        "trap_detail": source.detail == target.detail,
+        "external_detail": source.detail == target.detail,
+        "csr_value": source.value == target.value,
+        "privilege_state": (source.subject_id, source.value, source.detail) ==
                            (target.subject_id, target.value, target.detail),
     }
     return all(checks[item] for item in obligations)
@@ -396,15 +369,22 @@ def compare_effect_traces(*, source: ExecutionObservation, target: ExecutionObse
     if set(target_events) != covered_targets: reasons.append("target-trace-relation-coverage-mismatch")
     target_sequences = {event.event_id: event.sequence for event in target_events.values()}
     for source_id in sorted(set(source_events) & set(declared)):
-        event, declaration, relation = source_events[source_id], declared[source_id], relations[source_id]
+        relation = relations.get(source_id)
+        if relation is None:
+            reasons.append("effect:" + source_id + ":approved-relation-missing")
+            continue
+        event, declaration = source_events[source_id], declared[source_id]
         prefix = "effect:" + source_id + ":"
+        if not relation.authority_complete:
+            reasons.append(prefix + "approved-relation-incomplete")
+            continue
         if (event.kind, event.subject_id) != (declaration.event_kind, declaration.logical_subject):
             reasons.append(prefix + "source-declaration-mismatch")
         if not _required_obligations(event).issubset(relation.observable_requirements):
             reasons.append(prefix + "observable-requirements-incomplete")
         targets = [target_events[item] for item in relation.target_effect_ids if item in target_events]
         if len(targets) != len(relation.target_effect_ids): continue
-        if relation.relation_kind == "runtime-mediated":
+        if relation.relation_kind == "runtime_mediated":
             if not any(item.kind in {"call", "external"} for item in targets):
                 reasons.append(prefix + "runtime-carrier-missing")
             obligations = tuple(item for item in relation.observable_requirements if item not in {"kind", "target"})
@@ -412,7 +392,10 @@ def compare_effect_traces(*, source: ExecutionObservation, target: ExecutionObse
                 reasons.append(prefix + "runtime-observable-effect-mismatch")
         else:
             carrier = targets[-1]
-            obligations = tuple(item for item in relation.observable_requirements if item not in {"kind", "memory-order"}) if relation.relation_kind == "strengthened" else relation.observable_requirements
+            obligations = tuple(
+                item for item in relation.observable_requirements
+                if item not in {"kind", "memory_order", "compiler_ordering", "hardware_ordering"}
+            ) if relation.relation_kind == "strengthened" else relation.observable_requirements
             if not _obligations_match(event, carrier, obligations):
                 reasons.append(prefix + "observable-effect-mismatch")
             if relation.relation_kind == "strengthened":
@@ -422,23 +405,18 @@ def compare_effect_traces(*, source: ExecutionObservation, target: ExecutionObse
                     reasons.append(prefix + "invalid-strengthening-kind")
                 if not _order_strengthens(event.memory_order, carrier.memory_order):
                     reasons.append(prefix + "unproved-order-strengthening")
-        for predecessor in event.ordering_predecessors:
-            predecessor_relation = relations.get(predecessor)
-            if predecessor_relation is None: reasons.append(prefix + "predecessor-relation-missing"); continue
-            predecessor_sequences = [target_sequences[item] for item in predecessor_relation.target_effect_ids if item in target_sequences]
-            current_sequences = [target_sequences[item] for item in relation.target_effect_ids if item in target_sequences]
-            if not predecessor_sequences or not current_sequences or max(predecessor_sequences) >= min(current_sequences):
-                reasons.append(prefix + "ordering-predecessor-not-preserved")
-    ordered_sources = sorted(source_events.values(), key=lambda item: item.sequence)
-    previous_target_max = -1
-    for event in ordered_sources:
-        relation = relations.get(event.event_id)
-        if relation is None or "preserve-program-order" not in relation.ordering_requirements:
-            continue
-        sequences = [target_sequences[item] for item in relation.target_effect_ids if item in target_sequences]
-        if sequences and min(sequences) <= previous_target_max:
-            reasons.append("effect:" + event.event_id + ":program-order-not-preserved")
-        if sequences: previous_target_max = max(sequences)
+        for ordering in relation.ordering_requirements:
+            before_relation = relations.get(ordering.before)
+            after_relation = relations.get(ordering.after)
+            if before_relation is None or after_relation is None:
+                reasons.append(prefix + "ordering-relation-missing")
+                continue
+            before = [target_sequences[item] for item in before_relation.target_effect_ids
+                      if item in target_sequences]
+            after = [target_sequences[item] for item in after_relation.target_effect_ids
+                     if item in target_sequences]
+            if not before or not after or max(before) >= min(after):
+                reasons.append(prefix + "ordering-requirement-not-preserved")
     return tuple(sorted(set(reasons)))
 
 
@@ -458,21 +436,50 @@ def run_l2_effect_trace_differential(config: L2EffectRunnerConfig, **kwargs: obj
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                      detail="L2 authority unavailable: " + str(exc))
     except (ValueError, json.JSONDecodeError) as exc:
-        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED,
+        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                      detail="L2 authority invalid: " + str(exc))
     artifact = kwargs.get("translation_artifact")
     fragment_id = getattr(artifact, "fragment_id", "")
     shell_identity = getattr(artifact, "shell_facts_identity", "")
     if operand_authority.identity != shell_identity or effect_authority.source_shell_facts_identity != shell_identity:
-        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2 shell authority mismatch")
+        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail="L2 shell authority mismatch")
     if effect_authority.identity != getattr(artifact, "proof_identity", ""):
-        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2 relation proof identity mismatch")
+        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail="L2 relation proof identity mismatch")
     if (effect_authority.runtime_contract_id, effect_authority.runtime_contract_version) != (
             getattr(artifact, "runtime_contract_id", ""), getattr(artifact, "runtime_contract_version", "")):
-        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2 runtime contract mismatch")
+        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail="L2 runtime contract mismatch")
     fragment = effect_authority.for_fragment(fragment_id)
     if fragment is None:
-        reasons = ("effect-authority-fragment-missing",)
+        return ValidationLayerResult(
+            ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+            detail="effect-authority-fragment-missing",
+        )
+    relation_set_identity = effect_relation_set_identity(
+        fragment_id, [item.to_dict() for item in fragment.relations],
+    )
+    if relation_set_identity != getattr(artifact, "effect_relation_set_identity", ""):
+        return ValidationLayerResult(
+            ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+            detail="L2 approved relation set identity mismatch",
+        )
+    incomplete = tuple(
+        item.relation_id for item in fragment.relations
+        if not item.authority_complete
+        or (item.relation_kind == "runtime_mediated"
+            and item.runtime_contract_id != getattr(artifact, "runtime_contract_id", ""))
+    )
+    declared_ids = {item.event_id for item in fragment.source_events}
+    related_ids = {item.source_effect_id for item in fragment.relations}
+    if incomplete or declared_ids != related_ids:
+        detail = {
+            "reasonCode": "L2_APPROVED_EFFECT_RELATION_INCOMPLETE",
+            "incompleteRelationIds": list(incomplete),
+            "missingSourceEffectIds": sorted(declared_ids - related_ids),
+        }
+        return ValidationLayerResult(
+            ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+            detail=json.dumps(detail, sort_keys=True),
+        )
     else:
         reasons = (
             *compare_logical_operands(source=source, target=target, authority=operand_authority,
