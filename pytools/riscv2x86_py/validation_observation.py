@@ -13,6 +13,7 @@ from typing import Mapping
 from .validation_status import PreservationMode
 
 VALIDATION_OBSERVATION_SCHEMA = "riscv2x86.validation-observation.v2"
+SEMANTIC_EVENT_SCHEMA = "riscv2x86.semantic-event.v2"
 RUNNER_COMMAND_PROFILE_SCHEMA = "riscv2x86.runner-command-profile.v1"
 OBSERVATION_CANONICALIZER_VERSION = "riscv2x86.observation-canonicalizer.v1"
 _HEX = re.compile(r"^0x[0-9a-f]+$")
@@ -25,6 +26,16 @@ _EVENT_KINDS = {"read_operand", "write_operand", "read_memory", "write_memory",
 _MEMORY_ORDERS = {"not_applicable", "relaxed", "consume", "acquire", "release",
                   "acq_rel", "seq_cst", "compiler", "hardware"}
 _ATOMICITIES = {"none", "atomic", "lr_sc", "amo", "lock_prefixed"}
+_EVENT_KIND_NAMES = {
+    "read_operand": "ReadOperand", "write_operand": "WriteOperand",
+    "read_memory": "ReadMemory", "write_memory": "WriteMemory",
+    "branch": "Branch", "call": "RuntimeHelper", "return": "Return",
+    "trap": "Trap", "fence": "Fence", "atomic": "Atomic",
+    "external": "External", "csr_read": "CsrRead", "csr_write": "CsrWrite",
+    "privilege_transition": "PrivilegeTransition", "privileged_state": "PrivilegedState",
+}
+_EVENT_KIND_VALUES = {value: key for key, value in _EVENT_KIND_NAMES.items()}
+_RAW_ADDRESS = re.compile(r"^(?:0x[0-9a-fA-F]+|[0-9]{6,})$")
 
 
 def _canonical_json(value: object) -> str:
@@ -300,9 +311,29 @@ class MemoryObjectObservation:
 
 
 @dataclass(frozen=True)
+class SemanticEventSourceLocation:
+    file_identity: str
+    fragment_offset: int
+
+    def __post_init__(self) -> None:
+        _require_digest(self.file_identity, "semantic event source file identity")
+        if self.fragment_offset < 0:
+            raise ValueError("semantic event fragment offset is invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"fileIdentity": self.file_identity, "fragmentOffset": self.fragment_offset}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "SemanticEventSourceLocation":
+        _fields(value, {"fileIdentity", "fragmentOffset"}, "semantic event source location")
+        return cls(_str(value, "fileIdentity", "source location"),
+                   _int(value, "fragmentOffset", "source location"))
+
+
+@dataclass(frozen=True)
 class SemanticEvent:
     event_id: str
-    sequence: int
+    execution_order: int
     fragment_id: str
     kind: str
     subject_id: str
@@ -316,57 +347,173 @@ class SemanticEvent:
     branch_taken: bool | None
     target_id: str
     detail: str
-    ordering_predecessors: tuple[str, ...] = ()
+    ordering_predecessors: tuple[str, ...]
+    source_location: SemanticEventSourceLocation
+    termination: bool | None = None
+    schema_version: str = SEMANTIC_EVENT_SCHEMA
 
     def __post_init__(self) -> None:
-        if not self.event_id or self.sequence < 0 or not self.fragment_id or self.kind not in _EVENT_KINDS:
+        if (self.schema_version != SEMANTIC_EVENT_SCHEMA or not self.event_id
+                or self.execution_order < 0 or not self.fragment_id
+                or self.kind not in _EVENT_KINDS):
             raise ValueError("semantic event identity/kind is invalid")
-        _canonical_set(self.ordering_predecessors, "ordering predecessors")
+        if not isinstance(self.source_location, SemanticEventSourceLocation):
+            raise ValueError("semantic event source location is required")
+        if (not all(isinstance(item, str) and item for item in self.ordering_predecessors)
+                or len(set(self.ordering_predecessors)) != len(self.ordering_predecessors)):
+            raise ValueError("ordering predecessors must be unique and preserve producer order")
         memory = self.kind in {"read_memory", "write_memory", "atomic"}
         if memory:
-            if not self.object_id or self.offset is None or self.offset < 0 or self.access_size <= 0 or self.alignment <= 0:
-                raise ValueError("memory event coordinates are invalid")
+            if (not self.object_id or _RAW_ADDRESS.fullmatch(self.object_id)
+                    or self.offset is None or self.offset < 0
+                    or self.access_size <= 0 or self.alignment <= 0):
+                raise ValueError("memory event coordinates are not object-relative")
             if self.atomicity not in _ATOMICITIES or self.memory_order not in _MEMORY_ORDERS or self.value is None:
-                raise ValueError("memory event value/ordering is invalid")
-            if ((self.atomicity == "none" and self.memory_order not in {"not_applicable", "relaxed"}) or
-                    (self.atomicity != "none" and self.memory_order == "not_applicable") or
-                    self.kind == "atomic" and self.atomicity == "none"):
+                raise ValueError("memory event value/size/alignment/atomicity/order is incomplete")
+            if ((self.atomicity == "none" and self.memory_order not in {"not_applicable", "relaxed"})
+                    or (self.atomicity != "none" and self.memory_order == "not_applicable")
+                    or self.kind == "atomic" and self.atomicity == "none"):
                 raise ValueError("memory order and atomicity are inconsistent")
-        elif self.object_id or self.offset is not None or self.access_size or self.alignment:
+        elif self.object_id or self.offset is not None or self.access_size or self.alignment or self.atomicity:
             raise ValueError("non-memory event cannot carry memory coordinates")
         if self.kind == "fence":
             if self.memory_order not in _MEMORY_ORDERS - {"not_applicable"}:
                 raise ValueError("fence event requires an explicit ordering")
         elif not memory and self.memory_order:
             raise ValueError("memory order is only valid on memory or fence events")
-        if (self.kind == "branch") != isinstance(self.branch_taken, bool):
+        if self.kind == "branch":
+            if not isinstance(self.branch_taken, bool) or self.value is None or not self.target_id:
+                raise ValueError("branch requires condition, taken state, and continuation")
+        elif self.branch_taken is not None:
             raise ValueError("branch taken fact is present on the wrong event kind")
+        if self.kind == "trap":
+            if not self.detail or not self.target_id or not isinstance(self.termination, bool):
+                raise ValueError("trap requires cause, continuation, and termination")
+        elif self.termination is not None:
+            raise ValueError("termination is only valid on trap events")
+        if self.kind == "call" and not self.target_id:
+            raise ValueError("runtime helper event requires a declared target")
+
+    @property
+    def sequence(self) -> int:
+        """Read-only compatibility alias; persisted schema uses executionOrder."""
+        return self.execution_order
+
+    def _payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        if self.value is not None: payload["value"] = self.value.to_dict()
+        if self.object_id:
+            payload.update({"objectId": self.object_id, "offset": self.offset,
+                            "size": self.access_size, "alignment": self.alignment,
+                            "atomicity": self.atomicity, "memoryOrder": self.memory_order})
+        elif self.kind == "fence": payload["memoryOrder"] = self.memory_order
+        if self.kind == "branch":
+            payload.update({"condition": self.value.to_dict(), "taken": self.branch_taken,
+                            "continuation": self.target_id})
+            payload.pop("value", None)
+        elif self.target_id: payload["targetId"] = self.target_id
+        if self.detail: payload["detail"] = self.detail
+        if self.kind == "trap":
+            payload.update({"cause": self.detail, "continuation": self.target_id,
+                            "termination": self.termination})
+            payload.pop("detail", None); payload.pop("targetId", None)
+        return payload
 
     def to_dict(self) -> dict[str, object]:
-        return {"eventId": self.event_id, "sequence": self.sequence, "fragmentId": self.fragment_id,
-                "kind": self.kind, "subjectId": self.subject_id,
-                "value": None if self.value is None else self.value.to_dict(), "objectId": self.object_id,
-                "offset": self.offset, "accessSize": self.access_size, "alignment": self.alignment,
-                "atomicity": self.atomicity, "memoryOrder": self.memory_order,
-                "branchTaken": self.branch_taken, "targetId": self.target_id, "detail": self.detail,
-                "orderingPredecessors": list(self.ordering_predecessors)}
+        return {
+            "schemaVersion": self.schema_version, "eventId": self.event_id,
+            "fragmentId": self.fragment_id, "eventKind": _EVENT_KIND_NAMES[self.kind],
+            "logicalSubject": self.subject_id, "payload": self._payload(),
+            "executionOrder": self.execution_order,
+            "orderingPredecessors": list(self.ordering_predecessors),
+            "sourceLocation": self.source_location.to_dict(),
+        }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "SemanticEvent":
-        _fields(value, {"eventId", "sequence", "fragmentId", "kind", "subjectId", "value", "objectId",
-                        "offset", "accessSize", "alignment", "atomicity", "memoryOrder", "branchTaken",
-                        "targetId", "detail", "orderingPredecessors"}, "semantic event")
-        val, offset, taken = value.get("value"), value.get("offset"), value.get("branchTaken")
-        if val is not None and not isinstance(val, Mapping): raise ValueError("event value is invalid")
-        if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int)): raise ValueError("event offset is invalid")
-        if taken is not None and not isinstance(taken, bool): raise ValueError("branchTaken is invalid")
-        return cls(_str(value, "eventId", "event"), _int(value, "sequence", "event"),
-                   _str(value, "fragmentId", "event"), _str(value, "kind", "event"),
-                   _str(value, "subjectId", "event", True), CanonicalValue.from_dict(val) if isinstance(val, Mapping) else None,
-                   _str(value, "objectId", "event", True), offset, _int(value, "accessSize", "event"),
-                   _int(value, "alignment", "event"), _str(value, "atomicity", "event", True),
-                   _str(value, "memoryOrder", "event", True), taken, _str(value, "targetId", "event", True),
-                   _str(value, "detail", "event", True), _strs(value.get("orderingPredecessors"), "orderingPredecessors"))
+        _fields(value, {"schemaVersion", "eventId", "fragmentId", "eventKind",
+                        "logicalSubject", "payload", "executionOrder",
+                        "orderingPredecessors", "sourceLocation"}, "semantic event")
+        if value.get("schemaVersion") != SEMANTIC_EVENT_SCHEMA:
+            raise ValueError("semantic event schema is unsupported")
+        kind_name = _str(value, "eventKind", "event")
+        if kind_name not in _EVENT_KIND_VALUES:
+            raise ValueError("semantic event kind is unsupported")
+        kind = _EVENT_KIND_VALUES[kind_name]
+        payload, location = value.get("payload"), value.get("sourceLocation")
+        if not isinstance(payload, Mapping) or not isinstance(location, Mapping):
+            raise ValueError("semantic event payload/source location is invalid")
+        memory = kind in {"read_memory", "write_memory", "atomic"}
+        exact = ({"objectId", "offset", "size", "value", "alignment", "atomicity", "memoryOrder"}
+                 if memory else {"memoryOrder"} if kind == "fence" else
+                 {"condition", "taken", "continuation"} if kind == "branch" else
+                 {"cause", "continuation", "termination"} if kind == "trap" else None)
+        allowed = ({"value", "detail"} if kind in {
+            "read_operand", "write_operand", "csr_read", "csr_write", "privileged_state",
+        } else {"targetId", "detail"} if kind in {"call", "external"}
+            else {"value", "targetId", "detail"})
+        if ((exact is not None and set(payload) != exact)
+                or (exact is None and not set(payload).issubset(allowed))):
+            raise ValueError("semantic event payload fields are incomplete or unknown")
+        raw_value = payload.get("condition") if kind == "branch" else payload.get("value")
+        if raw_value is not None and not isinstance(raw_value, Mapping):
+            raise ValueError("semantic event canonical value is invalid")
+        offset = payload.get("offset")
+        if offset is not None and (isinstance(offset, bool) or not isinstance(offset, int)):
+            raise ValueError("semantic event offset is invalid")
+        taken, termination = payload.get("taken"), payload.get("termination")
+        if taken is not None and not isinstance(taken, bool): raise ValueError("event taken is invalid")
+        if termination is not None and not isinstance(termination, bool): raise ValueError("event termination is invalid")
+        target = payload.get("continuation", payload.get("targetId", ""))
+        detail = payload.get("cause", payload.get("detail", ""))
+        if not isinstance(target, str) or not isinstance(detail, str):
+            raise ValueError("semantic event target/detail is invalid")
+        return cls(
+            _str(value, "eventId", "event"), _int(value, "executionOrder", "event"),
+            _str(value, "fragmentId", "event"), kind,
+            _str(value, "logicalSubject", "event", True),
+            CanonicalValue.from_dict(raw_value) if isinstance(raw_value, Mapping) else None,
+            (_str(payload, "objectId", "event payload") if memory else ""), offset,
+            (_int(payload, "size", "event payload") if memory else 0),
+            (_int(payload, "alignment", "event payload") if memory else 0),
+            (_str(payload, "atomicity", "event payload") if memory else ""),
+            (_str(payload, "memoryOrder", "event payload")
+             if memory or kind == "fence" else ""),
+            taken, target, detail,
+            _strs(value.get("orderingPredecessors"), "orderingPredecessors"),
+            SemanticEventSourceLocation.from_dict(location), termination,
+            _str(value, "schemaVersion", "event"),
+        )
+
+
+def materialize_observable_semantic_events(
+    events: tuple[SemanticEvent, ...], *,
+    runtime_internal_event_ids: tuple[str, ...] = (),
+    declared_runtime_event_ids: tuple[str, ...] = (),
+) -> tuple[SemanticEvent, ...]:
+    """Producer-side exclusion of undeclared runtime internals.
+
+    This is deliberately separate from parsing: persisted observations are
+    never repaired or filtered.  A runtime event remains observable only when
+    its stable event ID is explicitly declared by the runtime contract.
+    """
+    for values, label in (
+        (runtime_internal_event_ids, "runtime internal event IDs"),
+        (declared_runtime_event_ids, "declared runtime event IDs"),
+    ):
+        if (not all(isinstance(item, str) and item for item in values)
+                or len(values) != len(set(values))):
+            raise ValueError(label + " must be unique non-empty strings")
+    known = {event.event_id for event in events}
+    if not set(runtime_internal_event_ids).issubset(known):
+        raise ValueError("runtime internal event declaration references an unknown event")
+    internal = set(runtime_internal_event_ids) - set(declared_runtime_event_ids)
+    retained = tuple(event for event in events if event.event_id not in internal)
+    retained_ids = {event.event_id for event in retained}
+    if any(predecessor not in retained_ids for event in retained
+           for predecessor in event.ordering_predecessors):
+        raise ValueError("excluding runtime internals would break observable ordering")
+    return retained
 
 
 @dataclass(frozen=True)
@@ -479,18 +626,35 @@ class ExecutionObservation:
         object_ids = tuple(x.object_id for x in self.memory_objects)
         if tuple(sorted(set(object_ids))) != object_ids:
             raise ValueError("memory objects must be unique and canonically ordered")
-        seen: set[str] = set()
-        for sequence, event in enumerate(self.semantic_events):
-            if event.sequence != sequence or event.event_id in seen:
-                raise ValueError("events require unique IDs and contiguous execution order")
+        event_ids = tuple(event.event_id for event in self.semantic_events)
+        execution_orders = tuple(event.execution_order for event in self.semantic_events)
+        if len(set(event_ids)) != len(event_ids):
+            raise ValueError("semantic event IDs must be unique")
+        if execution_orders != tuple(range(len(self.semantic_events))):
+            raise ValueError("semantic events must preserve unique canonical execution order")
+        known = set(event_ids)
+        by_id = {event.event_id: event for event in self.semantic_events}
+        for event in self.semantic_events:
             if event.fragment_id not in self.fragment_ids: raise ValueError("event references unknown fragment")
-            if any(pred not in seen for pred in event.ordering_predecessors):
-                raise ValueError("ordering predecessor must be an earlier event")
+            if any(pred not in known for pred in event.ordering_predecessors):
+                raise ValueError("ordering predecessor references an unknown event")
             if event.object_id and event.object_id not in object_ids: raise ValueError("event references unknown memory object")
-            seen.add(event.event_id)
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        def visit(event_id: str) -> None:
+            if event_id in visiting: raise ValueError("semantic event ordering graph contains a cycle")
+            if event_id in visited: return
+            visiting.add(event_id)
+            for predecessor in by_id[event_id].ordering_predecessors: visit(predecessor)
+            visiting.remove(event_id); visited.add(event_id)
+        for event_id in event_ids: visit(event_id)
+        order_by_id = {event.event_id: event.execution_order for event in self.semantic_events}
+        if any(order_by_id[pred] >= event.execution_order for event in self.semantic_events
+               for pred in event.ordering_predecessors):
+            raise ValueError("ordering predecessor contradicts execution order")
         sources = tuple(x.source_event_id for x in self.effect_relations)
         if tuple(sorted(set(sources))) != sources: raise ValueError("effect relations must be unique and sorted")
-        if any(target not in seen for x in self.effect_relations for target in x.target_event_ids):
+        if any(target not in known for x in self.effect_relations for target in x.target_event_ids):
             raise ValueError("effect relation references unknown target event")
         state_keys = tuple(x[0] for x in self.privileged_state)
         if tuple(sorted(set(state_keys))) != state_keys: raise ValueError("privileged state must be unique and sorted")

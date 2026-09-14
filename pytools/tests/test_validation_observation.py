@@ -9,8 +9,9 @@ from riscv2x86_py.validation_observation import (
     OBSERVATION_CANONICALIZER_VERSION, CanonicalValue, EffectRelation,
     ExecutionObservation, ExecutionResult, LogicalOperandObservation,
     MemoryObjectObservation, ObservationProvenance, RunnerCommandProfile,
-    SemanticEvent, TextObservation, ToolIdentity,
-    canonicalize_observation_input, validation_identity,
+    SemanticEvent, SemanticEventSourceLocation, TextObservation, ToolIdentity,
+    canonicalize_observation_input, materialize_observable_semantic_events,
+    validation_identity,
 )
 from riscv2x86_py.validation_status import PreservationMode
 
@@ -25,6 +26,10 @@ def _tool(name):
 
 def _value(number=42):
     return CanonicalValue("u64", f"0x{number:016x}", 64)
+
+
+def _location(offset=0):
+    return SemanticEventSourceLocation(_digest("source.c"), offset)
 
 
 def _observation(stdout="PASS\n", relations=()):
@@ -42,11 +47,11 @@ def _observation(stdout="PASS\n", relations=()):
         (MemoryObjectObservation("arg:buffer", 8, _digest("memory")),),
         (
             SemanticEvent("event:0", 0, "fragment-1", "write_memory", "", _value(),
-                          "arg:buffer", 0, 8, 8, "atomic", "release", None, "", "", ()),
-            SemanticEvent("event:1", 1, "fragment-1", "branch", "loop", None,
-                          "", None, 0, 0, "", "", True, "block:loop", "", ("event:0",)),
-            SemanticEvent("event:2", 2, "fragment-1", "branch", "loop", None,
-                          "", None, 0, 0, "", "", False, "block:exit", "", ("event:1",)),
+                          "arg:buffer", 0, 8, 8, "atomic", "release", None, "", "", (), _location()),
+            SemanticEvent("event:1", 1, "fragment-1", "branch", "loop", _value(1),
+                          "", None, 0, 0, "", "", True, "block:loop", "", ("event:0",), _location(1)),
+            SemanticEvent("event:2", 2, "fragment-1", "branch", "loop", _value(0),
+                          "", None, 0, 0, "", "", False, "block:exit", "", ("event:1",), _location(2)),
         ),
         relations, (("csr:mstatus", _value(128)),), ("csr:cycle-rate",),
         ObservationProvenance(
@@ -95,6 +100,54 @@ def test_memory_event_records_value_order_memory_order_and_fragment():
     event = _observation().semantic_events[0]
     assert (event.event_id, event.sequence, event.fragment_id) == ("event:0", 0, "fragment-1")
     assert (event.value, event.memory_order, event.ordering_predecessors) == (_value(), "release", ())
+
+
+def test_event_graph_rejects_duplicate_id_missing_predecessor_and_cycle():
+    observation = _observation()
+    events = observation.semantic_events
+    invalid = (
+        events[:2] + (replace(events[2], event_id="event:1"),),
+        (events[0], replace(events[1], ordering_predecessors=("event:missing",)), events[2]),
+        (replace(events[0], ordering_predecessors=("event:2",)), events[1], events[2]),
+    )
+    for candidate in invalid:
+        with pytest.raises(ValueError):
+            replace(observation, semantic_events=candidate)
+
+
+def test_parser_preserves_predecessor_order_and_rejects_noncanonical_execution_order():
+    observation = _observation()
+    events = observation.semantic_events
+    third = replace(events[2], ordering_predecessors=("event:1", "event:0"))
+    restored = ExecutionObservation.from_dict(
+        replace(observation, semantic_events=events[:2] + (third,)).to_dict()
+    )
+    assert restored.semantic_events[2].ordering_predecessors == ("event:1", "event:0")
+    raw = restored.to_dict()
+    raw["semanticEvents"][2]["executionOrder"] = 1
+    with pytest.raises(ValueError):
+        ExecutionObservation.from_dict(raw)
+
+
+def test_memory_event_rejects_raw_address_subject():
+    event = _observation().semantic_events[0]
+    with pytest.raises(ValueError, match="object-relative"):
+        replace(event, object_id="0x7fff1234")
+
+
+def test_undeclared_runtime_internal_access_is_not_observable():
+    call = SemanticEvent("event:call", 0, "fragment-1", "call", "runtime-helper", None,
+                         "", None, 0, 0, "", "", None, "runtime:clock", "", (), _location())
+    internal = SemanticEvent("event:internal", 1, "fragment-1", "read_memory", "runtime-state", _value(),
+                             "runtime:private-state", 0, 8, 8, "none", "relaxed", None, "", "", (),
+                             _location(1))
+    assert materialize_observable_semantic_events(
+        (call, internal), runtime_internal_event_ids=("event:internal",),
+    ) == (call,)
+    assert materialize_observable_semantic_events(
+        (call, internal), runtime_internal_event_ids=("event:internal",),
+        declared_runtime_event_ids=("event:internal",),
+    ) == (call, internal)
 
 
 def test_effect_relation_maps_one_source_effect_to_multiple_target_effects():

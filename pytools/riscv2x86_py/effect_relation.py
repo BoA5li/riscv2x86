@@ -16,7 +16,8 @@ EFFECT_RELATION_SCHEMA = "riscv2x86.effect-relation.v2"
 EFFECT_RELATION_KINDS = {"exact", "strengthened", "runtime_mediated"}
 OBSERVABLE_REQUIREMENTS = {
     "kind", "subject", "value", "memory_coordinates", "memory_order",
-    "branch_outcome", "target", "trap_detail", "external_detail",
+    "branch_condition", "branch_outcome", "branch_continuation", "target",
+    "trap_cause", "trap_continuation", "trap_termination", "external_detail",
     "csr_value", "privilege_state", "compiler_ordering", "hardware_ordering",
 }
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")

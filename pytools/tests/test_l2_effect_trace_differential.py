@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 import json
 from types import SimpleNamespace
@@ -18,7 +19,8 @@ from riscv2x86_py.l2_operand_differential import (
 from riscv2x86_py.translation_validation import ValidationLevel
 from riscv2x86_py.validation_observation import (
     CanonicalValue, ExecutionObservation, ExecutionResult, MemoryObjectObservation,
-    ObservationProvenance, RunnerCommandProfile, SemanticEvent, TextObservation, ToolIdentity,
+    ObservationProvenance, RunnerCommandProfile, SemanticEvent,
+    SemanticEventSourceLocation, TextObservation, ToolIdentity,
 )
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 from riscv2x86_py.validation_runtime_registry import (
@@ -32,6 +34,10 @@ def _digest(value):
 
 def _value(number=42):
     return CanonicalValue("u64", f"0x{number:016x}", 64)
+
+
+def _location(offset=0):
+    return SemanticEventSourceLocation(_digest("source.c"), offset)
 
 
 def _operand_sidecar():
@@ -71,7 +77,9 @@ def _declaration(event):
 def _relation(source_id, target_ids, kind="exact", obligations=None, ordering=(),
               runtime_contract_id=""):
     aliases = {"memory-coordinates": "memory_coordinates", "memory-order": "memory_order",
-               "branch-outcome": "branch_outcome", "trap-detail": "trap_detail",
+               "branch-condition": "branch_condition", "branch-outcome": "branch_outcome",
+               "branch-continuation": "branch_continuation", "trap-cause": "trap_cause",
+               "trap-continuation": "trap_continuation", "trap-termination": "trap_termination",
                "external-detail": "external_detail", "csr-value": "csr_value",
                "privilege-state": "privilege_state"}
     canonical = [aliases.get(item, item) for item in
@@ -103,17 +111,20 @@ def _effect_sidecar(shell_identity, source_events, relations, *, memory_carrier=
 
 def _memory(event_id, sequence, *, order="relaxed", predecessors=()):
     return SemanticEvent(event_id, sequence, "fragment-1", "write_memory", "output-buffer", _value(),
-                         "arg:buffer", 64, 8, 8, "none", order, None, "", "", predecessors)
+                         "arg:buffer", 64, 8, 8, "none", order, None, "", "", predecessors,
+                         _location(sequence))
 
 
 def _fence(event_id, sequence, order, predecessors=()):
     return SemanticEvent(event_id, sequence, "fragment-1", "fence", "compiler-order", None,
-                         "", None, 0, 0, "", order, None, "", "", predecessors)
+                         "", None, 0, 0, "", order, None, "", "", predecessors,
+                         _location(sequence))
 
 
 def _call(event_id, sequence):
     return SemanticEvent(event_id, sequence, "fragment-1", "call", "runtime-helper", None,
-                         "", None, 0, 0, "", "", None, "runtime:store", "", ())
+                         "", None, 0, 0, "", "", None, "runtime:store", "", (),
+                         _location(sequence))
 
 
 def _tool(name):
@@ -149,6 +160,21 @@ def test_exact_normalized_memory_trace_uses_object_offset_not_raw_address():
     )
     assert reasons == ()
     assert (source.object_id, source.offset, source.access_size, source.alignment) == ("arg:buffer", 64, 8, 8)
+
+
+def test_same_memory_value_at_a_different_object_offset_fails():
+    operand = logical_operand_authority_from_dict(_operand_sidecar())
+    source = _memory("source:0", 0)
+    target = replace(_memory("target:0", 0), offset=72)
+    authority = effect_trace_authority_from_dict(_effect_sidecar(
+        operand.identity, [source], [_relation("source:0", ["target:0"])],
+    ))
+    reasons = compare_effect_traces(
+        source=_observation(operand.identity, "source", [source]),
+        target=_observation(operand.identity, "target", [target]),
+        authority=authority, fragment_id="fragment-1",
+    )
+    assert "effect:source:0:observable-effect-mismatch" in reasons
 
 
 def test_strengthened_fence_is_allowed_only_by_approved_relation():
@@ -194,7 +220,7 @@ def test_uncovered_extra_effect_and_reversed_predecessor_fail_closed():
     assert any("ordering-requirement" in item for item in reasons)
 
     extra = SemanticEvent("target:extra", 2, "fragment-1", "external", "debug-write", None,
-                          "", None, 0, 0, "", "", None, "", "visible", ())
+                          "", None, 0, 0, "", "", None, "", "visible", (), _location(2))
     reasons = compare_effect_traces(source=_observation(operand.identity, "source", [source0, source1]),
                                     target=_observation(operand.identity, "target", [target1, target0, extra]),
                                     authority=authority, fragment_id="fragment-1")
@@ -204,9 +230,9 @@ def test_uncovered_extra_effect_and_reversed_predecessor_fail_closed():
 def test_csr_trap_external_and_privilege_events_compare_logical_payloads():
     operand = logical_operand_authority_from_dict(_operand_sidecar())
     source = SemanticEvent("source:0", 0, "fragment-1", "csr_read", "csr:mstatus", _value(1),
-                           "", None, 0, 0, "", "", None, "", "", ())
+                           "", None, 0, 0, "", "", None, "", "", (), _location())
     target = SemanticEvent("target:0", 0, "fragment-1", "csr_read", "csr:mstatus", _value(2),
-                           "", None, 0, 0, "", "", None, "", "", ())
+                           "", None, 0, 0, "", "", None, "", "", (), _location())
     relation = _relation("source:0", ["target:0"], obligations=["csr-value", "kind", "subject"])
     authority = effect_trace_authority_from_dict(_effect_sidecar(operand.identity, [source], [relation]))
     reasons = compare_effect_traces(source=_observation(operand.identity, "source", [source]),
@@ -216,7 +242,8 @@ def test_csr_trap_external_and_privilege_events_compare_logical_payloads():
 
     for kind in ("csr_write", "privilege_transition", "trap", "external"):
         SemanticEvent("event:" + kind, 0, "fragment-1", kind, "logical-state", _value(),
-                      "", None, 0, 0, "", "", None, "", "detail", ())
+                      "", None, 0, 0, "", "", None, "target", "detail", (), _location(),
+                      False if kind == "trap" else None)
 
 
 def test_shell_contract_rejects_plain_c_for_memory_clobber_and_other_losses():

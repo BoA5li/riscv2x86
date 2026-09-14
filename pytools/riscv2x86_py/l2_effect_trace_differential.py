@@ -293,9 +293,11 @@ def _required_obligations(event: SemanticEvent) -> set[str]:
     if event.kind in _MEMORY_KINDS: required |= {"value", "memory_coordinates", "memory_order"}
     if event.kind == "fence": required.add("memory_order")
     if event.kind in {"read_operand", "write_operand", "return"}: required.add("value")
-    if event.kind == "branch": required.add("branch_outcome")
+    if event.kind == "branch":
+        required.update({"branch_condition", "branch_outcome", "branch_continuation"})
     if event.kind in {"call", "return"}: required.add("target")
-    if event.kind == "trap": required.add("trap_detail")
+    if event.kind == "trap":
+        required.update({"trap_cause", "trap_continuation", "trap_termination"})
     if event.kind == "external": required.add("external_detail")
     if event.kind in {"csr_read", "csr_write"}: required.add("csr_value")
     if event.kind == "privilege_transition": required.add("privilege_state")
@@ -313,9 +315,13 @@ def _obligations_match(source: SemanticEvent, target: SemanticEvent, obligations
         "memory_order": source.memory_order == target.memory_order,
         "compiler_ordering": source.memory_order == target.memory_order,
         "hardware_ordering": source.memory_order == target.memory_order,
+        "branch_condition": source.value == target.value,
         "branch_outcome": source.branch_taken == target.branch_taken,
+        "branch_continuation": source.target_id == target.target_id,
         "target": source.target_id == target.target_id,
-        "trap_detail": source.detail == target.detail,
+        "trap_cause": source.detail == target.detail,
+        "trap_continuation": source.target_id == target.target_id,
+        "trap_termination": source.termination == target.termination,
         "external_detail": source.detail == target.detail,
         "csr_value": source.value == target.value,
         "privilege_state": (source.subject_id, source.value, source.detail) ==
