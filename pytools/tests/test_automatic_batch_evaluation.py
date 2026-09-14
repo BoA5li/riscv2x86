@@ -49,7 +49,10 @@ def test_inventory_generates_translation_and_registered_l0_l1(tmp_path, monkeypa
     assert "${SOURCE_ROOT}" in request["translationCommand"]
     assert request["translationArtifacts"] == {}
     assert request["targetBuild"]["artifactKind"] == "shared_library"
-    assert set(request["runtimeRegistryTemplate"]["validators"]) == {"L0", "L1"}
+    assert set(request["runtimeRegistryTemplate"]["validators"]) == {"L0", "L1", "L2"}
+    l2 = request["runtimeRegistryTemplate"]["validators"]["L2"]
+    assert l2["type"] == "requirement-driven"
+    assert l2["config"]["providers"] == []
     assert request["runtimeRegistryTemplate"]["validators"]["L1"]["config"]["functions"][0]["name"] == "add"
 
 
@@ -85,10 +88,10 @@ def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path,
     assert plan["profile"] == "architectural"
     assert request["comparisonPolicy"] == "riscv2x86.comparison-policy.architectural.v1"
     l2 = request["runtimeRegistryTemplate"]["validators"]["L2"]
-    assert l2["type"] == "composite"
-    assert [(item["dimension"], item["type"]) for item in l2["validators"]] == [
-        ("logical_operands", "automatic-l2-operand-differential"),
-        ("shell_semantics", "automatic-l2-effect-differential"),
+    assert l2["type"] == "requirement-driven"
+    assert [(item["providerId"], item["dimensions"]) for item in l2["config"]["providers"]] == [
+        ("automatic-l2-effect-v1", ["shell_semantics"]),
+        ("automatic-l2-operand-v1", ["logical_operands"]),
     ]
 
 
@@ -444,7 +447,7 @@ def test_explicit_harness_precedes_automatic_signature_limits(tmp_path, monkeypa
     )
     descriptor = json.loads((tmp_path / "inventory/cases/branch/riscv2x86-evaluation.json").read_text())
     config = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L1"]["config"]
-    assert payload["programs"][0]["validationProfile"] == "functional"
+    assert payload["programs"][0]["validationProfile"] == "architectural"
     assert payload["programs"][0]["harnessMode"] == "explicit-common-harness"
     assert config["schemaVersion"] == "riscv2x86.auto-l1-runner.v3"
     assert config["mode"] == "explicit-common-harness"
@@ -452,6 +455,39 @@ def test_explicit_harness_precedes_automatic_signature_limits(tmp_path, monkeypa
     assert config["harnessDigest"].startswith("sha256:")
     assert config["harnessManifestDigest"].startswith("sha256:")
     assert config["observableDimensions"] == ["exit_code", "stderr", "stdout", "termination"]
+
+
+def test_inventory_loads_content_bound_explicit_l2_provider(tmp_path, monkeypatch):
+    corpus = tmp_path / "corpus"; corpus.mkdir()
+    source = corpus / "add.c"; source.write_text("unsigned long add(unsigned long a){return a;}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    provider_root = tmp_path / "l2-providers"; provider_root.mkdir()
+    provider = {
+        "providerId": "explicit-operand-v1", "dimensions": ["logical_operands"],
+        "bindingKind": "explicit", "validatorType": "automatic-l2-operand-differential",
+        "config": {"custom": "configuration"}, "fragmentIds": [],
+    }
+    manifest = {
+        "schemaVersion": "riscv2x86.explicit-l2-providers.v1",
+        "sourceRelativePath": "add.c", "sourceDigest": auto._digest(source),
+        "providers": [provider],
+    }
+    manifest["manifestIdentity"] = auto._identity(manifest)
+    (provider_root / "add.c.l2-providers.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda _source: (
+        False, ({"name": "add", "arity": 1, "returnType": "unsigned long",
+                 "parameterTypes": ["unsigned long"], "pointerParameters": [],
+                 "l2OperandBoundary": {"complete": False}},),
+    ))
+
+    payload = auto.prepare_automatic_inventory(
+        corpus, tmp_path / "inventory", frontend=frontend,
+        l2_provider_directory=provider_root,
+    )
+    descriptor = json.loads((tmp_path / "inventory/cases/add/riscv2x86-evaluation.json").read_text())
+    providers = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L2"]["config"]["providers"]
+    assert providers == [provider]
+    assert payload["programs"][0]["explicitL2ProviderCount"] == 1
 
 
 def test_explicit_harness_cannot_escape_manifest_directory(tmp_path, monkeypatch):

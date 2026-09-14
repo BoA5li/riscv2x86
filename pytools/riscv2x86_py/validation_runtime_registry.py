@@ -11,6 +11,12 @@ from .translation_validation import (
     LayerValidator, ValidationLayerResult, ValidationLevel, ValidationRuntimeRegistry,
 )
 from .l2_dimensions import parse_l2_dimension
+from .l2_validator_resolution import (
+    ExplicitL2Bindings, L2BindingStatus, L2RuntimeCapabilities,
+    L2ValidatorResolver, fragment_requirement_from_dict, provider_from_dict,
+    write_resolved_execution_plan,
+    L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA,
+)
 from .validation_status import ValidationStatus
 
 
@@ -126,6 +132,133 @@ def _composite_validator(items: tuple[tuple[str, LayerValidator], ...]) -> Layer
     return validate
 
 
+def _requirement_driven_l2_validator(
+    config: Mapping[str, object], factories: Mapping[str, ValidatorFactory],
+) -> LayerValidator:
+    """Build an L2 runner whose exact children are selected per fragment."""
+    expected = {"schemaVersion", "requirementManifestPath", "fragmentId",
+                "executionProfile", "resolvedPlanPath", "providers"}
+    if set(config) != expected or config.get("schemaVersion") != L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA:
+        raise ValueError("requirement-driven L2 registry config is malformed")
+    manifest_path = config.get("requirementManifestPath")
+    configured_fragment_id = config.get("fragmentId")
+    execution_profile = config.get("executionProfile")
+    resolved_plan_path = config.get("resolvedPlanPath")
+    raw_providers = config.get("providers")
+    if (not isinstance(manifest_path, str) or not manifest_path
+            or not isinstance(configured_fragment_id, str) or not configured_fragment_id
+            or not isinstance(execution_profile, str) or not execution_profile
+            or not isinstance(resolved_plan_path, str) or not resolved_plan_path
+            or not isinstance(raw_providers, list)):
+        raise ValueError("requirement-driven L2 registry paths/profile/providers are invalid")
+    from .l2_eligibility import load_l2_requirement_manifest
+    manifest = load_l2_requirement_manifest(manifest_path)
+    providers = tuple(provider_from_dict(item) for item in raw_providers
+                      if isinstance(item, Mapping))
+    if len(providers) != len(raw_providers):
+        raise ValueError("requirement-driven L2 provider is malformed")
+    for provider in providers:
+        if provider.validator_type not in factories:
+            raise ValueError("requirement-driven L2 provider type is unregistered")
+    requirements = manifest.get("requirements")
+    assert isinstance(requirements, list)
+    by_fragment = {}
+    for raw in requirements:
+        assert isinstance(raw, Mapping)
+        requirement = fragment_requirement_from_dict(raw)
+        if requirement.fragment_id in by_fragment:
+            raise ValueError("L2 requirement manifest contains duplicate fragment IDs")
+        by_fragment[requirement.fragment_id] = requirement
+    explicit = ExplicitL2Bindings(tuple(item for item in providers if item.binding_kind == "explicit"))
+    capabilities = L2RuntimeCapabilities(tuple(item for item in providers if item.binding_kind != "explicit"))
+    resolver = L2ValidatorResolver()
+    requirement = by_fragment.get(configured_fragment_id)
+    plan = (None if requirement is None else
+            resolver.resolve(requirement, capabilities, explicit,
+                             execution_profile=execution_profile))
+    if plan is not None:
+        write_resolved_execution_plan(resolved_plan_path, plan)
+    selected_provider_ids = {
+        binding.provider_id for binding in (plan.bindings if plan is not None else ())
+        if binding.binding_status is L2BindingStatus.RESOLVED
+    }
+    validators = {
+        item.provider_id: factories[item.validator_type](item.config)
+        for item in providers if item.provider_id in selected_provider_ids
+    }
+
+    def validate(**kwargs: object) -> ValidationLayerResult:
+        artifact = kwargs.get("translation_artifact")
+        fragment_id = str(getattr(artifact, "fragment_id", ""))
+        if fragment_id != configured_fragment_id or requirement is None or plan is None:
+            detail = {"schemaVersion": "riscv2x86.validation-dimensions.v1",
+                      "reasonCode": "l2.requirement.fragment-missing",
+                      "fragmentId": fragment_id, "dimensions": {}}
+            return ValidationLayerResult(
+                kwargs["level"], ValidationStatus.INCONCLUSIVE,
+                detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
+            )
+        if requirement.eligibility_status.value != "eligible":
+            detail = {"schemaVersion": "riscv2x86.validation-dimensions.v1",
+                      "reasonCode": "l2.requirement.not-eligible",
+                      "fragmentId": fragment_id,
+                      "eligibilityStatus": requirement.eligibility_status.value,
+                      "dimensions": {}}
+            return ValidationLayerResult(
+                kwargs["level"], ValidationStatus.INCONCLUSIVE,
+                detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
+            )
+        provider_results: dict[str, ValidationLayerResult] = {}
+        dimension_results: dict[str, dict[str, object]] = {}
+        for binding in plan.bindings:
+            if binding.binding_status is not L2BindingStatus.RESOLVED:
+                dimension_results[binding.dimension.value] = {
+                    "status": ("not_run" if binding.binding_status is L2BindingStatus.NOT_RUN
+                               else "inconclusive"),
+                    "evidenceIdentity": "", "providerId": "",
+                    "bindingStatus": binding.binding_status.value,
+                    "detail": ";".join(binding.reason_codes),
+                }
+                continue
+            if binding.provider_id not in provider_results:
+                result = validators[binding.provider_id](**kwargs)
+                if not isinstance(result, ValidationLayerResult) or result.level is not kwargs.get("level"):
+                    result = ValidationLayerResult(kwargs["level"], ValidationStatus.FAILED,
+                                                   detail="invalid requirement-driven child result")
+                elif (result.status is ValidationStatus.VERIFIED
+                      and _SHA256.fullmatch(result.evidence_identity) is None):
+                    result = ValidationLayerResult(
+                        kwargs["level"], ValidationStatus.INCONCLUSIVE,
+                        detail="verified requirement-driven child has no stable evidence identity",
+                    )
+                provider_results[binding.provider_id] = result
+            result = provider_results[binding.provider_id]
+            dimension_results[binding.dimension.value] = {
+                "status": result.status.value, "evidenceIdentity": result.evidence_identity,
+                "providerId": binding.provider_id, "bindingStatus": "resolved",
+                "detail": result.detail,
+            }
+        raw_statuses = [str(item["status"]) for item in dimension_results.values()]
+        status = (ValidationStatus.FAILED if "failed" in raw_statuses else
+                  ValidationStatus.INCONCLUSIVE if any(item != "verified" for item in raw_statuses)
+                  else ValidationStatus.VERIFIED)
+        payload = {
+            "schemaVersion": "riscv2x86.validation-dimensions.v1",
+            "fragmentId": fragment_id,
+            "requirementIdentity": requirement.requirement_identity,
+            "resolvedPlanIdentity": plan.to_dict()["planIdentity"],
+            "resolvedPlanPath": resolved_plan_path,
+            "dimensions": dimension_results,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        evidence = "sha256:" + sha256(encoded).hexdigest()
+        return ValidationLayerResult(
+            kwargs["level"], status, evidence,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+    return validate
+
+
 def validation_runtime_registry_from_dict(
     data: Mapping[str, object], *,
     validator_factories: Mapping[str, ValidatorFactory] | None = None,
@@ -156,6 +289,13 @@ def validation_runtime_registry_from_dict(
         if not isinstance(raw_descriptor, Mapping):
             raise ValueError("validation runner descriptor is malformed")
         runner_type = raw_descriptor.get("type")
+        if runner_type == "requirement-driven":
+            if level is not ValidationLevel.L2 or schema_version != VALIDATION_RUNTIME_REGISTRY_SCHEMA:
+                raise ValueError("requirement-driven validation is only supported for L2 in registry v2")
+            if set(raw_descriptor) != {"type", "config"} or not isinstance(raw_descriptor.get("config"), Mapping):
+                raise ValueError("requirement-driven validation runner descriptor is malformed")
+            validators[level] = _requirement_driven_l2_validator(raw_descriptor["config"], factories)
+            continue
         if runner_type == "composite":
             if schema_version != VALIDATION_RUNTIME_REGISTRY_SCHEMA:
                 raise ValueError("composite validation requires registry schema v2")

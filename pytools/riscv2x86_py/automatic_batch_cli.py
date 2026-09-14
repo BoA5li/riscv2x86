@@ -13,6 +13,9 @@ from typing import Mapping
 
 from .batch_evaluation_cli import BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, run_batch_evaluation
 from .l2_dimensions import L2Dimension
+from .l2_validator_resolution import (
+    L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA, provider_from_dict,
+)
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
 EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
@@ -346,11 +349,51 @@ def _privileged_binding(
             "path": str(path)}
 
 
+def _explicit_l2_providers(
+    source: Path, source_root: Path, provider_root: Path | None,
+) -> tuple[dict[str, object], ...]:
+    """Load a source-bound provider plug-in manifest without guessing bindings."""
+    if provider_root is None:
+        return ()
+    relative = source.relative_to(source_root).as_posix()
+    path = (provider_root / (relative + ".l2-providers.json")).resolve()
+    if not path.is_file():
+        return ()
+    try:
+        path.relative_to(provider_root)
+    except ValueError as exc:
+        raise ValueError("explicit L2 provider manifest escapes its directory") from exc
+    value = json.loads(path.read_text(encoding="utf-8"))
+    fields = {"schemaVersion", "sourceRelativePath", "sourceDigest",
+              "providers", "manifestIdentity"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError("explicit L2 provider manifest fields are incomplete or unknown")
+    payload = dict(value); identity = payload.pop("manifestIdentity")
+    if (value.get("schemaVersion") != L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA
+            or value.get("sourceRelativePath") != relative
+            or value.get("sourceDigest") != _digest(source)
+            or identity != _identity(payload)):
+        raise ValueError("explicit L2 provider manifest identity/source binding is invalid")
+    raw_providers = value.get("providers")
+    if not isinstance(raw_providers, list) or not raw_providers:
+        raise ValueError("explicit L2 provider manifest requires providers")
+    providers = []
+    for raw in raw_providers:
+        if not isinstance(raw, Mapping):
+            raise ValueError("explicit L2 provider descriptor is malformed")
+        parsed = provider_from_dict(raw)
+        if parsed.binding_kind != "explicit":
+            raise ValueError("explicit L2 provider manifest contains a non-explicit provider")
+        providers.append(dict(raw))
+    return tuple(providers)
+
+
 def prepare_automatic_inventory(
     input_path: str | Path, inventory_directory: str | Path, *, frontend: str | Path,
     timeout: int = 60, allow_functional_fallbacks: bool = False,
     harness_directory: str | Path | None = None,
     privileged_config_directory: str | Path | None = None,
+    l2_provider_directory: str | Path | None = None,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
     sources = ([root] if root.is_file() else
@@ -364,6 +407,10 @@ def prepare_automatic_inventory(
                        else Path(privileged_config_directory).resolve())
     if privileged_root is not None and not privileged_root.is_dir():
         raise ValueError("privileged configuration directory is unavailable")
+    provider_root = (None if l2_provider_directory is None
+                     else Path(l2_provider_directory).resolve())
+    if provider_root is not None and not provider_root.is_dir():
+        raise ValueError("explicit L2 provider directory is unavailable")
     if not sources:
         raise ValueError("automatic evaluation found no C sources")
     if inventory.exists():
@@ -404,6 +451,7 @@ def prepare_automatic_inventory(
         case_dir = inventory / "cases" / case_id
         explicit = _explicit_harness(source, source_root, harness_root)
         privileged_binding = privileged_bindings[source]
+        explicit_l2_providers = _explicit_l2_providers(source, source_root, provider_root)
         try:
             has_main, functions = inspect_entry_points(source)
             inspection_error = ""
@@ -517,43 +565,52 @@ def prepare_automatic_inventory(
                 "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-effects",
                 "timeoutSeconds": timeout,
                 "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
-            l2_validators = []
-            if l2_auto_possible and effect_mode:
-                effect_dimension = (
-                    L2Dimension.MEMORY_EFFECTS if effect_mode == "memory-object-functions"
-                    else L2Dimension.CONTROL_FLOW if effect_mode == "branch-domain-functions"
-                    else L2Dimension.SHELL_SEMANTICS
-                )
-                l2_validators.extend([
-                    {"dimension": effect_dimension.value, "type": "automatic-l2-effect-differential",
-                     "config": effect_config},
-                    {"dimension": L2Dimension.LOGICAL_OPERANDS.value,
-                     "type": "automatic-l2-operand-differential",
-                     "config": operand_config},
-                ])
-            elif l2_auto_possible:
-                l2_validators.append({"dimension": L2Dimension.LOGICAL_OPERANDS.value,
-                                      "type": "automatic-l2-operand-differential",
-                                      "config": operand_config})
-            elif effect_mode:
-                effect_dimension = (
-                    L2Dimension.MEMORY_EFFECTS if effect_mode == "memory-object-functions"
-                    else L2Dimension.CONTROL_FLOW if effect_mode == "branch-domain-functions"
-                    else L2Dimension.SHELL_SEMANTICS
-                )
-                l2_validators.append({"dimension": effect_dimension.value,
-                                      "type": "automatic-l2-effect-differential",
-                                      "config": effect_config})
+            l2_providers = []
+            if l2_auto_possible:
+                l2_providers.append({
+                    "providerId": "automatic-l2-operand-v1",
+                    "dimensions": [L2Dimension.LOGICAL_OPERANDS.value],
+                    "bindingKind": "automatic",
+                    "validatorType": "automatic-l2-operand-differential",
+                    "config": operand_config, "fragmentIds": [],
+                })
+            if effect_mode:
+                effect_dimensions = {L2Dimension.SHELL_SEMANTICS}
+                if effect_mode == "memory-object-functions":
+                    effect_dimensions.add(L2Dimension.MEMORY_EFFECTS)
+                elif effect_mode == "branch-domain-functions":
+                    effect_dimensions.add(L2Dimension.CONTROL_FLOW)
+                elif effect_mode == "fence-functions":
+                    effect_dimensions.add(L2Dimension.MEMORY_EFFECTS)
+                l2_providers.append({
+                    "providerId": "automatic-l2-effect-v1",
+                    "dimensions": sorted(item.value for item in effect_dimensions),
+                    "bindingKind": "automatic",
+                    "validatorType": "automatic-l2-effect-differential",
+                    "config": effect_config, "fragmentIds": [],
+                })
             if privileged_binding is not None:
-                l2_validators.append({"dimension": L2Dimension.PRIVILEGED_STATE.value,
-                                      "type": "l2-privileged-real-runner",
-                                      "config": privileged_binding["config"]})
-            l2_validators.sort(key=lambda item: str(item["dimension"]))
-            if len(l2_validators) == 1:
-                only = l2_validators[0]
-                validators["L2"] = {"type": only["type"], "config": only["config"]}
-            elif l2_validators:
-                validators["L2"] = {"type": "composite", "validators": l2_validators}
+                l2_providers.append({
+                    "providerId": "explicit-privileged-" + str(privileged_binding["identity"]),
+                    "dimensions": sorted((L2Dimension.PRIVILEGED_STATE.value,
+                                          L2Dimension.TRAP_SEMANTICS.value)),
+                    "bindingKind": "explicit",
+                    "validatorType": "l2-privileged-real-runner",
+                    "config": privileged_binding["config"], "fragmentIds": [],
+                })
+            l2_providers.extend(explicit_l2_providers)
+            l2_providers.sort(key=lambda item: str(item["providerId"]))
+            validators["L2"] = {
+                "type": "requirement-driven",
+                "config": {
+                    "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v1",
+                    "requirementManifestPath": "${TRANSLATED_REPORT}.l2-requirements.json",
+                    "fragmentId": "${FRAGMENT_ID}",
+                    "executionProfile": "rv64gc-user-to-x86_64-user",
+                    "resolvedPlanPath": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-resolved-plan.json",
+                    "providers": l2_providers,
+                },
+            }
             if "L2" in validators:
                 profile = "architectural"
                 plan["profile"] = profile
@@ -598,6 +655,7 @@ def prepare_automatic_inventory(
                                                        else privileged_binding["identity"]),
                         "privilegedBindingPath": ("" if privileged_binding is None
                                                    else privileged_binding["path"]),
+                        "explicitL2ProviderCount": len(explicit_l2_providers),
                         "validationProfile": profile})
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
@@ -620,6 +678,8 @@ def main() -> int:
                         help="directory containing <source>.harness.json sidecars")
     parser.add_argument("--privileged-config-directory",
                         help="directory containing <source>.c.privileged.json bindings")
+    parser.add_argument("--l2-provider-directory",
+                        help="directory containing <source>.c.l2-providers.json bindings")
     args = parser.parse_args()
     output = Path(args.output_directory).resolve()
     inventory = output.with_name(output.name + "-inventory")
@@ -628,7 +688,8 @@ def main() -> int:
                                     timeout=args.timeout_seconds,
                                     allow_functional_fallbacks=args.allow_functional_fallbacks,
                                     harness_directory=args.harness_directory,
-                                    privileged_config_directory=args.privileged_config_directory)
+                                    privileged_config_directory=args.privileged_config_directory,
+                                    l2_provider_directory=args.l2_provider_directory)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
         print(json.dumps({"status": "inconclusive", "reasonCode": "automatic.configuration-error",

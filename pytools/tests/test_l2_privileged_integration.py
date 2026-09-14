@@ -132,9 +132,13 @@ def test_content_addressed_binding_resolves_inputs_and_binds_capabilities(tmp_pa
         (tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json")
     ).read_text())
     request = descriptor["request"]
-    assert request["runtimeRegistryTemplate"]["validators"]["L2"]["type"] == (
-        "l2-privileged-real-runner"
-    )
+    l2 = request["runtimeRegistryTemplate"]["validators"]["L2"]
+    assert l2["type"] == "requirement-driven"
+    explicit = [item for item in l2["config"]["providers"]
+                if item["bindingKind"] == "explicit"]
+    assert len(explicit) == 1
+    assert explicit[0]["validatorType"] == "l2-privileged-real-runner"
+    assert explicit[0]["dimensions"] == ["privileged_state", "trap_semantics"]
     environment = json.loads((tmp_path / "inventory/config/target-environment.json").read_text())
     assert "qemu-system" in environment["sourceRunnerCapabilities"]
     assert "logical-csr-runtime" in environment["targetRunnerCapabilities"]

@@ -56,22 +56,37 @@ rates. Canonical L2 dimensions are `logical_operands`, `memory_effects`, `contro
 L3 uses experiment contract. A dimension is verified only when a named composite validator
 produces its own evidence. A generic L2 success is not expanded into dimension successes.
 
-An L2 registry composes applicable validators explicitly, for example:
+The automatic path does not choose a fixed L2 mode before translation.  It consumes the
+versioned requirement manifest after translation and resolves providers per fragment:
 
 ```json
 {
   "L2": {
-    "type": "composite",
-    "validators": [
-      {"dimension": "logical_operands", "type": "l2-logical-operand-differential", "config": {}},
-      {"dimension": "shell_semantics", "type": "l2-effect-trace-differential", "config": {}}
-    ]
+    "type": "requirement-driven",
+    "config": {
+      "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v1",
+      "requirementManifestPath": "${TRANSLATED_REPORT}.l2-requirements.json",
+      "fragmentId": "${FRAGMENT_ID}",
+      "executionProfile": "rv64gc-user-to-x86_64-user",
+      "resolvedPlanPath": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-resolved-plan.json",
+      "providers": []
+    }
   }
 }
 ```
 
-Real `config` objects contain the corresponding versioned sidecars and runner contracts.
-Dimension names must be unique and sorted. Registry schema v2 rejects legacy aliases such as
+Providers declare canonical dimensions, a registered validator type, and one of
+`explicit`, `automatic`, or `runtime_adapter`.  Resolution priority is in that order.
+Every eligible fragment receives a content-addressed
+`riscv2x86.l2-resolved-execution-plan.v1`; missing or ambiguous bindings remain in the plan
+as `not_run`/`inconclusive` and prevent L2 verification.  A provider may cover multiple
+dimensions and is executed once per attempt.  Additional providers can be registered without
+changing the evaluator or paper aggregator.  Source-bound explicit provider manifests may be
+supplied to the automatic CLI with `--l2-provider-directory`; they use schema
+`riscv2x86.explicit-l2-providers.v1` and override automatic providers for their dimensions.
+
+Real provider `config` objects contain the corresponding versioned sidecars and runner
+contracts. Dimension names must be unique and sorted. Registry schema v2 rejects legacy aliases such as
 `operand`, `operands`, `effects`, and `shell`. Requirement-manifest v1 data must be converted
 with the explicit `migrate_l2_requirement_v1_to_v2()` API; normal parsing never migrates or
 repairs it. A child failure fails the layer, while unavailable

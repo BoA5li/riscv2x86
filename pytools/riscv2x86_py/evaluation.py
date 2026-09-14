@@ -16,7 +16,7 @@ from .candidate_materialization import (
     verify_candidate_artifact_manifest,
 )
 from .schema import TranslationOutcome
-from .translation_attempt import load_translation_attempt_archive
+from .translation_attempt import TranslationAttemptArchive, load_translation_attempt_archive
 from .l2_dimensions import parse_l2_dimensions
 from .translation_artifact_binding import artifacts_from_report
 from .translation_validation import (
@@ -25,6 +25,10 @@ from .translation_validation import (
     translation_artifact_from_dict,
 )
 from .validation_runtime_registry import validation_runtime_registry_from_dict
+from .l2_validator_resolution import (
+    provider_from_dict, resolve_fragment_execution_plan,
+    write_resolved_execution_plan,
+)
 from .validation_status import ValidationStatus
 
 
@@ -319,6 +323,44 @@ def _environment_provenance(
     }
 
 
+def _materialize_l2_resolution_plans(
+    request: EvaluationRequest, report_path: Path,
+    archive: TranslationAttemptArchive, replay_directory: Path,
+) -> None:
+    """Plan every translated fragment before build/runtime availability is known."""
+    validators = request.runtime_registry_template.get("validators")
+    if not isinstance(validators, Mapping):
+        return
+    descriptor = validators.get("L2")
+    if not isinstance(descriptor, Mapping) or descriptor.get("type") != "requirement-driven":
+        return
+    config = descriptor.get("config")
+    if not isinstance(config, Mapping):
+        raise ValueError("requirement-driven L2 registry config is malformed")
+    raw_providers = config.get("providers")
+    execution_profile = config.get("executionProfile")
+    if not isinstance(raw_providers, list) or not isinstance(execution_profile, str) or not execution_profile:
+        raise ValueError("requirement-driven L2 provider catalogue/profile is invalid")
+    providers = tuple(provider_from_dict(item) for item in raw_providers
+                      if isinstance(item, Mapping))
+    if len(providers) != len(raw_providers):
+        raise ValueError("requirement-driven L2 provider is malformed")
+    from .l2_eligibility import load_l2_requirement_manifest
+    manifest_path = report_path.with_name(report_path.name + ".l2-requirements.json")
+    manifest = load_l2_requirement_manifest(manifest_path)
+    for attempt in archive.attempts:
+        plan = resolve_fragment_execution_plan(
+            manifest, providers, attempt.fragment_id,
+            execution_profile=execution_profile,
+        )
+        if plan is None:
+            raise ValueError("L2 requirement is missing for translation attempt fragment")
+        path = replay_directory / (
+            attempt.artifact_id.replace(":", "-") + "-l2-resolved-plan.json"
+        )
+        write_resolved_execution_plan(path, plan)
+
+
 def run_evaluation(
     request: EvaluationRequest, *, work_directory: str | Path,
     command_executor: Callable[[Sequence[str], Path, int, str], CommandRecord] = _execute,
@@ -363,6 +405,8 @@ def run_evaluation(
         candidate_manifest, source_root=source_root, staging_root=staging,
         translated_report=report, attempt_archive=archive_path,
     )
+    archive = load_translation_attempt_archive(archive_path)
+    _materialize_l2_resolution_plans(request, report, archive, replay)
     source_path = source_root / request.source_relative_path
     target_path = staging / request.target_relative_path
     if not source_path.is_file() or not target_path.is_file():
@@ -373,7 +417,6 @@ def run_evaluation(
         "CANDIDATE_MANIFEST": str(candidate_manifest_path),
         "CANDIDATE_MANIFEST_ID": candidate_manifest.manifest_id,
     })
-    archive = load_translation_attempt_archive(archive_path)
     attributable_archive = tuple(
         item for item in archive.attempts
         if not request.selected_attempt_ids or item.artifact_id in request.selected_attempt_ids
@@ -485,6 +528,7 @@ def run_evaluation(
             continue
         attempt_variables = dict(variables)
         attempt_variables.update({"ATTEMPT_ID": attempt.artifact_id,
+                                  "FRAGMENT_ID": attempt.fragment_id,
                                   "TRANSLATION_ID": translation.identity})
         registry_replay = replay / (attempt.artifact_id.replace(":", "-") + "-registry.json")
         try:
