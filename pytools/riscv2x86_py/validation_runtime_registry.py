@@ -10,6 +10,7 @@ from typing import Callable, Mapping
 from .translation_validation import (
     LayerValidator, ValidationLayerResult, ValidationLevel, ValidationRuntimeRegistry,
 )
+from .l2_dimensions import parse_l2_dimension
 from .validation_status import ValidationStatus
 
 
@@ -171,6 +172,8 @@ def validation_runtime_registry_from_dict(
                 if (not isinstance(dimension, str) or not dimension or not isinstance(child_type, str)
                         or child_type not in factories or not isinstance(child_config, Mapping)):
                     raise ValueError("composite child validator is invalid")
+                if level is ValidationLevel.L2:
+                    dimension = parse_l2_dimension(dimension).value
                 children.append((dimension, factories[child_type](child_config)))
             dimensions = tuple(item[0] for item in children)
             if dimensions != tuple(sorted(set(dimensions))):

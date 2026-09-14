@@ -18,6 +18,7 @@ from .evaluation import (
     persist_evaluation_result,
     run_evaluation,
 )
+from .l2_dimensions import L2Dimension
 
 
 BATCH_CASE_SCHEMA = "riscv2x86.batch-evaluation-case.v1"
@@ -308,7 +309,8 @@ def _privileged_claim_counts(attempts: object) -> dict[str, int]:
                 if payload.get("schemaVersion") == "riscv2x86.l2-privileged-result.v2":
                     candidates.append(payload)
                 dimensions = payload.get("dimensions")
-                privileged = dimensions.get("privileged") if isinstance(dimensions, Mapping) else None
+                privileged = (dimensions.get(L2Dimension.PRIVILEGED_STATE.value)
+                              if isinstance(dimensions, Mapping) else None)
                 nested = privileged.get("detail") if isinstance(privileged, Mapping) else None
                 try:
                     nested_payload = json.loads(nested) if isinstance(nested, str) else None

@@ -17,6 +17,7 @@ from .candidate_materialization import (
 )
 from .schema import TranslationOutcome
 from .translation_attempt import load_translation_attempt_archive
+from .l2_dimensions import parse_l2_dimensions
 from .translation_artifact_binding import artifacts_from_report
 from .translation_validation import (
     ProgramArtifact, TranslationValidationResult, load_target_environment,
@@ -714,7 +715,8 @@ def _translation_evaluation_linkage(
                 level_status.setdefault(level, "not_run")
             requirement = requirement_by_finding.get(finding_id)
             required_dimensions = (
-                list(requirement.get("requiredDimensions", []))
+                [item.value for item in parse_l2_dimensions(
+                    requirement.get("requiredDimensions", []))]
                 if isinstance(requirement, Mapping) else []
             )
             requirement_disposition = (

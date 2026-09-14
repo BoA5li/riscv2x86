@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 
 from .translation_attempt import load_translation_attempt_archive
 from .evaluation import EVALUATION_RESULT_SCHEMA
+from .l2_dimensions import L2Dimension, parse_l2_dimension
 
 
 PAPER_CORPUS_SCHEMA = "riscv2x86.paper-corpus-manifest.v1"
@@ -23,11 +24,8 @@ PAPER_POLICY = "riscv2x86.paper-metrics.v1"
 _SHA_PREFIX = "sha256:"
 _COVERAGE = ("recognition", "modeling", "routing", "candidate", "proof", "rendering")
 _LEVELS = ("L0", "L1", "L2", "L3")
-_DIMENSION_LEVEL = {
-    "shell": "L2", "operand": "L2", "memory": "L2", "control_flow": "L2",
-    "trap": "L2", "atomic": "L2", "privileged": "L2",
-    "experiment_contract": "L3",
-}
+_DIMENSION_LEVEL = {dimension.value: "L2" for dimension in L2Dimension}
+_DIMENSION_LEVEL["experiment_contract"] = "L3"
 _EMITTED = {"emitted", "strengthened", "functional_fallback"}
 
 
@@ -331,21 +329,31 @@ def _validation_maps(
             layer_map[str(item.get("level"))] = item_status
             detail = item.get("detail")
             if isinstance(detail, str) and detail.startswith("{"):
-                try:
-                    payload = json.loads(detail)
-                    if payload.get("schemaVersion") == "riscv2x86.validation-dimensions.v1":
-                        for name, result in payload.get("dimensions", {}).items():
-                            if not isinstance(result, Mapping):
-                                continue
-                            status = str(result.get("status"))
-                            if status == "verified":
-                                try:
-                                    _sha(result.get("evidenceIdentity"), "dimension evidence identity")
-                                except ValueError:
-                                    status = "inconclusive"
-                            dimensions[str(name)] = status
-                except (ValueError, AttributeError):
-                    pass
+                payload = json.loads(detail)
+                if payload.get("schemaVersion") == "riscv2x86.validation-dimensions.v1":
+                    raw_dimensions = payload.get("dimensions")
+                    if not isinstance(raw_dimensions, Mapping):
+                        raise ValueError("L2 dimension evidence must be an object")
+                    names = list(raw_dimensions)
+                    if names != sorted(set(names)):
+                        raise ValueError("L2 dimension evidence is not canonical")
+                    for name, dimension_result in raw_dimensions.items():
+                        if item.get("level") == "L2":
+                            dimension = parse_l2_dimension(name).value
+                        elif name == "experiment_contract":
+                            dimension = name
+                        else:
+                            raise ValueError("validation dimension is unsupported for its level")
+                        if not isinstance(dimension_result, Mapping):
+                            raise ValueError("L2 dimension result is malformed")
+                        status = str(dimension_result.get("status"))
+                        if status == "verified":
+                            try:
+                                _sha(dimension_result.get("evidenceIdentity"),
+                                     "dimension evidence identity")
+                            except ValueError:
+                                status = "inconclusive"
+                        dimensions[dimension] = status
         maps.append(layer_map); dimension_maps.append(dimensions)
     result = {}
     for level in _LEVELS:

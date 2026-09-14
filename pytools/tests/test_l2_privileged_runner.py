@@ -11,7 +11,8 @@ from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from riscv2x86_py.l2_effect_trace_differential import L2_EFFECT_RUNNER_SCHEMA, L2EffectRunnerConfig
 from riscv2x86_py.l2_privileged_runner import (
     CSR_ROUTE_CONTRACT_SCHEMA, PRIVILEGED_INITIAL_STATE_SCHEMA, PRIVILEGED_MANIFEST_SCHEMA,
-    PRIVILEGED_OBSERVATION_SCHEMA, CommandResult, L2PrivilegedRunnerConfig,
+    PRIVILEGED_OBSERVATION_SCHEMA, PRIVILEGED_RUNNER_SCHEMA,
+    CommandResult, L2PrivilegedRunnerConfig,
     PrivilegedRunnerSpec, load_csr_route_contract, run_l2_privileged_differential,
     validate_csr_routes,
 )
@@ -244,7 +245,7 @@ def test_runtime_registry_exposes_composite_l2c_as_the_single_l2_runner(tmp_path
     registry = validation_runtime_registry_from_dict({
         "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-v1",
         "validators": {"L2": {"type": "l2-privileged-real-runner", "config": {
-            "schemaVersion": "riscv2x86.l2-privileged-runner.v1",
+            "schemaVersion": PRIVILEGED_RUNNER_SCHEMA,
             "comparisonPolicy": ARCHITECTURAL_COMPARISON_POLICY,
             "baseEffectRunner": {
                 "schemaVersion": L2_EFFECT_RUNNER_SCHEMA,

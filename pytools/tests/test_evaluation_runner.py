@@ -339,7 +339,7 @@ def test_corpus_runner_generates_requests_manifest_evidence_and_report(tmp_path)
                     "beginOffset": begin, "endOffset": end,
                     "sourceSliceDigest": "sha256:" + __import__("hashlib").sha256(ASM).hexdigest(),
                     "category": "integer", "subcategory": "scalar",
-                    "requiredDimensions": ["operand", "shell"]}
+                    "requiredDimensions": ["logical_operands", "shell_semantics"]}
     oracle_id = "sha256:" + __import__("hashlib").sha256(json.dumps(
         oracle_facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()

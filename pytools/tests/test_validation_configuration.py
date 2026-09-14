@@ -132,16 +132,16 @@ def test_runtime_registry_composes_named_dimension_evidence_without_overwrite():
     registry = validation_runtime_registry_from_dict({
         "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-1",
         "validators": {"L2": {"type": "composite", "validators": [
-            {"dimension": "operand", "type": "test", "config": {"status": "verified", "evidence": "1"}},
-            {"dimension": "shell", "type": "test", "config": {"status": "inconclusive", "evidence": "2"}},
+            {"dimension": "logical_operands", "type": "test", "config": {"status": "verified", "evidence": "1"}},
+            {"dimension": "shell_semantics", "type": "test", "config": {"status": "inconclusive", "evidence": "2"}},
         ]}},
     }, validator_factories={"test": factory})
     result = registry.validator_for(ValidationLevel.L2)(level=ValidationLevel.L2)
     detail = json.loads(result.detail)
     assert result.status is ValidationStatus.INCONCLUSIVE
     assert result.evidence_identity.startswith("sha256:")
-    assert detail["dimensions"]["operand"]["status"] == "verified"
-    assert detail["dimensions"]["shell"]["status"] == "inconclusive"
+    assert detail["dimensions"]["logical_operands"]["status"] == "verified"
+    assert detail["dimensions"]["shell_semantics"]["status"] == "inconclusive"
 
 
 def test_runtime_registry_rejects_duplicate_composite_dimensions():
@@ -152,8 +152,8 @@ def test_runtime_registry_rejects_duplicate_composite_dimensions():
         validation_runtime_registry_from_dict({
             "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-1",
             "validators": {"L2": {"type": "composite", "validators": [
-                {"dimension": "operand", "type": "test", "config": {}},
-                {"dimension": "operand", "type": "test", "config": {}},
+                {"dimension": "logical_operands", "type": "test", "config": {}},
+                {"dimension": "logical_operands", "type": "test", "config": {}},
             ]}},
         }, validator_factories={"test": factory})
 
@@ -168,7 +168,22 @@ def test_legacy_registry_remains_readable_but_cannot_claim_composite_dimensions(
         legacy, validator_factories={"test": factory},
     ).validator_for(ValidationLevel.L1) is not None
     legacy["validators"] = {"L2": {"type": "composite", "validators": [
-        {"dimension": "operand", "type": "test", "config": {}},
+        {"dimension": "logical_operands", "type": "test", "config": {}},
     ]}}
     with pytest.raises(ValueError, match="schema v2"):
         validation_runtime_registry_from_dict(legacy, validator_factories={"test": factory})
+
+
+@pytest.mark.parametrize("dimension", ["effects", "operands", "operand", "shell", "unknown"])
+def test_l2_registry_rejects_legacy_and_unknown_dimension_names(dimension):
+    factory = lambda _config: (lambda **kwargs: ValidationLayerResult(
+        kwargs["level"], ValidationStatus.INCONCLUSIVE,
+    ))
+    with pytest.raises(ValueError, match="unsupported L2 dimension"):
+        validation_runtime_registry_from_dict({
+            "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA,
+            "version": "registry-1",
+            "validators": {"L2": {"type": "composite", "validators": [
+                {"dimension": dimension, "type": "test", "config": {}},
+            ]}},
+        }, validator_factories={"test": factory})

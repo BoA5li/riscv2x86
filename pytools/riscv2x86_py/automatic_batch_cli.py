@@ -12,6 +12,7 @@ import sys
 from typing import Mapping
 
 from .batch_evaluation_cli import BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, run_batch_evaluation
+from .l2_dimensions import L2Dimension
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
 EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
@@ -518,22 +519,33 @@ def prepare_automatic_inventory(
                 "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
             l2_validators = []
             if l2_auto_possible and effect_mode:
+                effect_dimension = (
+                    L2Dimension.MEMORY_EFFECTS if effect_mode == "memory-object-functions"
+                    else L2Dimension.CONTROL_FLOW if effect_mode == "branch-domain-functions"
+                    else L2Dimension.SHELL_SEMANTICS
+                )
                 l2_validators.extend([
-                    {"dimension": "effects", "type": "automatic-l2-effect-differential",
+                    {"dimension": effect_dimension.value, "type": "automatic-l2-effect-differential",
                      "config": effect_config},
-                    {"dimension": "operands", "type": "automatic-l2-operand-differential",
+                    {"dimension": L2Dimension.LOGICAL_OPERANDS.value,
+                     "type": "automatic-l2-operand-differential",
                      "config": operand_config},
                 ])
             elif l2_auto_possible:
-                l2_validators.append({"dimension": "operands",
+                l2_validators.append({"dimension": L2Dimension.LOGICAL_OPERANDS.value,
                                       "type": "automatic-l2-operand-differential",
                                       "config": operand_config})
             elif effect_mode:
-                l2_validators.append({"dimension": "effects",
+                effect_dimension = (
+                    L2Dimension.MEMORY_EFFECTS if effect_mode == "memory-object-functions"
+                    else L2Dimension.CONTROL_FLOW if effect_mode == "branch-domain-functions"
+                    else L2Dimension.SHELL_SEMANTICS
+                )
+                l2_validators.append({"dimension": effect_dimension.value,
                                       "type": "automatic-l2-effect-differential",
                                       "config": effect_config})
             if privileged_binding is not None:
-                l2_validators.append({"dimension": "privileged",
+                l2_validators.append({"dimension": L2Dimension.PRIVILEGED_STATE.value,
                                       "type": "l2-privileged-real-runner",
                                       "config": privileged_binding["config"]})
             l2_validators.sort(key=lambda item: str(item["dimension"]))

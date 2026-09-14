@@ -148,7 +148,7 @@ def test_batch_counts_privileged_claim_boundary_without_counting_program_run_twi
     attempts = [{"validation": {"layers": [{
         "level": "L2", "detail": json.dumps({
             "schemaVersion": "riscv2x86.validation-dimensions.v1",
-            "dimensions": {"privileged": {"detail": privileged}},
+            "dimensions": {"privileged_state": {"detail": privileged}},
         }),
     }]}}]
     assert _privileged_claim_counts(attempts) == {

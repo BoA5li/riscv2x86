@@ -49,7 +49,7 @@ def _attempt(fragment: str, *, emitted: bool) -> TranslationAttempt:
 
 
 def _evaluation(path: Path, attempt: TranslationAttempt, *, unit="single_candidate", group="g0",
-                dimensions=("operand", "shell")):
+                dimensions=("logical_operands", "shell_semantics")):
     layers = [{"level": level, "status": "verified", "evidenceIdentity": _digest(level.encode()), "detail": ""}
               for level in ("L0", "L1", "L2")]
     layers[-1]["detail"] = json.dumps({
@@ -96,7 +96,8 @@ def _manifest(tmp_path: Path):
         facts = {"fragmentId": "fragment:" + str(index), "relativePath": "case.c",
                  "beginOffset": begin, "endOffset": begin + len(text),
                  "sourceSliceDigest": _digest(text), "category": "integer",
-                 "subcategory": "scalar", "requiredDimensions": ["operand", "shell"]}
+                 "subcategory": "scalar",
+                 "requiredDimensions": ["logical_operands", "shell_semantics"]}
         oracle.append({"oracleFragmentId": _digest(json.dumps(
             facts, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()), **facts})
@@ -124,7 +125,7 @@ def test_paper_metrics_use_oracle_denominators_and_program_cluster_bootstrap(tmp
     assert result["metrics"]["modelingCoverage"]["estimate"] == 0.5
     assert result["metrics"]["candidateCoverage"]["estimate"] == 0.5
     assert result["metrics"]["l2VerifiedRate"]["estimate"] == 1.0
-    assert result["dimensionMetrics"]["shell"]["estimate"] == 1.0
+    assert result["dimensionMetrics"]["shell_semantics"]["estimate"] == 1.0
     assert result["metrics"]["candidateCoverage"]["clusters"] == 1
     assert result["translationOutcomeBreakdown"] == {"emitted": 1, "unsupported": 1}
     assert set(render_paper_outputs(result)) == {"paper-evaluation.json", "paper-metrics.csv",
@@ -175,8 +176,17 @@ def test_bootstrap_resamples_program_clusters_not_fragments():
 def test_generic_l2_success_does_not_invent_missing_dimension_evidence(tmp_path):
     value = _manifest(tmp_path)
     attempt = load_translation_attempt_archive(tmp_path / "attempts.json").attempts[0]
-    _evaluation(tmp_path / "result.json", attempt, dimensions=("operand",))
+    _evaluation(tmp_path / "result.json", attempt, dimensions=("logical_operands",))
     result = aggregate_paper_corpus(paper_manifest_from_dict(value), manifest_directory=tmp_path)
     assert result["metrics"]["l2VerifiedRate"]["estimate"] == 1.0
-    assert result["dimensionMetrics"]["operand"]["estimate"] == 1.0
-    assert result["dimensionMetrics"]["shell"]["estimate"] == 0.0
+    assert result["dimensionMetrics"]["logical_operands"]["estimate"] == 1.0
+    assert result["dimensionMetrics"]["shell_semantics"]["estimate"] == 0.0
+
+
+@pytest.mark.parametrize("dimension", ["operand", "operands", "effects", "shell", "unknown"])
+def test_paper_oracle_rejects_noncanonical_l2_dimension_names(tmp_path, dimension):
+    value = _manifest(tmp_path)
+    oracle = value["programs"][0]["oracleFragments"][0]
+    oracle["requiredDimensions"] = [dimension]
+    with pytest.raises(ValueError, match="unsupported"):
+        paper_manifest_from_dict(value)

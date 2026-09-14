@@ -12,21 +12,38 @@ import json
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from .l2_dimensions import (
+    L2Dimension, L2DimensionStatus, L2EligibilityStatus,
+    parse_l2_dimensions,
+)
 
-L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v1"
-L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v1"
-L2_VALIDATOR_PLAN_SCHEMA = "riscv2x86.l2-validator-plan.v1"
+LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v1"
+LEGACY_L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v1"
+LEGACY_L2_VALIDATOR_PLAN_SCHEMA = "riscv2x86.l2-validator-plan.v1"
+L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v2"
+L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v2"
+L2_VALIDATOR_PLAN_SCHEMA = "riscv2x86.l2-validator-plan.v2"
+L2_DIMENSION_MIGRATION_VERSION = "l2-dimension-migration-v1"
 
 _CANDIDATES = {"emitted", "strengthened", "functional_fallback"}
 _NO_CANDIDATE = {"keep", "needs_route", "unsupported", "failed", "not_attempted"}
 _DIMENSION_VALIDATOR = {
-    "atomic": "l2-concurrency-memory-model",
-    "control_flow": "l2-effect-trace-differential",
-    "logical_operands": "l2-logical-operand-differential",
-    "memory": "l2-effect-trace-differential",
-    "privileged_state": "l2-privileged-real-runner",
-    "shell": "l2-effect-trace-differential",
-    "trap": "l2-privileged-real-runner",
+    L2Dimension.ATOMIC_MEMORY_ORDER: "l2-concurrency-memory-model",
+    L2Dimension.CONTROL_FLOW: "l2-effect-trace-differential",
+    L2Dimension.LOGICAL_OPERANDS: "l2-logical-operand-differential",
+    L2Dimension.MEMORY_EFFECTS: "l2-effect-trace-differential",
+    L2Dimension.PRIVILEGED_STATE: "l2-privileged-real-runner",
+    L2Dimension.SHELL_SEMANTICS: "l2-effect-trace-differential",
+    L2Dimension.TRAP_SEMANTICS: "l2-privileged-real-runner",
+}
+_LEGACY_DIMENSION_MAP = {
+    "atomic": L2Dimension.ATOMIC_MEMORY_ORDER,
+    "control_flow": L2Dimension.CONTROL_FLOW,
+    "logical_operands": L2Dimension.LOGICAL_OPERANDS,
+    "memory": L2Dimension.MEMORY_EFFECTS,
+    "privileged_state": L2Dimension.PRIVILEGED_STATE,
+    "shell": L2Dimension.SHELL_SEMANTICS,
+    "trap": L2Dimension.TRAP_SEMANTICS,
 }
 
 
@@ -54,21 +71,21 @@ def _reason_matches(reasons: Sequence[str], *needles: str) -> bool:
     return any(any(needle in item for needle in needles) for item in upper)
 
 
-def _structured_dimensions(finding: Mapping[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _structured_dimensions(finding: Mapping[str, object]) -> tuple[tuple[L2Dimension, ...], tuple[str, ...]]:
     """Return required dimensions and conservative classification diagnostics."""
     fragment = finding.get("fragment")
     if not isinstance(fragment, Mapping):
         return (), ("l2.classification.fragment-facts-missing",)
-    dimensions = {"shell"}
+    dimensions = {L2Dimension.SHELL_SEMANTICS}
     reasons = _strings(finding.get("translationReasonCodes"))
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     if ((isinstance(outputs, list) and outputs) or
             (isinstance(inputs, list) and inputs)):
-        dimensions.add("logical_operands")
+        dimensions.add(L2Dimension.LOGICAL_OPERANDS)
     clobbers = _strings(fragment.get("clobbers"))
     if ("memory" in clobbers or
             _reason_matches(reasons, "MEMORY", "LOAD", "STORE", "BARRIER", "FENCE")):
-        dimensions.add("memory")
+        dimensions.add(L2Dimension.MEMORY_EFFECTS)
     control = fragment.get("controlFlow")
     control_surface = str(fragment.get("controlFlowSurface") or "")
     if (isinstance(control, Mapping) or control_surface not in {"", "StraightLine"} or
@@ -76,18 +93,18 @@ def _structured_dimensions(finding: Mapping[str, object]) -> tuple[tuple[str, ..
                 "hasAsmGoto", "hasLocalLabels", "hasExternalControlFlow",
                 "hasMultipleExits", "hasNonLocalControlDependency")) or
             _reason_matches(reasons, "BRANCH", "CONTROL_FLOW", "CONTROL-FLOW")):
-        dimensions.add("control_flow")
+        dimensions.add(L2Dimension.CONTROL_FLOW)
     privileged_manifest = finding.get("privilegedOutputManifest")
     if ((isinstance(privileged_manifest, Mapping) and bool(privileged_manifest)) or
             _reason_matches(reasons, "CSR", "PRIVILEGED", "MMU", "PMP")):
-        dimensions.add("privileged_state")
+        dimensions.add(L2Dimension.PRIVILEGED_STATE)
     if _reason_matches(reasons, "TRAP", "EXCEPTION", "INTERRUPT"):
-        dimensions.add("trap")
+        dimensions.add(L2Dimension.TRAP_SEMANTICS)
     if (_reason_matches(reasons, "ATOMIC", "LRSC", "LR_SC", "MEMORY_ORDER") or
             str(finding.get("buildFamily") or "").lower() in {"atomic", "lrsc"}):
-        dimensions.add("atomic")
-        dimensions.add("memory")
-    return tuple(sorted(dimensions)), ()
+        dimensions.add(L2Dimension.ATOMIC_MEMORY_ORDER)
+        dimensions.add(L2Dimension.MEMORY_EFFECTS)
+    return tuple(sorted(dimensions, key=lambda item: item.value)), ()
 
 
 class L2EligibilityClassifier:
@@ -99,17 +116,21 @@ class L2EligibilityClassifier:
         outcome = str(finding.get("translationOutcome") or "not_attempted")
         dimensions, diagnostics = _structured_dimensions(finding)
         if outcome in _NO_CANDIDATE:
-            disposition = "not_applicable"
+            eligibility = L2EligibilityStatus.NOT_APPLICABLE
+            disposition = L2DimensionStatus.NOT_APPLICABLE
             reason_codes = ("l2.no-target-candidate",)
             dimensions = ()
         elif outcome not in _CANDIDATES:
-            disposition = "inconclusive"
+            eligibility = L2EligibilityStatus.INCONCLUSIVE
+            disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = ("l2.translation-outcome-unknown",)
         elif diagnostics or not fragment_id or not dimensions:
-            disposition = "inconclusive"
+            eligibility = L2EligibilityStatus.INCONCLUSIVE
+            disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = diagnostics or ("l2.classification-facts-incomplete",)
         else:
-            disposition = "not_run"
+            eligibility = L2EligibilityStatus.ELIGIBLE
+            disposition = L2DimensionStatus.NOT_RUN
             reason_codes = ("l2.execution-not-yet-configured",)
         validators = tuple(sorted({_DIMENSION_VALIDATOR[item] for item in dimensions}))
         plan = {
@@ -117,7 +138,7 @@ class L2EligibilityClassifier:
             "level": "L2",
             "composite": len(validators) > 1,
             "validators": [
-                {"dimension": dimension, "type": _DIMENSION_VALIDATOR[dimension]}
+                {"dimension": dimension.value, "type": _DIMENSION_VALIDATOR[dimension]}
                 for dimension in dimensions
             ],
             "validatorTypes": list(validators),
@@ -127,8 +148,9 @@ class L2EligibilityClassifier:
             "findingId": finding_id,
             "fragmentId": fragment_id,
             "translationOutcome": outcome,
-            "requiredDimensions": list(dimensions),
-            "disposition": disposition,
+            "requiredDimensions": [item.value for item in dimensions],
+            "eligibilityStatus": eligibility.value,
+            "disposition": disposition.value,
             "reasonCodes": list(reason_codes),
             "validatorPlan": plan,
         }
@@ -170,8 +192,14 @@ def classify_l2_requirements(report: Mapping[str, object]) -> dict[str, object]:
 def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
     expected = {"schemaVersion", "classificationPolicy", "requirements",
                 "dispositionCounts", "requiredDimensionCounts", "manifestIdentity"}
-    if set(value) != expected or value.get("schemaVersion") != L2_REQUIREMENT_MANIFEST_SCHEMA:
+    migration_fields = {"sourceSchemaVersion", "canonicalizationVersion"}
+    if (frozenset(value) not in {frozenset(expected), frozenset(expected | migration_fields)}
+            or value.get("schemaVersion") != L2_REQUIREMENT_MANIFEST_SCHEMA):
         raise ValueError("L2 requirement manifest schema or fields are invalid")
+    if migration_fields.issubset(value):
+        if (value.get("sourceSchemaVersion") != LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA
+                or value.get("canonicalizationVersion") != L2_DIMENSION_MIGRATION_VERSION):
+            raise ValueError("L2 requirement manifest migration provenance is invalid")
     identity = value.get("manifestIdentity")
     payload = dict(value); payload.pop("manifestIdentity")
     if not isinstance(identity, str) or identity != _identity(payload):
@@ -180,8 +208,8 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
     if not isinstance(requirements, list):
         raise ValueError("L2 requirement manifest requirements must be an array")
     requirement_fields = {"schemaVersion", "findingId", "fragmentId", "translationOutcome",
-                          "requiredDimensions", "disposition", "reasonCodes", "validatorPlan",
-                          "requirementIdentity"}
+                          "requiredDimensions", "eligibilityStatus", "disposition",
+                          "reasonCodes", "validatorPlan", "requirementIdentity"}
     seen = set()
     disposition_counts: dict[str, int] = {}
     dimension_counts: dict[str, int] = {}
@@ -197,10 +225,20 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
             raise ValueError("L2 fragment finding identity is missing or duplicated")
         seen.add(finding_id)
         dimensions = item.get("requiredDimensions")
-        if (not isinstance(dimensions, list) or dimensions != sorted(set(dimensions)) or
-                not all(item in _DIMENSION_VALIDATOR for item in dimensions)):
+        if not isinstance(dimensions, list):
             raise ValueError("L2 required dimensions are invalid or non-canonical")
-        if item.get("disposition") not in {"not_run", "not_applicable", "inconclusive"}:
+        try:
+            parsed_dimensions = parse_l2_dimensions(dimensions)
+            eligibility = L2EligibilityStatus(str(item.get("eligibilityStatus")))
+            disposition = L2DimensionStatus(str(item.get("disposition")))
+        except ValueError as exc:
+            raise ValueError("L2 required dimensions or statuses are invalid") from exc
+        valid_pair = {
+            L2EligibilityStatus.ELIGIBLE: L2DimensionStatus.NOT_RUN,
+            L2EligibilityStatus.NOT_APPLICABLE: L2DimensionStatus.NOT_APPLICABLE,
+            L2EligibilityStatus.INCONCLUSIVE: L2DimensionStatus.INCONCLUSIVE,
+        }
+        if valid_pair[eligibility] is not disposition:
             raise ValueError("L2 planning disposition is invalid")
         reasons = item.get("reasonCodes")
         if (not isinstance(reasons, list) or not reasons or
@@ -212,21 +250,135 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
                 plan.get("schemaVersion") != L2_VALIDATOR_PLAN_SCHEMA or plan.get("level") != "L2"):
             raise ValueError("L2 validator plan is malformed")
         expected_entries = [
-            {"dimension": dimension, "type": _DIMENSION_VALIDATOR[dimension]}
-            for dimension in dimensions
+            {"dimension": dimension.value, "type": _DIMENSION_VALIDATOR[dimension]}
+            for dimension in parsed_dimensions
         ]
-        expected_types = sorted({_DIMENSION_VALIDATOR[dimension] for dimension in dimensions})
+        expected_types = sorted({_DIMENSION_VALIDATOR[dimension] for dimension in parsed_dimensions})
         if (plan.get("validators") != expected_entries or plan.get("validatorTypes") != expected_types
                 or plan.get("composite") is not (len(expected_types) > 1)):
             raise ValueError("L2 validator selection does not match required dimensions")
-        disposition = str(item["disposition"])
-        disposition_counts[disposition] = disposition_counts.get(disposition, 0) + 1
-        for dimension in dimensions:
-            dimension_counts[dimension] = dimension_counts.get(dimension, 0) + 1
+        disposition_value = disposition.value
+        disposition_counts[disposition_value] = disposition_counts.get(disposition_value, 0) + 1
+        for dimension in parsed_dimensions:
+            dimension_counts[dimension.value] = dimension_counts.get(dimension.value, 0) + 1
     if value.get("dispositionCounts") != dict(sorted(disposition_counts.items())):
         raise ValueError("L2 disposition counts do not match requirements")
     if value.get("requiredDimensionCounts") != dict(sorted(dimension_counts.items())):
         raise ValueError("L2 dimension counts do not match requirements")
+
+
+def migrate_l2_requirement_v1_to_v2(value: Mapping[str, object]) -> dict[str, object]:
+    """Explicitly migrate a strict v1 manifest; normal v2 parsing never aliases."""
+    if value.get("schemaVersion") != LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA:
+        raise ValueError("L2 requirement migration requires a v1 manifest")
+    expected = {"schemaVersion", "classificationPolicy", "requirements",
+                "dispositionCounts", "requiredDimensionCounts", "manifestIdentity"}
+    if set(value) != expected:
+        raise ValueError("legacy L2 requirement manifest fields are invalid")
+    legacy_payload = dict(value); legacy_identity = legacy_payload.pop("manifestIdentity", None)
+    if legacy_identity != _identity(legacy_payload):
+        raise ValueError("legacy L2 requirement manifest identity does not match content")
+    raw_requirements = value.get("requirements")
+    if not isinstance(raw_requirements, list):
+        raise ValueError("legacy L2 requirements must be an array")
+    migrated = []
+    for raw in raw_requirements:
+        legacy_fields = {"schemaVersion", "findingId", "fragmentId", "translationOutcome",
+                         "requiredDimensions", "disposition", "reasonCodes", "validatorPlan",
+                         "requirementIdentity"}
+        if (not isinstance(raw, Mapping) or set(raw) != legacy_fields
+                or raw.get("schemaVersion") != LEGACY_L2_FRAGMENT_REQUIREMENT_SCHEMA):
+            raise ValueError("legacy L2 fragment requirement is invalid")
+        legacy_item = dict(raw); legacy_item_identity = legacy_item.pop("requirementIdentity", None)
+        if legacy_item_identity != _identity(legacy_item):
+            raise ValueError("legacy L2 fragment requirement identity does not match content")
+        raw_dimensions = raw.get("requiredDimensions")
+        if (not isinstance(raw_dimensions, list)
+                or raw_dimensions != sorted(set(raw_dimensions))):
+            raise ValueError("legacy L2 dimensions are not canonical")
+        try:
+            dimensions = tuple(_LEGACY_DIMENSION_MAP[item] for item in raw_dimensions)
+        except (KeyError, TypeError) as exc:
+            raise ValueError("legacy L2 dimension is unsupported") from exc
+        dimensions = tuple(sorted(dimensions, key=lambda item: item.value))
+        legacy_plan = raw.get("validatorPlan")
+        legacy_validator_map = {
+            name: _DIMENSION_VALIDATOR[dimension]
+            for name, dimension in _LEGACY_DIMENSION_MAP.items()
+        }
+        legacy_validators = tuple(sorted({legacy_validator_map[item] for item in raw_dimensions}))
+        expected_legacy_plan = {
+            "schemaVersion": LEGACY_L2_VALIDATOR_PLAN_SCHEMA,
+            "level": "L2", "composite": len(legacy_validators) > 1,
+            "validators": [
+                {"dimension": item, "type": legacy_validator_map[item]}
+                for item in raw_dimensions
+            ],
+            "validatorTypes": list(legacy_validators),
+        }
+        if legacy_plan != expected_legacy_plan:
+            raise ValueError("legacy L2 validator plan is inconsistent")
+        disposition = L2DimensionStatus(str(raw.get("disposition")))
+        eligibility = {
+            L2DimensionStatus.NOT_RUN: L2EligibilityStatus.ELIGIBLE,
+            L2DimensionStatus.NOT_APPLICABLE: L2EligibilityStatus.NOT_APPLICABLE,
+            L2DimensionStatus.INCONCLUSIVE: L2EligibilityStatus.INCONCLUSIVE,
+        }.get(disposition)
+        if eligibility is None:
+            raise ValueError("legacy L2 planning disposition is invalid")
+        validators = tuple(sorted({_DIMENSION_VALIDATOR[item] for item in dimensions}))
+        item = {
+            "schemaVersion": L2_FRAGMENT_REQUIREMENT_SCHEMA,
+            "findingId": raw.get("findingId"),
+            "fragmentId": raw.get("fragmentId"),
+            "translationOutcome": raw.get("translationOutcome"),
+            "requiredDimensions": [dimension.value for dimension in dimensions],
+            "eligibilityStatus": eligibility.value,
+            "disposition": disposition.value,
+            "reasonCodes": raw.get("reasonCodes"),
+            "validatorPlan": {
+                "schemaVersion": L2_VALIDATOR_PLAN_SCHEMA,
+                "level": "L2",
+                "composite": len(validators) > 1,
+                "validators": [
+                    {"dimension": dimension.value, "type": _DIMENSION_VALIDATOR[dimension]}
+                    for dimension in dimensions
+                ],
+                "validatorTypes": list(validators),
+            },
+        }
+        item["requirementIdentity"] = _identity(item)
+        migrated.append(item)
+    disposition_counts: dict[str, int] = {}
+    dimension_counts: dict[str, int] = {}
+    for item in migrated:
+        disposition = str(item["disposition"])
+        disposition_counts[disposition] = disposition_counts.get(disposition, 0) + 1
+        for dimension in item["requiredDimensions"]:
+            dimension_counts[str(dimension)] = dimension_counts.get(str(dimension), 0) + 1
+    expected_legacy_dispositions: dict[str, int] = {}
+    expected_legacy_dimensions: dict[str, int] = {}
+    for raw in raw_requirements:
+        disposition = str(raw["disposition"])
+        expected_legacy_dispositions[disposition] = expected_legacy_dispositions.get(disposition, 0) + 1
+        for dimension in raw["requiredDimensions"]:
+            expected_legacy_dimensions[str(dimension)] = expected_legacy_dimensions.get(str(dimension), 0) + 1
+    if value.get("dispositionCounts") != dict(sorted(expected_legacy_dispositions.items())):
+        raise ValueError("legacy L2 disposition counts are inconsistent")
+    if value.get("requiredDimensionCounts") != dict(sorted(expected_legacy_dimensions.items())):
+        raise ValueError("legacy L2 dimension counts are inconsistent")
+    result = {
+        "schemaVersion": L2_REQUIREMENT_MANIFEST_SCHEMA,
+        "classificationPolicy": value.get("classificationPolicy"),
+        "requirements": migrated,
+        "dispositionCounts": dict(sorted(disposition_counts.items())),
+        "requiredDimensionCounts": dict(sorted(dimension_counts.items())),
+        "sourceSchemaVersion": LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA,
+        "canonicalizationVersion": L2_DIMENSION_MIGRATION_VERSION,
+    }
+    result["manifestIdentity"] = _identity(result)
+    validate_l2_requirement_manifest(result)
+    return result
 
 
 def load_l2_requirement_manifest(path: str | Path) -> Mapping[str, object]:

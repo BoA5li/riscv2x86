@@ -51,7 +51,8 @@ the canonical `selectedAttemptIds`. The paper manifest separately names the matc
 
 Coverage stages are recognition, modeling, routing, candidate generation, proof approval,
 and rendering. Validation reports unconditional and predecessor-conditional L0/L1/L2/L3
-rates. L2 dimensions are shell, operand, memory, control flow, trap, atomic, and privileged;
+rates. Canonical L2 dimensions are `logical_operands`, `memory_effects`, `control_flow`,
+`shell_semantics`, `trap_semantics`, `privileged_state`, and `atomic_memory_order`;
 L3 uses experiment contract. A dimension is verified only when a named composite validator
 produces its own evidence. A generic L2 success is not expanded into dimension successes.
 
@@ -62,15 +63,18 @@ An L2 registry composes applicable validators explicitly, for example:
   "L2": {
     "type": "composite",
     "validators": [
-      {"dimension": "operand", "type": "l2-logical-operand-differential", "config": {}},
-      {"dimension": "shell", "type": "l2-effect-trace-differential", "config": {}}
+      {"dimension": "logical_operands", "type": "l2-logical-operand-differential", "config": {}},
+      {"dimension": "shell_semantics", "type": "l2-effect-trace-differential", "config": {}}
     ]
   }
 }
 ```
 
 Real `config` objects contain the corresponding versioned sidecars and runner contracts.
-Dimension names must be unique and sorted. A child failure fails the layer, while unavailable
+Dimension names must be unique and sorted. Registry schema v2 rejects legacy aliases such as
+`operand`, `operands`, `effects`, and `shell`. Requirement-manifest v1 data must be converted
+with the explicit `migrate_l2_requirement_v1_to_v2()` API; normal parsing never migrates or
+repairs it. A child failure fails the layer, while unavailable
 child tooling makes it inconclusive.
 
 All intervals use program-cluster bootstrap. The JSON and CSV outputs retain numerators,
