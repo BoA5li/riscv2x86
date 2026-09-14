@@ -14,6 +14,7 @@ from .l2_dimensions import (
     L2ClaimScope, L2DimensionStatus, parse_l2_dimension,
 )
 from .l2_results import L2DimensionResult, L2FragmentResult
+from .l2_program_results import canonical_identity, sample_set_identity
 from .l2_validator_resolution import (
     ExplicitL2Bindings, L2BindingStatus, L2RuntimeCapabilities,
     L2ValidatorResolver, fragment_requirement_from_dict, provider_from_dict,
@@ -285,7 +286,18 @@ def _requirement_driven_l2_validator(
             )
             source_identity = str(getattr(kwargs.get("source_observation"), "identity", ""))
             target_identity = str(getattr(kwargs.get("target_observation"), "identity", ""))
-            execution_identity = result.evidence_identity
+            execution_identity = (
+                canonical_identity({
+                    "schemaVersion": "riscv2x86.l2-program-execution.v1",
+                    "sourceObservationIdentity": source_identity,
+                    "targetObservationIdentity": target_identity,
+                    "sampleSetIdentity": sample_set_identity(
+                        source_identity, target_identity,
+                    ),
+                })
+                if (_SHA256.fullmatch(source_identity)
+                    and _SHA256.fullmatch(target_identity)) else ""
+            )
             identities = {
                 "authority": authority_identity, "source-observation": source_identity,
                 "target-observation": target_identity,

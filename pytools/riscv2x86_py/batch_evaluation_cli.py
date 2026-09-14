@@ -247,6 +247,11 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         dict(l2_manifest.get("requiredDimensionCounts", {}))
         if isinstance(l2_manifest, Mapping) else {}
     )
+    l2_execution_samples = (
+        list(linkage.get("programExecutionEvidence", []))
+        if isinstance(linkage, Mapping)
+        and isinstance(linkage.get("programExecutionEvidence"), list) else []
+    )
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -266,6 +271,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         ) if isinstance(l2_group, Mapping) else 0,
         "l2ProgramExecutionSampleCount": int(l2_group.get("executionSampleCount", 0))
         if isinstance(l2_group, Mapping) else 0,
+        "l2ProgramExecutionSamples": l2_execution_samples,
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
@@ -371,10 +377,18 @@ def run_batch_evaluation(
         l2_requirement_dispositions = Counter()
         l2_required_dimensions = Counter()
         l2_privileged_claims = Counter()
+        l2_execution_sample_keys: set[tuple[str, str, str]] = set()
         for item in completed:
             l2_requirement_dispositions.update(item.get("l2RequirementDispositionCounts", {}))
             l2_required_dimensions.update(item.get("l2RequiredDimensionCounts", {}))
             l2_privileged_claims.update(item.get("l2PrivilegedFragmentClaimCounts", {}))
+            for evidence in item.get("l2ProgramExecutionSamples", []):
+                if isinstance(evidence, Mapping):
+                    key = tuple(str(evidence.get(name, "")) for name in (
+                        "programId", "executionIdentity", "sampleSetIdentity",
+                    ))
+                    if all(key):
+                        l2_execution_sample_keys.add(key)
         payload: dict[str, object] = {
             "schemaVersion": BATCH_RESULT_SCHEMA,
             "batchIdentity": "", "caseCount": len(completed),
@@ -409,9 +423,7 @@ def run_batch_evaluation(
                 "required": sum(int(item.get("l2RequiredMemberCount", 0)) for item in completed),
                 "verified": sum(int(item.get("l2VerifiedMemberCount", 0)) for item in completed),
             },
-            "l2ProgramExecutionSampleCount": sum(
-                int(item.get("l2ProgramExecutionSampleCount", 0)) for item in completed
-            ),
+            "l2ProgramExecutionSampleCount": len(l2_execution_sample_keys),
             "l2PrivilegedFragmentClaimCounts": dict(sorted(l2_privileged_claims.items())),
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),

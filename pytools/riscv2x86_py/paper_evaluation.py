@@ -16,10 +16,11 @@ from .translation_attempt import load_translation_attempt_archive
 from .evaluation import EVALUATION_RESULT_SCHEMA
 from .l2_dimensions import L2Dimension
 from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMA
+from .l2_program_results import ProgramExecutionEvidence
 
 
 PAPER_CORPUS_SCHEMA = "riscv2x86.paper-corpus-manifest.v1"
-PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v1"
+PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v2"
 PAPER_EXECUTION_SCHEMA = "riscv2x86.paper-corpus-execution.v1"
 PAPER_POLICY = "riscv2x86.paper-metrics.v1"
 _SHA_PREFIX = "sha256:"
@@ -432,6 +433,7 @@ def _cluster_metric(rows: Sequence[Mapping[str, object]], predicate, denominator
 def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory: str | Path) -> dict[str, object]:
     base = Path(manifest_directory).resolve(); fragments = []; units = []; errors = []; environments = {}
     seen_oracles: set[str] = set()
+    l2_execution_sample_keys: set[tuple[str, str, str]] = set()
     for program in manifest.programs:
         source_root = base / program.source_root
         try:
@@ -497,6 +499,18 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                 elif actual_attempts != expected_attempts:
                     raise ValueError("evaluation selected attempts do not match oracle group")
                 layers, dimension_statuses = _validation_maps(evaluation, selected)
+                linkage = evaluation.get("translationEvaluationLink")
+                raw_execution_evidence = (
+                    linkage.get("programExecutionEvidence", [])
+                    if isinstance(linkage, Mapping) else []
+                )
+                if not isinstance(raw_execution_evidence, list):
+                    raise ValueError("L2 program execution evidence must be an array")
+                for raw_evidence in raw_execution_evidence:
+                    if not isinstance(raw_evidence, Mapping):
+                        raise ValueError("L2 program execution evidence entry is invalid")
+                    evidence = ProgramExecutionEvidence.from_dict(raw_evidence)
+                    l2_execution_sample_keys.add(evidence.deduplication_key)
                 provenance = evaluation.get("environmentProvenance")
                 if not isinstance(provenance, Mapping):
                     raise ValueError("evaluation environment provenance is missing")
@@ -605,6 +619,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                                   "bootstrap": "program-cluster"},
               "integrityStatus": "failed" if errors else "verified", "integrityErrors": errors,
               "fragmentRecords": fragments, "validationUnitRecords": units,
+              "l2ProgramExecutionSampleCount": len(l2_execution_sample_keys),
               "metrics": metrics, "dimensionMetrics": dimensions,
               "translationOutcomeBreakdown": dict(sorted(outcomes.items())),
               "categorySummaries": category_summaries,

@@ -134,7 +134,7 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert result["attempts"][0]["reasonCodes"] == ["validation.layer-runner-missing:L0"]
     assert (work / result["replayArtifact"]).is_file()
     linkage = result["translationEvaluationLink"]
-    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v2"
+    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v3"
     assert linkage["translatedReportDigest"].startswith("sha256:")
     assert linkage["attemptArchiveDigest"].startswith("sha256:")
     joined = linkage["findings"][0]
@@ -147,8 +147,13 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert joined["levelStatus"] == {
         "L0": "inconclusive", "L1": "not_run", "L2": "not_run", "L3": "not_run",
     }
+    assert linkage["validationGroups"][0].pop("l2GroupResult") is None
+    l2_group_result = linkage["validationGroups"][1].pop("l2GroupResult")
+    assert l2_group_result["schemaVersion"] == "riscv2x86.l2-program-group-result.v1"
+    assert l2_group_result["status"] == "not_applicable"
+    assert l2_group_result["executionSampleCount"] == 0
     assert linkage["validationGroups"] == [{
-        "schemaVersion": "riscv2x86.program-validation-group.v2",
+        "schemaVersion": "riscv2x86.program-validation-group.v3",
         "sourceRelativePath": "case.c",
         "memberAttemptIds": [attempt.artifact_id],
         "validationGroupId": joined["validationGroupId"],
@@ -157,7 +162,7 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
         "memberResults": [], "programExecutionEvidenceIdentities": [],
         "executionSampleCount": 0,
     }, {
-        "schemaVersion": "riscv2x86.program-validation-group.v2",
+        "schemaVersion": "riscv2x86.program-validation-group.v3",
         "sourceRelativePath": "case.c",
         "memberAttemptIds": [attempt.artifact_id],
         "validationGroupId": joined["validationGroupId"],
@@ -172,6 +177,8 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
             "requirementIdentity": "",
             "status": "not_run",
             "evidenceIdentity": "",
+            "fragmentResult": None,
+            "uncoveredObservableEffects": [],
             "programExecutionEvidenceIdentities": [],
         }],
         "programExecutionEvidenceIdentities": [],

@@ -18,6 +18,11 @@ from .candidate_materialization import (
 from .schema import TranslationOutcome
 from .translation_attempt import TranslationAttemptArchive, load_translation_attempt_archive
 from .l2_dimensions import parse_l2_dimensions
+from .l2_results import L2FragmentResult
+from .l2_program_results import (
+    ProgramExecutionEvidence, ProgramL2GroupResult, ProgramL2MemberResult,
+    sample_set_identity,
+)
 from .translation_artifact_binding import artifacts_from_report
 from .translation_validation import (
     ProgramArtifact, TranslationValidationResult, load_target_environment,
@@ -37,7 +42,7 @@ EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v2"
 LEGACY_EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v1"
 EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v2"
 EVALUATION_REPLAY_SCHEMA = "riscv2x86.evaluation-replay.v1"
-TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v2"
+TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v3"
 _EMITTED = {
     TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
     TranslationOutcome.FUNCTIONAL_FALLBACK,
@@ -710,7 +715,7 @@ def _translation_evaluation_linkage(
         } and isinstance(item.get("attemptArtifactId"), str)
     )
     group_payload = {
-        "schemaVersion": "riscv2x86.program-validation-group.v2",
+        "schemaVersion": "riscv2x86.program-validation-group.v3",
         "sourceRelativePath": request.source_relative_path,
         "memberAttemptIds": emitted_attempt_ids,
     }
@@ -725,14 +730,10 @@ def _translation_evaluation_linkage(
             level = str(layer.get("level")) if isinstance(layer, Mapping) else ""
             if level in grouped_layers:
                 grouped_layers[level].append(layer)
-    shared_program_execution_evidence = sorted({
-        str(item.get("evidenceIdentity")) for item in grouped_layers["L1"]
-        if item.get("status") == "verified"
-        and isinstance(item.get("evidenceIdentity"), str)
-        and item.get("evidenceIdentity")
-    })
     findings: list[dict[str, object]] = []
     l2_member_results: list[dict[str, object]] = []
+    typed_l2_members: list[ProgramL2MemberResult] = []
+    parsed_l2_results: dict[str, L2FragmentResult] = {}
     raw: object = {}
     if report_path.is_file():
         raw = json.loads(report_path.read_text(encoding="utf-8"))
@@ -777,6 +778,29 @@ def _translation_evaluation_linkage(
                 layer for layer in layers
                 if isinstance(layer, Mapping) and layer.get("level") == "L2"
             ), None)
+            parsed_l2: L2FragmentResult | None = None
+            if isinstance(l2_layer, Mapping):
+                try:
+                    detail = json.loads(str(l2_layer.get("detail", "")))
+                    if not isinstance(detail, Mapping):
+                        raise ValueError("L2 fragment result detail is not an object")
+                    parsed_l2 = L2FragmentResult.from_dict(detail)
+                    if (parsed_l2.fragment_id != fragment_id
+                            or parsed_l2.evidence_identity
+                            != str(l2_layer.get("evidenceIdentity", ""))):
+                        raise ValueError("L2 fragment result/layer identity mismatch")
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    parsed_l2 = None
+            if parsed_l2 is not None and has_l2_requirement_manifest:
+                expected_dimensions = tuple(required_dimensions)
+                if (not isinstance(requirement, Mapping)
+                        or parsed_l2.requirement_identity
+                        != str(requirement.get("requirementIdentity", ""))
+                        or tuple(item.value for item in parsed_l2.required_dimensions)
+                        != expected_dimensions):
+                    parsed_l2 = None
+            if parsed_l2 is not None:
+                parsed_l2_results[fragment_id] = parsed_l2
             if has_l2_requirement_manifest:
                 # A stale/incomplete requirement manifest must not silently remove
                 # a translated fragment from the program-level L2 denominator.
@@ -785,20 +809,28 @@ def _translation_evaluation_linkage(
                     l2_status = "inconclusive"
                 elif not l2_required:
                     l2_status = "not_applicable"
-                elif isinstance(l2_layer, Mapping):
-                    l2_status = str(l2_layer.get("status", "inconclusive"))
+                elif parsed_l2 is not None:
+                    l2_status = parsed_l2.status.value
                 else:
-                    l2_status = "not_run"
+                    l2_status = "inconclusive" if isinstance(l2_layer, Mapping) else "not_run"
             else:
-                l2_required = l2_layer is not None
+                l2_required = parsed_l2 is not None
                 l2_status = (
-                    str(l2_layer.get("status", "inconclusive"))
-                    if isinstance(l2_layer, Mapping) else "not_run"
+                    parsed_l2.status.value if parsed_l2 is not None else "not_run"
                 )
             l2_evidence = (
-                str(l2_layer.get("evidenceIdentity", ""))
-                if isinstance(l2_layer, Mapping) else ""
+                parsed_l2.evidence_identity if parsed_l2 is not None else ""
             )
+            uncovered_effects = tuple(sorted({
+                reason for result in (
+                    parsed_l2.dimension_results if parsed_l2 is not None else ()
+                ) for reason in result.reason_codes
+                if "coverage-mismatch" in reason or "uncovered" in reason
+            }))
+            typed_member = ProgramL2MemberResult(
+                fragment_id, l2_required, parsed_l2, uncovered_effects,
+            )
+            typed_l2_members.append(typed_member)
             member = {
                 "findingId": finding_id,
                 "fragmentId": fragment_id,
@@ -811,9 +843,9 @@ def _translation_evaluation_linkage(
                 ),
                 "status": l2_status,
                 "evidenceIdentity": l2_evidence,
-                "programExecutionEvidenceIdentities": (
-                    shared_program_execution_evidence if l2_required else []
-                ),
+                "fragmentResult": None if parsed_l2 is None else parsed_l2.to_dict(),
+                "uncoveredObservableEffects": list(uncovered_effects),
+                "programExecutionEvidenceIdentities": [],
             }
             l2_member_results.append(member)
             findings.append({
@@ -850,18 +882,52 @@ def _translation_evaluation_linkage(
                 "l2Result": member,
             })
     required_l2_members = [item for item in l2_member_results if item["required"]]
-    if not required_l2_members and has_l2_requirement_manifest:
-        l2_group_status = "not_applicable"
-    elif not required_l2_members:
-        l2_group_status = "not_run"
-    else:
-        required_statuses = [str(item["status"]) for item in required_l2_members]
-        l2_group_status = (
-            "failed" if "failed" in required_statuses else
-            "inconclusive" if "inconclusive" in required_statuses else
-            "not_run" if "not_run" in required_statuses else
-            "verified" if all(item == "verified" for item in required_statuses)
-            else "inconclusive"
+    execution_groups: dict[tuple[str, str, str], set[str]] = {}
+    for fragment_id, fragment_result in parsed_l2_results.items():
+        required_results = tuple(
+            item for item in fragment_result.dimension_results
+            if item.dimension in fragment_result.required_dimensions
+        )
+        execution_ids = {item.execution_identity for item in required_results if item.execution_identity}
+        source_ids = {item.source_observation_identity for item in required_results
+                      if item.source_observation_identity}
+        target_ids = {item.target_observation_identity for item in required_results
+                      if item.target_observation_identity}
+        if len(execution_ids) == len(source_ids) == len(target_ids) == 1:
+            key = (next(iter(execution_ids)), next(iter(source_ids)), next(iter(target_ids)))
+            execution_groups.setdefault(key, set()).add(fragment_id)
+    program_execution_evidence = tuple(
+        ProgramExecutionEvidence(
+            execution_id, request.source_relative_path, source_id, target_id,
+            sample_set_identity(source_id, target_id), tuple(sorted(member_ids)),
+        )
+        for (execution_id, source_id, target_id), member_ids
+        in sorted(execution_groups.items())
+    )
+    required_fragment_ids = tuple(
+        str(item["fragmentId"]) for item in required_l2_members
+    )
+    l2_group = ProgramL2GroupResult.close(
+        program_id=request.source_relative_path,
+        required_member_fragment_ids=required_fragment_ids,
+        member_results=typed_l2_members,
+        execution_evidence=program_execution_evidence,
+    )
+    l2_group_status = (
+        "not_run" if not has_l2_requirement_manifest and not required_l2_members
+        else l2_group.status.value
+    )
+    evidence_by_fragment = {
+        fragment_id: sorted({
+            evidence.execution_identity for evidence in program_execution_evidence
+            if fragment_id in evidence.member_fragment_ids
+        })
+        for fragment_id in parsed_l2_results
+    }
+    for member in l2_member_results:
+        member["programExecutionEvidenceIdentities"] = (
+            evidence_by_fragment.get(str(member["fragmentId"]), [])
+            if member["required"] else []
         )
     default_group_status = {
         level: (
@@ -883,6 +949,9 @@ def _translation_evaluation_linkage(
         ),
         "l2RequirementManifestDigest": _digest_file(l2_path) if l2_path.is_file() else "",
         "l2Requirements": l2_requirements,
+        "programExecutionEvidence": [
+            item.to_dict() for item in program_execution_evidence
+        ],
         "findings": findings,
         "validationGroups": ([] if not emitted_attempt_ids else [
             {
@@ -904,11 +973,13 @@ def _translation_evaluation_linkage(
                 ),
                 "memberResults": l2_member_results if level == "L2" else [],
                 "programExecutionEvidenceIdentities": (
-                    shared_program_execution_evidence if level == "L2" else []
+                    sorted({item.execution_identity for item in program_execution_evidence})
+                    if level == "L2" else []
                 ),
                 "executionSampleCount": (
-                    len(shared_program_execution_evidence) if level == "L2" else 0
+                    l2_group.execution_sample_count if level == "L2" else 0
                 ),
+                "l2GroupResult": l2_group.to_dict() if level == "L2" else None,
             }
             for level in ("L1", "L2")
         ]),

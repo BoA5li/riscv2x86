@@ -128,6 +128,8 @@ def test_registry_consumes_manifest_and_persists_plan(tmp_path):
     assert detail["claimScope"] == "architectural"
     assert all(item["schemaVersion"] == "riscv2x86.l2-dimension-result.v1"
                for item in detail["dimensionResults"].values())
+    assert len({item["executionIdentity"]
+                for item in detail["dimensionResults"].values()}) == 1
 
 
 def test_registry_missing_required_provider_cannot_verify(tmp_path):
