@@ -394,6 +394,8 @@ def run_evaluation(
 
     report = _path(request.translated_report, work)
     archive_path = _path(request.attempt_archive, work)
+    archive = load_translation_attempt_archive(archive_path)
+    _materialize_l2_resolution_plans(request, report, archive, replay)
     staging = work / "candidate-staging"
     candidate_manifest_path = work / "candidate-artifact-manifest.json"
     candidate_manifest = materialize_candidate_tree(
@@ -405,8 +407,6 @@ def run_evaluation(
         candidate_manifest, source_root=source_root, staging_root=staging,
         translated_report=report, attempt_archive=archive_path,
     )
-    archive = load_translation_attempt_archive(archive_path)
-    _materialize_l2_resolution_plans(request, report, archive, replay)
     source_path = source_root / request.source_relative_path
     target_path = staging / request.target_relative_path
     if not source_path.is_file() or not target_path.is_file():
