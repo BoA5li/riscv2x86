@@ -343,6 +343,21 @@ def _requirement_driven_l2_validator(
                 execution_identity=(execution_identity
                     if _SHA256.fullmatch(execution_identity) else ""),
                 reason_codes=reasons,
+                relation_kind=(
+                    "runtime_mediated" if claim_scope is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION
+                    else "diagnostic" if claim_scope is L2ClaimScope.DIAGNOSTIC_ONLY
+                    else "exact" if claim_scope is L2ClaimScope.ARCHITECTURAL else ""
+                ),
+                verified_properties=(
+                    tuple(getattr(artifact, "l2_verified_properties", ())) or
+                    (("declared-return-relation",) if claim_scope is
+                     L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ())
+                ),
+                not_claimed_properties=(
+                    tuple(getattr(artifact, "l2_not_claimed_properties", ())) or
+                    (("architectural-state-equivalence",) if claim_scope is
+                     L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ())
+                ),
             ))
         fragment_result = L2FragmentResult.close(
             fragment_id=fragment_id,

@@ -132,6 +132,9 @@ def test_functional_member_cannot_close_architectural_program_group():
         authority_identity=_id("a"), source_observation_identity=SOURCE,
         target_observation_identity=TARGET, effect_relation_identity=_id("d"),
         execution_identity=EXECUTION,
+        relation_kind="runtime_mediated",
+        verified_properties=("declared-return-relation",),
+        not_claimed_properties=("architectural-state-equivalence",),
     )
     fragment = L2FragmentResult.close(
         fragment_id="fragment:0", requirement_identity=_id("f"),

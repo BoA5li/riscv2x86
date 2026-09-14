@@ -13,13 +13,14 @@ import re
 from typing import Mapping, Sequence
 
 from .l2_dimensions import (
-    L2ClaimScope, L2Dimension, L2DimensionStatus,
+    L2ClaimConclusion, L2ClaimScope, L2Dimension, L2DimensionStatus,
+    l2_claim_conclusion,
     parse_l2_dimension, parse_l2_dimensions,
 )
 
 
-L2_DIMENSION_RESULT_SCHEMA = "riscv2x86.l2-dimension-result.v1"
-L2_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v1"
+L2_DIMENSION_RESULT_SCHEMA = "riscv2x86.l2-dimension-result.v2"
+L2_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v2"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -46,12 +47,25 @@ class L2DimensionResult:
     effect_relation_identity: str
     execution_identity: str
     reason_codes: tuple[str, ...]
+    relation_kind: str = ""
+    verified_properties: tuple[str, ...] = ()
+    not_claimed_properties: tuple[str, ...] = ()
+
+    @property
+    def conclusion(self) -> L2ClaimConclusion:
+        return l2_claim_conclusion(self.status, self.claim_scope)
 
     def __post_init__(self) -> None:
         if tuple(sorted(set(self.reason_codes))) != self.reason_codes:
             raise ValueError("L2 dimension reason codes must be unique and sorted")
         if not all(isinstance(item, str) and item for item in self.reason_codes):
             raise ValueError("L2 dimension reason codes are invalid")
+        for values in (self.verified_properties, self.not_claimed_properties):
+            if values != tuple(sorted(set(values))) or not all(
+                    isinstance(item, str) and item for item in values):
+                raise ValueError("L2 claim properties must be unique and sorted")
+        if self.relation_kind not in {"", "exact", "strengthened", "runtime_mediated", "diagnostic"}:
+            raise ValueError("L2 relation kind is unsupported")
         identities = (
             self.authority_identity, self.source_observation_identity,
             self.target_observation_identity, self.effect_relation_identity,
@@ -68,6 +82,12 @@ class L2DimensionResult:
                 raise ValueError("verified L2 dimension carries failure reasons")
             if not self.evidence_identity:
                 raise ValueError("verified L2 dimension has no evidence identity")
+            if self.claim_scope is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION and (
+                    self.relation_kind != "runtime_mediated" or
+                    not self.verified_properties or not self.not_claimed_properties):
+                raise ValueError("functional L2 claim boundary is incomplete")
+            if self.claim_scope is L2ClaimScope.DIAGNOSTIC_ONLY and self.relation_kind != "diagnostic":
+                raise ValueError("diagnostic L2 claim relation is invalid")
         elif self.claim_scope is not L2ClaimScope.NONE:
             raise ValueError("unverified L2 dimension must not carry a claim scope")
         if self.evidence_identity:
@@ -88,6 +108,9 @@ class L2DimensionResult:
             "effectRelationIdentity": self.effect_relation_identity,
             "executionIdentity": self.execution_identity,
             "reasonCodes": list(self.reason_codes),
+            "relationKind": self.relation_kind,
+            "verifiedProperties": list(self.verified_properties),
+            "notClaimedProperties": list(self.not_claimed_properties),
         }
 
     @classmethod
@@ -97,6 +120,8 @@ class L2DimensionResult:
         authority_identity: str = "", source_observation_identity: str = "",
         target_observation_identity: str = "", effect_relation_identity: str = "",
         execution_identity: str = "", reason_codes: Sequence[str] = (),
+        relation_kind: str = "", verified_properties: Sequence[str] = (),
+        not_claimed_properties: Sequence[str] = (),
         materialize_evidence: bool = True,
     ) -> "L2DimensionResult":
         reasons = tuple(sorted(set(reason_codes)))
@@ -110,17 +135,23 @@ class L2DimensionResult:
             "effectRelationIdentity": effect_relation_identity,
             "executionIdentity": execution_identity,
             "reasonCodes": list(reasons),
+            "relationKind": relation_kind,
+            "verifiedProperties": sorted(set(verified_properties)),
+            "notClaimedProperties": sorted(set(not_claimed_properties)),
         }
         evidence_identity = _identity(payload) if materialize_evidence else ""
         return cls(
             dimension, status, claim_scope, evidence_identity, authority_identity,
             source_observation_identity, target_observation_identity,
-            effect_relation_identity, execution_identity, reasons,
+            effect_relation_identity, execution_identity, reasons, relation_kind,
+            tuple(sorted(set(verified_properties))),
+            tuple(sorted(set(not_claimed_properties))),
         )
 
     def to_dict(self) -> dict[str, object]:
         value = self._evidence_payload()
         value["evidenceIdentity"] = self.evidence_identity
+        value["conclusion"] = self.conclusion.value
         return value
 
     @classmethod
@@ -129,7 +160,8 @@ class L2DimensionResult:
             "schemaVersion", "dimension", "status", "claimScope",
             "evidenceIdentity", "authorityIdentity", "sourceObservationIdentity",
             "targetObservationIdentity", "effectRelationIdentity",
-            "executionIdentity", "reasonCodes",
+            "executionIdentity", "reasonCodes", "conclusion",
+            "relationKind", "verifiedProperties", "notClaimedProperties",
         }
         if set(value) != expected or value.get("schemaVersion") != L2_DIMENSION_RESULT_SCHEMA:
             raise ValueError("L2 dimension result schema or fields are invalid")
@@ -137,13 +169,18 @@ class L2DimensionResult:
         if (not isinstance(reasons, list)
                 or not all(isinstance(item, str) and item for item in reasons)):
             raise ValueError("L2 dimension result reason codes must be an array")
+        verified_properties = value.get("verifiedProperties")
+        not_claimed_properties = value.get("notClaimedProperties")
+        if (not isinstance(verified_properties, list) or
+                not isinstance(not_claimed_properties, list)):
+            raise ValueError("L2 dimension claim properties must be arrays")
         string_fields = (
             "evidenceIdentity", "authorityIdentity", "sourceObservationIdentity",
             "targetObservationIdentity", "effectRelationIdentity", "executionIdentity",
         )
         if any(not isinstance(value.get(name), str) for name in string_fields):
             raise ValueError("L2 dimension result identity fields are invalid")
-        return cls(
+        result = cls(
             parse_l2_dimension(value.get("dimension")),
             L2DimensionStatus(str(value.get("status"))),
             L2ClaimScope(str(value.get("claimScope"))),
@@ -152,7 +189,12 @@ class L2DimensionResult:
             str(value["targetObservationIdentity"]),
             str(value["effectRelationIdentity"]), str(value["executionIdentity"]),
             tuple(reasons),
+            str(value.get("relationKind")), tuple(verified_properties),
+            tuple(not_claimed_properties),
         )
+        if value.get("conclusion") != result.conclusion.value:
+            raise ValueError("L2 dimension conclusion does not match status and scope")
+        return result
 
 
 def _closed_status(
@@ -199,6 +241,14 @@ class L2FragmentResult:
     status: L2DimensionStatus
     claim_scope: L2ClaimScope
 
+    @property
+    def conclusion(self) -> L2ClaimConclusion:
+        return l2_claim_conclusion(self.status, self.claim_scope)
+
+    @property
+    def architectural_verified(self) -> bool:
+        return self.conclusion is L2ClaimConclusion.ARCHITECTURAL_VERIFIED
+
     def __post_init__(self) -> None:
         if not self.fragment_id or not _valid_identity(self.requirement_identity):
             raise ValueError("L2 fragment result identities are invalid")
@@ -243,6 +293,7 @@ class L2FragmentResult:
             },
             "status": self.status.value,
             "claimScope": self.claim_scope.value,
+            "conclusion": self.conclusion.value,
         }
 
     @classmethod
@@ -250,6 +301,7 @@ class L2FragmentResult:
         expected = {
             "schemaVersion", "fragmentId", "requirementIdentity",
             "requiredDimensions", "dimensionResults", "status", "claimScope",
+            "conclusion",
         }
         if set(value) != expected or value.get("schemaVersion") != L2_FRAGMENT_RESULT_SCHEMA:
             raise ValueError("L2 fragment result schema or fields are invalid")
@@ -264,7 +316,7 @@ class L2FragmentResult:
             if result.dimension.value != name:
                 raise ValueError("L2 fragment result dimension key does not match content")
             results.append(result)
-        return cls(
+        result = cls(
             str(value.get("fragmentId") or ""),
             str(value.get("requirementIdentity") or ""),
             parse_l2_dimensions(required),
@@ -272,6 +324,9 @@ class L2FragmentResult:
             L2DimensionStatus(str(value.get("status"))),
             L2ClaimScope(str(value.get("claimScope"))),
         )
+        if value.get("conclusion") != result.conclusion.value:
+            raise ValueError("L2 fragment conclusion does not match status and scope")
+        return result
 
 
 def validate_l2_fragment_result(value: Mapping[str, object]) -> None:

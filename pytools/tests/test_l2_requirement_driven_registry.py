@@ -122,11 +122,11 @@ def test_registry_consumes_manifest_and_persists_plan(tmp_path):
     )
     assert result.status is ValidationStatus.VERIFIED
     detail = json.loads(result.detail)
-    assert detail["schemaVersion"] == "riscv2x86.l2-fragment-result.v1"
+    assert detail["schemaVersion"] == "riscv2x86.l2-fragment-result.v2"
     assert set(detail["dimensionResults"]) == {"logical_operands", "shell_semantics"}
     assert detail["requiredDimensions"] == ["logical_operands", "shell_semantics"]
     assert detail["claimScope"] == "architectural"
-    assert all(item["schemaVersion"] == "riscv2x86.l2-dimension-result.v1"
+    assert all(item["schemaVersion"] == "riscv2x86.l2-dimension-result.v2"
                for item in detail["dimensionResults"].values())
     assert len({item["executionIdentity"]
                 for item in detail["dimensionResults"].values()}) == 1

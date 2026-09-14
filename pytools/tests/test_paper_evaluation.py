@@ -45,9 +45,10 @@ def test_paper_maps_do_not_accept_legacy_untyped_l2_success():
             }),
         }]},
     }]}
-    levels, dimensions = _validation_maps(evaluation, {"fragment:1"})
+    levels, dimensions, scopes = _validation_maps(evaluation, {"fragment:1"})
     assert levels["L2"] == "inconclusive"
     assert dimensions == {}
+    assert scopes == {}
 
 
 def _attempt(fragment: str, *, emitted: bool) -> TranslationAttempt:
@@ -73,17 +74,24 @@ def _attempt(fragment: str, *, emitted: bool) -> TranslationAttempt:
 
 
 def _evaluation(path: Path, attempt: TranslationAttempt, *, unit="single_candidate", group="g0",
-                dimensions=("logical_operands", "shell_semantics")):
+                dimensions=("logical_operands", "shell_semantics"),
+                claim_scope=L2ClaimScope.ARCHITECTURAL):
     layers = [{"level": level, "status": "verified", "evidenceIdentity": _digest(level.encode()), "detail": ""}
               for level in ("L0", "L1", "L2")]
     dimension_results = tuple(L2DimensionResult.create(
         dimension=parse_l2_dimension(name), status=L2DimensionStatus.VERIFIED,
-        claim_scope=L2ClaimScope.ARCHITECTURAL,
+        claim_scope=claim_scope,
         authority_identity=_digest((name + "-authority").encode()),
         source_observation_identity=_digest((name + "-source").encode()),
         target_observation_identity=_digest((name + "-target").encode()),
         effect_relation_identity=_digest((name + "-relation").encode()),
         execution_identity=_digest((name + "-execution").encode()),
+        relation_kind=("runtime_mediated" if claim_scope is
+                       L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else "exact"),
+        verified_properties=(("declared-return-relation",) if claim_scope is
+                             L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ()),
+        not_claimed_properties=(("architectural-state-equivalence",) if claim_scope is
+                                L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ()),
     ) for name in dimensions)
     fragment_result = L2FragmentResult.close(
         fragment_id=attempt.fragment_id, requirement_identity=_digest(b"requirement"),
@@ -215,9 +223,24 @@ def test_generic_l2_success_does_not_invent_missing_dimension_evidence(tmp_path)
     attempt = load_translation_attempt_archive(tmp_path / "attempts.json").attempts[0]
     _evaluation(tmp_path / "result.json", attempt, dimensions=("logical_operands",))
     result = aggregate_paper_corpus(paper_manifest_from_dict(value), manifest_directory=tmp_path)
-    assert result["metrics"]["l2VerifiedRate"]["estimate"] == 1.0
+    assert result["metrics"]["l2VerifiedRate"]["estimate"] == 0.0
     assert result["dimensionMetrics"]["logical_operands"]["estimate"] == 1.0
     assert result["dimensionMetrics"]["shell_semantics"]["estimate"] == 0.0
+
+
+def test_functional_relation_is_excluded_from_architectural_l2_numerator(tmp_path):
+    value = _manifest(tmp_path)
+    attempt = load_translation_attempt_archive(tmp_path / "attempts.json").attempts[0]
+    _evaluation(
+        tmp_path / "result.json", attempt,
+        claim_scope=L2ClaimScope.APPROVED_FUNCTIONAL_RELATION,
+    )
+    result = aggregate_paper_corpus(
+        paper_manifest_from_dict(value), manifest_directory=tmp_path,
+    )
+    assert result["metrics"]["l2VerifiedRate"]["numerator"] == 0
+    assert result["metrics"]["l2ApprovedFunctionalRelationVerifiedRate"]["numerator"] == 1
+    assert result["dimensionMetrics"]["logical_operands"]["numerator"] == 0
 
 
 @pytest.mark.parametrize("dimension", ["operand", "operands", "effects", "shell", "unknown"])

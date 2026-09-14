@@ -42,6 +42,36 @@ class L2ClaimScope(str, Enum):
     NONE = "none"
 
 
+class L2ClaimConclusion(str, Enum):
+    """Typed public conclusion; status alone is never a claim boundary."""
+    ARCHITECTURAL_VERIFIED = "l2_architectural_verified"
+    APPROVED_FUNCTIONAL_RELATION_VERIFIED = "l2_approved_functional_relation_verified"
+    DIAGNOSTIC_PASSED = "l2_diagnostic_passed"
+    ARCHITECTURAL_FAILED = "l2_architectural_failed"
+    INCONCLUSIVE = "l2_inconclusive"
+    NOT_RUN = "l2_not_run"
+    NOT_APPLICABLE = "l2_not_applicable"
+
+
+def l2_claim_conclusion(
+    status: L2DimensionStatus, scope: L2ClaimScope,
+) -> L2ClaimConclusion:
+    if status is L2DimensionStatus.VERIFIED:
+        return {
+            L2ClaimScope.ARCHITECTURAL: L2ClaimConclusion.ARCHITECTURAL_VERIFIED,
+            L2ClaimScope.APPROVED_FUNCTIONAL_RELATION:
+                L2ClaimConclusion.APPROVED_FUNCTIONAL_RELATION_VERIFIED,
+            L2ClaimScope.DIAGNOSTIC_ONLY: L2ClaimConclusion.DIAGNOSTIC_PASSED,
+        }[scope]
+    if status is L2DimensionStatus.FAILED:
+        return L2ClaimConclusion.ARCHITECTURAL_FAILED
+    if status is L2DimensionStatus.NOT_RUN:
+        return L2ClaimConclusion.NOT_RUN
+    if status is L2DimensionStatus.NOT_APPLICABLE:
+        return L2ClaimConclusion.NOT_APPLICABLE
+    return L2ClaimConclusion.INCONCLUSIVE
+
+
 def parse_l2_dimension(value: str) -> L2Dimension:
     """Parse one canonical dimension without trimming or alias conversion."""
     if not isinstance(value, str):

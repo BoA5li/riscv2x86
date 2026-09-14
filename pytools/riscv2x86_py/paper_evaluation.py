@@ -14,13 +14,13 @@ from typing import Mapping, Sequence
 
 from .translation_attempt import load_translation_attempt_archive
 from .evaluation import EVALUATION_RESULT_SCHEMA
-from .l2_dimensions import L2Dimension
+from .l2_dimensions import L2ClaimScope, L2Dimension
 from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMA
 from .l2_program_results import ProgramExecutionEvidence
 
 
 PAPER_CORPUS_SCHEMA = "riscv2x86.paper-corpus-manifest.v1"
-PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v2"
+PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v3"
 PAPER_EXECUTION_SCHEMA = "riscv2x86.paper-corpus-execution.v1"
 PAPER_POLICY = "riscv2x86.paper-metrics.v1"
 _SHA_PREFIX = "sha256:"
@@ -306,19 +306,20 @@ def _tree_identity(root: Path) -> str:
 
 def _validation_maps(
     evaluation: Mapping[str, object], selected_fragment_ids: set[str],
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     attempts = [item for item in evaluation["attempts"] if isinstance(item, Mapping)
                 and (not selected_fragment_ids or item.get("fragmentId") in selected_fragment_ids)]
     if not attempts:
-        return {}, {}
+        return {}, {}, {}
     maps = []
     dimension_maps = []
+    scope_maps = []
     for attempt in attempts:
         validation = attempt.get("validation")
         if not isinstance(validation, Mapping) or not isinstance(validation.get("layers"), list):
             maps.append({})
-            dimension_maps.append({}); continue
-        layer_map = {}; dimensions = {}
+            dimension_maps.append({}); scope_maps.append({}); continue
+        layer_map = {}; dimensions = {}; scopes = {}
         for item in validation["layers"]:
             if not isinstance(item, Mapping):
                 continue
@@ -342,6 +343,7 @@ def _validation_maps(
                         layer_map["L2"] = item_status
                     for result in fragment_result.dimension_results:
                         dimensions[result.dimension.value] = result.status.value
+                        scopes[result.dimension.value] = result.claim_scope.value
                 elif (item.get("level") != "L2"
                       and payload.get("schemaVersion") == "riscv2x86.validation-dimensions.v1"):
                     raw_dimensions = payload.get("dimensions")
@@ -367,7 +369,7 @@ def _validation_maps(
                         dimensions[dimension] = status
             if item.get("level") == "L2" and not typed_l2:
                 layer_map["L2"] = "inconclusive"
-        maps.append(layer_map); dimension_maps.append(dimensions)
+        maps.append(layer_map); dimension_maps.append(dimensions); scope_maps.append(scopes)
     result = {}
     for level in _LEVELS:
         if not any(level in item for item in maps):
@@ -380,7 +382,19 @@ def _validation_maps(
         statuses = [item.get(dimension, "inconclusive") for item in dimension_maps]
         dimension_result[dimension] = ("failed" if "failed" in statuses else
                                        "inconclusive" if "inconclusive" in statuses else "verified")
-    return result, dimension_result
+    scope_result = {}
+    for dimension in sorted(set(name for item in scope_maps for name in item)):
+        values = {item.get(dimension, L2ClaimScope.NONE.value) for item in scope_maps}
+        scope_result[dimension] = (
+            L2ClaimScope.ARCHITECTURAL.value
+            if values == {L2ClaimScope.ARCHITECTURAL.value}
+            else L2ClaimScope.DIAGNOSTIC_ONLY.value
+            if L2ClaimScope.DIAGNOSTIC_ONLY.value in values
+            else L2ClaimScope.APPROVED_FUNCTIONAL_RELATION.value
+            if L2ClaimScope.APPROVED_FUNCTIONAL_RELATION.value in values
+            else L2ClaimScope.NONE.value
+        )
+    return result, dimension_result, scope_result
 
 
 def _stage_facts(attempt: object | None) -> dict[str, bool]:
@@ -498,7 +512,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                         raise ValueError("program validation selected individual attempts")
                 elif actual_attempts != expected_attempts:
                     raise ValueError("evaluation selected attempts do not match oracle group")
-                layers, dimension_statuses = _validation_maps(evaluation, selected)
+                layers, dimension_statuses, dimension_scopes = _validation_maps(evaluation, selected)
                 linkage = evaluation.get("translationEvaluationLink")
                 raw_execution_evidence = (
                     linkage.get("programExecutionEvidence", [])
@@ -536,7 +550,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                 errors.append({"programId": program.program_id, "evaluationId": declaration.evaluation_id,
                                "reasonCode": "paper.evaluation-invalid",
                                "detail": f"{type(exc).__name__}: {exc}"})
-                layers = {}; dimension_statuses = {}; status = "invalid"; reason_codes = ["paper.evaluation-invalid"]
+                layers = {}; dimension_statuses = {}; dimension_scopes = {}; status = "invalid"; reason_codes = ["paper.evaluation-invalid"]
             required_dimensions = sorted(set(
                 dimension for fragment in program.fragments
                 if not declaration.oracle_fragment_ids or fragment.oracle_fragment_id in declaration.oracle_fragment_ids
@@ -549,6 +563,10 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                           "layers": layers, "requiredDimensions": required_dimensions,
                           "dimensions": {name: dimension_statuses.get(name, "inconclusive")
                                          for name in required_dimensions},
+                          "dimensionClaimScopes": {
+                              name: dimension_scopes.get(name, L2ClaimScope.NONE.value)
+                              for name in required_dimensions
+                          },
                           "reasonCodes": sorted(set(str(item) for item in reason_codes if str(item))),
                           "environmentId": declaration.expected_environment_id})
     metrics = {}
@@ -559,8 +577,13 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         )
     for index, level in enumerate(_LEVELS):
         applies = lambda row, level=level: level in row["layers"]
+        verified = (lambda row, level=level: row["layers"].get(level) == "verified"
+                    and (level != "L2" or all(
+                        row["dimensions"].get(dimension) == "verified"
+                        and row["dimensionClaimScopes"].get(dimension) == L2ClaimScope.ARCHITECTURAL.value
+                        for dimension in row["requiredDimensions"])))
         metrics[level.lower() + "VerifiedRate"] = _cluster_metric(
-            units, lambda row, level=level: row["layers"].get(level) == "verified", applies,
+            units, verified, applies,
             manifest.bootstrap, level + ":unconditional",
         )
         previous = _LEVELS[:index]
@@ -568,16 +591,37 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
             level in row["layers"] and all(row["layers"].get(item) == "verified" for item in previous)
         )
         metrics[level.lower() + "ConditionalVerifiedRate"] = _cluster_metric(
-            units, lambda row, level=level: row["layers"].get(level) == "verified", conditional,
+            units, verified, conditional,
             manifest.bootstrap, level + ":conditional",
         )
     dimensions = {}
     for dimension, level in _DIMENSION_LEVEL.items():
         dimensions[dimension] = _cluster_metric(
-            units, lambda row, dimension=dimension: row["dimensions"].get(dimension) == "verified",
+            units, lambda row, dimension=dimension: (
+                row["dimensions"].get(dimension) == "verified" and
+                row["dimensionClaimScopes"].get(dimension) == L2ClaimScope.ARCHITECTURAL.value),
             lambda row, dimension=dimension: dimension in row["requiredDimensions"],
             manifest.bootstrap, "dimension:" + dimension,
         )
+    metrics["l2ApprovedFunctionalRelationVerifiedRate"] = _cluster_metric(
+        units,
+        lambda row: bool(row["requiredDimensions"]) and all(
+            row["dimensions"].get(dimension) == "verified" and
+            row["dimensionClaimScopes"].get(dimension) ==
+                L2ClaimScope.APPROVED_FUNCTIONAL_RELATION.value
+            for dimension in row["requiredDimensions"]),
+        lambda row: "L2" in row["layers"], manifest.bootstrap,
+        "L2:approved-functional-relation",
+    )
+    metrics["l2DiagnosticExecutionCoverage"] = _cluster_metric(
+        units,
+        lambda row: any(
+            row["dimensions"].get(dimension) == "verified" and
+            row["dimensionClaimScopes"].get(dimension) == L2ClaimScope.DIAGNOSTIC_ONLY.value
+            for dimension in row["requiredDimensions"]),
+        lambda row: bool(row["requiredDimensions"]), manifest.bootstrap,
+        "L2:diagnostic-execution",
+    )
     outcomes: dict[str, int] = {}
     for row in fragments:
         outcome = str(row["translationOutcome"]); outcomes[outcome] = outcomes.get(outcome, 0) + 1
@@ -591,14 +635,21 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         ) for name in _COVERAGE}
         validation = {}
         for index, level in enumerate(_LEVELS):
+            category_verified = (lambda row, level=level:
+                row["layers"].get(level) == "verified" and
+                (level != "L2" or all(
+                    row["dimensions"].get(dimension) == "verified" and
+                    row["dimensionClaimScopes"].get(dimension) ==
+                        L2ClaimScope.ARCHITECTURAL.value
+                    for dimension in row["requiredDimensions"])))
             validation[level.lower() + "VerifiedRate"] = _cluster_metric(
-                category_units, lambda row, level=level: row["layers"].get(level) == "verified",
+                category_units, category_verified,
                 lambda row, level=level: level in row["layers"], manifest.bootstrap,
                 "category:" + category + ":" + level,
             )
             previous = _LEVELS[:index]
             validation[level.lower() + "ConditionalVerifiedRate"] = _cluster_metric(
-                category_units, lambda row, level=level: row["layers"].get(level) == "verified",
+                category_units, category_verified,
                 lambda row, level=level, previous=previous: level in row["layers"] and all(
                     row["layers"].get(item) == "verified" for item in previous),
                 manifest.bootstrap, "category:" + category + ":" + level + ":conditional",

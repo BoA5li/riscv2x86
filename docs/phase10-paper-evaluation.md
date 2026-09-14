@@ -90,8 +90,8 @@ contracts. Dimension names must be unique and sorted. Registry schema v2 rejects
 `operand`, `operands`, `effects`, and `shell`. Requirement-manifest v1 data must be converted
 with the explicit `migrate_l2_requirement_v1_to_v2()` API; normal parsing never migrates or
 repairs it. Each execution is closed into content-addressed
-`riscv2x86.l2-dimension-result.v1` members and one
-`riscv2x86.l2-fragment-result.v1`. A verified dimension binds the authority, source and
+`riscv2x86.l2-dimension-result.v2` members and one
+`riscv2x86.l2-fragment-result.v2`. A verified dimension binds the authority, source and
 target observations, approved effect relation, and execution identities. The fragment result
 retains both `requiredDimensions` and typed `dimensionResults`; a missing required member,
 an invalid content hash, or an incomplete identity chain cannot verify. Additional diagnostic

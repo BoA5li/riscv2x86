@@ -3,7 +3,7 @@ import copy
 import pytest
 
 from riscv2x86_py.l2_dimensions import (
-    L2ClaimScope, L2Dimension, L2DimensionStatus,
+    L2ClaimConclusion, L2ClaimScope, L2Dimension, L2DimensionStatus,
 )
 from riscv2x86_py.l2_results import (
     L2DimensionResult, L2FragmentResult,
@@ -21,6 +21,13 @@ def _verified(dimension, scope=L2ClaimScope.ARCHITECTURAL):
         source_observation_identity=_id("b"),
         target_observation_identity=_id("c"),
         effect_relation_identity=_id("d"), execution_identity=_id("e"),
+        relation_kind=("runtime_mediated" if scope is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION
+                       else "diagnostic" if scope is L2ClaimScope.DIAGNOSTIC_ONLY
+                       else "exact"),
+        verified_properties=(("declared-return-relation",) if scope is
+                             L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ()),
+        not_claimed_properties=(("absolute-value-equivalence",) if scope is
+                                L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ()),
     )
 
 
@@ -97,6 +104,38 @@ def test_functional_scope_never_aggregates_to_architectural():
     assert result.status is L2DimensionStatus.VERIFIED
     assert result.claim_scope is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION
     assert result.claim_scope is not L2ClaimScope.ARCHITECTURAL
+    assert result.conclusion is L2ClaimConclusion.APPROVED_FUNCTIONAL_RELATION_VERIFIED
+    assert not result.architectural_verified
+
+
+def test_diagnostic_only_required_result_is_not_architectural_verified():
+    result = _close(
+        (L2Dimension.PRIVILEGED_STATE,),
+        (_verified(L2Dimension.PRIVILEGED_STATE, L2ClaimScope.DIAGNOSTIC_ONLY),),
+    )
+    assert result.status is L2DimensionStatus.VERIFIED
+    assert result.conclusion is L2ClaimConclusion.DIAGNOSTIC_PASSED
+    assert not result.architectural_verified
+
+
+def test_time_relation_records_verified_and_explicitly_unclaimed_properties():
+    result = L2DimensionResult.create(
+        dimension=L2Dimension.PRIVILEGED_STATE,
+        status=L2DimensionStatus.VERIFIED,
+        claim_scope=L2ClaimScope.APPROVED_FUNCTIONAL_RELATION,
+        authority_identity=_id("a"), source_observation_identity=_id("b"),
+        target_observation_identity=_id("c"), effect_relation_identity=_id("d"),
+        execution_identity=_id("e"), relation_kind="runtime_mediated",
+        verified_properties=("declared-return-relation", "monotonicity", "progress"),
+        not_claimed_properties=(
+            "absolute-value-equivalence", "epoch-equivalence", "frequency-equivalence",
+            "resolution-equivalence",
+        ),
+    )
+    encoded = result.to_dict()
+    assert encoded["relationKind"] == "runtime_mediated"
+    assert "frequency-equivalence" in encoded["notClaimedProperties"]
+    assert L2DimensionResult.from_dict(encoded) == result
 
 
 def test_extra_diagnostic_dimension_does_not_change_required_gate():

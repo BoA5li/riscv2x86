@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 import json
 import sys
@@ -162,6 +163,20 @@ def test_fallback_compares_only_required_projection_and_declared_non_escaping_st
     paths[1].write_text(json.dumps(escaped), encoding="utf-8")
     assert _execute(_config(paths, target_mode="ordinary-user-process"), escaped,
                     initial_identity, ignored=ignored).status is ValidationStatus.FAILED
+
+
+def test_fallback_runtime_contract_version_mismatch_is_inconclusive(tmp_path):
+    ignored = ("csr:cycle-rate",)
+    route = _route("time", "monotonic-time-adapter", "read", domain="monotonic-domain-v1",
+                   csr="time", write_observable=False)
+    paths, manifest, initial_identity = _write_inputs(
+        tmp_path, mode="functional_equivalence_only", route=route, ignored=ignored,
+    )
+    config = _config(paths, target_mode="ordinary-user-process")
+    config = replace(config, target_runner=replace(config.target_runner, runtime_version="runtime-v2"))
+    result = _execute(config, manifest, initial_identity, ignored=ignored)
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert "runtime contract version mismatch" in result.detail
 
 
 @pytest.mark.parametrize("route,target_mode,expected", [

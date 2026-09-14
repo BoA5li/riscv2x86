@@ -479,12 +479,17 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
     except (ValueError, json.JSONDecodeError) as exc:
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C input invalid: " + str(exc))
     artifact = kwargs.get("translation_artifact")
+    if (manifest.preservation_mode is DifferentialPreservationMode.FUNCTIONAL and
+            manifest.runtime_contract_version != config.target_runner.runtime_version):
+        return ValidationLayerResult(
+            ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+            detail="L2-C fallback runtime contract version mismatch",
+        )
     if (manifest.initial_state_identity != initial_identity or manifest.route_contract_identity != routes.identity or
             manifest.proof_identity != getattr(artifact, "proof_identity", "") or
             manifest.preservation_mode.value != getattr(getattr(artifact, "preservation_mode", None), "value", "") or
             (manifest.runtime_contract_id, manifest.runtime_contract_version) !=
-            (getattr(artifact, "runtime_contract_id", ""), getattr(artifact, "runtime_contract_version", "")) or
-            manifest.runtime_contract_version != config.target_runner.runtime_version):
+            (getattr(artifact, "runtime_contract_id", ""), getattr(artifact, "runtime_contract_version", ""))):
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C manifest identity mismatch")
     route_reasons = validate_csr_routes(routes, target_mode=config.target_runner.target_execution_mode,
                                         preservation_mode=manifest.preservation_mode)
