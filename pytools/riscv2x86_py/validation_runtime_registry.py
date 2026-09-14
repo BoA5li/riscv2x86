@@ -279,8 +279,10 @@ def _requirement_driven_l2_validator(
             claim_scope = (_dimension_claim_scope(artifact)
                            if dimension_status is L2DimensionStatus.VERIFIED
                            else L2ClaimScope.NONE)
-            authority_identity = str(getattr(artifact, "shell_facts_identity", ""))
-            effect_relation_identity = str(getattr(artifact, "proof_identity", ""))
+            authority_identity = str(getattr(artifact, "l2_authority_identity", ""))
+            effect_relation_identity = str(
+                getattr(artifact, "effect_relation_set_identity", "")
+            )
             source_identity = str(getattr(kwargs.get("source_observation"), "identity", ""))
             target_identity = str(getattr(kwargs.get("target_observation"), "identity", ""))
             execution_identity = result.evidence_identity
@@ -296,7 +298,20 @@ def _requirement_driven_l2_validator(
             )
             reasons = _result_reason_codes(result)
             scope_missing = claim_scope is L2ClaimScope.NONE
-            if dimension_status is L2DimensionStatus.VERIFIED and (scope_missing or missing):
+            authority_incomplete = not bool(
+                getattr(artifact, "l2_authority_complete", False)
+            )
+            if authority_incomplete:
+                missing = tuple(sorted(set(missing + (
+                    "l2.authority.incomplete",
+                ))))
+                # A mismatch without complete producer authority is not a
+                # translation-semantic failure; the comparison is unauthorised.
+                dimension_status = L2DimensionStatus.INCONCLUSIVE
+                claim_scope = L2ClaimScope.NONE
+                reasons = tuple(sorted(set(reasons + missing)))
+            elif dimension_status is L2DimensionStatus.VERIFIED and (
+                    scope_missing or missing):
                 dimension_status = L2DimensionStatus.INCONCLUSIVE
                 claim_scope = L2ClaimScope.NONE
                 reasons = tuple(sorted(set(reasons + missing + (

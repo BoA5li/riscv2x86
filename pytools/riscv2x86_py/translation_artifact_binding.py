@@ -9,6 +9,7 @@ from typing import Mapping
 from .translation_attempt import TranslationAttempt, TranslationAttemptArchive
 from .translation_validation import TranslationArtifact
 from .validation_status import PreservationMode
+from .l2_authority import l2_authority_sidecar_from_dict
 
 
 def _text(value: object, name: str) -> str:
@@ -103,6 +104,22 @@ def translation_artifact_from_approval(
             "rendererVersion": attempt.renderer_version,
             "candidateReplacementDigest": attempt.candidate_replacement_digest,
         })
+    l2_identity = attempt.l2_authority_identity
+    relation_identity = attempt.effect_relation_set_identity
+    raw_l2 = approval.get("l2AuthoritySidecar")
+    if raw_l2 is not None:
+        if not isinstance(raw_l2, Mapping):
+            raise ValueError("approval L2 authority sidecar must be an object")
+        l2 = l2_authority_sidecar_from_dict(
+            raw_l2, expected_fragment_id=attempt.fragment_id,
+            expected_shell_fact_identity=shell_identity,
+        )
+        if (l2.authority_identity != l2_identity
+                or l2.effect_relation_set_identity != relation_identity
+                or l2.complete != attempt.l2_authority_complete):
+            raise ValueError("approval/attempt L2 authority binding mismatch")
+    elif l2_identity or relation_identity or attempt.l2_authority_complete:
+        raise ValueError("attempt L2 authority is absent from approval")
     return TranslationArtifact(
         fragment_id=attempt.fragment_id,
         source_model_identity=attempt.source_model_id,
@@ -117,6 +134,9 @@ def translation_artifact_from_approval(
         ignored_source_state=tuple(ignored),
         semantic_class=_text(approval.get("semanticClass", attempt.candidate_kind), "semanticClass"),
         target_route=_text(approval.get("targetRoute", attempt.candidate_route), "targetRoute"),
+        l2_authority_identity=l2_identity,
+        effect_relation_set_identity=relation_identity,
+        l2_authority_complete=attempt.l2_authority_complete,
     )
 
 

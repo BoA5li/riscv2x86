@@ -9,6 +9,7 @@ import re
 from typing import Mapping, Sequence
 
 from .schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
+from .l2_authority import l2_authority_sidecar_from_dict
 
 
 TRANSLATION_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v1"
@@ -77,6 +78,9 @@ class TranslationAttempt:
     binding_complete: bool = False
     artifact_id: str = ""
     schema_version: str = TRANSLATION_ATTEMPT_SCHEMA
+    l2_authority_identity: str = ""
+    effect_relation_set_identity: str = ""
+    l2_authority_complete: bool = False
 
     def __post_init__(self) -> None:
         if self.schema_version != TRANSLATION_ATTEMPT_SCHEMA:
@@ -110,6 +114,14 @@ class TranslationAttempt:
             raise ValueError("proof/plan/renderer binding completeness is inconsistent")
         if self.proof_binding_identity:
             _sha(self.proof_binding_identity, "proof binding identity")
+        for value, label in (
+            (self.l2_authority_identity, "L2 authority identity"),
+            (self.effect_relation_set_identity, "effect relation set identity"),
+        ):
+            _sha(value, label, optional=True)
+        if self.l2_authority_complete and not (
+                self.l2_authority_identity and self.effect_relation_set_identity):
+            raise ValueError("complete L2 authority binding is missing identities")
         expected = _identity(self._payload(include_artifact_id=False))
         if self.artifact_id and self.artifact_id != expected:
             raise ValueError("translation attempt artifact ID does not match content")
@@ -175,6 +187,9 @@ class TranslationAttempt:
             "rendererContractId": self.renderer_contract_id,
             "rendererRegistryId": self.renderer_registry_id,
             "rendererRegistryVersion": self.renderer_registry_version,
+            "l2AuthorityIdentity": self.l2_authority_identity,
+            "effectRelationSetIdentity": self.effect_relation_set_identity,
+            "l2AuthorityComplete": self.l2_authority_complete,
             "bindingComplete": self.binding_complete,
         }
         if include_artifact_id:
@@ -194,14 +209,16 @@ _ATTEMPT_FIELDS = {
     "proofBindingIdentity", "targetEnvironmentId", "rendererId",
     "rendererVersion", "rendererContractId", "rendererRegistryId",
     "rendererRegistryVersion", "bindingComplete",
+    "l2AuthorityIdentity", "effectRelationSetIdentity", "l2AuthorityComplete",
 }
 
 
 def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAttempt:
     if set(value) != _ATTEMPT_FIELDS:
         raise ValueError("translation attempt fields are invalid")
-    if not isinstance(value.get("bindingComplete"), bool):
-        raise ValueError("translation attempt bindingComplete must be boolean")
+    if (not isinstance(value.get("bindingComplete"), bool)
+            or not isinstance(value.get("l2AuthorityComplete"), bool)):
+        raise ValueError("translation attempt completeness fields must be boolean")
     return TranslationAttempt(
         finding_id=_text(value.get("findingId"), "findingId"),
         fragment_id=_text(value.get("fragmentId"), "fragmentId"),
@@ -226,6 +243,9 @@ def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAtt
         renderer_contract_id=_text(value.get("rendererContractId"), "rendererContractId", optional=True),
         renderer_registry_id=_text(value.get("rendererRegistryId"), "rendererRegistryId", optional=True),
         renderer_registry_version=_text(value.get("rendererRegistryVersion"), "rendererRegistryVersion", optional=True),
+        l2_authority_identity=_sha(value.get("l2AuthorityIdentity"), "l2AuthorityIdentity", optional=True),
+        effect_relation_set_identity=_sha(value.get("effectRelationSetIdentity"), "effectRelationSetIdentity", optional=True),
+        l2_authority_complete=value["l2AuthorityComplete"],
         binding_complete=value["bindingComplete"],
         artifact_id=_sha(value.get("artifactId"), "artifactId"),
         schema_version=_text(value.get("schemaVersion"), "schemaVersion"),
@@ -274,6 +294,21 @@ def terminal_attempt_from_finding(finding: object, finding_index: int) -> Transl
         public = getattr(finding, "publicApprovalArtifact", {})
         approval = public if isinstance(public, Mapping) else {}
     binding, complete = _proof_binding(approval)
+    l2_identity = ""
+    relation_identity = ""
+    l2_complete = False
+    raw_l2_authority = approval.get("l2AuthoritySidecar")
+    if raw_l2_authority is not None:
+        if not isinstance(raw_l2_authority, Mapping):
+            raise ValueError("approval L2 authority sidecar must be an object")
+        shell_identity = approval.get("shellFactsIdentity")
+        authority = l2_authority_sidecar_from_dict(
+            raw_l2_authority, expected_fragment_id=fragment_id,
+            expected_shell_fact_identity=(shell_identity if isinstance(shell_identity, str) else ""),
+        )
+        l2_identity = authority.authority_identity
+        relation_identity = authority.effect_relation_set_identity
+        l2_complete = authority.complete
     return TranslationAttempt(
         finding_id=finding_id,
         fragment_id=fragment_id or str(artifact.get("fragmentId", "")),
@@ -286,6 +321,9 @@ def terminal_attempt_from_finding(finding: object, finding_index: int) -> Transl
         validation_outcome=ValidationOutcome(str(getattr(finding, "validationOutcome"))),
         publication_outcome=PublicationOutcome(str(getattr(finding, "publicationOutcome"))),
         reason_codes=tuple(sorted(set(str(item) for item in artifact.get("reasonCodes", []) if str(item)))),
+        l2_authority_identity=l2_identity,
+        effect_relation_set_identity=relation_identity,
+        l2_authority_complete=l2_complete,
         binding_complete=complete, **binding,
     )
 

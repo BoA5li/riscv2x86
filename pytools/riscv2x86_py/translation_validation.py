@@ -138,6 +138,9 @@ class TranslationArtifact:
     ignored_source_state: tuple[str, ...]
     semantic_class: str
     target_route: str
+    l2_authority_identity: str = ""
+    effect_relation_set_identity: str = ""
+    l2_authority_complete: bool = False
 
     def __post_init__(self) -> None:
         required = (
@@ -149,6 +152,12 @@ class TranslationArtifact:
             raise ValueError("translation artifact is missing required identity facts")
         if tuple(sorted(set(self.ignored_source_state))) != self.ignored_source_state:
             raise ValueError("ignored source state must be unique and sorted")
+        for value in (self.l2_authority_identity, self.effect_relation_set_identity):
+            if value and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                raise ValueError("translation artifact L2 authority identity is invalid")
+        if self.l2_authority_complete and not (
+                self.l2_authority_identity and self.effect_relation_set_identity):
+            raise ValueError("complete translation L2 authority is missing identities")
 
     @property
     def identity(self) -> str:
@@ -559,11 +568,19 @@ def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArt
         "shell_facts_identity", "runtime_contract_id",
         "runtime_contract_version", "recipe_id", "ignored_source_state",
         "semantic_class", "target_route",
+        "l2_authority_identity", "effect_relation_set_identity",
+        "l2_authority_complete",
     }
-    _strict_fields(data, fields, "translation artifact")
+    legacy_fields = fields - {
+        "l2_authority_identity", "effect_relation_set_identity", "l2_authority_complete",
+    }
+    if frozenset(data) not in {frozenset(fields), frozenset(legacy_fields)}:
+        _strict_fields(data, fields, "translation artifact")
     ignored = data.get("ignored_source_state")
     if not isinstance(ignored, list) or not all(isinstance(item, str) for item in ignored):
         raise ValueError("translation artifact ignored source state must be an array")
+    if "l2_authority_complete" in data and not isinstance(data.get("l2_authority_complete"), bool):
+        raise ValueError("translation artifact L2 authority completeness must be boolean")
     return TranslationArtifact(
         fragment_id=str(data.get("fragment_id", "")),
         source_model_identity=str(data.get("source_model_identity", "")),
@@ -578,6 +595,9 @@ def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArt
         ignored_source_state=tuple(ignored),
         semantic_class=str(data.get("semantic_class", "")),
         target_route=str(data.get("target_route", "")),
+        l2_authority_identity=str(data.get("l2_authority_identity", "")),
+        effect_relation_set_identity=str(data.get("effect_relation_set_identity", "")),
+        l2_authority_complete=bool(data.get("l2_authority_complete", False)),
     )
 
 

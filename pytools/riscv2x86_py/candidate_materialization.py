@@ -13,6 +13,7 @@ from .schema import Finding, TranslationOutcome, load_report
 from .translation_attempt import (
     TranslationAttempt, TranslationAttemptArchive, load_translation_attempt_archive,
 )
+from .l2_authority import authority_identity_set
 
 
 CANDIDATE_ARTIFACT_MANIFEST_SCHEMA = "riscv2x86.candidate-artifact-manifest.v1"
@@ -154,6 +155,8 @@ class CandidateArtifactManifest:
     target_tree_digest: str
     attempt_archive_id: str
     translated_report_digest: str
+    l2_authority_identity: str
+    effect_relation_set_identity: str
     edits: tuple[CandidateEditManifest, ...]
     manifest_id: str = ""
     schema_version: str = CANDIDATE_ARTIFACT_MANIFEST_SCHEMA
@@ -166,6 +169,9 @@ class CandidateArtifactManifest:
                       self.attempt_archive_id, self.translated_report_digest):
             if _SHA256.fullmatch(value) is None:
                 raise ValueError("candidate artifact manifest contains invalid digest")
+        for value in (self.l2_authority_identity, self.effect_relation_set_identity):
+            if value and _SHA256.fullmatch(value) is None:
+                raise ValueError("candidate artifact manifest contains invalid L2 digest")
         keys = tuple((item.relative_path, item.begin_offset, item.end_offset) for item in self.edits)
         if keys != tuple(sorted(set(keys))):
             raise ValueError("candidate artifact edits are not canonical and unique")
@@ -183,6 +189,8 @@ class CandidateArtifactManifest:
             "targetTreeDigest": self.target_tree_digest,
             "attemptArchiveId": self.attempt_archive_id,
             "translatedReportDigest": self.translated_report_digest,
+            "l2AuthorityIdentity": self.l2_authority_identity,
+            "effectRelationSetIdentity": self.effect_relation_set_identity,
             "edits": [item.to_dict() for item in self.edits],
         }
         if include_id:
@@ -305,12 +313,24 @@ def materialize_candidate_tree(
                     before_digest, after_digest, attempt.binding_complete, headers,
                 ))
         target_digest = _tree_digest(staging)
+        selected_emitted = tuple(
+            attempt for _, attempt in sorted(attempts.items())
+            if attempt.translation_outcome in _EMITTED
+            and (selected is None or attempt.artifact_id in selected)
+        )
         manifest = CandidateArtifactManifest(
             source_root_identity=_identity({"role": "source", "treeDigest": source_digest}),
             staging_root_identity=_identity({"role": "candidate-target", "treeDigest": target_digest}),
             source_tree_digest=source_digest, target_tree_digest=target_digest,
             attempt_archive_id=archive.archive_id,
             translated_report_digest=_digest_bytes(report_path.read_bytes()),
+            l2_authority_identity=authority_identity_set(
+                [item.l2_authority_identity for item in selected_emitted], role="authority",
+            ),
+            effect_relation_set_identity=authority_identity_set(
+                [item.effect_relation_set_identity for item in selected_emitted],
+                role="effect-relations",
+            ),
             edits=tuple(sorted(edit_manifests, key=lambda item: (item.relative_path, item.begin_offset, item.end_offset))),
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -335,6 +355,7 @@ def load_candidate_artifact_manifest(path: str | Path) -> CandidateArtifactManif
     expected = {"schemaVersion", "manifestId", "sourceRootIdentity", "stagingRootIdentity",
                 "sourceTreeDigest", "targetTreeDigest", "attemptArchiveId",
                 "translatedReportDigest", "edits"}
+    expected.update({"l2AuthorityIdentity", "effectRelationSetIdentity"})
     if set(value) != expected or value.get("schemaVersion") != CANDIDATE_ARTIFACT_MANIFEST_SCHEMA:
         raise ValueError("candidate artifact manifest fields are invalid")
     raw_edits = value.get("edits")
@@ -368,6 +389,8 @@ def load_candidate_artifact_manifest(path: str | Path) -> CandidateArtifactManif
         target_tree_digest=str(value["targetTreeDigest"]),
         attempt_archive_id=str(value["attemptArchiveId"]),
         translated_report_digest=str(value["translatedReportDigest"]),
+        l2_authority_identity=str(value["l2AuthorityIdentity"]),
+        effect_relation_set_identity=str(value["effectRelationSetIdentity"]),
         edits=tuple(edits), manifest_id=str(value["manifestId"]),
         schema_version=str(value["schemaVersion"]),
     )
@@ -398,3 +421,15 @@ def verify_candidate_artifact_manifest(
     for expected, actual, label in checks:
         if expected != actual:
             raise ValueError("candidate artifact " + label + " binding mismatch")
+    by_id = {item.artifact_id: item for item in archive.attempts}
+    ordered_ids = tuple(edit.attempt_artifact_id for edit in manifest.edits)
+    selected = tuple(by_id[item] for item in ordered_ids)
+    authority_binding = authority_identity_set(
+        [item.l2_authority_identity for item in selected], role="authority",
+    )
+    relation_binding = authority_identity_set(
+        [item.effect_relation_set_identity for item in selected], role="effect-relations",
+    )
+    if (manifest.l2_authority_identity != authority_binding
+            or manifest.effect_relation_set_identity != relation_binding):
+        raise ValueError("candidate artifact L2 authority binding mismatch")

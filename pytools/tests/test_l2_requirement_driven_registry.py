@@ -98,6 +98,8 @@ def _artifact():
     return SimpleNamespace(
         fragment_id="fragment:1", preservation_mode=PreservationMode.ARCHITECTURE_EQUIVALENT,
         shell_facts_identity=identity, proof_identity=identity,
+        l2_authority_identity=identity, effect_relation_set_identity=identity,
+        l2_authority_complete=True,
     )
 
 

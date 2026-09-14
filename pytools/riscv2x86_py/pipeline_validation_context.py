@@ -165,6 +165,9 @@ class PipelineValidationContext:
             "proofIdentity": translation.proof_identity,
             "shellSemanticsPreserved": artifact.get("shellSemanticsPreserved"),
             "shellFactsIdentity": translation.shell_facts_identity,
+            "l2AuthorityIdentity": translation.l2_authority_identity,
+            "effectRelationSetIdentity": translation.effect_relation_set_identity,
+            "l2AuthorityComplete": translation.l2_authority_complete,
             "translationManifestDigest": self.translation_manifest_digest,
             "sourceArtifactDigest": self.source_program_artifact.artifact_digest,
             "targetArtifactDigest": self.target_program_artifact.artifact_digest,
@@ -195,6 +198,8 @@ class PipelineValidationContext:
             )
         artifact["validationEvidence"] = evidence
         artifact["shellFactsIdentity"] = translation.shell_facts_identity
+        artifact["l2AuthorityIdentity"] = translation.l2_authority_identity
+        artifact["effectRelationSetIdentity"] = translation.effect_relation_set_identity
         for name in (
             "validationStatus", "validationIdentity", "validationProfile",
             "translationManifestDigest", "sourceArtifactDigest",
