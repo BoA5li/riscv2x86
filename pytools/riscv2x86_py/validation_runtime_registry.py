@@ -10,20 +10,61 @@ from typing import Callable, Mapping
 from .translation_validation import (
     LayerValidator, ValidationLayerResult, ValidationLevel, ValidationRuntimeRegistry,
 )
-from .l2_dimensions import parse_l2_dimension
+from .l2_dimensions import (
+    L2ClaimScope, L2DimensionStatus, parse_l2_dimension,
+)
+from .l2_results import L2DimensionResult, L2FragmentResult
 from .l2_validator_resolution import (
     ExplicitL2Bindings, L2BindingStatus, L2RuntimeCapabilities,
     L2ValidatorResolver, fragment_requirement_from_dict, provider_from_dict,
     write_resolved_execution_plan,
     L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA,
 )
-from .validation_status import ValidationStatus
+from .validation_status import PreservationMode, ValidationStatus
 
 
 LEGACY_VALIDATION_RUNTIME_REGISTRY_SCHEMA = "riscv2x86.validation-runtime-registry.v1"
 VALIDATION_RUNTIME_REGISTRY_SCHEMA = "riscv2x86.validation-runtime-registry.v2"
 ValidatorFactory = Callable[[Mapping[str, object]], LayerValidator]
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _dimension_status(status: ValidationStatus) -> L2DimensionStatus:
+    if status is ValidationStatus.VERIFIED:
+        return L2DimensionStatus.VERIFIED
+    if status is ValidationStatus.FAILED:
+        return L2DimensionStatus.FAILED
+    return L2DimensionStatus.INCONCLUSIVE
+
+
+def _dimension_claim_scope(artifact: object) -> L2ClaimScope:
+    raw = getattr(artifact, "preservation_mode", None)
+    try:
+        mode = raw if isinstance(raw, PreservationMode) else PreservationMode(str(raw))
+    except ValueError:
+        return L2ClaimScope.NONE
+    if mode is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY:
+        return L2ClaimScope.APPROVED_FUNCTIONAL_RELATION
+    return L2ClaimScope.ARCHITECTURAL
+
+
+def _result_reason_codes(result: ValidationLayerResult) -> tuple[str, ...]:
+    if result.status is ValidationStatus.VERIFIED:
+        return ()
+    try:
+        detail = json.loads(result.detail)
+    except (TypeError, json.JSONDecodeError):
+        detail = None
+    if isinstance(detail, Mapping):
+        raw = detail.get("reasonCodes")
+        if isinstance(raw, list) and all(isinstance(item, str) and item for item in raw):
+            return tuple(sorted(set(raw)))
+        raw = detail.get("reasonCode")
+        if isinstance(raw, str) and raw:
+            return (raw,)
+    if isinstance(detail, list) and all(isinstance(item, str) and item for item in detail):
+        return tuple(sorted(set(detail)))
+    return ("l2.validator-result:" + result.status.value,)
 
 
 def _l0_build_matrix_factory(config: Mapping[str, object]) -> LayerValidator:
@@ -209,16 +250,17 @@ def _requirement_driven_l2_validator(
                 detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
             )
         provider_results: dict[str, ValidationLayerResult] = {}
-        dimension_results: dict[str, dict[str, object]] = {}
+        dimension_results: list[L2DimensionResult] = []
         for binding in plan.bindings:
             if binding.binding_status is not L2BindingStatus.RESOLVED:
-                dimension_results[binding.dimension.value] = {
-                    "status": ("not_run" if binding.binding_status is L2BindingStatus.NOT_RUN
-                               else "inconclusive"),
-                    "evidenceIdentity": "", "providerId": "",
-                    "bindingStatus": binding.binding_status.value,
-                    "detail": ";".join(binding.reason_codes),
-                }
+                dimension_results.append(L2DimensionResult.create(
+                    dimension=binding.dimension,
+                    status=(L2DimensionStatus.NOT_RUN
+                            if binding.binding_status is L2BindingStatus.NOT_RUN
+                            else L2DimensionStatus.INCONCLUSIVE),
+                    reason_codes=binding.reason_codes,
+                    materialize_evidence=False,
+                ))
                 continue
             if binding.provider_id not in provider_results:
                 result = validators[binding.provider_id](**kwargs)
@@ -233,27 +275,64 @@ def _requirement_driven_l2_validator(
                     )
                 provider_results[binding.provider_id] = result
             result = provider_results[binding.provider_id]
-            dimension_results[binding.dimension.value] = {
-                "status": result.status.value, "evidenceIdentity": result.evidence_identity,
-                "providerId": binding.provider_id, "bindingStatus": "resolved",
-                "detail": result.detail,
+            dimension_status = _dimension_status(result.status)
+            claim_scope = (_dimension_claim_scope(artifact)
+                           if dimension_status is L2DimensionStatus.VERIFIED
+                           else L2ClaimScope.NONE)
+            authority_identity = str(getattr(artifact, "shell_facts_identity", ""))
+            effect_relation_identity = str(getattr(artifact, "proof_identity", ""))
+            source_identity = str(getattr(kwargs.get("source_observation"), "identity", ""))
+            target_identity = str(getattr(kwargs.get("target_observation"), "identity", ""))
+            execution_identity = result.evidence_identity
+            identities = {
+                "authority": authority_identity, "source-observation": source_identity,
+                "target-observation": target_identity,
+                "effect-relation": effect_relation_identity,
+                "execution": execution_identity,
             }
-        raw_statuses = [str(item["status"]) for item in dimension_results.values()]
-        status = (ValidationStatus.FAILED if "failed" in raw_statuses else
-                  ValidationStatus.INCONCLUSIVE if any(item != "verified" for item in raw_statuses)
-                  else ValidationStatus.VERIFIED)
-        payload = {
-            "schemaVersion": "riscv2x86.validation-dimensions.v1",
-            "fragmentId": fragment_id,
-            "requirementIdentity": requirement.requirement_identity,
-            "resolvedPlanIdentity": plan.to_dict()["planIdentity"],
-            "resolvedPlanPath": resolved_plan_path,
-            "dimensions": dimension_results,
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        evidence = "sha256:" + sha256(encoded).hexdigest()
+            missing = tuple(
+                "l2.dimension-identity-missing:" + name
+                for name, value in identities.items() if _SHA256.fullmatch(value) is None
+            )
+            reasons = _result_reason_codes(result)
+            scope_missing = claim_scope is L2ClaimScope.NONE
+            if dimension_status is L2DimensionStatus.VERIFIED and (scope_missing or missing):
+                dimension_status = L2DimensionStatus.INCONCLUSIVE
+                claim_scope = L2ClaimScope.NONE
+                reasons = tuple(sorted(set(reasons + missing + (
+                    (() if not scope_missing else
+                     ("l2.dimension-claim-scope-missing",))
+                ))))
+            dimension_results.append(L2DimensionResult.create(
+                dimension=binding.dimension, status=dimension_status,
+                claim_scope=claim_scope, authority_identity=(authority_identity
+                    if _SHA256.fullmatch(authority_identity) else ""),
+                source_observation_identity=(source_identity
+                    if _SHA256.fullmatch(source_identity) else ""),
+                target_observation_identity=(target_identity
+                    if _SHA256.fullmatch(target_identity) else ""),
+                effect_relation_identity=(effect_relation_identity
+                    if _SHA256.fullmatch(effect_relation_identity) else ""),
+                execution_identity=(execution_identity
+                    if _SHA256.fullmatch(execution_identity) else ""),
+                reason_codes=reasons,
+            ))
+        fragment_result = L2FragmentResult.close(
+            fragment_id=fragment_id,
+            requirement_identity=requirement.requirement_identity,
+            required_dimensions=requirement.required_dimensions,
+            dimension_results=dimension_results,
+        )
+        status = (
+            ValidationStatus.VERIFIED
+            if fragment_result.status is L2DimensionStatus.VERIFIED
+            else ValidationStatus.FAILED
+            if fragment_result.status is L2DimensionStatus.FAILED
+            else ValidationStatus.INCONCLUSIVE
+        )
+        payload = fragment_result.to_dict()
         return ValidationLayerResult(
-            kwargs["level"], status, evidence,
+            kwargs["level"], status, fragment_result.evidence_identity,
             json.dumps(payload, sort_keys=True, separators=(",", ":")),
         )
     return validate
@@ -318,6 +397,8 @@ def validation_runtime_registry_from_dict(
             dimensions = tuple(item[0] for item in children)
             if dimensions != tuple(sorted(set(dimensions))):
                 raise ValueError("composite validation dimensions must be unique and sorted")
+            if level is ValidationLevel.L2:
+                raise ValueError("L2 composite validation must use the requirement-driven registry")
             validators[level] = _composite_validator(tuple(children))
             continue
         if set(raw_descriptor) != {"type", "config"}:

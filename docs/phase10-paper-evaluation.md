@@ -89,8 +89,16 @@ Real provider `config` objects contain the corresponding versioned sidecars and 
 contracts. Dimension names must be unique and sorted. Registry schema v2 rejects legacy aliases such as
 `operand`, `operands`, `effects`, and `shell`. Requirement-manifest v1 data must be converted
 with the explicit `migrate_l2_requirement_v1_to_v2()` API; normal parsing never migrates or
-repairs it. A child failure fails the layer, while unavailable
-child tooling makes it inconclusive.
+repairs it. Each execution is closed into content-addressed
+`riscv2x86.l2-dimension-result.v1` members and one
+`riscv2x86.l2-fragment-result.v1`. A verified dimension binds the authority, source and
+target observations, approved effect relation, and execution identities. The fragment result
+retains both `requiredDimensions` and typed `dimensionResults`; a missing required member,
+an invalid content hash, or an incomplete identity chain cannot verify. Additional diagnostic
+members do not change the required set. The aggregate claim is `architectural` only when
+every required verified member has architectural scope. A child failure fails the layer,
+while unavailable child tooling makes it inconclusive and an unexecuted required binding is
+retained as `not_run` in the fragment result.
 
 All intervals use program-cluster bootstrap. The JSON and CSV outputs retain numerators,
 denominators, cluster counts, confidence level, resample count, and the bootstrap unit.

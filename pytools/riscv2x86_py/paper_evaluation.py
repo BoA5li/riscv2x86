@@ -14,7 +14,8 @@ from typing import Mapping, Sequence
 
 from .translation_attempt import load_translation_attempt_archive
 from .evaluation import EVALUATION_RESULT_SCHEMA
-from .l2_dimensions import L2Dimension, parse_l2_dimension
+from .l2_dimensions import L2Dimension
+from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMA
 
 
 PAPER_CORPUS_SCHEMA = "riscv2x86.paper-corpus-manifest.v1"
@@ -328,19 +329,28 @@ def _validation_maps(
                     item_status = "inconclusive"
             layer_map[str(item.get("level"))] = item_status
             detail = item.get("detail")
+            typed_l2 = False
             if isinstance(detail, str) and detail.startswith("{"):
                 payload = json.loads(detail)
-                if payload.get("schemaVersion") == "riscv2x86.validation-dimensions.v1":
+                if (item.get("level") == "L2"
+                        and payload.get("schemaVersion") == L2_FRAGMENT_RESULT_SCHEMA):
+                    fragment_result = L2FragmentResult.from_dict(payload)
+                    typed_l2 = True
+                    if item.get("evidenceIdentity") != fragment_result.evidence_identity:
+                        item_status = "inconclusive"
+                        layer_map["L2"] = item_status
+                    for result in fragment_result.dimension_results:
+                        dimensions[result.dimension.value] = result.status.value
+                elif (item.get("level") != "L2"
+                      and payload.get("schemaVersion") == "riscv2x86.validation-dimensions.v1"):
                     raw_dimensions = payload.get("dimensions")
                     if not isinstance(raw_dimensions, Mapping):
-                        raise ValueError("L2 dimension evidence must be an object")
+                        raise ValueError("validation dimension evidence must be an object")
                     names = list(raw_dimensions)
                     if names != sorted(set(names)):
                         raise ValueError("L2 dimension evidence is not canonical")
                     for name, dimension_result in raw_dimensions.items():
-                        if item.get("level") == "L2":
-                            dimension = parse_l2_dimension(name).value
-                        elif name == "experiment_contract":
+                        if name == "experiment_contract":
                             dimension = name
                         else:
                             raise ValueError("validation dimension is unsupported for its level")
@@ -354,6 +364,8 @@ def _validation_maps(
                             except ValueError:
                                 status = "inconclusive"
                         dimensions[dimension] = status
+            if item.get("level") == "L2" and not typed_l2:
+                layer_map["L2"] = "inconclusive"
         maps.append(layer_map); dimension_maps.append(dimensions)
     result = {}
     for level in _LEVELS:

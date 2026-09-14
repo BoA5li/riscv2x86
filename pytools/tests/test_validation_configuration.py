@@ -122,26 +122,21 @@ def test_runtime_registry_uses_only_registered_versioned_layer_factories():
         })
 
 
-def test_runtime_registry_composes_named_dimension_evidence_without_overwrite():
+def test_runtime_registry_rejects_l2_composite_bypass():
     def factory(config):
         status = ValidationStatus(config["status"])
         return lambda **kwargs: ValidationLayerResult(
             kwargs["level"], status, "sha256:" + config["evidence"] * 64,
         )
 
-    registry = validation_runtime_registry_from_dict({
-        "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-1",
-        "validators": {"L2": {"type": "composite", "validators": [
-            {"dimension": "logical_operands", "type": "test", "config": {"status": "verified", "evidence": "1"}},
-            {"dimension": "shell_semantics", "type": "test", "config": {"status": "inconclusive", "evidence": "2"}},
-        ]}},
-    }, validator_factories={"test": factory})
-    result = registry.validator_for(ValidationLevel.L2)(level=ValidationLevel.L2)
-    detail = json.loads(result.detail)
-    assert result.status is ValidationStatus.INCONCLUSIVE
-    assert result.evidence_identity.startswith("sha256:")
-    assert detail["dimensions"]["logical_operands"]["status"] == "verified"
-    assert detail["dimensions"]["shell_semantics"]["status"] == "inconclusive"
+    with pytest.raises(ValueError, match="requirement-driven registry"):
+        validation_runtime_registry_from_dict({
+            "schemaVersion": VALIDATION_RUNTIME_REGISTRY_SCHEMA, "version": "registry-1",
+            "validators": {"L2": {"type": "composite", "validators": [
+                {"dimension": "logical_operands", "type": "test", "config": {"status": "verified", "evidence": "1"}},
+                {"dimension": "shell_semantics", "type": "test", "config": {"status": "inconclusive", "evidence": "2"}},
+            ]}},
+        }, validator_factories={"test": factory})
 
 
 def test_runtime_registry_rejects_duplicate_composite_dimensions():

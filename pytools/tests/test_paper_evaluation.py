@@ -5,9 +5,14 @@ from pathlib import Path
 import pytest
 
 from riscv2x86_py.evaluation import EVALUATION_RESULT_SCHEMA
+from riscv2x86_py.l2_dimensions import (
+    L2ClaimScope, L2DimensionStatus, parse_l2_dimension,
+)
+from riscv2x86_py.l2_results import L2DimensionResult, L2FragmentResult
 
 from riscv2x86_py.paper_evaluation import (
-    PAPER_CORPUS_SCHEMA, PAPER_POLICY, Bootstrap, _cluster_metric, aggregate_paper_corpus,
+    PAPER_CORPUS_SCHEMA, PAPER_POLICY, Bootstrap, _cluster_metric, _validation_maps,
+    aggregate_paper_corpus,
     paper_manifest_from_dict, render_paper_outputs,
 )
 from riscv2x86_py.schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
@@ -24,6 +29,25 @@ def _tree(root: Path) -> str:
     files = [{"path": path.relative_to(root).as_posix(), "digest": _digest(path.read_bytes())}
              for path in sorted(root.rglob("*")) if path.is_file()]
     return _digest(json.dumps({"files": files}, sort_keys=True, separators=(",", ":")).encode())
+
+
+def test_paper_maps_do_not_accept_legacy_untyped_l2_success():
+    evaluation = {"attempts": [{
+        "fragmentId": "fragment:1",
+        "validation": {"layers": [{
+            "level": "L2", "status": "verified",
+            "evidenceIdentity": _digest(b"legacy-layer"),
+            "detail": json.dumps({
+                "schemaVersion": "riscv2x86.validation-dimensions.v1",
+                "dimensions": {"logical_operands": {
+                    "status": "verified", "evidenceIdentity": _digest(b"legacy"),
+                }},
+            }),
+        }]},
+    }]}
+    levels, dimensions = _validation_maps(evaluation, {"fragment:1"})
+    assert levels["L2"] == "inconclusive"
+    assert dimensions == {}
 
 
 def _attempt(fragment: str, *, emitted: bool) -> TranslationAttempt:
@@ -52,11 +76,24 @@ def _evaluation(path: Path, attempt: TranslationAttempt, *, unit="single_candida
                 dimensions=("logical_operands", "shell_semantics")):
     layers = [{"level": level, "status": "verified", "evidenceIdentity": _digest(level.encode()), "detail": ""}
               for level in ("L0", "L1", "L2")]
-    layers[-1]["detail"] = json.dumps({
-        "schemaVersion": "riscv2x86.validation-dimensions.v1",
-        "dimensions": {name: {"status": "verified", "evidenceIdentity": _digest(name.encode()), "detail": ""}
-                       for name in dimensions},
-    }, sort_keys=True, separators=(",", ":"))
+    dimension_results = tuple(L2DimensionResult.create(
+        dimension=parse_l2_dimension(name), status=L2DimensionStatus.VERIFIED,
+        claim_scope=L2ClaimScope.ARCHITECTURAL,
+        authority_identity=_digest((name + "-authority").encode()),
+        source_observation_identity=_digest((name + "-source").encode()),
+        target_observation_identity=_digest((name + "-target").encode()),
+        effect_relation_identity=_digest((name + "-relation").encode()),
+        execution_identity=_digest((name + "-execution").encode()),
+    ) for name in dimensions)
+    fragment_result = L2FragmentResult.close(
+        fragment_id=attempt.fragment_id, requirement_identity=_digest(b"requirement"),
+        required_dimensions=tuple(parse_l2_dimension(name) for name in dimensions),
+        dimension_results=dimension_results,
+    )
+    layers[-1]["detail"] = json.dumps(
+        fragment_result.to_dict(), sort_keys=True, separators=(",", ":"),
+    )
+    layers[-1]["evidenceIdentity"] = fragment_result.evidence_identity
     value = {
         "schemaVersion": EVALUATION_RESULT_SCHEMA, "requestIdentity": _digest(b"request"),
         "status": "verified", "reasonCodes": [], "candidateManifestId": _digest(b"candidate"),

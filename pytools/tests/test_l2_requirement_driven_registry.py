@@ -11,7 +11,7 @@ from riscv2x86_py.l2_validator_resolution import (
 )
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
-from riscv2x86_py.validation_status import ValidationStatus
+from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 
 
 def _requirement():
@@ -93,6 +93,18 @@ def _registry(tmp_path, providers):
     return registry, plan
 
 
+def _artifact():
+    identity = "sha256:" + "b" * 64
+    return SimpleNamespace(
+        fragment_id="fragment:1", preservation_mode=PreservationMode.ARCHITECTURE_EQUIVALENT,
+        shell_facts_identity=identity, proof_identity=identity,
+    )
+
+
+def _observation():
+    return SimpleNamespace(identity="sha256:" + "c" * 64)
+
+
 def test_registry_consumes_manifest_and_persists_plan(tmp_path):
     providers = [{
         "providerId": "both", "dimensions": ["logical_operands", "shell_semantics"],
@@ -102,12 +114,18 @@ def test_registry_consumes_manifest_and_persists_plan(tmp_path):
     registry, plan_path = _registry(tmp_path, providers)
     assert plan_path.is_file()
     validator = registry.validator_for(ValidationLevel.L2)
-    result = validator(level=ValidationLevel.L2,
-                       translation_artifact=SimpleNamespace(fragment_id="fragment:1"))
+    result = validator(
+        level=ValidationLevel.L2, translation_artifact=_artifact(),
+        source_observation=_observation(), target_observation=_observation(),
+    )
     assert result.status is ValidationStatus.VERIFIED
     detail = json.loads(result.detail)
-    assert set(detail["dimensions"]) == {"logical_operands", "shell_semantics"}
-    assert all(item["providerId"] == "both" for item in detail["dimensions"].values())
+    assert detail["schemaVersion"] == "riscv2x86.l2-fragment-result.v1"
+    assert set(detail["dimensionResults"]) == {"logical_operands", "shell_semantics"}
+    assert detail["requiredDimensions"] == ["logical_operands", "shell_semantics"]
+    assert detail["claimScope"] == "architectural"
+    assert all(item["schemaVersion"] == "riscv2x86.l2-dimension-result.v1"
+               for item in detail["dimensionResults"].values())
 
 
 def test_registry_missing_required_provider_cannot_verify(tmp_path):
@@ -119,10 +137,13 @@ def test_registry_missing_required_provider_cannot_verify(tmp_path):
     registry, _plan_path = _registry(tmp_path, providers)
     result = registry.validator_for(ValidationLevel.L2)(
         level=ValidationLevel.L2,
-        translation_artifact=SimpleNamespace(fragment_id="fragment:1"),
+        translation_artifact=_artifact(),
+        source_observation=_observation(), target_observation=_observation(),
     )
     assert result.status is ValidationStatus.INCONCLUSIVE
-    assert json.loads(result.detail)["dimensions"]["shell_semantics"]["status"] == "not_run"
+    detail = json.loads(result.detail)
+    assert detail["status"] == "not_run"
+    assert detail["dimensionResults"]["shell_semantics"]["status"] == "not_run"
 
 
 def test_provider_dimensions_reject_legacy_alias(tmp_path):
