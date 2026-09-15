@@ -888,14 +888,15 @@ def _translation_evaluation_linkage(
             item for item in fragment_result.dimension_results
             if item.dimension in fragment_result.required_dimensions
         )
-        execution_ids = {item.execution_identity for item in required_results if item.execution_identity}
-        source_ids = {item.source_observation_identity for item in required_results
-                      if item.source_observation_identity}
-        target_ids = {item.target_observation_identity for item in required_results
-                      if item.target_observation_identity}
-        if len(execution_ids) == len(source_ids) == len(target_ids) == 1:
-            key = (next(iter(execution_ids)), next(iter(source_ids)), next(iter(target_ids)))
-            execution_groups.setdefault(key, set()).add(fragment_id)
+        # Each dimension may be produced by a distinct validator execution.
+        # Preserve every complete execution tuple here; shared tuples across
+        # fragments are still merged and later deduplicated at program scope.
+        for item in required_results:
+            if (item.execution_identity and item.source_observation_identity
+                    and item.target_observation_identity):
+                key = (item.execution_identity, item.source_observation_identity,
+                       item.target_observation_identity)
+                execution_groups.setdefault(key, set()).add(fragment_id)
     program_execution_evidence = tuple(
         ProgramExecutionEvidence(
             execution_id, request.source_relative_path, source_id, target_id,
