@@ -16,6 +16,8 @@ from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
 from .effect_relation import approved_effect_relation_from_dict
 from .l2_authority import l2_authority_sidecar_from_dict
+from .l2_authority import l2_control_flow_authority_from_dict, l2_operand_authority_from_dict
+from .l2_control_flow import L2ControlFlowObservation, exact_control_flow_observations_match
 
 
 AUTO_L2_EFFECT_SCHEMA = "riscv2x86.auto-l2-effect-runner.v1"
@@ -110,9 +112,12 @@ def _approved_relations(
             if relation.runtime_contract_id != runtime_id or len(matches) != 1:
                 return None, "L2_EFFECT_RUNTIME_CONTRACT_MISMATCH"
     return {
+        "fragmentId": authority.fragment_id,
         "authorityIdentity": authority.authority_identity,
         "effectRelationSetIdentity": authority.effect_relation_set_identity,
         "relations": [item.to_dict() for item in relations],
+        "controlFlow": [item.to_dict() for item in authority.control_flow],
+        "operands": [item.to_dict() for item in authority.operands],
     }, ""
 
 
@@ -206,6 +211,119 @@ def _scalar_events(stdout: str, function: Mapping[str, object]) -> list[dict[str
     return events if len(events) == 8 ** arity else None
 
 
+def _canonical(value: int, width: int, signed: bool = False) -> str:
+    return f"{'i' if signed else 'u'}{width}:0x{value & ((1 << width) - 1):0{width // 4}x}"
+
+
+def _condition(kind: str, left: int, right: int, width: int) -> bool:
+    mask = (1 << width) - 1
+    left, right = left & mask, right & mask
+    if kind.startswith("signed_"):
+        sign = 1 << (width - 1)
+        left = left - (1 << width) if left & sign else left
+        right = right - (1 << width) if right & sign else right
+    return {"equal": left == right, "not_equal": left != right,
+            "signed_less": left < right, "unsigned_less": left < right,
+            "signed_less_equal": left <= right,
+            "unsigned_less_equal": left <= right}[kind]
+
+
+def _control_flow_events(
+    stdout: str, function: Mapping[str, object], authority: Mapping[str, object], *, side: str,
+) -> list[L2ControlFlowObservation] | None:
+    raw_control, raw_operands, raw_relations = (
+        authority.get("controlFlow"), authority.get("operands"), authority.get("relations"))
+    if (not isinstance(raw_control, list) or len(raw_control) != 1
+            or not isinstance(raw_operands, list) or not isinstance(raw_relations, list)):
+        return None
+    control = l2_control_flow_authority_from_dict(raw_control[0])
+    operands = tuple(l2_operand_authority_from_dict(item) for item in raw_operands
+                     if isinstance(item, Mapping))
+    if len(operands) != len(raw_operands):
+        return None
+    by_id = {item.operand_id: item for item in operands}
+    relations = tuple(approved_effect_relation_from_dict(item) for item in raw_relations
+                      if isinstance(item, Mapping))
+    event_ids = {item.source_effect_id if side == "source" else item.target_effect_ids[0]
+                 for item in relations}
+    name = str(function["name"])
+    observations = []
+    if control.transfer_kind == "conditional":
+        pattern = re.compile(rf"^{re.escape(name)}:case=([0-9]+):return=([0-9a-f]{{16}})$")
+        condition_operands = [by_id[item] for item in control.input_operand_ids
+                              if item in by_id and by_id[item].operand_id not in {
+                                  control.true_value_operand_id, control.false_value_operand_id}]
+        if len(condition_operands) != 2:
+            return None
+        condition_operands.sort(key=lambda item: item.parameter_index
+                                if item.parameter_index is not None else -1)
+        true_operand, false_operand = (by_id.get(control.true_value_operand_id),
+                                       by_id.get(control.false_value_operand_id))
+        result_operand = by_id.get(control.result_operand_id)
+        if true_operand is None or false_operand is None or result_operand is None:
+            return None
+        for line in stdout.splitlines():
+            match = pattern.fullmatch(line)
+            if not match:
+                continue
+            case, result = int(match.group(1)), int(match.group(2), 16)
+            if case >= len(_BRANCH_CASES):
+                return None
+            values = _BRANCH_CASES[case]
+            left = values[condition_operands[0].parameter_index]
+            right = values[condition_operands[1].parameter_index]
+            taken = _condition(control.condition_kind, left, right, result_operand.width_bits)
+            selected = true_operand if taken else false_operand
+            if selected.parameter_index is None or result != values[selected.parameter_index]:
+                return None
+            source_id = f"case:{case}:branch"
+            event_id = source_id if side == "source" else "target:" + source_id
+            if event_id not in event_ids:
+                return None
+            signed = control.condition_kind.startswith("signed_")
+            observations.append(L2ControlFlowObservation(
+                event_id, str(authority.get("fragmentId", "")), "Branch", "condition:0",
+                {"conditionInputs": [_canonical(left, result_operand.width_bits, signed),
+                                      _canonical(right, result_operand.width_bits, signed)],
+                 "conditionResult": taken, "taken": taken,
+                 "continuationId": "continuation:taken" if taken else "continuation:not-taken",
+                 "result": _canonical(result, result_operand.width_bits,
+                                      result_operand.signedness == "signed"),
+                 "termination": control.termination_kind},
+            ))
+        return observations if len(observations) == len(_BRANCH_CASES) else None
+    if control.transfer_kind == "direct":
+        arity = int(function["arity"])
+        pattern = re.compile(rf"^operand_trace={re.escape(name)};"
+                             + ";".join([r"([0-9a-f]{16})"] * (arity + 1)) + r"$")
+        result_operand = by_id.get(control.result_operand_id)
+        selected = by_id.get(control.selected_value_operand_id)
+        if result_operand is None or selected is None or selected.parameter_index is None:
+            return None
+        for line in stdout.splitlines():
+            match = pattern.fullmatch(line)
+            if not match:
+                continue
+            values = tuple(int(item, 16) for item in match.groups())
+            sample = len(observations)
+            if values[-1] != values[selected.parameter_index]:
+                return None
+            source_id = f"sample:{sample}:transfer"
+            event_id = source_id if side == "source" else "target:" + source_id
+            if event_id not in event_ids:
+                return None
+            observations.append(L2ControlFlowObservation(
+                event_id, str(authority.get("fragmentId", "")), "ControlTransfer", "transfer:0",
+                {"sourceContinuation": control.source_continuation,
+                 "targetContinuation": control.target_continuation, "transferKind": "direct",
+                 "result": _canonical(values[-1], result_operand.width_bits,
+                                      result_operand.signedness == "signed"),
+                 "termination": control.termination_kind},
+            ))
+        return observations if len(observations) == 8 ** arity else None
+    return None
+
+
 def _fence_events(stdout: str, function: Mapping[str, object], authority: Mapping[str, object],
                   *, side: str) -> list[dict[str, object]] | None:
     name = str(function["name"])
@@ -269,6 +387,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
     if set(config) != expected or config.get("schemaVersion") != AUTO_L2_EFFECT_SCHEMA:
         raise ValueError("automatic L2 effect config fields/schema are invalid")
     if config.get("mode") not in {"memory-object-functions", "branch-domain-functions",
+                                  "control-flow-functions",
                                   "scalar-effect-functions", "fence-functions"}:
         raise ValueError("automatic L2 effect mode is unsupported")
     functions = config.get("functions")
@@ -320,8 +439,18 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                         "reasonCode": "L2_EFFECT_EXPLICIT_NORMALIZED_TRACE_REQUIRED",
                     }),
                 )
+            control_kind = ""
+            if mode == "control-flow-functions":
+                controls = relation_authority.get("controlFlow")
+                if not isinstance(controls, list) or len(controls) != 1:
+                    return ValidationLayerResult(
+                        ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps({"reasonCode":"L2_CONTROL_FLOW_AUTHORITY_MISSING"}))
+                control_kind = str(controls[0].get("transferKind", ""))
             wrapper = (_memory_object_wrapper([function]) if mode == "memory-object-functions" else
                        _branch_domain_wrapper([function]) if mode == "branch-domain-functions" else
+                       _branch_domain_wrapper([function]) if control_kind == "conditional" else
+                       _operand_trace_wrapper(function) if control_kind == "direct" else
                        _operand_trace_wrapper(function) if mode == "scalar-effect-functions" else
                        _scalar_wrapper([function]))
             work, replay = Path(str(config["workDirectory"])), Path(str(config["replayDirectory"]))
@@ -339,8 +468,15 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             parser = (_memory_events if mode == "memory-object-functions" else
                       _branch_events if mode == "branch-domain-functions" else
                       _scalar_events if mode == "scalar-effect-functions" else None)
-            source_events = (_fence_events(left.stdout,function,relation_authority,side="source") if parser is None else parser(left.stdout,function))
-            target_events = (_fence_events(right.stdout,function,relation_authority,side="target") if parser is None else parser(right.stdout,function))
+            if mode == "control-flow-functions":
+                source_control = _control_flow_events(left.stdout,function,relation_authority,side="source")
+                target_control = _control_flow_events(right.stdout,function,relation_authority,side="target")
+                source_events = None if source_control is None else [item.to_dict() for item in source_control]
+                target_events = None if target_control is None else [item.to_dict() for item in target_control]
+            else:
+                source_control = target_control = None
+                source_events = (_fence_events(left.stdout,function,relation_authority,side="source") if parser is None else parser(left.stdout,function))
+                target_events = (_fence_events(right.stdout,function,relation_authority,side="target") if parser is None else parser(right.stdout,function))
             observation={"schemaVersion":AUTO_L2_EFFECT_OBSERVATION_SCHEMA,
                          "fragmentId":getattr(artifact,"fragment_id",""),
                          "attemptId":work.name,"mode":mode,"approvedRelationAuthority":relation_authority,
@@ -351,6 +487,11 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 status=ValidationStatus.INCONCLUSIVE; reason="L2_EFFECT_TRACE_INCOMPLETE"
             elif left.returncode or right.returncode or left.stderr or right.stderr:
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_EXECUTION_FAILED"
+            elif mode == "control-flow-functions" and source_control is not None and target_control is not None:
+                matches, reason = exact_control_flow_observations_match(
+                    source_control, target_control, approved,
+                )
+                status = ValidationStatus.VERIFIED if matches else ValidationStatus.FAILED
             elif not _approved_effect_ids_match(
                     source_events, target_events, relation_authority):
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_APPROVED_TARGET_EFFECT_MISSING"

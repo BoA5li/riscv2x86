@@ -214,6 +214,15 @@ class L2ControlFlowAuthority:
     input_operand_ids: tuple[str, ...]
     continuations: tuple[str, ...]
     continuation_complete: bool
+    transfer_kind: str = ""
+    condition_kind: str = ""
+    result_operand_id: str = ""
+    true_value_operand_id: str = ""
+    false_value_operand_id: str = ""
+    selected_value_operand_id: str = ""
+    source_continuation: str = ""
+    target_continuation: str = ""
+    termination_kind: str = "normal_return"
     def __post_init__(self) -> None:
         if not self.condition_id or not self.input_operand_ids or not self.continuations:
             raise ValueError("control-flow authority is incomplete")
@@ -221,19 +230,58 @@ class L2ControlFlowAuthority:
             raise ValueError("control-flow operands must be unique and sorted")
         if self.continuations != tuple(sorted(set(self.continuations))):
             raise ValueError("control-flow continuations must be unique and sorted")
+        if self.continuation_complete:
+            if self.transfer_kind == "conditional":
+                if (self.condition_kind not in {"equal", "not_equal", "signed_less",
+                        "unsigned_less", "signed_less_equal", "unsigned_less_equal"}
+                        or not self.result_operand_id or not self.true_value_operand_id
+                        or not self.false_value_operand_id
+                        or set(self.continuations) != {
+                            "continuation:not-taken", "continuation:taken"}):
+                    raise ValueError("complete branch authority lacks typed condition/value facts")
+            elif self.transfer_kind == "direct":
+                if (not self.result_operand_id or not self.selected_value_operand_id
+                        or not self.source_continuation or not self.target_continuation):
+                    raise ValueError("complete direct-transfer authority lacks target/value facts")
+                if self.continuations != (self.target_continuation,):
+                    raise ValueError("direct-transfer continuation set is incomplete")
+            else:
+                raise ValueError("complete control-flow authority transfer kind is unsupported")
+            if self.termination_kind not in {"normal_return", "fallthrough"}:
+                raise ValueError("control-flow termination kind is unsupported")
     def to_dict(self) -> dict[str, object]:
         return {"conditionId": self.condition_id, "inputOperandIds": list(self.input_operand_ids),
                 "continuations": list(self.continuations),
-                "continuationComplete": self.continuation_complete}
+                "continuationComplete": self.continuation_complete,
+                "transferKind": self.transfer_kind, "conditionKind": self.condition_kind,
+                "resultOperandId": self.result_operand_id,
+                "trueValueOperandId": self.true_value_operand_id,
+                "falseValueOperandId": self.false_value_operand_id,
+                "selectedValueOperandId": self.selected_value_operand_id,
+                "sourceContinuation": self.source_continuation,
+                "targetContinuation": self.target_continuation,
+                "terminationKind": self.termination_kind}
 
 
 def l2_control_flow_authority_from_dict(v: Mapping[str, object]) -> L2ControlFlowAuthority:
-    _fields(v, {"conditionId", "inputOperandIds", "continuations", "continuationComplete"},
+    _fields(v, {"conditionId", "inputOperandIds", "continuations", "continuationComplete",
+                "transferKind", "conditionKind", "resultOperandId", "trueValueOperandId",
+                "falseValueOperandId", "selectedValueOperandId", "sourceContinuation",
+                "targetContinuation", "terminationKind"},
             "control-flow")
     return L2ControlFlowAuthority(_str(v, "conditionId", "control-flow"),
         _strings(v.get("inputOperandIds"), "control-flow operands", True),
         _strings(v.get("continuations"), "control-flow continuations", True),
-        _bool(v, "continuationComplete", "control-flow"))
+        _bool(v, "continuationComplete", "control-flow"),
+        _str(v, "transferKind", "control-flow", True),
+        _str(v, "conditionKind", "control-flow", True),
+        _str(v, "resultOperandId", "control-flow", True),
+        _str(v, "trueValueOperandId", "control-flow", True),
+        _str(v, "falseValueOperandId", "control-flow", True),
+        _str(v, "selectedValueOperandId", "control-flow", True),
+        _str(v, "sourceContinuation", "control-flow", True),
+        _str(v, "targetContinuation", "control-flow", True),
+        _str(v, "terminationKind", "control-flow"))
 
 
 @dataclass(frozen=True)
@@ -405,6 +453,14 @@ class L2AuthoritySidecar:
             raise ValueError("operand tie names an unknown operand")
         if any(not set(x.input_operand_ids).issubset(known_operands) for x in self.control_flow):
             raise ValueError("control-flow authority names an unknown operand")
+        if any(not {item for item in (
+                x.result_operand_id, x.true_value_operand_id, x.false_value_operand_id,
+                x.selected_value_operand_id) if item}.issubset(known_operands)
+               for x in self.control_flow):
+            raise ValueError("control-flow authority value binding names an unknown operand")
+        control_ids = tuple(item.condition_id for item in self.control_flow)
+        if control_ids != tuple(sorted(set(control_ids))):
+            raise ValueError("control-flow authority IDs must be unique and sorted")
         relation_ids = tuple(x.relation_id for x in self.approved_effect_relations)
         source_ids = tuple(x.source_effect_id for x in self.approved_effect_relations)
         if relation_ids != tuple(sorted(set(relation_ids))) or len(source_ids) != len(set(source_ids)):

@@ -597,19 +597,20 @@ def prepare_automatic_inventory(
                 l2_environment_capabilities.add("shell_observation")
                 l2_providers.append(provider(
                     "automatic-l2-scalar-effect-v2", [L2Dimension.SHELL_SEMANTICS.value],
-                    ["jump", "scalar"], ["shell_observation"],
+                    ["scalar"], ["shell_observation"],
                     "automatic-l2-effect-differential",
                     effect_config("scalar-effect-functions"),
                 ))
-            if has_four_argument_function:
+            if l2_operand_possible:
                 l2_environment_capabilities.update(("control_flow_observation",
                                                     "shell_observation"))
                 l2_providers.append(provider(
-                    "automatic-l2-branch-effect-v2",
+                    "automatic-l2-control-flow-v1",
                     [L2Dimension.CONTROL_FLOW.value, L2Dimension.SHELL_SEMANTICS.value],
-                    ["branch"], ["control_flow_observation", "shell_observation"],
+                    ["branch", "jump"],
+                    ["control_flow_observation", "shell_observation"],
                     "automatic-l2-effect-differential",
-                    effect_config("branch-domain-functions"),
+                    effect_config("control-flow-functions"),
                 ))
             if has_memory_objects:
                 l2_environment_capabilities.update(("object_relative_memory_observation",

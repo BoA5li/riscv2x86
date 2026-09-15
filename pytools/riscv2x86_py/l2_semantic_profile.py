@@ -228,6 +228,7 @@ def profile_from_source_model(
         bool(getattr(getattr(source_model, "operands", None), "complete", False)),
     )
     control = getattr(source_model, "control_flow", None)
+    shell = getattr(source_model, "shell", None)
     branch = getattr(source_model, "local_branch_select", None)
     jump = getattr(source_model, "local_unconditional_jump", None)
     successors = tuple(getattr(control, "successors", ()) or ())
@@ -235,7 +236,8 @@ def profile_from_source_model(
         bool(branch) or bool(getattr(control, "has_internal_branch", False)), bool(jump),
         bool(getattr(control, "has_indirect_control_flow", False)),
         bool(getattr(control, "has_external_control_flow", False)),
-        bool(getattr(control, "has_multiple_exits", False)), len(successors),
+        bool(getattr(control, "has_multiple_exits", False)),
+        2 if branch else 1 if jump else len(successors),
         bool(getattr(control, "cfg_ok", False))
         and not bool(getattr(control, "has_unknown_target", True)),
     )
@@ -318,6 +320,10 @@ def profile_from_source_model(
         kind = L2PatternKind.INSTRUCTION_VISIBILITY_FENCE
     elif memory_barrier:
         kind = L2PatternKind.FENCE
+    elif bool(getattr(shell, "has_asm_goto", False)):
+        # Host-C continuations require a versioned explicit harness.  Treating
+        # asm-goto as an automatic local branch would overclaim observability.
+        kind = L2PatternKind.UNKNOWN
     elif branch:
         kind = L2PatternKind.BRANCH
     elif jump:

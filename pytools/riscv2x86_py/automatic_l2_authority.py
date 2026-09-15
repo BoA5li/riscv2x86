@@ -18,6 +18,11 @@ from .l2_authority import (
     L2OperandAuthority,
     L2SourceEffectAuthority,
 )
+from .l2_control_flow import (
+    bind_control_flow_authority,
+    control_flow_proof_facts_from_dict,
+)
+from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
@@ -132,27 +137,67 @@ def _scalar_authority(
     arity = function.get("arity")
     if isinstance(arity, bool) or not isinstance(arity, int) or not 1 <= arity <= 4:
         return None
+    raw_profile = finding.get("l2SemanticProfile")
+    if not isinstance(raw_profile, Mapping):
+        return None
+    try:
+        profile = l2_fragment_semantic_profile_from_dict(
+            raw_profile, expected_fragment_id=fragment_id,
+        )
+    except ValueError:
+        return None
+    if profile.pattern_kind not in {
+            L2PatternKind.SCALAR, L2PatternKind.BRANCH, L2PatternKind.JUMP}:
+        return None
+    control_flow = ()
+    proof_facts = None
+    if profile.pattern_kind in {L2PatternKind.BRANCH, L2PatternKind.JUMP}:
+        raw_control = approval.get("l2ControlFlowProofFacts")
+        if not isinstance(raw_control, Mapping):
+            return None
+        try:
+            proof_facts = control_flow_proof_facts_from_dict(raw_control)
+            if (proof_facts.fragment_id != fragment_id
+                    or proof_facts.pattern_kind != profile.pattern_kind.value):
+                return None
+            control_flow = (bind_control_flow_authority(proof_facts, operands),)
+        except (KeyError, ValueError):
+            return None
     relations = []
     source_effects = []
-    # Sidecar relations are canonicalized by relationId, not numeric sample
-    # order (e.g. relation:10 sorts before relation:2).
-    for sample in sorted(range(8 ** arity), key=lambda item: f"relation:scalar:{item}"):
-        event_id = f"sample:{sample}:continuation"
+    sample_count = 11 if profile.pattern_kind is L2PatternKind.BRANCH else 8 ** arity
+    relation_prefix = ("branch" if profile.pattern_kind is L2PatternKind.BRANCH else
+                       "jump" if profile.pattern_kind is L2PatternKind.JUMP else "scalar")
+    event_kind = ("Branch" if profile.pattern_kind is L2PatternKind.BRANCH else
+                  "ControlTransfer" if profile.pattern_kind is L2PatternKind.JUMP
+                  else "continuation")
+    requirements = (("branch_condition", "branch_continuation", "branch_outcome", "kind", "value")
+                    if profile.pattern_kind is L2PatternKind.BRANCH else
+                    ("kind", "target", "value") if profile.pattern_kind is L2PatternKind.JUMP else
+                    ("branch_continuation", "kind", "value"))
+    for sample in sorted(range(sample_count), key=lambda item: f"relation:{relation_prefix}:{item}"):
+        event_id = (f"case:{sample}:branch" if profile.pattern_kind is L2PatternKind.BRANCH
+                    else f"sample:{sample}:transfer" if profile.pattern_kind is L2PatternKind.JUMP
+                    else f"sample:{sample}:continuation")
+        target_id = "target:" + event_id if proof_facts is not None else event_id
         relation = ApprovedEffectRelation(
-            f"relation:scalar:{sample}", event_id, (event_id,), "exact",
-            ("branch_continuation", "kind", "value"), (), "", True,
+            f"relation:{relation_prefix}:{sample}", event_id, (target_id,), "exact",
+            requirements, (), "", True,
         )
         relations.append(relation)
         source_effects.append(L2SourceEffectAuthority(
-            event_id, "continuation", "continuation:return", True,
+            event_id, event_kind,
+            "condition:0" if profile.pattern_kind is L2PatternKind.BRANCH else
+            "transfer:0" if profile.pattern_kind is L2PatternKind.JUMP else
+            "continuation:return", True,
         ))
     shell_identity = _shell_identity(approval, fragment_id)
     return L2AuthoritySidecar(
         fragment_id,
-        L2AuthorityProducer("frontend-compiler-sidecar", "automatic-scalar-authority",
-                            "v2", producer_digest),
+        L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
+                            "v3", producer_digest),
         shell_identity, tuple(operands), (), tuple(source_effects), tuple(relations),
-        (), (), True,
+        (), (), True, control_flow=control_flow,
     )
 
 

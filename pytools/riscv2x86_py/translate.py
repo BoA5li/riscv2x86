@@ -47,6 +47,7 @@ from .semantic_types import (
 )
 from .source_model import build_source_semantic_model, SourceSemanticModel
 from .l2_semantic_profile import profile_from_source_model
+from .l2_control_flow import control_flow_proof_facts_from_source_model
 from .candidate_plans import candidate_generation_blockers, generate_candidate_plans
 from .phase6c_constraints import (
     FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT,
@@ -844,6 +845,11 @@ def _output(
         if isinstance(approval, dict):
             approval["l2SemanticProfileIdentity"] = profile.profile_identity
             approval["l2PatternKind"] = profile.pattern_kind.value
+            control_facts = control_flow_proof_facts_from_source_model(
+                context.fragment.id, context.sourceModel,
+            )
+            if control_facts is not None:
+                approval["l2ControlFlowProofFacts"] = control_facts.to_dict()
 
     privileged = (
         None if context.sourceModel is None

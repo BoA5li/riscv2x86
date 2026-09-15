@@ -7,6 +7,7 @@ from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authori
 from types import SimpleNamespace
 import tempfile
 from pathlib import Path
+from tests.l2_profile_fixtures import profile_dict
 
 
 def _artifact():
@@ -44,6 +45,7 @@ def test_authority_joins_compiler_boundary_and_frontend_shell():
                      "inputs": [{"constraint": "r", "symbolicName": "lhs"},
                                 {"constraint": "r", "symbolicName": "rhs"}]},
         "approvalArtifact": {"proofStatus": "approved"},
+        "l2SemanticProfile": profile_dict("fragment"),
     }
     artifact = _artifact()
     finding["approvalArtifact"].update({

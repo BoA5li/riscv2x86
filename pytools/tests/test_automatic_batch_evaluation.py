@@ -92,6 +92,7 @@ def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path,
     assert l2["type"] == "requirement-driven"
     assert [(item["providerId"], item["supportedDimensions"])
             for item in l2["config"]["providers"]] == [
+        ("automatic-l2-control-flow-v1", ["control_flow", "shell_semantics"]),
         ("automatic-l2-operand-v2", ["logical_operands"]),
         ("automatic-l2-scalar-effect-v2", ["shell_semantics"]),
     ]
@@ -502,7 +503,7 @@ def test_inventory_loads_content_bound_explicit_l2_provider(tmp_path, monkeypatc
 @pytest.mark.parametrize(("function", "expected_provider"), [
     ({"name": "branch", "arity": 4, "returnType": "uint64_t",
       "parameterTypes": ["uint64_t"] * 4, "pointerParameters": []},
-     "automatic-l2-branch-effect-v2"),
+     "automatic-l2-control-flow-v1"),
     ({"name": "load", "arity": 1, "returnType": "uint64_t",
       "parameterTypes": ["uint64_t *"], "pointerParameters": [0]},
      "automatic-l2-memory-effect-v2"),

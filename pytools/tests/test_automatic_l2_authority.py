@@ -3,6 +3,7 @@ from pathlib import Path
 from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
+from tests.l2_profile_fixtures import profile_dict
 
 
 def _ref(identity):
@@ -60,6 +61,7 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
             "planId": "plan", "targetEnvironmentId": "environment",
             "targetCatalogVersion": "catalog",
         },
+        "l2SemanticProfile": profile_dict("fragment"),
     }
     frontend = tmp_path / "frontend"
     frontend.write_bytes(b"frontend")
