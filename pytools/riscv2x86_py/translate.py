@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 37867)
-Total output lines: 4167
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -1985,7 +1982,950 @@ def _try_architectural_memory_barrier(
     return StrategyResult.success(output)
 
 def _try_nop(context: TranslationContext) -> StrategyResult:
-    if not _single_instruction_has_structured_semantic_…7867 tokens truncated…IME_NS_V1,
+    if not _single_instruction_has_structured_semantic_tag(
+        context,
+        StructuredSemanticTag.ARCHITECTURAL_NOP,
+    ):
+        return StrategyResult.no_match()
+
+    # A volatile asm statement remains compiler-observable even when its
+    # machine instruction is architecturally a NOP.  Replacing it with C void
+    # expression would remove that observable asm execution surface.
+    if context.shell.is_volatile:
+        return StrategyResult.rejected(
+            "NOP strategy does not erase a volatile asm statement"
+        )
+
+    if (
+        context.fragment.outputs
+        or context.fragment.inputs
+        or context.fragment.outputBindings
+    ):
+        return StrategyResult.rejected(
+            "NOP strategy does not remove asm operands because input "
+            "evaluation and output-constraint semantics are not proven inert"
+        )
+
+    if (
+        context.shell.has_memory_clobber
+        or context.shell.has_cc_clobber
+        or context.shell.has_tied_operand
+        or context.shell.has_early_clobber
+    ):
+        return StrategyResult.rejected(
+            "NOP strategy does not reconstruct asm clobber or operand "
+            "constraint semantics"
+        )
+
+    if (
+        context.summary.reads_mem
+        or context.summary.writes_mem
+        or context.summary.has_atomic
+        or context.summary.has_branch
+        or context.summary.has_call_or_return
+        or context.summary.has_memory_barrier
+        or context.summary.has_instruction_barrier
+    ):
+        return StrategyResult.rejected(
+            "NOP mnemonic disagrees with p-code summary effects"
+        )
+
+    output = _output(
+        kind="pure_c",
+        replacement="((void)0);",
+        context=context,
+        route="canonical_noop",
+        notes=["translated an effect-free non-volatile RISC-V NOP fragment"],
+        reason_codes=["TR_NOP"],
+        build_family="c",
+        requires_build_check=True,
+        requires_block_proof=True,
+        metadata={
+            "architectureSemanticsPreserved": True,
+            "microarchitectureSemanticsPreserved": False,
+        },
+    )
+
+    return StrategyResult.success(output)
+
+def _try_experiment_preserving_x86(
+    context: TranslationContext,
+) -> StrategyResult:
+    """
+    D 级只实现可以明确解释的专用 x86 lowering。
+
+    不能把 rdcycle 无条件替换为 rdtsc：
+      - 频率和单位不同；
+      - 序列化属性不同；
+      - migration/virtualization 行为不同；
+      - 实验校准方式不同。
+    """
+    shell = context.shell
+
+    if not _single_instruction_has_structured_semantic_tag(
+        context,
+        StructuredSemanticTag.SPIN_WAIT_HINT,
+    ):
+        return StrategyResult.no_match()
+
+    if _has_unreconstructable_operand_surface(context):
+        return StrategyResult.rejected(
+            "pause lowering would discard asm operand, tied-operand, or "
+            "early-clobber semantics"
+        )
+
+    if (
+        context.summary.reads_mem
+        or context.summary.writes_mem
+        or context.summary.has_branch
+        or context.summary.has_call_or_return
+        or context.summary.has_atomic
+        or context.summary.has_memory_barrier
+        or context.summary.has_instruction_barrier
+    ):
+        return StrategyResult.rejected(
+            "pause mnemonic disagrees with p-code summary effects"
+        )
+
+    clobbers = ['"memory"']
+
+    # Preserve an explicit compiler-visible condition-code clobber.
+    if shell.has_cc_clobber:
+        clobbers.append('"cc"')
+
+    replacement = (
+        '__asm__ __volatile__("pause" ::: '
+        + ", ".join(clobbers)
+        + ");"
+    )
+
+    output = _output(
+        kind="x86_inline_asm",
+        replacement=replacement,
+        context=context,
+        route="experiment_preserving_x86_pause",
+        notes=[
+            "mapped RISC-V pause/spin-loop hint to the x86 PAUSE instruction",
+            "the generated instruction preserves spin-loop intent; exact "
+            "cycle-level behavior still requires experimental validation",
+        ],
+        reason_codes=["TR_EXPERIMENT_X86_PAUSE"],
+        build_family="x86_gnu_inline_asm",
+        requires_build_check=True,
+        requires_block_proof=True,
+        requires_path_validation=True,
+        metadata={
+            "architectureSemanticsPreserved": True,
+            "microarchitectureSemanticsPreserved": "best_effort",
+            "requiresExperimentalValidation": True,
+            "usesVolatileInlineAsm": True,
+            "clobbers": (
+                ["memory", "cc"]
+                if shell.has_cc_clobber
+                else ["memory"]
+            ),
+            "requiredArchitecture": "x86",
+        },
+    )
+
+    return StrategyResult.success(output)
+
+def _try_atomic_builtin(context: TranslationContext) -> StrategyResult:
+    """
+    Atomic placeholder gate.
+
+    仅凭 IRSummary.has_atomic 和 mnemonic 集合无法可靠恢复：
+      - address expression；
+      - access width；
+      - expected/desired；
+      - LR/SC retry condition；
+      - weak/strong CAS；
+      - success/failure memory order；
+      - observable retry behavior。
+
+    因此这里不猜测。后续应在此位置接入基于规范化 Op/dataflow 的
+    LR/SC CAS、LR/SC RMW 和 AMO 策略。
+    """
+    if not context.summary.has_atomic:
+        return StrategyResult.no_match()
+
+    return StrategyResult.rejected(
+        "atomic semantics detected, but no proven LR/SC or AMO pattern matched"
+    )
+
+def _replacement_has_early_clobber_output_constraint(
+    replacement: str,
+) -> bool:
+    """
+    检查 generated GNU extended asm 是否含有 early-clobber output
+    constraint，例如：
+
+        "=&r"
+        "+&r"
+        "=&rm"
+        "+&rm"
+
+    GNU asm 中 output constraint 通常以 '=' 或 '+' 开始；
+    '&' 表示 early-clobber。
+
+    输入约束通常不应以 '=' 或 '+' 开头，因此该匹配可以避免把普通
+    input constraint 中的字符误判为 early-clobber output。
+    """
+    if not isinstance(replacement, str) or not replacement.strip():
+        return False
+
+    return re.search(
+        r'"[=+][^"]*&[^"]*"',
+        replacement,
+    ) is not None
+    
+def _try_generic_integer_x86_att_block(
+    context: TranslationContext,
+) -> StrategyResult:
+    """
+    Try lowering a proven normalized RV64 ADD/SUB p-code block into
+    x86-64 GNU AT&T inline asm.
+
+    Binding safety contract:
+
+        RISC-V p-code register
+            -> TranslationRuntimeFacts.rv_to_operand_index
+            -> validated X86LoweringOperandBindingView
+            -> GNU inline asm named operand
+
+    No binding may be inferred from p-code ordering, operand ordering,
+    RISC-V xN numbering, XLEN, or C expression text.
+    """
+
+    def _reject(*reasons: str) -> StrategyResult:
+        """
+        统一打印策略 rejection 原因。
+
+        StrategyResult.rejection_reasons 仍然是正式的策略返回信息；
+        print 仅用于当前 CLI 执行日志中的精确定位。
+        """
+        normalized_reasons = [
+            str(reason)
+            for reason in reasons
+            if reason
+        ]
+
+        print(
+            "[X86_ATT_REJECT]",
+            {
+                "fragment_type": getattr(
+                    context,
+                    "fragment_type",
+                    type(getattr(context, "fragment", None)).__name__,
+                ),
+                "xlen": getattr(context, "xlen", None),
+                "reasons": normalized_reasons,
+            },
+        )
+
+        return StrategyResult.rejected(*normalized_reasons)
+
+    print(
+        "[DEBUG] enter _try_generic_integer_x86_att_block:",
+        {
+            "xlen": getattr(context, "xlen", None),
+            "fragment_type": type(
+                getattr(context, "fragment", None)
+            ).__name__,
+            "has_fragment": getattr(context, "fragment", None) is not None,
+            "has_runtimeFacts": getattr(context, "runtimeFacts", None)
+            is not None,
+            "decision": repr(getattr(context, "decision", None)),
+            "block_count": len(getattr(context, "blocks", []) or []),
+        },
+    )
+
+    if context.xlen != 64:
+        return _reject(
+            "generic x86-64 AT&T integer lowering supports RV64 only; "
+            f"got xlen={context.xlen}"
+        )
+
+    if context.decision is None:
+        return _reject(
+            "preservation classification was not performed"
+        )
+
+    if context.decision.level != PreservationLevel.A:
+        return _reject(
+            "generic x86 integer lowering is valid only for preservation "
+            f"level A; got level={context.decision.level!r}"
+        )
+
+    proof = _semantic_proof_gate(
+        context,
+        target_kind="x86_inline_asm",
+    )
+
+    print(
+        "[DEBUG] x86 AT&T semantic proof result:",
+        {
+            "ok": getattr(proof, "ok", None),
+            "failures": getattr(proof, "failures", None),
+        },
+    )
+
+    if not proof.ok:
+        return _reject(*proof.failures)
+
+    if context.shell.has_memory_clobber:
+        return _reject(
+            'generic x86 AT&T integer lowering does not yet emit a required '
+            '"memory" clobber'
+        )
+
+    if getattr(context, "runtimeFacts", None) is None:
+        return _reject(
+            "x86 AT&T integer lowering requires TranslationRuntimeFacts"
+        )
+
+    # Build validated register -> source GNU operand binding projection.
+    try:
+        bindings = _bindings_for_x86_lowering(context)
+    except Exception as exc:
+        return _reject(
+            "x86 runtime operand binding validation raised an exception: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    print(
+        "[DEBUG] x86 validated operand bindings:",
+        {
+            "bindings_repr": repr(bindings),
+            "errors": getattr(bindings, "errors", None),
+            "binding_dict": getattr(bindings, "__dict__", None),
+        },
+    )
+
+    if bindings.errors:
+        return _reject(
+            *[
+                "x86 runtime operand binding validation failed: " + error
+                for error in bindings.errors
+            ]
+        )
+
+    x86_context = _make_x86_lowering_context(
+        context=context,
+        bindings=bindings,
+    )
+
+    print(
+        "[DEBUG] constructed x86 lowering context:",
+        {
+            "type": type(x86_context).__name__,
+            "dict": getattr(x86_context, "__dict__", None),
+            "fragment_type": type(
+                getattr(x86_context, "fragment", None)
+            ).__name__,
+            "fragment_outputs_type": type(
+                getattr(
+                    getattr(x86_context, "fragment", None),
+                    "outputs",
+                    None,
+                )
+            ).__name__,
+            "fragment_outputs_repr": repr(
+                getattr(
+                    getattr(x86_context, "fragment", None),
+                    "outputs",
+                    None,
+                )
+            ),
+        },
+    )
+
+    try:
+        for block_index, block in enumerate(context.blocks):
+            print(f"[DEBUG] block={block_index}, addr={block.addr:#x}")
+
+            for op_index, op in enumerate(block.ops):
+                output = op.output
+
+                print(
+                    "[DEBUG] op",
+                    {
+                        "block": block_index,
+                        "op": op_index,
+                        "opcode": op.opcode,
+                        "output": {
+                            "repr": repr(output),
+                            "kind": getattr(output, "kind", None),
+                            "name": getattr(output, "name", None),
+                            "offset": getattr(output, "offset", None),
+                            "size": getattr(output, "size", None),
+                        } if output is not None else None,
+                        "inputs": [
+                            {
+                                "repr": repr(var),
+                                "kind": getattr(var, "kind", None),
+                                "name": getattr(var, "name", None),
+                                "offset": getattr(var, "offset", None),
+                                "size": getattr(var, "size", None),
+                            }
+                            for var in op.inputs
+                        ],
+                    },
+                )
+
+        lowering = lower_normalized_add_sub_to_x86_att(x86_context)
+
+    except Exception as exc:
+        return _reject(
+            "normalized ADD/SUB x86 lowerer raised an exception: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    print(
+        "[DEBUG] normalized ADD/SUB x86 lowerer result:",
+        {
+            "matched": getattr(lowering, "matched", None),
+            "error": getattr(lowering, "error", None),
+            "replacement": getattr(lowering, "replacement", None),
+            "lowering_repr": repr(lowering),
+            "lowering_dict": getattr(lowering, "__dict__", None),
+        },
+    )
+
+    if not lowering.matched:
+        if lowering.error:
+            return _reject(
+                "normalized ADD/SUB x86 lowerer rejected block: "
+                + lowering.error
+            )
+
+        return _reject(
+            "normalized ADD/SUB x86 lowerer did not match this structured "
+            "IR block"
+        )
+
+    replacement = lowering.replacement or ""
+
+    if not replacement.strip():
+        return _reject(
+            "normalized ADD/SUB x86 lowerer matched but returned an empty "
+            "inline-asm replacement"
+        )
+
+    print(
+        "[DEBUG] x86 generated replacement:",
+        replacement,
+    )
+
+    # Route contract:
+    #
+    # - generated x86 asm must preserve volatile semantics;
+    # - generated x86 asm must explicitly declare condition-code clobbering.
+    #
+    # Do not trust metadata alone: inspect generated source text.
+    if not re.search(
+        r"\b(?:__asm__|asm)\s+(?:__volatile__|volatile)\b",
+        replacement,
+    ):
+        return _reject(
+            "normalized ADD/SUB x86 lowerer returned asm without a proven "
+            "volatile qualifier"
+        )
+
+    if '"cc"' not in replacement:
+        return _reject(
+            'normalized ADD/SUB x86 lowerer returned asm without the '
+            'required "cc" clobber'
+        )
+
+    # 读取 source fragment outputs。
+    #
+    # 不再假设 outputs 是 list，避免 tuple / AST wrapper 被误判。
+    source_outputs, source_outputs_error = _fragment_outputs_as_tuple(context)
+
+    if source_outputs_error is not None:
+        return _reject(
+            "cannot verify x86 output constraint preservation: "
+            + source_outputs_error
+        )
+
+    assert source_outputs is not None
+
+    print(
+        "[DEBUG] source GNU asm outputs for verification:",
+        {
+            "count": len(source_outputs),
+            "outputs_type": type(source_outputs).__name__,
+            "outputs_repr": repr(source_outputs),
+            "output_details": [
+                {
+                    "index": index,
+                    "type": type(output).__name__,
+                    "repr": repr(output),
+                    "dict": getattr(output, "__dict__", None),
+                    "constraint": _asm_operand_constraint_text(output),
+                    "isEarlyClobber": getattr(
+                        output,
+                        "isEarlyClobber",
+                        None,
+                    ),
+                    "is_early_clobber": getattr(
+                        output,
+                        "is_early_clobber",
+                        None,
+                    ),
+                    "resolved_early_clobber": _asm_operand_has_early_clobber(
+                        output
+                    ),
+                }
+                for index, output in enumerate(source_outputs)
+            ],
+        },
+    )
+
+    if len(source_outputs) != 1:
+        return _reject(
+            "normalized ADD/SUB x86 lowerer succeeded, but source fragment "
+            "does not have exactly one output operand; cannot verify GNU "
+            "output constraint preservation: "
+            f"source_output_count={len(source_outputs)}"
+        )
+
+    source_output = source_outputs[0]
+    source_constraint = _asm_operand_constraint_text(source_output)
+    source_has_early_clobber = _asm_operand_has_early_clobber(source_output)
+
+    replacement_has_early_clobber = (
+        _replacement_has_early_clobber_output_constraint(replacement)
+    )
+
+    print(
+        "[DEBUG] early-clobber preservation verification:",
+        {
+            "source_constraint": source_constraint,
+            "source_has_early_clobber": source_has_early_clobber,
+            "replacement_has_early_clobber": (
+                replacement_has_early_clobber
+            ),
+        },
+    )
+
+    if (
+        source_has_early_clobber
+        and not replacement_has_early_clobber
+    ):
+        return _reject(
+            "source GNU inline asm has an early-clobber output constraint, "
+            "but normalized ADD/SUB x86 lowering did not preserve it: "
+            f"source_constraint={source_constraint!r}; "
+            f"replacement={replacement!r}"
+        )
+
+    print(
+        "[DEBUG] x86 AT&T generic integer lowering accepted:",
+        {
+            "source_constraint": source_constraint,
+            "source_has_early_clobber": source_has_early_clobber,
+            "replacement_has_early_clobber": (
+                replacement_has_early_clobber
+            ),
+        },
+    )
+
+    return StrategyResult.success(
+        _output(
+            kind="x86_inline_asm_att",
+            replacement=replacement,
+            context=context,
+            route="normalized_pcode_to_x86_att_integer",
+            notes=[
+                "lowered normalized RISC-V ADD/SUB structured p-code IR to "
+                "x86-64 GNU AT&T inline asm",
+                "lowering uses runtime-proven register-to-operand bindings "
+                "and AST-proven host operand widths",
+                "no register mapping or operand width was inferred from "
+                "operand order, p-code order, expression text, xN numbering, "
+                "or XLEN",
+            ],
+            reason_codes=[
+                "TR_PCODE_INTEGER_TO_X86_ATT",
+            ],
+            build_family="x86_gnu_inline_asm",
+            requires_build_check=True,
+            requires_block_proof=True,
+            metadata={
+                "assemblySyntax": "att",
+                "requiredArchitecture": "x86_64",
+                "architectureSemanticsPreserved": True,
+                "microarchitectureSemanticsPreserved": False,
+                "requiresExperimentalValidation": False,
+                "genericPureCAllowed": False,
+                "normalizedPcodeLowering": True,
+                "usesVolatileInlineAsm": True,
+                "clobbers": ["cc", "rax"],
+            },
+        )
+    )
+# =============================================================================
+# Level-specific dispatch
+# =============================================================================
+
+
+def _run_strategies(
+    context: TranslationContext,
+    strategies: Sequence[Callable[[TranslationContext], StrategyResult]],
+) -> Tuple[Optional[TranslationOutput], List[str]]:
+    rejected: List[str] = []
+
+    for strategy in strategies:
+        strategy_name = getattr(strategy, "__name__", repr(strategy))
+
+        print(
+            "[DEBUG] trying translation strategy:",
+            strategy_name,
+        )
+
+        result = strategy(context)
+
+        print(
+            "[DEBUG] translation strategy result:",
+            {
+                "strategy": strategy_name,
+                "matched": result.matched,
+                "rejection_reasons": result.rejection_reasons,
+                "has_output": result.output is not None,
+            },
+        )
+
+        if result.matched:
+            return result.output, rejected
+
+        rejected.extend(result.rejection_reasons)
+
+    return None, rejected
+
+def _translate_level_a(context: TranslationContext) -> TranslationOutput:
+    """
+    Transitional legacy Level-A route.
+
+    Source semantic classification must already have been performed by
+    Phase 6A build_source_semantic_model().  This function must not rescan
+    Block[], CFGResult, IRSummary, AsmFragment, or TranslationRuntimeFacts to
+    derive preservation level or source semantic features.
+
+    Level A permits only source fragments whose authoritative
+    PreservationDecision is PreservationLevel.A.
+
+    Current policy:
+
+      1. Do not silently lower generic RISC-V integer p-code to ordinary
+         pure C.
+      2. For proven ADD/SUB data-dependency chains, permit x86-64 GNU AT&T
+         inline asm lowering.
+      3. If operand mapping, width, constraints, clobbers, CFG shape, or
+         normalized p-code shape cannot be proven, return needs_route.
+      4. needs_route is a valid scheduling result, never a silent fallback.
+    """
+    decision, failure = _get_phase6a_decision(context)
+
+    if failure is not None:
+        return failure
+
+    assert decision is not None
+
+    if decision.level != PreservationLevel.A:
+        return _unsupported(
+            context,
+            reason=(
+                "legacy Level-A route received a non-Level-A "
+                f"PreservationDecision: {decision.level.value}"
+            ),
+            reason_code="TR_LEGACY_LEVEL_ROUTE_MISMATCH",
+        )
+
+    output, rejected = _run_strategies(
+        context,
+        [
+            # Specialized semantics-aware strategies.
+            _try_pic_address_strategy,
+            _try_architectural_memory_barrier,
+            _try_atomic_builtin,
+            _try_nop,
+
+            # Generic integer route: proven x86-64 AT&T GNU inline asm only.
+            _try_generic_integer_x86_att_block,
+        ],
+    )
+
+    if output is not None:
+        return output
+
+    return _needs_route(
+        context,
+        route="level_a_semantic_lowering_required",
+        reason=(
+            "no proven Level-A AT&T x86 translation strategy matched"
+            + (f": {'; '.join(rejected)}" if rejected else "")
+        ),
+        reason_code="TR_LEVEL_A_NO_PROVEN_STRATEGY",
+        metadata={
+            "strategyRejections": rejected,
+            "recommendedRoute": (
+                "normalized-pcode x86-64 AT&T integer/memory/atomic lowering "
+                "or target-specific x86 helper"
+            ),
+            "genericPureCAllowed": False,
+            "requiredAssemblySyntax": "att",
+            "architectureSemanticsPreserved": False,
+            "microarchitectureSemanticsPreserved": False,
+        },
+    )
+
+def _translate_level_b(context: TranslationContext) -> TranslationOutput:
+    """
+    Transitional legacy Level-B route.
+
+    Level B is selected only by the authoritative Phase-6A
+    PreservationDecision.  Stack/frame classification must not be repeated
+    here by rescanning IRSummary or Block[].
+    """
+    decision, failure = _get_phase6a_decision(context)
+
+    if failure is not None:
+        return failure
+
+    assert decision is not None
+
+    if decision.level != PreservationLevel.B:
+        return _unsupported(
+            context,
+            reason=(
+                "legacy Level-B route received a non-Level-B "
+                f"PreservationDecision: {decision.level.value}"
+            ),
+            reason_code="TR_LEGACY_LEVEL_ROUTE_MISMATCH",
+        )
+
+    return _needs_route(
+        context,
+        route="stack_aware_lowering",
+        reason=(
+            "fragment depends on RISC-V stack/frame state and requires an "
+            "ABI-aware x86 lowering or function-level rewrite"
+        ),
+        reason_code="TR_STACK_AWARE_ROUTE_REQUIRED",
+        metadata={
+            "recommendedRoute": "x86 ABI-aware stack/frame lowering",
+            "genericPureCAllowed": False,
+            "preservationFeatures": sorted(
+                feature.value
+                for feature in decision.features
+            ),
+        },
+    )
+
+def _translate_level_c(context: TranslationContext) -> TranslationOutput:
+    """
+    Transitional legacy Level-C route.
+
+    Control-flow classification is authoritative only in the Phase-6A
+    SourceSemanticModel / PreservationDecision.  This function must not
+    rescan AsmFragment, Block[], CFGResult, or IRSummary to independently
+    re-classify asm-goto, indirect control flow, external flow, calls,
+    returns, tail calls, or multiple exits.
+    """
+    decision, failure = _get_phase6a_decision(context)
+
+    if failure is not None:
+        return failure
+
+    assert decision is not None
+
+    if decision.level != PreservationLevel.C:
+        return _unsupported(
+            context,
+            reason=(
+                "legacy Level-C route received a non-Level-C "
+                f"PreservationDecision: {decision.level.value}"
+            ),
+            reason_code="TR_LEGACY_LEVEL_ROUTE_MISMATCH",
+        )
+
+    features = decision.features
+
+    # The labels themselves are shell metadata and may still be included in
+    # diagnostics.  The semantic determination that this is asm-goto must
+    # come from Phase-6A SemanticFeature.ASM_GOTO.
+    if SemanticFeature.ASM_GOTO in features:
+        return _needs_route(
+            context,
+            route="function_control_flow_rewrite",
+            reason=(
+                "asm goto requires host-function CFG rewriting; a local "
+                "replacement string is insufficient"
+            ),
+            reason_code="TR_ASM_GOTO_FUNCTION_REWRITE",
+            metadata={
+                "gotoLabels": list(context.fragment.gotoLabels),
+                "genericPureCAllowed": False,
+                "preservationFeatures": sorted(
+                    feature.value
+                    for feature in features
+                ),
+            },
+        )
+
+    if SemanticFeature.INDIRECT_CONTROL_FLOW in features:
+        return _needs_route(
+            context,
+            route="indirect_control_preserving_x86",
+            reason=(
+                "indirect control flow requires target and ABI recovery before "
+                "x86 emission"
+            ),
+            reason_code="TR_INDIRECT_CONTROL_ROUTE_REQUIRED",
+            metadata={
+                "genericPureCAllowed": False,
+                "preservationFeatures": sorted(
+                    feature.value
+                    for feature in features
+                ),
+            },
+        )
+
+    return _needs_route(
+        context,
+        route="control_preserving_lowering",
+        reason=(
+            "call/return/tail-call, internal branch, external control-flow, "
+            "unknown-target, or multiple-exit semantics require a "
+            "control-preserving x86 or function-level lowering"
+        ),
+        reason_code="TR_CONTROL_PRESERVING_ROUTE_REQUIRED",
+        metadata={
+            "genericPureCAllowed": False,
+
+            # This is retained as diagnostics/shell metadata only.
+            # It must not be used as a second source semantic classifier.
+            "controlFlowSurface": context.fragment.controlFlowSurface,
+
+            "preservationFeatures": sorted(
+                feature.value
+                for feature in features
+            ),
+            "preservationReasonCodes": list(decision.reason_codes),
+        },
+    )
+
+def _translate_level_d(context: TranslationContext) -> TranslationOutput:
+    """
+    Transitional legacy Level-D route.
+
+    Level-D microarchitecture-sensitive classification is derived only from
+    the Phase-6A SourceSemanticModel / PreservationDecision.
+
+    This route may invoke dedicated experiment-preserving strategies, but it
+    must not independently rescan fragment, blocks, CFG, summary, or runtime
+    facts to reconstruct microarchitecture sensitivity.
+    """
+    decision, failure = _get_phase6a_decision(context)
+
+    if failure is not None:
+        return failure
+
+    assert decision is not None
+
+    if decision.level != PreservationLevel.D:
+        return _unsupported(
+            context,
+            reason=(
+                "legacy Level-D route received a non-Level-D "
+                f"PreservationDecision: {decision.level.value}"
+            ),
+            reason_code="TR_LEGACY_LEVEL_ROUTE_MISMATCH",
+        )
+
+    output, rejected = _run_strategies(
+        context,
+        [
+            _try_experiment_preserving_x86,
+        ],
+    )
+
+    if output is not None:
+        return output
+
+    return _needs_route(
+        context,
+        route="experiment_preserving_lowering",
+        reason=(
+            "microarchitecture-sensitive fragment has no proven x86 "
+            "experiment-preserving strategy"
+            + (f": {'; '.join(rejected)}" if rejected else "")
+        ),
+        reason_code="TR_EXPERIMENT_PRESERVING_ROUTE_REQUIRED",
+        metadata={
+            "strategyRejections": rejected,
+
+            # These values originate from Phase 6A collection, not from a
+            # second fragment / summary / block scan in this route.
+            "microarchReasons": list(decision.reasons),
+            "microarchReasonCodes": list(decision.reason_codes),
+            "preservationFeatures": sorted(
+                feature.value
+                for feature in decision.features
+            ),
+
+            "architectureSemanticsPreserved": False,
+            "microarchitectureSemanticsPreserved": False,
+            "requiresExperimentalValidation": True,
+            "genericPureCAllowed": False,
+        },
+    )
+
+
+def translate_whole_function_definition(
+    *,
+    facts: WholeFunctionTranslationFacts,
+    route: WholeFunctionRouteDecision,
+) -> tuple[FunctionReplacementArtifact | None, WholeFunctionProofResult | None]:
+    """Run the independent D-class 6B--6F function-definition pipeline.
+
+    This deliberately has no ``AsmFragment`` argument.  It cannot be called
+    by the ordinary fragment renderer, which prevents overlapping statement
+    and function replacements at the same source location.
+    """
+    return translate_whole_function(facts=facts, route=route)
+
+# =============================================================================
+# Public entry
+# =============================================================================
+def _render_counter_csr_functional_fallback(
+    *,
+    context: TranslationContext,
+    csr_name: str,
+    result_operand_index: int,
+    width_bits: int,
+    target_environment: TargetEnvironment,
+) -> TranslationOutput | None:
+    """Render one explicitly approved *functional-only* counter adapter.
+
+    This is deliberately separate from the normal Phase-6 proof pipeline.
+    RISC-V counter CSRs are architecture-defined environment interfaces, and
+    x86 ``rdtsc`` is not a strict replacement for their time domain.  A caller
+    must opt in to this documented semantic downgrade.  The registry is keyed
+    by structured Phase-6A CSR facts, never by an asm mnemonic or source text.
+
+    ``time`` and ``cycle`` use distinct target observation domains.  RV32
+    low/high CSR forms are explicit projections of the same 64-bit adapter.
+    ``instret`` remains unregistered because an ordinary x86 user process has
+    no unconditional retired-instruction counter interface.
+    """
+    base_name = csr_name[:-1] if csr_name.endswith("h") else csr_name
+    high_half = csr_name.endswith("h")
+    contracts = {
+        "time": (
+            MONOTONIC_TIME_NS_V1,
             "riscv.readonly-counter-csr.time.v1",
             "posix.clock-monotonic.nanoseconds.v1",
             "riscv2x86.time.monotonic-observation.v1",
