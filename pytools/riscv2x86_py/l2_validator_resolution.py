@@ -18,10 +18,11 @@ from .l2_dimensions import (
     L2Dimension, L2EligibilityStatus,
     parse_l2_dimension, parse_l2_dimensions,
 )
+from .l2_semantic_profile import L2PatternKind
 
 
-L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA = "riscv2x86.l2-requirement-driven-registry.v1"
-L2_RESOLVED_EXECUTION_PLAN_SCHEMA = "riscv2x86.l2-resolved-execution-plan.v1"
+L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA = "riscv2x86.l2-requirement-driven-registry.v2"
+L2_RESOLVED_EXECUTION_PLAN_SCHEMA = "riscv2x86.l2-resolved-execution-plan.v2"
 L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA = "riscv2x86.explicit-l2-providers.v1"
 _BINDING_KINDS = ("explicit", "automatic", "runtime_adapter")
 _PRIORITY = {name: index for index, name in enumerate(_BINDING_KINDS)}
@@ -88,6 +89,21 @@ class L2FragmentRequirement:
     requirement_identity: str
     required_dimensions: tuple[L2Dimension, ...]
     eligibility_status: L2EligibilityStatus
+    semantic_profile_identity: str = ""
+    pattern_kind: str = "unknown"
+    required_capabilities: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.required_capabilities != tuple(sorted(set(self.required_capabilities))):
+            raise ValueError("L2 requirement capabilities must be unique and sorted")
+        try:
+            kind = L2PatternKind(self.pattern_kind)
+        except ValueError as exc:
+            raise ValueError("L2 requirement pattern kind is unsupported") from exc
+        if self.eligibility_status is L2EligibilityStatus.ELIGIBLE and (
+                _SHA256.fullmatch(self.semantic_profile_identity) is None
+                or kind is L2PatternKind.UNKNOWN or not self.required_capabilities):
+            raise ValueError("eligible L2 requirement has no complete semantic profile")
 
 
 @dataclass(frozen=True)
@@ -117,6 +133,19 @@ class L2ResolvedExecutionPlan:
     execution_profile: str
     eligibility_status: L2EligibilityStatus
     bindings: tuple[L2ResolvedBinding, ...]
+    semantic_profile_identity: str = ""
+    pattern_kind: str = "unknown"
+    required_capabilities: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        L2PatternKind(self.pattern_kind)
+        if self.required_capabilities != tuple(sorted(set(self.required_capabilities))):
+            raise ValueError("L2 resolved plan capabilities must be unique and sorted")
+        if self.eligibility_status is L2EligibilityStatus.ELIGIBLE and (
+                _SHA256.fullmatch(self.semantic_profile_identity) is None
+                or self.pattern_kind == L2PatternKind.UNKNOWN.value
+                or not self.required_capabilities):
+            raise ValueError("eligible L2 resolved plan has no complete semantic profile")
 
     def to_dict(self) -> dict[str, object]:
         payload = {
@@ -125,6 +154,9 @@ class L2ResolvedExecutionPlan:
             "requirementIdentity": self.requirement_identity,
             "executionProfile": self.execution_profile,
             "eligibilityStatus": self.eligibility_status.value,
+            "semanticProfileIdentity": self.semantic_profile_identity,
+            "patternKind": self.pattern_kind,
+            "requiredCapabilities": list(self.required_capabilities),
             "bindings": [binding.to_dict() for binding in self.bindings],
         }
         payload["planIdentity"] = _identity(payload)
@@ -183,6 +215,8 @@ class L2ValidatorResolver:
         return L2ResolvedExecutionPlan(
             requirement.fragment_id, requirement.requirement_identity,
             execution_profile, requirement.eligibility_status, tuple(bindings),
+            requirement.semantic_profile_identity, requirement.pattern_kind,
+            requirement.required_capabilities,
         )
 
 
@@ -200,8 +234,24 @@ def fragment_requirement_from_dict(value: Mapping[str, object]) -> L2FragmentReq
     eligibility = L2EligibilityStatus(str(value.get("eligibilityStatus")))
     if eligibility is L2EligibilityStatus.ELIGIBLE and not parsed_dimensions:
         raise ValueError("eligible L2 fragment requirement has no dimensions")
-    return L2FragmentRequirement(fragment_id, requirement_identity,
-                                 parsed_dimensions, eligibility)
+    profile_identity = value.get("semanticProfileIdentity")
+    pattern_kind = value.get("patternKind")
+    capabilities = value.get("requiredCapabilities")
+    if (not isinstance(profile_identity, str)
+            or (profile_identity and _SHA256.fullmatch(profile_identity) is None)
+            or not isinstance(pattern_kind, str) or not pattern_kind
+            or not isinstance(capabilities, list)
+            or capabilities != sorted(set(capabilities))
+            or not all(isinstance(item, str) and item for item in capabilities)):
+        raise ValueError("L2 fragment requirement semantic profile binding is invalid")
+    try:
+        L2PatternKind(pattern_kind)
+    except ValueError as exc:
+        raise ValueError("L2 fragment requirement pattern kind is unsupported") from exc
+    return L2FragmentRequirement(
+        fragment_id, requirement_identity, parsed_dimensions, eligibility,
+        profile_identity, pattern_kind, tuple(capabilities),
+    )
 
 
 def provider_from_dict(value: Mapping[str, object]) -> L2ValidatorProvider:
@@ -245,7 +295,8 @@ def resolve_fragment_execution_plan(
 
 def validate_resolved_execution_plan(value: Mapping[str, object]) -> None:
     expected = {"schemaVersion", "fragmentId", "requirementIdentity", "executionProfile",
-                "eligibilityStatus", "bindings", "planIdentity"}
+                "eligibilityStatus", "semanticProfileIdentity", "patternKind",
+                "requiredCapabilities", "bindings", "planIdentity"}
     if set(value) != expected or value.get("schemaVersion") != L2_RESOLVED_EXECUTION_PLAN_SCHEMA:
         raise ValueError("L2 resolved execution plan schema or fields are invalid")
     payload = dict(value); identity = payload.pop("planIdentity")
@@ -258,6 +309,20 @@ def validate_resolved_execution_plan(value: Mapping[str, object]) -> None:
             or not value.get("executionProfile")):
         raise ValueError("L2 resolved execution plan identities/profile are invalid")
     L2EligibilityStatus(str(value.get("eligibilityStatus")))
+    profile_identity = value.get("semanticProfileIdentity")
+    capabilities = value.get("requiredCapabilities")
+    if (not isinstance(profile_identity, str)
+            or (profile_identity and _SHA256.fullmatch(profile_identity) is None)
+            or not isinstance(value.get("patternKind"), str)
+            or not value.get("patternKind")
+            or not isinstance(capabilities, list)
+            or capabilities != sorted(set(capabilities))
+            or not all(isinstance(item, str) and item for item in capabilities)):
+        raise ValueError("L2 resolved execution plan semantic profile is invalid")
+    try:
+        L2PatternKind(str(value.get("patternKind")))
+    except ValueError as exc:
+        raise ValueError("L2 resolved execution plan pattern kind is unsupported") from exc
     raw = value.get("bindings")
     if not isinstance(raw, list):
         raise ValueError("L2 resolved execution plan bindings must be an array")
