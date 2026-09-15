@@ -8,6 +8,10 @@ import sys
 import json
 
 from .l2_eligibility import classify_l2_requirements
+from .automatic_batch_cli import inspect_entry_points
+from .automatic_l2_authority import materialize_automatic_l2_authority
+from .schema import load_report
+from .translation_attempt import terminal_attempt_from_finding, save_translation_attempt_archive
 
 
 def main() -> int:
@@ -51,6 +55,23 @@ def main() -> int:
             translated = json.loads(report.read_text(encoding="utf-8"))
             if not isinstance(translated, dict):
                 raise ValueError("translated report root must be an object")
+            _, functions = inspect_entry_points(Path(args.source).resolve())
+            materialize_automatic_l2_authority(
+                translated, tuple(item for item in functions if isinstance(item, dict)),
+                args.frontend,
+            )
+            report.write_text(
+                json.dumps(translated, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            # Authority changes attempt and candidate identities, so the
+            # archive must be regenerated before candidate staging.
+            findings = load_report(str(report))
+            save_translation_attempt_archive(
+                tuple(terminal_attempt_from_finding(item, index)
+                      for index, item in enumerate(findings)),
+                str(report) + ".attempts.json",
+            )
             manifest = classify_l2_requirements(translated)
             report.with_name(report.name + ".l2-requirements.json").write_text(
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",

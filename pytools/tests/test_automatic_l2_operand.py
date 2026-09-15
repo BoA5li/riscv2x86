@@ -3,6 +3,10 @@ from __future__ import annotations
 from riscv2x86_py.automatic_l2_operand import _authority, _traces, _wrapper
 from riscv2x86_py.translation_validation import TranslationArtifact
 from riscv2x86_py.validation_status import PreservationMode
+from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
+from types import SimpleNamespace
+import tempfile
+from pathlib import Path
 
 
 def _artifact():
@@ -41,7 +45,35 @@ def test_authority_joins_compiler_boundary_and_frontend_shell():
                                 {"constraint": "r", "symbolicName": "rhs"}]},
         "approvalArtifact": {"proofStatus": "approved"},
     }
-    authority, reason = _authority(finding, [_function()], _artifact())
+    artifact = _artifact()
+    finding["approvalArtifact"].update({
+        "architectureSemanticsPreserved": True,
+        "shellSemanticsPreserved": True,
+        "sourceModelId": "model",
+        "constraintsId": "constraint",
+        "preservationDecisionId": "decision",
+        "planId": "plan",
+        "targetEnvironmentId": "environment",
+        "targetCatalogVersion": "catalog",
+    })
+    report = {"findings": [finding]}
+    with tempfile.NamedTemporaryFile() as producer:
+        assert materialize_automatic_l2_authority(
+            report, [_function()], Path(producer.name),
+        ) == 1
+    sidecar = finding["approvalArtifact"]["l2AuthoritySidecar"]
+    artifact_fields = dict(artifact.__dict__)
+    artifact_fields.update(
+        shell_facts_identity=sidecar["shellFactIdentity"],
+        proof_identity=finding["approvalArtifact"]["proofIdentity"],
+        l2_authority_identity=sidecar["authorityIdentity"],
+        effect_relation_set_identity=__import__(
+            "riscv2x86_py.l2_authority", fromlist=["l2_authority_sidecar_from_dict"]
+        ).l2_authority_sidecar_from_dict(sidecar).effect_relation_set_identity,
+        l2_authority_complete=True,
+    )
+    artifact = SimpleNamespace(**artifact_fields)
+    authority, reason = _authority(finding, [_function()], artifact)
     assert reason == "" and authority is not None
     assert authority["operands"][0]["earlyClobber"] is True
     assert authority["operands"][0]["targetContractCarriedByProof"] is True

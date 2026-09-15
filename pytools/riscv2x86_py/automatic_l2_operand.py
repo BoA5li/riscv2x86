@@ -12,6 +12,7 @@ from .l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from .runtime_dependency_binding import resolve_runtime_contracts
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
+from .l2_authority import l2_authority_sidecar_from_dict
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -139,6 +140,27 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "sourceConstraint": constraint, "targetContractCarriedByProof": True,
             "escaped": False,
         })
+    raw_sidecar = approval.get("l2AuthoritySidecar")
+    if not isinstance(raw_sidecar, Mapping):
+        return None, "L2_OPERAND_AUTHORITY_SIDECAR_MISSING"
+    try:
+        sidecar = l2_authority_sidecar_from_dict(
+            raw_sidecar, expected_fragment_id=str(getattr(artifact, "fragment_id", "")),
+            expected_shell_fact_identity=shell_identity,
+        )
+    except ValueError:
+        return None, "L2_OPERAND_AUTHORITY_SIDECAR_INVALID"
+    if (not sidecar.complete
+            or sidecar.authority_identity != getattr(artifact, "l2_authority_identity", "")
+            or sidecar.effect_relation_set_identity
+            != getattr(artifact, "effect_relation_set_identity", "")):
+        return None, "L2_OPERAND_AUTHORITY_IDENTITY_MISMATCH"
+    # Compiler facts above are an independent applicability check.  The
+    # validator consumes the proof-bound sidecar values, never reconstructed
+    # values, for comparison authority.
+    sidecar_operands = [dict(item) for item in sidecar.operands]
+    if len(sidecar_operands) != len(facts):
+        return None, "L2_OPERAND_AUTHORITY_FACT_MISSING"
     payload = {
         "schemaVersion": AUTO_L2_AUTHORITY_SCHEMA,
         "producer": "clang-ast-plus-frontend-gnu-shell-v1",
@@ -146,9 +168,10 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         "function": function_name, "shellFactsIdentity": shell_identity,
         "sourceModelIdentity": getattr(artifact, "source_model_identity", ""),
         "proofIdentity": getattr(artifact, "proof_identity", ""),
-        "operands": facts,
+        "operands": sidecar_operands,
+        "effectRelationSetIdentity": sidecar.effect_relation_set_identity,
     }
-    payload["authorityIdentity"] = _identity(payload)
+    payload["authorityIdentity"] = sidecar.authority_identity
     return payload, ""
 
 
@@ -282,7 +305,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 status=ValidationStatus.VERIFIED; observation["reasonCode"]=""
             evidence=_identity(observation)
             (replay / "operand-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v1","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"authorityIdentity":authority["authorityIdentity"],"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
+            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v1","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"authorityIdentity":authority["authorityIdentity"],"sourceObservationIdentity":observation["sourceTraceDigest"],"targetObservationIdentity":observation["targetTraceDigest"],"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))

@@ -68,6 +68,22 @@ def _result_reason_codes(result: ValidationLayerResult) -> tuple[str, ...]:
     return ("l2.validator-result:" + result.status.value,)
 
 
+def _provider_observation_identities(result: ValidationLayerResult) -> tuple[str, str]:
+    """Read identities explicitly emitted by an automatic observation producer."""
+    try:
+        detail = json.loads(result.detail)
+    except (TypeError, json.JSONDecodeError):
+        return "", ""
+    if not isinstance(detail, Mapping):
+        return "", ""
+    source = detail.get("sourceObservationIdentity")
+    target = detail.get("targetObservationIdentity")
+    return (
+        source if isinstance(source, str) and _SHA256.fullmatch(source) else "",
+        target if isinstance(target, str) and _SHA256.fullmatch(target) else "",
+    )
+
+
 def _l0_build_matrix_factory(config: Mapping[str, object]) -> LayerValidator:
     # Delayed import avoids a translation_validation -> registry -> L0 cycle.
     from .l0_build_matrix import build_l0_validator, load_l0_build_matrix
@@ -286,6 +302,11 @@ def _requirement_driven_l2_validator(
             )
             source_identity = str(getattr(kwargs.get("source_observation"), "identity", ""))
             target_identity = str(getattr(kwargs.get("target_observation"), "identity", ""))
+            provider_source, provider_target = _provider_observation_identities(result)
+            if not source_identity:
+                source_identity = provider_source
+            if not target_identity:
+                target_identity = provider_target
             execution_identity = (
                 canonical_identity({
                     "schemaVersion": "riscv2x86.l2-program-execution.v1",

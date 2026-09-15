@@ -131,7 +131,10 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
     }
     reference_counts: dict[str, int] = {}
     for item in _walk_ast(function):
-        identity = _decl_identity(item)
+        # Count each compiler DeclRefExpr exactly once.  Calling _decl_identity
+        # on its wrapping casts/parentheses counted one source reference more
+        # than once and made every direct-return scalar authority inconclusive.
+        identity = _decl_identity(item) if item.get("kind") == "DeclRefExpr" else ""
         if identity:
             reference_counts[identity] = reference_counts.get(identity, 0) + 1
     parameter_ids = [str(item.get("id") or item.get("name") or "") for item in params]

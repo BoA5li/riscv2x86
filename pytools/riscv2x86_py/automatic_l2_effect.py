@@ -365,6 +365,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 status=ValidationStatus.VERIFIED; reason=""
             observation["reasonCode"] = reason
             evidence = _identity(observation)
+            source_observation_identity = _identity(observation["source"])
+            target_observation_identity = _identity(observation["target"])
             replay.mkdir(parents=True,exist_ok=True)
             (replay/"effect-harness.c").write_text(wrapper,encoding="utf-8")
             (replay/"effect-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
@@ -373,6 +375,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                      "attemptId":observation["attemptId"],"mode":mode,
                      "eventCount":len(source_events or []),
                      "effectRelationSetIdentity":relation_authority["effectRelationSetIdentity"],
+                     "sourceObservationIdentity":source_observation_identity,
+                     "targetObservationIdentity":target_observation_identity,
                      "observationEvidenceIdentity":evidence,"replayArtifact":"effect-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
