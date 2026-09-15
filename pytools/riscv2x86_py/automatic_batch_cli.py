@@ -606,9 +606,14 @@ def prepare_automatic_inventory(
             validators["L2"] = {
                 "type": "requirement-driven",
                 "config": {
-                    "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v1",
+                    "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
                     "requirementManifestPath": "${TRANSLATED_REPORT}.l2-requirements.json",
                     "fragmentId": "${FRAGMENT_ID}",
+                    # L1 harness mode remains program-level.  L2 selection is
+                    # deliberately keyed by the authoritative per-fragment
+                    # profile carried by the requirement and resolved plan.
+                    "semanticProfileSource": "requirement-manifest",
+                    "providerSelectionUnit": "fragment",
                     "executionProfile": "rv64gc-user-to-x86_64-user",
                     "resolvedPlanPath": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-resolved-plan.json",
                     "providers": l2_providers,
@@ -663,6 +668,7 @@ def prepare_automatic_inventory(
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
                "statisticsUnits": {"L1": "program", "L2Requirements": "fragment",
+                                    "L2SemanticProfile": "fragment",
                                     "translation": "fragment",
                                     "bootstrapCluster": "program"}}
     _write_json(inventory / "automatic-inventory.json", payload)
