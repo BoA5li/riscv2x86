@@ -92,11 +92,8 @@ def _approved_relations(
             return None, "L2_EFFECT_AUTHORITY_IDENTITY_MISMATCH"
         if approval.get("proofIdentity") != getattr(artifact, "proof_identity", ""):
             return None, "L2_EFFECT_PROOF_IDENTITY_MISMATCH"
-        relations = tuple(
-            approved_effect_relation_from_dict(item)
-            for item in authority.approved_effect_relations
-        )
-    except ValueError:
+        relations = authority.approved_effect_relations
+    except (TypeError, ValueError):
         return None, "L2_EFFECT_APPROVED_RELATION_INVALID"
     if not authority.complete or not relations:
         return None, "L2_EFFECT_APPROVED_RELATION_MISSING"
@@ -107,8 +104,9 @@ def _approved_relations(
         if not relation.authority_complete:
             return None, "L2_EFFECT_APPROVED_RELATION_INCOMPLETE"
         if relation.relation_kind == "runtime_mediated":
-            matches = [item for item in contracts if item.get("runtimeContractId") == runtime_id
-                       and item.get("runtimeContractVersion") == runtime_version]
+            matches = [item for item in contracts
+                       if item.runtime_contract_id == runtime_id
+                       and item.contract_version == runtime_version]
             if relation.runtime_contract_id != runtime_id or len(matches) != 1:
                 return None, "L2_EFFECT_RUNTIME_CONTRACT_MISMATCH"
     return {

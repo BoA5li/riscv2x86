@@ -70,5 +70,5 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
         finding["approvalArtifact"]["l2AuthoritySidecar"]
     )
     assert sidecar.complete
-    assert sidecar.operands[0]["escapeKind"] == "function_return"
+    assert sidecar.operands[0].escape_kind == "function_return"
     assert len(sidecar.approved_effect_relations) == 64

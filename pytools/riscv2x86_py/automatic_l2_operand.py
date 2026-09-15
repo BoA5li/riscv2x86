@@ -158,7 +158,9 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     # Compiler facts above are an independent applicability check.  The
     # validator consumes the proof-bound sidecar values, never reconstructed
     # values, for comparison authority.
-    sidecar_operands = [dict(item) for item in sidecar.operands]
+    # The validator consumes typed compiler authority.  Conversion to JSON is
+    # only for the evidence payload; no field is reconstructed here.
+    sidecar_operands = [item.to_dict() for item in sidecar.operands]
     if len(sidecar_operands) != len(facts):
         return None, "L2_OPERAND_AUTHORITY_FACT_MISSING"
     payload = {

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from riscv2x86_py.l2_authority import (
-    L2AuthorityProducer, L2AuthoritySidecar, authority_identity_set,
+    L2AuthorityProducer, L2AuthoritySidecar, L2OperandAuthority,
+    L2SourceEffectAuthority, authority_identity_set,
     l2_authority_sidecar_from_dict,
 )
 from riscv2x86_py.l2_dimensions import L2Dimension, L2EligibilityStatus
@@ -30,9 +31,10 @@ def _sidecar(*, fragment="fragment:1", shell=None, width=64, relation="exact", c
         fragment, L2AuthorityProducer(
             "frontend-compiler-sidecar", "clang-plugin", "1", _digest("producer"),
         ), shell or _digest("shell"),
-        ({"index": 0, "name": "out", "width": width, "signedness": "unsigned"},),
-        (), ({"effectId": "effect:0", "kind": "WriteOperand"},),
-        (approved.to_dict(),),
+        (L2OperandAuthority("operand:out", 0, "out", "output", "integer",
+                            width, "unsigned", "", False, "", "function_return"),),
+        (), (L2SourceEffectAuthority("effect:0", "WriteOperand", "operand:out", True),),
+        (approved,),
         (), (), complete,
     )
 
@@ -59,7 +61,7 @@ def test_sidecar_identity_covers_operand_width_and_artifact_identity():
 
 def test_sidecar_rejects_stale_fragment_and_shell_bindings():
     raw = _sidecar().to_dict()
-    stale = deepcopy(raw); stale["operands"][0]["width"] = 32
+    stale = deepcopy(raw); stale["operands"][0]["widthBits"] = 32
     with pytest.raises(ValueError, match="stale sidecar"):
         l2_authority_sidecar_from_dict(stale)
     with pytest.raises(ValueError, match="fragment identity mismatch"):

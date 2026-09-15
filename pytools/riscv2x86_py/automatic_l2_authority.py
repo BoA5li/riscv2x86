@@ -12,7 +12,12 @@ import re
 from typing import Mapping, Sequence
 
 from .effect_relation import ApprovedEffectRelation
-from .l2_authority import L2AuthorityProducer, L2AuthoritySidecar
+from .l2_authority import (
+    L2AuthorityProducer,
+    L2AuthoritySidecar,
+    L2OperandAuthority,
+    L2SourceEffectAuthority,
+)
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
@@ -107,24 +112,25 @@ def _scalar_authority(
         if not width or signedness == "not_applicable":
             return None
         constraint = str(raw.get("constraint", ""))
-        operands.append({
-            "operandIndex": index,
-            "operandName": str(raw.get("symbolicName") or declaration.get("name") or f"operand{index}"),
-            "operandId": f"{fragment_id}:{index}:{declaration_id}",
-            "declarationId": declaration_id,
-            "accessMode": access,
-            "widthBits": width,
-            "parameterIndex": params.index(declaration_id) if declaration_id in params else None,
-            "signedness": signedness,
-            "tiedToOperandIndex": None,
-            "earlyClobber": bool(raw.get("isEarlyClobber")) or "&" in constraint,
-            "sourceConstraint": constraint,
-            "targetContractCarriedByProof": True,
-            "escaped": access == "output",
-            "escapeKind": "function_return" if access == "output" else "none",
-        })
+        operands.append(L2OperandAuthority(
+            operand_id=f"{fragment_id}:{index}:{declaration_id}",
+            operand_index=index,
+            logical_name=str(raw.get("symbolicName") or declaration.get("name") or f"operand{index}"),
+            access_mode=access,
+            type_kind="integer",
+            width_bits=width,
+            signedness=signedness,
+            tied_to_operand_id="",
+            early_clobber=bool(raw.get("isEarlyClobber")) or "&" in constraint,
+            fixed_register_contract="",
+            escape_kind="function_return" if access == "output" else "function_argument",
+            declaration_id=str(declaration_id),
+            parameter_index=params.index(declaration_id) if declaration_id in params else None,
+            source_constraint=constraint,
+            target_contract_carried_by_proof=True,
+        ))
     arity = function.get("arity")
-    if isinstance(arity, bool) or not isinstance(arity, int) or not 1 <= arity <= 3:
+    if isinstance(arity, bool) or not isinstance(arity, int) or not 1 <= arity <= 4:
         return None
     relations = []
     source_effects = []
@@ -136,13 +142,15 @@ def _scalar_authority(
             f"relation:scalar:{sample}", event_id, (event_id,), "exact",
             ("branch_continuation", "kind", "value"), (), "", True,
         )
-        relations.append(relation.to_dict())
-        source_effects.append({"eventId": event_id, "eventKind": "continuation"})
+        relations.append(relation)
+        source_effects.append(L2SourceEffectAuthority(
+            event_id, "continuation", "continuation:return", True,
+        ))
     shell_identity = _shell_identity(approval, fragment_id)
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-scalar-authority",
-                            "v1", producer_digest),
+                            "v2", producer_digest),
         shell_identity, tuple(operands), (), tuple(source_effects), tuple(relations),
         (), (), True,
     )

@@ -6,7 +6,9 @@ from riscv2x86_py.automatic_l2_effect import (
     _branch_events, _memory_events, _scalar_events, _shell_relation,
 )
 from riscv2x86_py.effect_relation import ApprovedEffectRelation
-from riscv2x86_py.l2_authority import L2AuthorityProducer, L2AuthoritySidecar
+from riscv2x86_py.l2_authority import (
+    L2AuthorityProducer, L2AuthoritySidecar, L2SourceEffectAuthority,
+)
 from hashlib import sha256
 
 
@@ -23,8 +25,9 @@ def _artifact():
     sidecar = L2AuthoritySidecar(
         "fragment", L2AuthorityProducer(
             "translation-proof-sidecar", "phase6d", "v1", _digest("producer"),
-        ), _digest("shell"), (), (), ({"eventId": "source-effect:0"},),
-        (relation.to_dict(),), (), (), True,
+        ), _digest("shell"), (), (),
+        (L2SourceEffectAuthority("source-effect:0", "fence", "ordering", True),),
+        (relation,), (), (), True,
     )
     return SimpleNamespace(
         fragment_id="fragment", recipe_id="recipe", proof_identity=_digest("proof"),
