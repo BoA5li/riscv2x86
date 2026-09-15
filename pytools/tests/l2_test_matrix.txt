@@ -1,4 +1,5 @@
 pytools/tests/test_l2_eligibility.py
+pytools/tests/test_l2_semantic_profile.py
 pytools/tests/test_l2_requirement_driven_registry.py
 pytools/tests/test_l2_dimension_results.py
 pytools/tests/test_l2_authority_candidate_binding.py
