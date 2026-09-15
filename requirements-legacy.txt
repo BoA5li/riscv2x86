@@ -1,0 +1,5 @@
+-r requirements-test.txt
+pypcode>=2,<4
+z3-solver>=4.12,<5
+pyelftools>=0.31,<1
+unicorn>=2,<3

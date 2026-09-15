@@ -61,7 +61,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pytest
+      - run: python -m pip install -r requirements-l2.txt
       - name: Run L2 concurrency, memory-model, and privileged runner suites
         env:
           PYTHONPATH: pytools
@@ -183,6 +183,7 @@ jobs:
       - name: Record unavailable controlled capabilities as inconclusive
         env:
           PRIVILEGED_ENABLED: ${{ vars.PRIVILEGED_RUNNER_ENABLED }}
+          CONCURRENCY_ENABLED: ${{ vars.CONCURRENCY_RUNNER_ENABLED }}
           L3_ENABLED: ${{ vars.L3_CONTROLLED_RUNNER_ENABLED }}
         run: |
           mkdir -p capability-results
@@ -190,6 +191,7 @@ jobs:
           import json, os
           rows = []
           for name, value in (("privileged", os.environ.get("PRIVILEGED_ENABLED")),
+                              ("concurrency", os.environ.get("CONCURRENCY_ENABLED")),
                               ("l3-controlled", os.environ.get("L3_ENABLED"))):
               enabled = value == "true"
               rows.append({"capability": name, "configured": enabled,

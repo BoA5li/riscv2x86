@@ -1,0 +1,13 @@
+pytools/tests/test_l2_eligibility.py
+pytools/tests/test_l2_requirement_driven_registry.py
+pytools/tests/test_l2_dimension_results.py
+pytools/tests/test_l2_authority_candidate_binding.py
+pytools/tests/test_l2_operand_differential.py
+pytools/tests/test_automatic_l2_operand.py
+pytools/tests/test_l2_effect_trace_differential.py
+pytools/tests/test_automatic_l2_effect.py
+pytools/tests/test_l2_privileged_runner.py
+pytools/tests/test_l2_privileged_integration.py
+pytools/tests/test_l2_program_evidence.py
+pytools/tests/test_l2_concurrency_runner.py
+pytools/tests/test_paper_evaluation.py

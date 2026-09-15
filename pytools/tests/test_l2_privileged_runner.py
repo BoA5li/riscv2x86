@@ -11,10 +11,12 @@ import riscv2x86_py.l2_privileged_runner as privileged
 from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from riscv2x86_py.l2_effect_trace_differential import L2_EFFECT_RUNNER_SCHEMA, L2EffectRunnerConfig
 from riscv2x86_py.l2_privileged_runner import (
-    CSR_ROUTE_CONTRACT_SCHEMA, PRIVILEGED_INITIAL_STATE_SCHEMA, PRIVILEGED_MANIFEST_SCHEMA,
+    CSR_ROUTE_CONTRACT_SCHEMA, LEGACY_PRIVILEGED_RUNNER_SCHEMA,
+    PRIVILEGED_INITIAL_STATE_SCHEMA, PRIVILEGED_MANIFEST_SCHEMA,
     PRIVILEGED_OBSERVATION_SCHEMA, PRIVILEGED_RUNNER_SCHEMA,
     CommandResult, L2PrivilegedRunnerConfig,
-    PrivilegedRunnerSpec, load_csr_route_contract, run_l2_privileged_differential,
+    PrivilegedRunnerSpec, load_csr_route_contract, load_l2_privileged_runner_config,
+    run_l2_privileged_differential,
     validate_csr_routes,
 )
 from riscv2x86_py.privileged_differential_validation import DifferentialPreservationMode
@@ -275,3 +277,29 @@ def test_runtime_registry_exposes_composite_l2c_as_the_single_l2_runner(tmp_path
         }}},
     })
     assert registry.validator_for(ValidationLevel.L2) is not None
+
+
+def test_legacy_v1_runner_rejects_v2_required_environment_field():
+    runner = lambda source: {
+        "command": ["/bin/true"],
+        "runnerKind": "qemu-system" if source else "x86-logical-runtime",
+        "runnerId": "source" if source else "target", "runtimeVersion": "runtime-v1",
+        "executionProfile": "rv64-system" if source else "x86-user",
+        "targetExecutionMode": "emulator-only" if source else "ordinary-user-process",
+    }
+    value = {
+        "schemaVersion": LEGACY_PRIVILEGED_RUNNER_SCHEMA,
+        "comparisonPolicy": ARCHITECTURAL_COMPARISON_POLICY,
+        "baseEffectRunner": {
+            "schemaVersion": L2_EFFECT_RUNNER_SCHEMA,
+            "operandAuthoritySidecarPath": "operands.json",
+            "effectAuthoritySidecarPath": "effects.json",
+            "comparisonPolicy": ARCHITECTURAL_COMPARISON_POLICY,
+        },
+        "sourceRunner": runner(True), "targetRunner": runner(False),
+        "initialStatePath": "initial.json", "privilegedManifestPath": "manifest.json",
+        "csrRouteContractPath": "routes.json", "timeoutSeconds": 10,
+        "requiredEnvironmentId": "test-privileged-environment",
+    }
+    with pytest.raises(ValueError, match="fields are incomplete or unknown"):
+        load_l2_privileged_runner_config(value)

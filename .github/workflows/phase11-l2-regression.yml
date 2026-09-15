@@ -1,0 +1,94 @@
+name: Phase 11 L2 regression closure
+
+on:
+  push:
+    branches: [phase11-l2-regression-and-ci-closure]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-test.txt
+      - name: Run core tests without optional analysis dependencies
+        env:
+          PYTHONPATH: pytools
+        run: >-
+          python -m pytest -q
+          pytools/tests/test_translation_validation.py
+          pytools/tests/test_validation_observation.py
+          pytools/tests/test_evaluation_runner.py
+          pytools/tests/test_evaluation_aggregate.py
+
+  unit-l2:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-l2.txt
+      - name: Run versioned L2 regression matrix
+        env:
+          PYTHONPATH: pytools
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tests < pytools/tests/l2_test_matrix.txt
+          python -m pytest -q --junitxml=l2-unit-results.xml "${tests[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l2-unit-results-${{ github.run_id }}
+          path: l2-unit-results.xml
+          if-no-files-found: error
+
+  integration-toolchain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install RV64 compiler and QEMU user runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu qemu-user
+      - name: Run real RV64/QEMU to x86 L2 workflow
+        run: python pytools/tests/run_real_l2_workflow.py --output l2-real/result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l2-real-workflow-${{ github.run_id }}
+          path: l2-real/result.json
+          if-no-files-found: error
+          retention-days: 30
+
+  legacy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-legacy.txt
+      - name: Run optional-dependency legacy tests in isolation
+        env:
+          PYTHONPATH: pytools
+        run: >-
+          python -m pytest -q
+          pytools/tests/test_lift.py
+          pytools/tests/test_cfg.py
+          pytools/tests/test_cas.py
+          pytools/tests/test_phase8_backend_conservative.py
+          pytools/tests/test_phase8_backend_registration.py
+          pytools/tests/test_phase8_checker_contract.py
