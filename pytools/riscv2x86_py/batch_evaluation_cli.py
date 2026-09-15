@@ -239,7 +239,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         if isinstance(item, Mapping) and item.get("level") == "L2"
     ), {})
     l2_manifest = linkage.get("l2Requirements") if isinstance(linkage, Mapping) else None
-    l2_dispositions = (
+    manifest_dispositions = (
         dict(l2_manifest.get("dispositionCounts", {}))
         if isinstance(l2_manifest, Mapping) else {}
     )
@@ -252,6 +252,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         if isinstance(linkage, Mapping)
         and isinstance(linkage.get("programExecutionEvidence"), list) else []
     )
+    l2_dispositions = _l2_disposition_counts(l2_group, manifest_dispositions)
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -275,6 +276,33 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
+    }
+
+
+def _l2_disposition_counts(
+    l2_group: object, manifest_dispositions: Mapping[str, object],
+) -> dict[str, int]:
+    """Return post-execution dispositions when closed member results exist.
+
+    Requirement manifests describe the pre-execution state and commonly carry
+    ``not_run``.  They are only a fallback for cases where no final required
+    member result was formed.
+    """
+    member_results = (
+        l2_group.get("memberResults", []) if isinstance(l2_group, Mapping) else []
+    )
+    final = Counter(
+        str(item.get("status")) for item in member_results
+        if isinstance(item, Mapping) and item.get("required") is True
+        and item.get("status") in {
+            "verified", "failed", "inconclusive", "not_run", "not_applicable",
+        }
+    )
+    if final:
+        return dict(final)
+    return {
+        str(key): int(value) for key, value in manifest_dispositions.items()
+        if isinstance(value, int) and not isinstance(value, bool)
     }
 
 
