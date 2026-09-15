@@ -87,6 +87,44 @@ def test_three_fragments_share_one_program_execution_sample(tmp_path):
                for item in group["memberResults"])
 
 
+def test_independent_dimension_executions_are_all_retained(tmp_path):
+    request, requirements = _setup(tmp_path, 1)
+    requirement = requirements[0]
+    dimensions = tuple(L2Dimension(item) for item in requirement["requiredDimensions"])
+    executions = (_id("e"), _id("f"))
+    results = tuple(
+        L2DimensionResult.create(
+            dimension=dimension, status=L2DimensionStatus.VERIFIED,
+            claim_scope=L2ClaimScope.ARCHITECTURAL,
+            authority_identity=_id("a"),
+            source_observation_identity=_id(str(index + 1)),
+            target_observation_identity=_id(str(index + 3)),
+            effect_relation_identity=_id("d"),
+            execution_identity=executions[index],
+        )
+        for index, dimension in enumerate(dimensions)
+    )
+    fragment = L2FragmentResult.close(
+        fragment_id="fragment:0",
+        requirement_identity=requirement["requirementIdentity"],
+        required_dimensions=dimensions,
+        dimension_results=results,
+    )
+
+    linkage = _translation_evaluation_linkage(
+        request, tmp_path, [_attempt(0, "fragment:0", fragment)],
+    )
+    group = next(item for item in linkage["validationGroups"] if item["level"] == "L2")
+
+    assert group["status"] == "verified"
+    assert group["executionSampleCount"] == 2
+    assert group["programExecutionEvidenceIdentities"] == sorted(executions)
+    assert len(linkage["programExecutionEvidence"]) == 2
+    assert group["memberResults"][0]["programExecutionEvidenceIdentities"] == sorted(
+        executions
+    )
+
+
 def test_missing_required_dimension_prevents_program_verification(tmp_path):
     request, requirements = _setup(tmp_path)
     attempts = [_attempt(i, f"fragment:{i}", _fragment_result(
