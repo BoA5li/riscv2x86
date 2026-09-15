@@ -10,7 +10,7 @@ import pytest
 
 from riscv2x86_py.batch_evaluation_cli import (
     BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, BATCH_TEMPLATE_SCHEMA,
-    discover_batch_cases,
+    _l2_disposition_counts, discover_batch_cases,
     run_batch_evaluation,
 )
 from tests.test_evaluation_runner import _setup
@@ -103,6 +103,19 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     header = (output / "batch-summary.csv").read_text().splitlines()[0]
     assert header == ("case_id,category,status,translation_outcomes,evaluation_disposition,"
                       "l0,l1,l2,l3,evaluation_identity,reason_codes")
+
+
+def test_final_l2_member_disposition_replaces_manifest_not_run():
+    manifest = {"not_run": 1}
+    group = {
+        "memberResults": [
+            {"fragmentId": "fragment:0", "required": True, "status": "verified"},
+            {"fragmentId": "diagnostic:0", "required": False, "status": "failed"},
+        ],
+    }
+
+    assert _l2_disposition_counts(group, manifest) == {"verified": 1}
+    assert _l2_disposition_counts({}, manifest) == {"not_run": 1}
 
 
 def test_batch_separates_no_candidate_from_target_build_failure(tmp_path):
