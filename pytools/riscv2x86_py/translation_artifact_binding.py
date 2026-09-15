@@ -10,6 +10,9 @@ from .translation_attempt import TranslationAttempt, TranslationAttemptArchive
 from .translation_validation import TranslationArtifact
 from .validation_status import PreservationMode
 from .l2_authority import l2_authority_sidecar_from_dict
+from .l2_semantic_profile import (
+    L2FragmentSemanticProfile, profile_from_finding,
+)
 
 
 def _text(value: object, name: str) -> str:
@@ -25,6 +28,7 @@ def _identity(value: Mapping[str, object]) -> str:
 
 def translation_artifact_from_approval(
     attempt: TranslationAttempt, approval: Mapping[str, object],
+    semantic_profile: L2FragmentSemanticProfile | None = None,
 ) -> TranslationArtifact:
     """Construct an evaluation artifact from an approved candidate binding.
 
@@ -120,6 +124,12 @@ def translation_artifact_from_approval(
             raise ValueError("approval/attempt L2 authority binding mismatch")
     elif l2_identity or relation_identity or attempt.l2_authority_complete:
         raise ValueError("attempt L2 authority is absent from approval")
+    profile_identity = "" if semantic_profile is None else semantic_profile.profile_identity
+    pattern_kind = "" if semantic_profile is None else semantic_profile.pattern_kind.value
+    if semantic_profile is not None and (
+            approval.get("l2SemanticProfileIdentity") != profile_identity
+            or approval.get("l2PatternKind") != pattern_kind):
+        raise ValueError("approval/finding L2 semantic profile binding mismatch")
     return TranslationArtifact(
         fragment_id=attempt.fragment_id,
         source_model_identity=attempt.source_model_id,
@@ -137,6 +147,8 @@ def translation_artifact_from_approval(
         l2_authority_identity=l2_identity,
         effect_relation_set_identity=relation_identity,
         l2_authority_complete=attempt.l2_authority_complete,
+        l2_semantic_profile_identity=profile_identity,
+        l2_pattern_kind=pattern_kind,
     )
 
 
@@ -164,5 +176,11 @@ def artifacts_from_report(
         if attempt.evaluation_binding_complete and (finding_ids is None or finding_id in finding_ids):
             if not isinstance(approval, Mapping):
                 raise ValueError("approved attempt has no approval artifact")
-            result[finding_id] = translation_artifact_from_approval(attempt, approval)
+            semantic_profile = (
+                profile_from_finding(finding)
+                if isinstance(finding.get("l2SemanticProfile"), Mapping) else None
+            )
+            result[finding_id] = translation_artifact_from_approval(
+                attempt, approval, semantic_profile,
+            )
     return result
