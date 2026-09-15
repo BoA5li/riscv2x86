@@ -95,22 +95,23 @@ def test_effect_relation_change_changes_candidate_manifest_identity():
 
 
 def test_incomplete_authority_is_inconclusive_not_semantic_failure(tmp_path):
-    requirement = L2FragmentRequirement(
-        "fragment:1", _digest("requirement"), (L2Dimension.LOGICAL_OPERANDS,),
-        L2EligibilityStatus.ELIGIBLE,
-    )
+    from tests.l2_profile_fixtures import profile_dict
+    profile = profile_dict()
     requirement_path = tmp_path / "requirements.json"
     from riscv2x86_py.l2_eligibility import classify_l2_requirements
     requirement_path.write_text(json.dumps(classify_l2_requirements({"findings": [{
         "translationOutcome": "emitted", "translationReasonCodes": [],
         "fragment": {"id": "fragment:1", "inputs": [{"name": "lhs"}],
                      "outputs": [{"name": "out"}], "clobbers": []},
+        "l2SemanticProfile": profile,
     }]})))
     payload = {
         "schemaVersion": "riscv2x86.validation-runtime-registry.v2", "version": "test-v1",
         "validators": {"L2": {"type": "requirement-driven", "config": {
-            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v1",
+            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
             "requirementManifestPath": str(requirement_path), "fragmentId": "fragment:1",
+            "semanticProfileSource": "requirement-manifest",
+            "providerSelectionUnit": "fragment",
             "executionProfile": "rv64gc-user-to-x86_64-user",
             "resolvedPlanPath": str(tmp_path / "plan.json"), "providers": [{
                 "providerId": "operand", "dimensions": ["logical_operands"],
@@ -130,6 +131,8 @@ def test_incomplete_authority_is_inconclusive_not_semantic_failure(tmp_path):
         fragment_id="fragment:1", preservation_mode=PreservationMode.ARCHITECTURE_EQUIVALENT,
         l2_authority_identity=identity, effect_relation_set_identity=identity,
         l2_authority_complete=False,
+        l2_semantic_profile_identity=profile["profileIdentity"],
+        l2_pattern_kind=profile["patternKind"],
     )
     observation = SimpleNamespace(identity=_digest("observation"))
     result = registry.validator_for(ValidationLevel.L2)(
