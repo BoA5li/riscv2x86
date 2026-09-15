@@ -468,6 +468,13 @@ class L2AuthoritySidecar:
         known_effects = {x.effect_id for x in self.source_effects}
         if any(x.source_effect_id not in known_effects for x in self.approved_effect_relations):
             raise ValueError("effect relation names an unknown source effect")
+        if any(x.before_effect_id not in known_effects or x.after_effect_id not in known_effects
+               for x in self.ordering):
+            raise ValueError("ordering authority names an unknown source effect")
+        if any(edge.before not in known_effects or edge.after not in known_effects
+               for relation in self.approved_effect_relations
+               for edge in relation.ordering_requirements):
+            raise ValueError("approved ordering relation names an unknown source effect")
         runtime_ids = {x.runtime_contract_id for x in self.runtime_contracts}
         if any(x.relation_kind == "runtime_mediated" and x.runtime_contract_id not in runtime_ids
                for x in self.approved_effect_relations):

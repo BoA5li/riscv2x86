@@ -16,6 +16,7 @@ from .l2_authority import (
     L2AuthorityProducer,
     L2AuthoritySidecar,
     L2OperandAuthority,
+    L2OrderingAuthority,
     L2SourceEffectAuthority,
 )
 from .l2_control_flow import (
@@ -25,6 +26,10 @@ from .l2_control_flow import (
 from .l2_memory_object import (
     bind_memory_object_authority,
     memory_proof_facts_from_dict,
+)
+from .l2_fence_ordering import (
+    approved_fence_relations,
+    fence_proof_facts_from_dict,
 )
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 
@@ -290,6 +295,50 @@ def _memory_authority(
     )
 
 
+def _fence_authority(
+    finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
+    producer_digest: str,
+) -> L2AuthoritySidecar | None:
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
+        return None
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    raw_profile, raw_facts = finding.get("l2SemanticProfile"), approval.get("l2FenceProofFacts")
+    matches = [item for item in functions
+               if item.get("name") == fragment.get("enclosingFunction")]
+    if (approval.get("proofStatus") != "approved" or not fragment_id or len(matches) != 1
+            or not isinstance(raw_profile, Mapping) or not isinstance(raw_facts, Mapping)):
+        return None
+    function = matches[0]
+    if function.get("arity") != 0 or function.get("returnType") != "void":
+        return None
+    try:
+        profile = l2_fragment_semantic_profile_from_dict(
+            raw_profile, expected_fragment_id=fragment_id)
+        facts = fence_proof_facts_from_dict(raw_facts)
+    except ValueError:
+        return None
+    if (profile.pattern_kind is not L2PatternKind.FENCE or facts.fragment_id != fragment_id
+            or not facts.complete
+            or approval.get("rendererContractId") != facts.target_contract_id
+            or approval.get("rendererVersion") != facts.target_contract_version):
+        return None
+    relations = approved_fence_relations(facts)
+    effects = tuple(sorted((
+        L2SourceEffectAuthority(facts.before_effect_id, "ReadMemory", "ordering:before", True),
+        L2SourceEffectAuthority(facts.fence_effect_id, "Fence", "ordering:fence", True),
+        L2SourceEffectAuthority(facts.after_effect_id, "WriteMemory", "ordering:after", True),
+    ), key=lambda item: item.effect_id))
+    ordering = (L2OrderingAuthority(
+        "ordering:fence-domain", facts.before_effect_id, facts.after_effect_id, True),)
+    return L2AuthoritySidecar(
+        fragment_id, L2AuthorityProducer("translation-proof-sidecar",
+          "automatic-fence-ordering-authority", "v1", producer_digest),
+        _shell_identity(approval, fragment_id), (), (), effects, relations, (), (), True,
+        ordering=ordering,
+    )
+
+
 def materialize_automatic_l2_authority(
     report: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     frontend: str | Path,
@@ -303,7 +352,8 @@ def materialize_automatic_l2_authority(
     for finding in findings:
         if not isinstance(finding, dict):
             continue
-        sidecar = (_memory_authority(finding, functions, producer_digest)
+        sidecar = (_fence_authority(finding, functions, producer_digest)
+                   or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))
         if sidecar is None:
             continue

@@ -63,7 +63,7 @@ def _dimension_capability(dimension: L2Dimension, pattern: L2PatternKind) -> str
         if pattern is L2PatternKind.FENCE:
             return "ordering_observation"
         if pattern is L2PatternKind.INSTRUCTION_VISIBILITY_FENCE:
-            return "instruction_visibility_observation"
+            return "instruction_visibility"
     return _DIMENSION_CAPABILITY[dimension]
 
 

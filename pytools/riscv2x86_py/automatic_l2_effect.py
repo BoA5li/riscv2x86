@@ -22,6 +22,11 @@ from .l2_memory_object import (
     L2MemoryObservation, exact_memory_observations_match,
     memory_proof_facts_from_dict,
 )
+from .l2_fence_ordering import (
+    fence_ordering_events,
+    fence_ordering_observations_match,
+    fence_proof_facts_from_dict,
+)
 
 
 AUTO_L2_EFFECT_SCHEMA = "riscv2x86.auto-l2-effect-runner.v1"
@@ -123,6 +128,8 @@ def _approved_relations(
         "controlFlow": [item.to_dict() for item in authority.control_flow],
         "operands": [item.to_dict() for item in authority.operands],
         "memoryObjects": [item.to_dict() for item in authority.memory_objects],
+        "sourceEffects": [item.to_dict() for item in authority.source_effects],
+        "ordering": [item.to_dict() for item in authority.ordering],
     }, ""
 
 
@@ -543,6 +550,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 )
             control_kind = ""
             memory_facts = None
+            fence_facts = None
             if mode == "control-flow-functions":
                 controls = relation_authority.get("controlFlow")
                 if not isinstance(controls, list) or len(controls) != 1:
@@ -558,6 +566,25 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                         detail=json.dumps({"reasonCode":"L2_MEMORY_PROOF_FACTS_MISSING"}))
                 memory_facts = memory_proof_facts_from_dict(raw_memory)
+            if mode == "fence-functions":
+                approval = finding.get("approvalArtifact")
+                raw_fence = approval.get("l2FenceProofFacts") if isinstance(approval, Mapping) else None
+                if not isinstance(raw_fence, Mapping):
+                    return ValidationLayerResult(
+                        ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps({"reasonCode":"L2_FENCE_PROOF_FACTS_MISSING"}))
+                fence_facts = fence_proof_facts_from_dict(raw_fence)
+                if (approval.get("rendererContractId") != fence_facts.target_contract_id
+                        or approval.get("rendererVersion") != fence_facts.target_contract_version
+                        or getattr(artifact, "recipe_id", "") != fence_facts.target_contract_id):
+                    return ValidationLayerResult(
+                        ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps({"reasonCode":"L2_FENCE_TARGET_CONTRACT_MISMATCH"}))
+                raw_ordering = relation_authority.get("ordering")
+                if not isinstance(raw_ordering, list) or len(raw_ordering) != 1:
+                    return ValidationLayerResult(
+                        ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps({"reasonCode":"L2_FENCE_ORDERING_AUTHORITY_MISSING"}))
             wrapper = (_object_relative_memory_wrapper(
                            function, relation_authority, memory_facts)
                        if mode == "memory-object-functions" else
@@ -580,7 +607,18 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             right=_run((str(target_exe),),work,timeout)
             parser = (_branch_events if mode == "branch-domain-functions" else
                       _scalar_events if mode == "scalar-effect-functions" else None)
-            if mode == "memory-object-functions":
+            if mode == "fence-functions":
+                marker = str(function["name"]) + "=completed"
+                if left.stdout.splitlines().count(marker) != 1 or right.stdout.splitlines().count(marker) != 1:
+                    source_fence = target_fence = None
+                    source_events = target_events = None
+                else:
+                    source_fence = fence_ordering_events(fence_facts, approved, side="source")
+                    target_fence = fence_ordering_events(fence_facts, approved, side="target")
+                    source_events = [item.to_dict() for item in source_fence]
+                    target_events = [item.to_dict() for item in target_fence]
+                source_control = target_control = None
+            elif mode == "memory-object-functions":
                 source_memory = _object_relative_memory_events(
                     left.stdout, relation_authority, memory_facts, side="source")
                 target_memory = _object_relative_memory_events(
@@ -615,6 +653,11 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             elif mode == "memory-object-functions" and source_memory is not None and target_memory is not None:
                 matches, reason = exact_memory_observations_match(
                     source_memory, target_memory, approved,
+                )
+                status = ValidationStatus.VERIFIED if matches else ValidationStatus.FAILED
+            elif mode == "fence-functions" and source_fence is not None and target_fence is not None:
+                matches, reason = fence_ordering_observations_match(
+                    source_fence, target_fence, approved,
                 )
                 status = ValidationStatus.VERIFIED if matches else ValidationStatus.FAILED
             elif not _approved_effect_ids_match(

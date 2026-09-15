@@ -45,7 +45,7 @@ _CAPABILITIES = {
                                  "object_relative_memory_observation", "shell_observation"),
     L2PatternKind.FENCE: ("ordering_observation", "shell_observation"),
     L2PatternKind.INSTRUCTION_VISIBILITY_FENCE: (
-        "instruction_visibility_observation", "shell_observation"),
+        "instruction_visibility", "shell_observation"),
     L2PatternKind.PRIVILEGED_READ: ("privileged_state_observation", "shell_observation"),
     L2PatternKind.PRIVILEGED_WRITE: ("privileged_state_observation", "shell_observation"),
     L2PatternKind.COMPOSITE: ("composite_fragment_observation", "shell_observation"),

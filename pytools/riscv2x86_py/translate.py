@@ -49,6 +49,7 @@ from .source_model import build_source_semantic_model, SourceSemanticModel
 from .l2_semantic_profile import profile_from_source_model
 from .l2_control_flow import control_flow_proof_facts_from_source_model
 from .l2_memory_object import memory_proof_facts_from_source_model
+from .l2_fence_ordering import fence_proof_facts_from_source_model
 from .candidate_plans import candidate_generation_blockers, generate_candidate_plans
 from .phase6c_constraints import (
     FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT,
@@ -856,6 +857,11 @@ def _output(
             )
             if memory_facts is not None:
                 approval["l2MemoryProofFacts"] = memory_facts.to_dict()
+            fence_facts = fence_proof_facts_from_source_model(
+                context.fragment.id, context.sourceModel, approval,
+            )
+            if fence_facts is not None:
+                approval["l2FenceProofFacts"] = fence_facts.to_dict()
 
     privileged = (
         None if context.sourceModel is None

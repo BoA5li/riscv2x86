@@ -635,7 +635,7 @@ def prepare_automatic_inventory(
                 l2_environment_capabilities.update(("ordering_observation",
                                                     "shell_observation"))
                 l2_providers.append(provider(
-                    "automatic-l2-fence-effect-v2",
+                    "automatic-l2-fence-ordering-v1",
                     [L2Dimension.MEMORY_EFFECTS.value, L2Dimension.SHELL_SEMANTICS.value],
                     ["fence"],
                     ["ordering_observation", "shell_observation"],
