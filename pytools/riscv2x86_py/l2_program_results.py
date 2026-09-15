@@ -197,7 +197,7 @@ def _program_status(
             if fragment_id in item.member_fragment_ids
         }
         if result.status is L2DimensionStatus.VERIFIED and (
-                len(referenced) != 1 or not referenced.issubset(available)):
+                not referenced or not referenced.issubset(available)):
             statuses.append(L2DimensionStatus.INCONCLUSIVE)
         else:
             statuses.append(result.status)
