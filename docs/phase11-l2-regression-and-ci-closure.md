@@ -24,3 +24,6 @@ records absent privileged, concurrency, or controlled L3 infrastructure as
 `inconclusive` with a reason code. A skipped self-hosted job therefore cannot be
 interpreted as verified evidence. Atomic/litmus, privileged system/guest, and expanded
 differential campaigns remain isolated from ordinary CI and preserve their artifacts.
+
+Workflow evidence is attached to each Phase 11 branch run as JUnit and real-toolchain
+JSON artifacts.
