@@ -12,13 +12,17 @@ from riscv2x86_py.l2_validator_resolution import (
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
+from tests.l2_profile_fixtures import profile_dict
 
 
 def _requirement():
+    profile = profile_dict()
     return L2FragmentRequirement(
         "fragment:1", "sha256:" + "1" * 64,
         (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
         L2EligibilityStatus.ELIGIBLE,
+        profile["profileIdentity"], profile["patternKind"],
+        tuple(profile["requiredCapabilities"]),
     )
 
 
@@ -61,6 +65,7 @@ def _manifest(path):
         "fragment": {"id": "fragment:1", "inputs": [{"name": "lhs"}],
                      "outputs": [{"name": "out"}], "clobbers": []},
         "translationReasonCodes": [],
+        "l2SemanticProfile": profile_dict(),
     }]}
     value = classify_l2_requirements(report)
     path.write_text(json.dumps(value), encoding="utf-8")
@@ -81,8 +86,10 @@ def _registry(tmp_path, providers):
         "schemaVersion": "riscv2x86.validation-runtime-registry.v2",
         "version": "test-v1",
         "validators": {"L2": {"type": "requirement-driven", "config": {
-            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v1",
+            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
             "requirementManifestPath": str(manifest), "fragmentId": "fragment:1",
+            "semanticProfileSource": "requirement-manifest",
+            "providerSelectionUnit": "fragment",
             "executionProfile": "rv64gc-user-to-x86_64-user",
             "resolvedPlanPath": str(plan), "providers": providers,
         }}},
@@ -95,11 +102,14 @@ def _registry(tmp_path, providers):
 
 def _artifact():
     identity = "sha256:" + "b" * 64
+    profile = profile_dict()
     return SimpleNamespace(
         fragment_id="fragment:1", preservation_mode=PreservationMode.ARCHITECTURE_EQUIVALENT,
         shell_facts_identity=identity, proof_identity=identity,
         l2_authority_identity=identity, effect_relation_set_identity=identity,
         l2_authority_complete=True,
+        l2_semantic_profile_identity=profile["profileIdentity"],
+        l2_pattern_kind=profile["patternKind"],
     )
 
 
