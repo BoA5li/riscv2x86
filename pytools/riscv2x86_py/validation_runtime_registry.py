@@ -195,16 +195,21 @@ def _requirement_driven_l2_validator(
 ) -> LayerValidator:
     """Build an L2 runner whose exact children are selected per fragment."""
     expected = {"schemaVersion", "requirementManifestPath", "fragmentId",
+                "semanticProfileSource", "providerSelectionUnit",
                 "executionProfile", "resolvedPlanPath", "providers"}
     if set(config) != expected or config.get("schemaVersion") != L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA:
         raise ValueError("requirement-driven L2 registry config is malformed")
     manifest_path = config.get("requirementManifestPath")
     configured_fragment_id = config.get("fragmentId")
+    semantic_profile_source = config.get("semanticProfileSource")
+    provider_selection_unit = config.get("providerSelectionUnit")
     execution_profile = config.get("executionProfile")
     resolved_plan_path = config.get("resolvedPlanPath")
     raw_providers = config.get("providers")
     if (not isinstance(manifest_path, str) or not manifest_path
             or not isinstance(configured_fragment_id, str) or not configured_fragment_id
+            or semantic_profile_source != "requirement-manifest"
+            or provider_selection_unit != "fragment"
             or not isinstance(execution_profile, str) or not execution_profile
             or not isinstance(resolved_plan_path, str) or not resolved_plan_path
             or not isinstance(raw_providers, list)):
@@ -252,6 +257,23 @@ def _requirement_driven_l2_validator(
             detail = {"schemaVersion": "riscv2x86.validation-dimensions.v1",
                       "reasonCode": "l2.requirement.fragment-missing",
                       "fragmentId": fragment_id, "dimensions": {}}
+            return ValidationLayerResult(
+                kwargs["level"], ValidationStatus.INCONCLUSIVE,
+                detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
+            )
+        if requirement.semantic_profile_identity and (
+                getattr(artifact, "l2_semantic_profile_identity", "")
+                != requirement.semantic_profile_identity
+                or getattr(artifact, "l2_pattern_kind", "")
+                != requirement.pattern_kind
+                or plan.semantic_profile_identity != requirement.semantic_profile_identity
+                or plan.pattern_kind != requirement.pattern_kind
+                or plan.required_capabilities != requirement.required_capabilities):
+            detail = {
+                "schemaVersion": "riscv2x86.validation-dimensions.v1",
+                "reasonCode": "l2.semantic-profile.binding-mismatch",
+                "fragmentId": fragment_id, "dimensions": {},
+            }
             return ValidationLayerResult(
                 kwargs["level"], ValidationStatus.INCONCLUSIVE,
                 detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
