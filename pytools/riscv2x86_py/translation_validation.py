@@ -141,6 +141,8 @@ class TranslationArtifact:
     l2_authority_identity: str = ""
     effect_relation_set_identity: str = ""
     l2_authority_complete: bool = False
+    l2_semantic_profile_identity: str = ""
+    l2_pattern_kind: str = ""
 
     def __post_init__(self) -> None:
         required = (
@@ -155,6 +157,15 @@ class TranslationArtifact:
         for value in (self.l2_authority_identity, self.effect_relation_set_identity):
             if value and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
                 raise ValueError("translation artifact L2 authority identity is invalid")
+        if bool(self.l2_semantic_profile_identity) != bool(self.l2_pattern_kind):
+            raise ValueError("translation artifact L2 semantic profile binding is incomplete")
+        if (self.l2_semantic_profile_identity
+                and re.fullmatch(r"sha256:[0-9a-f]{64}",
+                                 self.l2_semantic_profile_identity) is None):
+            raise ValueError("translation artifact L2 semantic profile identity is invalid")
+        if self.l2_pattern_kind:
+            from .l2_semantic_profile import L2PatternKind
+            L2PatternKind(self.l2_pattern_kind)
         if self.l2_authority_complete and not (
                 self.l2_authority_identity and self.effect_relation_set_identity):
             raise ValueError("complete translation L2 authority is missing identities")
@@ -570,11 +581,15 @@ def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArt
         "semantic_class", "target_route",
         "l2_authority_identity", "effect_relation_set_identity",
         "l2_authority_complete",
+        "l2_semantic_profile_identity", "l2_pattern_kind",
     }
     legacy_fields = fields - {
         "l2_authority_identity", "effect_relation_set_identity", "l2_authority_complete",
+        "l2_semantic_profile_identity", "l2_pattern_kind",
     }
-    if frozenset(data) not in {frozenset(fields), frozenset(legacy_fields)}:
+    authority_fields = fields - {"l2_semantic_profile_identity", "l2_pattern_kind"}
+    if frozenset(data) not in {
+            frozenset(fields), frozenset(authority_fields), frozenset(legacy_fields)}:
         _strict_fields(data, fields, "translation artifact")
     ignored = data.get("ignored_source_state")
     if not isinstance(ignored, list) or not all(isinstance(item, str) for item in ignored):
@@ -598,6 +613,8 @@ def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArt
         l2_authority_identity=str(data.get("l2_authority_identity", "")),
         effect_relation_set_identity=str(data.get("effect_relation_set_identity", "")),
         l2_authority_complete=bool(data.get("l2_authority_complete", False)),
+        l2_semantic_profile_identity=str(data.get("l2_semantic_profile_identity", "")),
+        l2_pattern_kind=str(data.get("l2_pattern_kind", "")),
     )
 
 
