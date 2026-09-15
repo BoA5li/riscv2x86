@@ -67,7 +67,7 @@ versioned requirement manifest after translation and resolves providers per frag
   "L2": {
     "type": "requirement-driven",
     "config": {
-      "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v1",
+      "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
       "requirementManifestPath": "${TRANSLATED_REPORT}.l2-requirements.json",
       "fragmentId": "${FRAGMENT_ID}",
       "executionProfile": "rv64gc-user-to-x86_64-user",
@@ -81,7 +81,7 @@ versioned requirement manifest after translation and resolves providers per frag
 Providers declare canonical dimensions, a registered validator type, and one of
 `explicit`, `automatic`, or `runtime_adapter`.  Resolution priority is in that order.
 Every eligible fragment receives a content-addressed
-`riscv2x86.l2-resolved-execution-plan.v1`; missing or ambiguous bindings remain in the plan
+`riscv2x86.l2-resolved-execution-plan.v2`; missing or ambiguous bindings remain in the plan
 as `not_run`/`inconclusive` and prevent L2 verification.  A provider may cover multiple
 dimensions and is executed once per attempt.  Additional providers can be registered without
 changing the evaluator or paper aggregator.  Source-bound explicit provider manifests may be
