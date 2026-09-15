@@ -7,9 +7,11 @@ import pytest
 
 from riscv2x86_py.l2_eligibility import (
     L2EligibilityClassifier, load_l2_requirement_manifest,
-    migrate_l2_requirement_v1_to_v2,
+    migrate_l2_requirement_v1_to_v3,
 )
 from riscv2x86_py.l2_dimensions import L2Dimension, parse_l2_dimension
+from riscv2x86_py.l2_semantic_profile import L2PatternKind
+from tests.l2_profile_fixtures import profile_dict
 
 
 def _identity(value):
@@ -18,7 +20,7 @@ def _identity(value):
 
 
 def _finding(*, outcome="emitted", reasons=(), fragment=None, privileged=None):
-    return {
+    result = {
         "translationOutcome": outcome,
         "translationReasonCodes": list(reasons),
         "fragment": fragment if fragment is not None else {
@@ -29,11 +31,20 @@ def _finding(*, outcome="emitted", reasons=(), fragment=None, privileged=None):
         "privilegedOutputManifest": privileged or {},
         "buildFamily": "",
     }
+    candidate_fragment = result.get("fragment")
+    if isinstance(candidate_fragment, dict):
+        kind = (L2PatternKind.COMPOSITE if reasons or privileged
+                or candidate_fragment.get("controlFlowSurface") != "StraightLine"
+                else L2PatternKind.SCALAR)
+        result["l2SemanticProfile"] = profile_dict(
+            candidate_fragment.get("id", "fragment:1"), kind,
+        )
+    return result
 
 
 def test_register_only_fragment_plans_operand_and_shell_composite():
     item = L2EligibilityClassifier().classify(_finding(), 0)
-    assert item["schemaVersion"] == "riscv2x86.l2-fragment-requirement.v2"
+    assert item["schemaVersion"] == "riscv2x86.l2-fragment-requirement.v3"
     assert item["eligibilityStatus"] == "eligible"
     assert item["disposition"] == "not_run"
     assert item["requiredDimensions"] == ["logical_operands", "shell_semantics"]
@@ -138,9 +149,9 @@ def test_v1_manifest_requires_explicit_migration_and_records_provenance(tmp_path
     path.write_text(json.dumps(legacy), encoding="utf-8")
     with pytest.raises(ValueError, match="schema"):
         load_l2_requirement_manifest(path)
-    migrated = migrate_l2_requirement_v1_to_v2(legacy)
+    migrated = migrate_l2_requirement_v1_to_v3(legacy)
     assert migrated["sourceSchemaVersion"] == "riscv2x86.l2-requirement-manifest.v1"
-    assert migrated["canonicalizationVersion"] == "l2-dimension-migration-v1"
+    assert migrated["canonicalizationVersion"] == "l2-semantic-profile-migration-v1"
     assert migrated["requirements"][0]["requiredDimensions"] == [
         "logical_operands", "shell_semantics",
     ]
