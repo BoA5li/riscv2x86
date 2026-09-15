@@ -20,9 +20,9 @@ from .l2_program_results import ProgramExecutionEvidence
 
 
 PAPER_CORPUS_SCHEMA = "riscv2x86.paper-corpus-manifest.v1"
-PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v3"
+PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v4"
 PAPER_EXECUTION_SCHEMA = "riscv2x86.paper-corpus-execution.v1"
-PAPER_POLICY = "riscv2x86.paper-metrics.v1"
+PAPER_POLICY = "riscv2x86.paper-metrics.v2"
 _SHA_PREFIX = "sha256:"
 _COVERAGE = ("recognition", "modeling", "routing", "candidate", "proof", "rendering")
 _LEVELS = ("L0", "L1", "L2", "L3")
@@ -306,20 +306,21 @@ def _tree_identity(root: Path) -> str:
 
 def _validation_maps(
     evaluation: Mapping[str, object], selected_fragment_ids: set[str],
-) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, dict[str, bool]]]:
     attempts = [item for item in evaluation["attempts"] if isinstance(item, Mapping)
                 and (not selected_fragment_ids or item.get("fragmentId") in selected_fragment_ids)]
     if not attempts:
-        return {}, {}, {}
+        return {}, {}, {}, {}
     maps = []
     dimension_maps = []
     scope_maps = []
+    execution_maps = []
     for attempt in attempts:
         validation = attempt.get("validation")
         if not isinstance(validation, Mapping) or not isinstance(validation.get("layers"), list):
             maps.append({})
-            dimension_maps.append({}); scope_maps.append({}); continue
-        layer_map = {}; dimensions = {}; scopes = {}
+            dimension_maps.append({}); scope_maps.append({}); execution_maps.append({}); continue
+        layer_map = {}; dimensions = {}; scopes = {}; execution = {}
         for item in validation["layers"]:
             if not isinstance(item, Mapping):
                 continue
@@ -344,6 +345,11 @@ def _validation_maps(
                     for result in fragment_result.dimension_results:
                         dimensions[result.dimension.value] = result.status.value
                         scopes[result.dimension.value] = result.claim_scope.value
+                        execution[result.dimension.value] = {
+                            "attempted": result.status.value not in {"not_run", "not_applicable"},
+                            "complete": (result.status.value in {"verified", "failed"}
+                                         and bool(result.evidence_identity)),
+                        }
                 elif (item.get("level") != "L2"
                       and payload.get("schemaVersion") == "riscv2x86.validation-dimensions.v1"):
                     raw_dimensions = payload.get("dimensions")
@@ -370,6 +376,7 @@ def _validation_maps(
             if item.get("level") == "L2" and not typed_l2:
                 layer_map["L2"] = "inconclusive"
         maps.append(layer_map); dimension_maps.append(dimensions); scope_maps.append(scopes)
+        execution_maps.append(execution)
     result = {}
     for level in _LEVELS:
         if not any(level in item for item in maps):
@@ -394,7 +401,15 @@ def _validation_maps(
             if L2ClaimScope.APPROVED_FUNCTIONAL_RELATION.value in values
             else L2ClaimScope.NONE.value
         )
-    return result, dimension_result, scope_result
+    execution_result = {}
+    for dimension in sorted(set(name for item in execution_maps for name in item)):
+        values = [item.get(dimension, {"attempted": False, "complete": False})
+                  for item in execution_maps]
+        execution_result[dimension] = {
+            "attempted": any(item["attempted"] for item in values),
+            "complete": all(item["complete"] for item in values),
+        }
+    return result, dimension_result, scope_result, execution_result
 
 
 def _stage_facts(attempt: object | None) -> dict[str, bool]:
@@ -446,6 +461,8 @@ def _cluster_metric(rows: Sequence[Mapping[str, object]], predicate, denominator
 
 def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory: str | Path) -> dict[str, object]:
     base = Path(manifest_directory).resolve(); fragments = []; units = []; errors = []; environments = {}
+    fragment_validation: dict[str, dict[str, object]] = {}
+    eligibility_classification: dict[str, str] = {}
     seen_oracles: set[str] = set()
     l2_execution_sample_keys: set[tuple[str, str, str]] = set()
     for program in manifest.programs:
@@ -512,8 +529,18 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                         raise ValueError("program validation selected individual attempts")
                 elif actual_attempts != expected_attempts:
                     raise ValueError("evaluation selected attempts do not match oracle group")
-                layers, dimension_statuses, dimension_scopes = _validation_maps(evaluation, selected)
+                layers, dimension_statuses, dimension_scopes, dimension_execution = _validation_maps(
+                    evaluation, selected,
+                )
                 linkage = evaluation.get("translationEvaluationLink")
+                if isinstance(linkage, Mapping) and isinstance(linkage.get("l2Requirements"), Mapping):
+                    from .l2_eligibility import validate_l2_requirement_manifest
+                    requirement_manifest = linkage["l2Requirements"]
+                    validate_l2_requirement_manifest(requirement_manifest)
+                    for requirement in requirement_manifest["requirements"]:
+                        eligibility_classification[str(requirement["fragmentId"])] = str(
+                            requirement["eligibilityStatus"]
+                        )
                 raw_execution_evidence = (
                     linkage.get("programExecutionEvidence", [])
                     if isinstance(linkage, Mapping) else []
@@ -550,7 +577,8 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                 errors.append({"programId": program.program_id, "evaluationId": declaration.evaluation_id,
                                "reasonCode": "paper.evaluation-invalid",
                                "detail": f"{type(exc).__name__}: {exc}"})
-                layers = {}; dimension_statuses = {}; dimension_scopes = {}; status = "invalid"; reason_codes = ["paper.evaluation-invalid"]
+                layers = {}; dimension_statuses = {}; dimension_scopes = {}; dimension_execution = {}
+                status = "invalid"; reason_codes = ["paper.evaluation-invalid"]
             required_dimensions = sorted(set(
                 dimension for fragment in program.fragments
                 if not declaration.oracle_fragment_ids or fragment.oracle_fragment_id in declaration.oracle_fragment_ids
@@ -569,6 +597,73 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                           },
                           "reasonCodes": sorted(set(str(item) for item in reason_codes if str(item))),
                           "environmentId": declaration.expected_environment_id})
+            covered_oracles = (
+                declaration.oracle_fragment_ids or
+                tuple(item.oracle_fragment_id for item in program.fragments)
+            )
+            for oracle_id in covered_oracles:
+                fragment_validation[oracle_id] = {
+                    "layers": dict(layers), "dimensions": dict(dimension_statuses),
+                    "scopes": dict(dimension_scopes), "execution": dict(dimension_execution),
+                }
+    for fragment in fragments:
+        required = tuple(fragment["requiredDimensions"])
+        classifier_status = eligibility_classification.get(str(fragment["fragmentId"]), "")
+        # Typed L2 evidence is itself bound to a requirement identity, and thus
+        # proves classification for older evaluation fixtures without linkage.
+        classified = bool(fragment["recognition"] and (
+            classifier_status or fragment["oracleFragmentId"] in fragment_validation
+        ))
+        eligible = classified and (
+            classifier_status == "eligible" if classifier_status else bool(required)
+        )
+        validation = fragment_validation.get(str(fragment["oracleFragmentId"]), {})
+        layers = validation.get("layers", {}) if isinstance(validation, Mapping) else {}
+        statuses = validation.get("dimensions", {}) if isinstance(validation, Mapping) else {}
+        scopes = validation.get("scopes", {}) if isinstance(validation, Mapping) else {}
+        execution = validation.get("execution", {}) if isinstance(validation, Mapping) else {}
+        dimension_records = {}
+        for dimension in required:
+            execution_record = execution.get(dimension, {}) if isinstance(execution, Mapping) else {}
+            dimension_records[dimension] = {
+                "status": statuses.get(dimension, "not_run") if isinstance(statuses, Mapping) else "not_run",
+                "claimScope": scopes.get(dimension, L2ClaimScope.NONE.value)
+                if isinstance(scopes, Mapping) else L2ClaimScope.NONE.value,
+                "attempted": bool(execution_record.get("attempted", False))
+                if isinstance(execution_record, Mapping) else False,
+                "complete": bool(execution_record.get("complete", False))
+                if isinstance(execution_record, Mapping) else False,
+            }
+        attempted = any(item["attempted"] for item in dimension_records.values())
+        complete = bool(required) and all(item["complete"] for item in dimension_records.values())
+        architectural = complete and all(
+            item["status"] == "verified" and
+            item["claimScope"] == L2ClaimScope.ARCHITECTURAL.value
+            for item in dimension_records.values()
+        )
+        functional = complete and all(
+            item["status"] == "verified" and
+            item["claimScope"] == L2ClaimScope.APPROVED_FUNCTIONAL_RELATION.value
+            for item in dimension_records.values()
+        )
+        diagnostic = any(
+            item["status"] == "verified" and
+            item["claimScope"] == L2ClaimScope.DIAGNOSTIC_ONLY.value
+            for item in dimension_records.values()
+        )
+        fragment.update({
+            "l2EligibilityClassified": classified,
+            "l2EligibilityStatus": (classifier_status if classified and classifier_status
+                                    else "eligible" if eligible else
+                                    "not_applicable" if classified else "unclassified"),
+            "l2Eligible": eligible, "l2Attempted": attempted,
+            "l2CompleteExecution": complete,
+            "l2ArchitecturalVerified": architectural,
+            "l2FunctionalRelationVerified": functional,
+            "l2DiagnosticPassed": diagnostic,
+            "l2Layers": dict(layers) if isinstance(layers, Mapping) else {},
+            "l2DimensionRecords": dimension_records,
+        })
     metrics = {}
     for name in _COVERAGE:
         metrics[name + "Coverage"] = _cluster_metric(
@@ -594,15 +689,85 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
             units, verified, conditional,
             manifest.bootstrap, level + ":conditional",
         )
+    metrics["l2EligibilityCoverage"] = _cluster_metric(
+        fragments, lambda row: row["l2EligibilityClassified"], lambda _row: True,
+        manifest.bootstrap, "L2:eligibility-coverage",
+    )
+    metrics["l2AttemptedCoverage"] = _cluster_metric(
+        fragments, lambda row: row["l2Attempted"], lambda row: row["l2Eligible"],
+        manifest.bootstrap, "L2:attempted-coverage",
+    )
+    metrics["l2CompleteExecutionCoverage"] = _cluster_metric(
+        fragments, lambda row: row["l2CompleteExecution"], lambda row: row["l2Eligible"],
+        manifest.bootstrap, "L2:complete-execution-coverage",
+    )
+    metrics["l2UnconditionalArchitecturalVerifiedRate"] = _cluster_metric(
+        fragments, lambda row: row["l2ArchitecturalVerified"], lambda _row: True,
+        manifest.bootstrap, "L2:unconditional-architectural",
+    )
+    metrics["l2ConditionalArchitecturalVerifiedRate"] = _cluster_metric(
+        fragments, lambda row: row["l2ArchitecturalVerified"],
+        lambda row: (row["l2Eligible"] and row["l2CompleteExecution"] and
+                     row["l2Layers"].get("L0") == "verified" and
+                     row["l2Layers"].get("L1") == "verified"),
+        manifest.bootstrap, "L2:conditional-architectural",
+    )
+    metrics["l2VerifiedAmongEligible"] = _cluster_metric(
+        fragments, lambda row: row["l2ArchitecturalVerified"],
+        lambda row: row["l2Eligible"], manifest.bootstrap, "L2:among-eligible",
+    )
+    metrics["l2InconclusiveRate"] = _cluster_metric(
+        fragments,
+        lambda row: row["l2Attempted"] and not row["l2CompleteExecution"],
+        lambda row: row["l2Eligible"], manifest.bootstrap, "L2:inconclusive",
+    )
+    metrics["needsRouteOrUnsupportedRate"] = _cluster_metric(
+        fragments, lambda row: row["translationOutcome"] in {"needs_route", "unsupported"},
+        lambda _row: True, manifest.bootstrap, "translation:needs-route-unsupported",
+    )
     dimensions = {}
     for dimension, level in _DIMENSION_LEVEL.items():
-        dimensions[dimension] = _cluster_metric(
-            units, lambda row, dimension=dimension: (
-                row["dimensions"].get(dimension) == "verified" and
-                row["dimensionClaimScopes"].get(dimension) == L2ClaimScope.ARCHITECTURAL.value),
-            lambda row, dimension=dimension: dimension in row["requiredDimensions"],
-            manifest.bootstrap, "dimension:" + dimension,
-        )
+        if level == "L2":
+            dimensions[dimension] = _cluster_metric(
+                fragments, lambda row, dimension=dimension: (
+                    row["l2DimensionRecords"].get(dimension, {}).get("status") == "verified" and
+                    row["l2DimensionRecords"].get(dimension, {}).get("claimScope") ==
+                        L2ClaimScope.ARCHITECTURAL.value),
+                lambda row, dimension=dimension: dimension in row["requiredDimensions"],
+                manifest.bootstrap, "dimension:" + dimension,
+            )
+        else:
+            dimensions[dimension] = _cluster_metric(
+                units, lambda row, dimension=dimension: row["dimensions"].get(dimension) == "verified",
+                lambda row, dimension=dimension: dimension in row["requiredDimensions"],
+                manifest.bootstrap, "dimension:" + dimension,
+            )
+    l2_dimension_summaries = {}
+    for dimension in (item.value for item in L2Dimension):
+        records = [fragment["l2DimensionRecords"][dimension]
+                   for fragment in fragments
+                   if dimension in fragment["requiredDimensions"]]
+        l2_dimension_summaries[dimension] = {
+            "dimension": dimension,
+            "required": len(records),
+            "attempted": sum(bool(item["attempted"]) for item in records),
+            "verifiedArchitectural": sum(
+                item["status"] == "verified" and
+                item["claimScope"] == L2ClaimScope.ARCHITECTURAL.value
+                for item in records),
+            "verifiedFunctionalRelation": sum(
+                item["status"] == "verified" and
+                item["claimScope"] == L2ClaimScope.APPROVED_FUNCTIONAL_RELATION.value
+                for item in records),
+            "diagnosticPassed": sum(
+                item["status"] == "verified" and
+                item["claimScope"] == L2ClaimScope.DIAGNOSTIC_ONLY.value
+                for item in records),
+            "failed": sum(item["status"] == "failed" for item in records),
+            "inconclusive": sum(item["status"] == "inconclusive" for item in records),
+            "notRun": sum(item["status"] == "not_run" for item in records),
+            "notApplicable": sum(item["status"] == "not_applicable" for item in records),
+        }
     metrics["l2ApprovedFunctionalRelationVerifiedRate"] = _cluster_metric(
         units,
         lambda row: bool(row["requiredDimensions"]) and all(
@@ -621,6 +786,14 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
             for dimension in row["requiredDimensions"]),
         lambda row: bool(row["requiredDimensions"]), manifest.bootstrap,
         "L2:diagnostic-execution",
+    )
+    metrics["l2ApprovedFunctionalRelationRate"] = _cluster_metric(
+        fragments, lambda row: row["l2FunctionalRelationVerified"],
+        lambda row: row["l2Eligible"], manifest.bootstrap, "L2:functional-fragment",
+    )
+    metrics["l2DiagnosticPassedRate"] = _cluster_metric(
+        fragments, lambda row: row["l2DiagnosticPassed"],
+        lambda row: row["l2Eligible"], manifest.bootstrap, "L2:diagnostic-fragment",
     )
     outcomes: dict[str, int] = {}
     for row in fragments:
@@ -664,14 +837,74 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
     for row in (*fragments, *units):
         for reason in row["reasonCodes"]:
             reasons[reason] = reasons.get(reason, 0) + 1
+    metric_definitions = {
+        "l2EligibilityCoverage": {"unit": "fragment", "denominator": "all independent oracle expected fragments",
+            "numerator": "recognized fragments with a complete eligibility classification"},
+        "l2AttemptedCoverage": {"unit": "fragment", "denominator": "L2 eligible fragments",
+            "numerator": "fragments for which at least one required-dimension validator was invoked"},
+        "l2CompleteExecutionCoverage": {"unit": "fragment", "denominator": "L2 eligible fragments",
+            "numerator": "fragments whose every required dimension has verified-or-failed comparison evidence"},
+        "l2UnconditionalArchitecturalVerifiedRate": {"unit": "fragment", "denominator": "all corpus oracle fragments",
+            "numerator": "architectural L2 verified fragments"},
+        "l2ConditionalArchitecturalVerifiedRate": {"unit": "fragment", "denominator": "L0 and L1 verified, L2 eligible fragments with complete required-dimension results",
+            "numerator": "architectural L2 verified fragments in that denominator"},
+        "l2VerifiedAmongEligible": {"unit": "fragment", "denominator": "L2 eligible fragments",
+            "numerator": "architectural L2 verified fragments"},
+        "l2ApprovedFunctionalRelationRate": {"unit": "fragment", "denominator": "L2 eligible fragments",
+            "numerator": "approved functional-relation verified fragments"},
+        "l2DiagnosticPassedRate": {"unit": "fragment", "denominator": "L2 eligible fragments",
+            "numerator": "fragments with at least one diagnostic-only verified required dimension"},
+        "l2InconclusiveRate": {"unit": "fragment", "denominator": "L2 eligible fragments",
+            "numerator": "attempted fragments without complete required-dimension comparison evidence"},
+        "needsRouteOrUnsupportedRate": {"unit": "fragment", "denominator": "all corpus oracle fragments",
+            "numerator": "needs_route or unsupported translation outcomes"},
+    }
+    for definition in metric_definitions.values():
+        definition["bootstrapCluster"] = "program/entry"
+    for name in _COVERAGE:
+        metric_definitions[name + "Coverage"] = {
+            "unit": "fragment", "denominator": "all corpus oracle fragments",
+            "numerator": "oracle fragments completing the " + name + " stage",
+            "bootstrapCluster": "program/entry",
+        }
+    for level in _LEVELS:
+        metric_definitions.setdefault(level.lower() + "VerifiedRate", {
+            "unit": "program/group", "denominator": "declared validation units containing " + level,
+            "numerator": level + " verified units", "bootstrapCluster": "program/entry",
+        })
+        metric_definitions.setdefault(level.lower() + "ConditionalVerifiedRate", {
+            "unit": "program/group", "denominator": "declared " + level +
+                " units whose preceding validation layers are verified",
+            "numerator": level + " verified units", "bootstrapCluster": "program/entry",
+        })
+    metric_definitions.setdefault("l2ApprovedFunctionalRelationVerifiedRate", {
+        "unit": "program/group", "denominator": "declared validation units containing L2",
+        "numerator": "units with every required dimension verified under an approved functional relation",
+        "bootstrapCluster": "program/entry",
+    })
+    metric_definitions.setdefault("l2DiagnosticExecutionCoverage", {
+        "unit": "program/group", "denominator": "declared units requiring at least one L2 dimension",
+        "numerator": "units with a diagnostic-only verified required dimension",
+        "bootstrapCluster": "program/entry",
+    })
     result = {"schemaVersion": PAPER_REPORT_SCHEMA, "metricPolicy": PAPER_POLICY,
               "corpusId": manifest.corpus_id, "corpusVersion": manifest.corpus_version,
-              "statisticalUnit": {"coverage": "oracle-fragment", "validation": "declared-validation-unit",
-                                  "bootstrap": "program-cluster"},
+              "statisticalUnit": {"translationEligibilityCoverage": "oracle-fragment",
+                                  "dimensionEvidence": "oracle-fragment",
+                                  "programDifferential": "declared-program-or-group",
+                                  "concurrency": "contract-or-campaign",
+                                  "bootstrap": "program-or-entry-cluster"},
+              "metricDefinitions": metric_definitions,
+              "dimensionMetricDefinition": {
+                  "unit": "fragment", "denominator": "oracle fragments requiring the named dimension",
+                  "numerator": "verified architectural results for the named dimension",
+                  "bootstrapCluster": "program/entry",
+              },
               "integrityStatus": "failed" if errors else "verified", "integrityErrors": errors,
               "fragmentRecords": fragments, "validationUnitRecords": units,
               "l2ProgramExecutionSampleCount": len(l2_execution_sample_keys),
               "metrics": metrics, "dimensionMetrics": dimensions,
+              "l2DimensionSummaries": l2_dimension_summaries,
               "translationOutcomeBreakdown": dict(sorted(outcomes.items())),
               "categorySummaries": category_summaries,
               "reasonCodeBreakdown": [{"reasonCode": key, "count": reasons[key]} for key in sorted(reasons)],
@@ -704,6 +937,23 @@ def render_paper_outputs(result: Mapping[str, object]) -> dict[str, str]:
         for name, metric in values.items():
             estimate = "n/a" if metric["estimate"] is None else f"{metric['estimate']:.6f}"
             md.append(f"| {namespace}{name} | {estimate} | {metric['numerator']} | {metric['denominator']} | {metric['clusters']} |")
+    md.extend(["", "## Metric denominators", "",
+               "| Metric | Unit | Numerator | Denominator | Bootstrap cluster |",
+               "|---|---|---|---|---|"])
+    for name, definition in result["metricDefinitions"].items():
+        md.append(f"| {name} | {definition['unit']} | {definition['numerator']} | {definition['denominator']} | {definition['bootstrapCluster']} |")
+    dimension_definition = result["dimensionMetricDefinition"]
+    md.append(f"| dimension.* | {dimension_definition['unit']} | {dimension_definition['numerator']} | {dimension_definition['denominator']} | {dimension_definition['bootstrapCluster']} |")
+    md.extend(["", "## L2 dimension dispositions", "",
+               "| Dimension | Required | Attempted | Architectural | Functional | Diagnostic | Failed | Inconclusive | Not run | Not applicable |",
+               "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"])
+    for item in result["l2DimensionSummaries"].values():
+        md.append(
+            f"| {item['dimension']} | {item['required']} | {item['attempted']} | "
+            f"{item['verifiedArchitectural']} | {item['verifiedFunctionalRelation']} | "
+            f"{item['diagnosticPassed']} | {item['failed']} | {item['inconclusive']} | "
+            f"{item['notRun']} | {item['notApplicable']} |"
+        )
     return {"paper-evaluation.json": json.dumps(result, indent=2, sort_keys=True) + "\n",
             "paper-metrics.csv": metric_buffer.getvalue(), "translation-outcomes.csv": outcome_buffer.getvalue(),
             "failure-breakdown.csv": reason_buffer.getvalue(),

@@ -45,10 +45,11 @@ def test_paper_maps_do_not_accept_legacy_untyped_l2_success():
             }),
         }]},
     }]}
-    levels, dimensions, scopes = _validation_maps(evaluation, {"fragment:1"})
+    levels, dimensions, scopes, execution = _validation_maps(evaluation, {"fragment:1"})
     assert levels["L2"] == "inconclusive"
     assert dimensions == {}
     assert scopes == {}
+    assert execution == {}
 
 
 def _attempt(fragment: str, *, emitted: bool) -> TranslationAttempt:
@@ -170,9 +171,22 @@ def test_paper_metrics_use_oracle_denominators_and_program_cluster_bootstrap(tmp
     assert result["metrics"]["modelingCoverage"]["estimate"] == 0.5
     assert result["metrics"]["candidateCoverage"]["estimate"] == 0.5
     assert result["metrics"]["l2VerifiedRate"]["estimate"] == 1.0
-    assert result["dimensionMetrics"]["shell_semantics"]["estimate"] == 1.0
+    assert result["metrics"]["l2EligibilityCoverage"]["denominator"] == 2
+    assert result["metrics"]["l2EligibilityCoverage"]["numerator"] == 1
+    assert result["metrics"]["l2AttemptedCoverage"]["denominator"] == 1
+    assert result["metrics"]["l2AttemptedCoverage"]["numerator"] == 1
+    assert result["metrics"]["l2CompleteExecutionCoverage"]["numerator"] == 1
+    assert result["metrics"]["l2UnconditionalArchitecturalVerifiedRate"]["denominator"] == 2
+    assert result["metrics"]["l2UnconditionalArchitecturalVerifiedRate"]["numerator"] == 1
+    assert result["dimensionMetrics"]["shell_semantics"]["estimate"] == 0.5
     assert result["metrics"]["candidateCoverage"]["clusters"] == 1
     assert result["translationOutcomeBreakdown"] == {"emitted": 1, "unsupported": 1}
+    assert result["statisticalUnit"]["bootstrap"] == "program-or-entry-cluster"
+    assert all(item["denominator"] for item in result["metricDefinitions"].values())
+    assert set(result["metrics"]) == set(result["metricDefinitions"])
+    markdown = render_paper_outputs(result)["paper-tables.md"]
+    assert "## Metric denominators" in markdown
+    assert "all corpus oracle fragments" in markdown
     assert set(render_paper_outputs(result)) == {"paper-evaluation.json", "paper-metrics.csv",
                                                   "translation-outcomes.csv",
                                                   "failure-breakdown.csv",
@@ -218,13 +232,22 @@ def test_bootstrap_resamples_program_clusters_not_fragments():
     assert metric["bootstrapUnit"] == "program"
 
 
+def test_ten_fragments_from_one_program_are_one_bootstrap_cluster():
+    rows = [{"programId": "p0", "ok": index < 7} for index in range(10)]
+    metric = _cluster_metric(rows, lambda row: row["ok"], lambda _row: True,
+                             Bootstrap(17, 200, 0.95), "ten-fragment-cluster")
+    assert metric["numerator"] == 7
+    assert metric["denominator"] == 10
+    assert metric["clusters"] == 1
+
+
 def test_generic_l2_success_does_not_invent_missing_dimension_evidence(tmp_path):
     value = _manifest(tmp_path)
     attempt = load_translation_attempt_archive(tmp_path / "attempts.json").attempts[0]
     _evaluation(tmp_path / "result.json", attempt, dimensions=("logical_operands",))
     result = aggregate_paper_corpus(paper_manifest_from_dict(value), manifest_directory=tmp_path)
     assert result["metrics"]["l2VerifiedRate"]["estimate"] == 0.0
-    assert result["dimensionMetrics"]["logical_operands"]["estimate"] == 1.0
+    assert result["dimensionMetrics"]["logical_operands"]["estimate"] == 0.5
     assert result["dimensionMetrics"]["shell_semantics"]["estimate"] == 0.0
 
 
@@ -239,8 +262,10 @@ def test_functional_relation_is_excluded_from_architectural_l2_numerator(tmp_pat
         paper_manifest_from_dict(value), manifest_directory=tmp_path,
     )
     assert result["metrics"]["l2VerifiedRate"]["numerator"] == 0
+    assert result["metrics"]["l2UnconditionalArchitecturalVerifiedRate"]["numerator"] == 0
     assert result["metrics"]["l2ApprovedFunctionalRelationVerifiedRate"]["numerator"] == 1
     assert result["dimensionMetrics"]["logical_operands"]["numerator"] == 0
+    assert result["l2DimensionSummaries"]["logical_operands"]["verifiedFunctionalRelation"] == 1
 
 
 @pytest.mark.parametrize("dimension", ["operand", "operands", "effects", "shell", "unknown"])

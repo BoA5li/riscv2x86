@@ -55,6 +55,9 @@ rates. Canonical L2 dimensions are `logical_operands`, `memory_effects`, `contro
 `shell_semantics`, `trap_semantics`, `privileged_state`, and `atomic_memory_order`;
 L3 uses experiment contract. A dimension is verified only when a named composite validator
 produces its own evidence. A generic L2 success is not expanded into dimension successes.
+The current `riscv2x86.paper-metrics.v2` policy closes L2 denominators over
+oracle fragments and records every denominator in JSON and Markdown; see
+`phase11-l2-paper-metric-closure.md`.
 
 The automatic path does not choose a fixed L2 mode before translation.  It consumes the
 versioned requirement manifest after translation and resolves providers per fragment:
