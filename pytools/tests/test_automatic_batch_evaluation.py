@@ -506,7 +506,7 @@ def test_inventory_loads_content_bound_explicit_l2_provider(tmp_path, monkeypatc
      "automatic-l2-control-flow-v1"),
     ({"name": "load", "arity": 1, "returnType": "uint64_t",
       "parameterTypes": ["uint64_t *"], "pointerParameters": [0]},
-     "automatic-l2-memory-effect-v2"),
+     "automatic-l2-memory-object-v1"),
 ])
 def test_inventory_registers_non_scalar_providers_by_capability(
     tmp_path, monkeypatch, function, expected_provider,
@@ -527,8 +527,16 @@ def test_inventory_registers_non_scalar_providers_by_capability(
     assert "automatic-l2-operand-v2" in providers
     assert expected_provider in providers
     assert providers["automatic-l2-operand-v2"]["supportedPatterns"] == [
-        "branch", "composite", "jump", "memory_load", "memory_store", "scalar",
+        "branch", "composite", "jump", "scalar",
     ]
+    if expected_provider == "automatic-l2-memory-object-v1":
+        assert providers[expected_provider]["supportedDimensions"] == [
+            "logical_operands", "memory_effects", "shell_semantics",
+        ]
+        assert providers[expected_provider]["requiredCapabilities"] == [
+            "logical_operand_observation", "object_relative_memory_observation",
+            "shell_observation",
+        ]
 
 
 def test_explicit_harness_cannot_escape_manifest_directory(tmp_path, monkeypatch):

@@ -22,10 +22,15 @@ from .l2_control_flow import (
     bind_control_flow_authority,
     control_flow_proof_facts_from_dict,
 )
+from .l2_memory_object import (
+    bind_memory_object_authority,
+    memory_proof_facts_from_dict,
+)
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
+_INTEGER_POINTER = re.compile(r"^(?:const |volatile )*(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)(?: const| volatile)*\s*\*$")
 
 
 def _identity(value: object) -> str:
@@ -201,6 +206,90 @@ def _scalar_authority(
     )
 
 
+def _memory_authority(
+    finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
+    producer_digest: str,
+) -> L2AuthoritySidecar | None:
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
+        return None
+    if (approval.get("proofStatus") != "approved"
+            or approval.get("architectureSemanticsPreserved") is False
+            or approval.get("shellSemanticsPreserved") is False):
+        return None
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    matches = [item for item in functions
+               if item.get("name") == fragment.get("enclosingFunction")]
+    raw_profile, raw_facts = finding.get("l2SemanticProfile"), approval.get("l2MemoryProofFacts")
+    if (not fragment_id or len(matches) != 1 or not isinstance(raw_profile, Mapping)
+            or not isinstance(raw_facts, Mapping)):
+        return None
+    function = matches[0]
+    boundary = function.get("l2OperandBoundary")
+    try:
+        profile = l2_fragment_semantic_profile_from_dict(
+            raw_profile, expected_fragment_id=fragment_id)
+        facts = memory_proof_facts_from_dict(raw_facts)
+    except ValueError:
+        return None
+    if (profile.pattern_kind not in {L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE}
+            or facts.fragment_id != fragment_id or not facts.complete
+            or not isinstance(boundary, Mapping) or boundary.get("complete") is not True):
+        return None
+    outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
+    declarations, asm_ids = boundary.get("declarations"), boundary.get("asmOperandDeclarationIds")
+    params = boundary.get("parameterDeclarationIds")
+    if (not isinstance(outputs, list) or not isinstance(inputs, list)
+            or not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
+            or not isinstance(params, list) or len(asm_ids) != len(outputs) + len(inputs)):
+        return None
+    raw_operands = [(item, "output") for item in outputs] + [(item, "input") for item in inputs]
+    operands = []
+    for index, ((raw, default_access), declaration_id) in enumerate(zip(raw_operands, asm_ids)):
+        declaration = declarations.get(declaration_id)
+        if not isinstance(raw, Mapping) or not isinstance(declaration, Mapping):
+            return None
+        type_name = str(declaration.get("type", ""))
+        is_pointer = bool(_INTEGER_POINTER.fullmatch(type_name.strip()))
+        width = 64 if is_pointer else _width(type_name)
+        signedness = "not_applicable" if is_pointer else _signedness(type_name)
+        if not width or (not is_pointer and signedness == "not_applicable"):
+            return None
+        access = "address" if index == facts.address_operand_index else default_access
+        operands.append(L2OperandAuthority(
+            f"{fragment_id}:{index}:{declaration_id}", index,
+            str(raw.get("symbolicName") or declaration.get("name") or f"operand{index}"),
+            access, "pointer" if is_pointer else "integer", width, signedness, "",
+            bool(raw.get("isEarlyClobber")) or "&" in str(raw.get("constraint", "")), "",
+            "function_argument" if declaration_id in params else
+            "function_return" if default_access == "output" else "non_escaping",
+            str(declaration_id), params.index(declaration_id) if declaration_id in params else None,
+            str(raw.get("constraint", "")), True,
+        ))
+    try:
+        memory_object, object_id = bind_memory_object_authority(facts, operands)
+    except ValueError:
+        return None
+    sample_count = 8 if any(item.parameter_index is not None and
+                            item.operand_index != facts.address_operand_index
+                            for item in operands) else 1
+    relations, effects = [], []
+    event_kind = "ReadMemory" if facts.access_kind == "load" else "WriteMemory"
+    requirements = ("kind", "memory_coordinates", "memory_order", "subject", "value")
+    for sample in range(sample_count):
+        source_id = f"sample:{sample}:memory"
+        relations.append(ApprovedEffectRelation(
+            f"relation:memory:{sample}", source_id, ("target:" + source_id,),
+            "exact", requirements, (), "", True))
+        effects.append(L2SourceEffectAuthority(source_id, event_kind, object_id, True))
+    return L2AuthoritySidecar(
+        fragment_id, L2AuthorityProducer("frontend-compiler-sidecar",
+          "automatic-memory-authority", "v1", producer_digest),
+        _shell_identity(approval, fragment_id), tuple(operands), (memory_object,),
+        tuple(effects), tuple(relations), (), (), True,
+    )
+
+
 def materialize_automatic_l2_authority(
     report: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     frontend: str | Path,
@@ -214,7 +303,8 @@ def materialize_automatic_l2_authority(
     for finding in findings:
         if not isinstance(finding, dict):
             continue
-        sidecar = _scalar_authority(finding, functions, producer_digest)
+        sidecar = (_memory_authority(finding, functions, producer_digest)
+                   or _scalar_authority(finding, functions, producer_digest))
         if sidecar is None:
             continue
         approval = finding.get("approvalArtifact")

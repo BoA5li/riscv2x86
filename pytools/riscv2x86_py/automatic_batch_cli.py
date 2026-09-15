@@ -147,10 +147,14 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
         children = [item for item in returns[0].get("inner", []) if isinstance(item, Mapping)]
         if len(children) == 1:
             return_id = _decl_identity(children[0])
+    function_type = (function.get("type", {}).get("qualType", "")
+                     if isinstance(function.get("type"), Mapping) else "")
+    returns_void = str(function_type).split(" (", 1)[0].strip() == "void"
     complete = bool(
-        len(asm_nodes) == 1 and asm_ids and all(asm_ids) and return_id
+        len(asm_nodes) == 1 and asm_ids and all(asm_ids)
+        and (return_id or returns_void)
         and all(parameter_ids) and all(item in declarations for item in asm_ids)
-        and return_id in declarations
+        and (returns_void or return_id in declarations)
     )
     return {
         "schemaVersion": "riscv2x86.compiler-operand-boundary.v1",
@@ -589,7 +593,7 @@ def prepare_automatic_inventory(
                 l2_environment_capabilities.add("logical_operand_observation")
                 l2_providers.append(provider(
                     "automatic-l2-operand-v2", [L2Dimension.LOGICAL_OPERANDS.value],
-                    ["branch", "composite", "jump", "memory_load", "memory_store", "scalar"],
+                    ["branch", "composite", "jump", "scalar"],
                     ["logical_operand_observation"],
                     "automatic-l2-operand-differential", operand_config,
                 ))
@@ -613,13 +617,16 @@ def prepare_automatic_inventory(
                     effect_config("control-flow-functions"),
                 ))
             if has_memory_objects:
-                l2_environment_capabilities.update(("object_relative_memory_observation",
+                l2_environment_capabilities.update(("logical_operand_observation",
+                                                    "object_relative_memory_observation",
                                                     "shell_observation"))
                 l2_providers.append(provider(
-                    "automatic-l2-memory-effect-v2",
-                    [L2Dimension.MEMORY_EFFECTS.value, L2Dimension.SHELL_SEMANTICS.value],
+                    "automatic-l2-memory-object-v1",
+                    [L2Dimension.LOGICAL_OPERANDS.value, L2Dimension.MEMORY_EFFECTS.value,
+                     L2Dimension.SHELL_SEMANTICS.value],
                     ["memory_load", "memory_store"],
-                    ["object_relative_memory_observation", "shell_observation"],
+                    ["logical_operand_observation", "object_relative_memory_observation",
+                     "shell_observation"],
                     "automatic-l2-effect-differential",
                     effect_config("memory-object-functions"),
                 ))

@@ -18,6 +18,10 @@ from .effect_relation import approved_effect_relation_from_dict
 from .l2_authority import l2_authority_sidecar_from_dict
 from .l2_authority import l2_control_flow_authority_from_dict, l2_operand_authority_from_dict
 from .l2_control_flow import L2ControlFlowObservation, exact_control_flow_observations_match
+from .l2_memory_object import (
+    L2MemoryObservation, exact_memory_observations_match,
+    memory_proof_facts_from_dict,
+)
 
 
 AUTO_L2_EFFECT_SCHEMA = "riscv2x86.auto-l2-effect-runner.v1"
@@ -118,6 +122,7 @@ def _approved_relations(
         "relations": [item.to_dict() for item in relations],
         "controlFlow": [item.to_dict() for item in authority.control_flow],
         "operands": [item.to_dict() for item in authority.operands],
+        "memoryObjects": [item.to_dict() for item in authority.memory_objects],
     }, ""
 
 
@@ -166,6 +171,103 @@ def _memory_events(stdout: str, function: Mapping[str, object]) -> list[dict[str
             return None
         pending_return = None
     return events if events else None
+
+
+def _object_relative_memory_events(
+    stdout: str, authority: Mapping[str, object], facts: object, *, side: str,
+) -> list[L2MemoryObservation] | None:
+    objects, relations = authority.get("memoryObjects"), authority.get("relations")
+    if not isinstance(objects, list) or len(objects) != 1 or not isinstance(relations, list):
+        return None
+    obj = objects[0]
+    if not isinstance(obj, Mapping):
+        return None
+    pattern = re.compile(r"^l2mem;sample=([0-9]+);value=([0-9a-f]+);outside=([01])$")
+    relation_by_source = {
+        item.source_effect_id: item for item in
+        (approved_effect_relation_from_dict(raw) for raw in relations if isinstance(raw, Mapping))
+    }
+    result = []
+    for line in stdout.splitlines():
+        match = pattern.fullmatch(line)
+        if not match:
+            continue
+        sample = int(match.group(1))
+        if match.group(3) != "0":
+            return None
+        source_id = f"sample:{sample}:memory"
+        relation = relation_by_source.get(source_id)
+        if relation is None or len(relation.target_effect_ids) != 1:
+            return None
+        event_id = source_id if side == "source" else relation.target_effect_ids[0]
+        width = int(getattr(facts, "width_bytes"))
+        value = int(match.group(2), 16)
+        result.append(L2MemoryObservation(
+            event_id, str(authority.get("fragmentId", "")),
+            "ReadMemory" if getattr(facts, "access_kind") == "load" else "WriteMemory",
+            str(obj.get("objectId", "")),
+            {"objectId": str(obj.get("objectId", "")),
+             "offset": int(getattr(facts, "byte_offset")), "size": width,
+             "value": _canonical(value, width * 8),
+             "alignment": int(getattr(facts, "required_alignment")),
+             "atomicity": "none", "memoryOrder": "relaxed"},
+            sample, (),
+        ))
+    return result if len(result) == len(relations) else None
+
+
+def _object_relative_memory_wrapper(
+    function: Mapping[str, object], authority: Mapping[str, object], facts: object,
+) -> str:
+    """Generate a typed harness from authority; never inspect source text."""
+    name, return_type = str(function.get("name", "")), str(function.get("returnType", ""))
+    parameter_types, pointer_parameters = function.get("parameterTypes"), function.get("pointerParameters")
+    objects = authority.get("memoryObjects")
+    if (not re.fullmatch(r"[A-Za-z_]\w*", name) or not isinstance(parameter_types, list)
+            or not isinstance(pointer_parameters, list) or len(pointer_parameters) != 1
+            or not isinstance(objects, list) or len(objects) != 1
+            or not isinstance(objects[0], Mapping)):
+        raise ValueError("object-relative memory harness binding is invalid")
+    pointer_index = int(pointer_parameters[0])
+    scalar_indexes = [i for i in range(len(parameter_types)) if i != pointer_index]
+    if len(scalar_indexes) > 1:
+        raise ValueError("automatic memory harness supports one scalar value operand")
+    size, offset, width = (int(objects[0]["sizeBytes"]), int(getattr(facts, "byte_offset")),
+                           int(getattr(facts, "width_bytes")))
+    samples = 8 if scalar_indexes else 1
+    values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
+              "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
+              "UINT64_C(0x5a17d3e4c29b806f)", "UINT64_C(0xc4ceb9fe1a85ec53)")
+    params = ", ".join(str(x) for x in parameter_types) if parameter_types else "void"
+    args = []
+    for index, parameter_type in enumerate(parameter_types):
+        if index == pointer_index:
+            args.append(f"({parameter_type})object")
+        else:
+            args.append(f"({parameter_type})values[sample]")
+    lines = ["#include <stdint.h>", "#include <stdio.h>", "#include <string.h>",
+             f"{return_type} {name}({params});", "int main(void){",
+             "static const uint64_t values[8]={" + ",".join(values) + "};",
+             f"for(unsigned sample=0;sample<{samples};++sample){{",
+             f"_Alignas(16) unsigned char object[{size}], before[{size}];",
+             f"for(unsigned i=0;i<{size};++i) object[i]=(unsigned char)(0x31u+i*17u);",
+             f"memcpy(before,object,{size});", "uint64_t observed=0;", "int outside=0;"]
+    invocation = f"{name}({','.join(args)})"
+    if getattr(facts, "access_kind") == "load":
+        if return_type == "void":
+            raise ValueError("memory load harness requires an observable result")
+        lines += [f"observed=(uint64_t){invocation};",
+                  f"outside=memcmp(before,object,{size})!=0;"]
+    else:
+        lines += [invocation + ";",
+                  f"memcpy(&observed,object+{offset},{width});",
+                  f"for(unsigned i=0;i<{size};++i) if((i<{offset}||i>={offset + width})"
+                  "&&object[i]!=before[i]) outside=1;"]
+    mask = "UINT64_MAX" if width == 8 else f"((UINT64_C(1)<<{width * 8})-1)"
+    lines += [f'observed&={mask};',
+              'printf("l2mem;sample=%u;value=%016llx;outside=%d\\n",sample,'
+              '(unsigned long long)observed,outside);', "}", "return 0;", "}"]
+    return "\n".join(lines) + "\n"
 
 
 def _branch_events(stdout: str, function: Mapping[str, object]) -> list[dict[str, object]] | None:
@@ -440,6 +542,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                     }),
                 )
             control_kind = ""
+            memory_facts = None
             if mode == "control-flow-functions":
                 controls = relation_authority.get("controlFlow")
                 if not isinstance(controls, list) or len(controls) != 1:
@@ -447,7 +550,17 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                         detail=json.dumps({"reasonCode":"L2_CONTROL_FLOW_AUTHORITY_MISSING"}))
                 control_kind = str(controls[0].get("transferKind", ""))
-            wrapper = (_memory_object_wrapper([function]) if mode == "memory-object-functions" else
+            if mode == "memory-object-functions":
+                approval = finding.get("approvalArtifact")
+                raw_memory = approval.get("l2MemoryProofFacts") if isinstance(approval, Mapping) else None
+                if not isinstance(raw_memory, Mapping):
+                    return ValidationLayerResult(
+                        ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps({"reasonCode":"L2_MEMORY_PROOF_FACTS_MISSING"}))
+                memory_facts = memory_proof_facts_from_dict(raw_memory)
+            wrapper = (_object_relative_memory_wrapper(
+                           function, relation_authority, memory_facts)
+                       if mode == "memory-object-functions" else
                        _branch_domain_wrapper([function]) if mode == "branch-domain-functions" else
                        _branch_domain_wrapper([function]) if control_kind == "conditional" else
                        _operand_trace_wrapper(function) if control_kind == "direct" else
@@ -465,10 +578,17 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
             right=_run((str(target_exe),),work,timeout)
-            parser = (_memory_events if mode == "memory-object-functions" else
-                      _branch_events if mode == "branch-domain-functions" else
+            parser = (_branch_events if mode == "branch-domain-functions" else
                       _scalar_events if mode == "scalar-effect-functions" else None)
-            if mode == "control-flow-functions":
+            if mode == "memory-object-functions":
+                source_memory = _object_relative_memory_events(
+                    left.stdout, relation_authority, memory_facts, side="source")
+                target_memory = _object_relative_memory_events(
+                    right.stdout, relation_authority, memory_facts, side="target")
+                source_events = None if source_memory is None else [item.to_dict() for item in source_memory]
+                target_events = None if target_memory is None else [item.to_dict() for item in target_memory]
+                source_control = target_control = None
+            elif mode == "control-flow-functions":
                 source_control = _control_flow_events(left.stdout,function,relation_authority,side="source")
                 target_control = _control_flow_events(right.stdout,function,relation_authority,side="target")
                 source_events = None if source_control is None else [item.to_dict() for item in source_control]
@@ -490,6 +610,11 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             elif mode == "control-flow-functions" and source_control is not None and target_control is not None:
                 matches, reason = exact_control_flow_observations_match(
                     source_control, target_control, approved,
+                )
+                status = ValidationStatus.VERIFIED if matches else ValidationStatus.FAILED
+            elif mode == "memory-object-functions" and source_memory is not None and target_memory is not None:
+                matches, reason = exact_memory_observations_match(
+                    source_memory, target_memory, approved,
                 )
                 status = ValidationStatus.VERIFIED if matches else ValidationStatus.FAILED
             elif not _approved_effect_ids_match(
