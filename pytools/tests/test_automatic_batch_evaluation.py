@@ -41,6 +41,7 @@ def test_inventory_generates_translation_and_registered_l0_l1(tmp_path, monkeypa
 
     assert payload["statisticsUnits"] == {
         "L1": "program", "L2Requirements": "fragment",
+        "L2SemanticProfile": "fragment",
         "translation": "fragment", "bootstrapCluster": "program",
     }
     assert request["translationCommand"]
