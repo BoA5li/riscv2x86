@@ -1757,6 +1757,9 @@ def run(
         f.privilegedOutputManifest = dict(
             translation_metadata.get("privilegedOutputManifest", {}) or {}
         )
+        f.l2SemanticProfile = dict(
+            translation_metadata.get("l2SemanticProfile", {}) or {}
+        )
         if f.approvalArtifact:
             f.approvalArtifact["sourceSliceDigest"] = _approval_digest(f.rawSourceText)
         f.notes.extend(translation_notes)
