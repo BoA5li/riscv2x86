@@ -16,7 +16,7 @@ from .l2_dimensions import (
 from .l2_results import L2DimensionResult, L2FragmentResult
 from .l2_program_results import canonical_identity, sample_set_identity
 from .l2_validator_resolution import (
-    ExplicitL2Bindings, L2BindingStatus, L2RuntimeCapabilities,
+    ExplicitL2Bindings, L2BindingKind, L2BindingStatus, L2RuntimeCapabilities,
     L2ValidatorResolver, fragment_requirement_from_dict, provider_from_dict,
     write_resolved_execution_plan,
     L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA,
@@ -194,28 +194,52 @@ def _requirement_driven_l2_validator(
     config: Mapping[str, object], factories: Mapping[str, ValidatorFactory],
 ) -> LayerValidator:
     """Build an L2 runner whose exact children are selected per fragment."""
-    expected = {"schemaVersion", "requirementManifestPath", "fragmentId",
-                "semanticProfileSource", "providerSelectionUnit",
+    expected = {"schemaVersion", "requirementManifestPath", "semanticProfilePath",
+                "fragmentId", "semanticProfileSource", "providerSelectionUnit",
+                "environmentCapabilities", "environmentExecutionProfiles",
                 "executionProfile", "resolvedPlanPath", "providers"}
     if set(config) != expected or config.get("schemaVersion") != L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA:
         raise ValueError("requirement-driven L2 registry config is malformed")
     manifest_path = config.get("requirementManifestPath")
+    semantic_profile_path = config.get("semanticProfilePath")
     configured_fragment_id = config.get("fragmentId")
     semantic_profile_source = config.get("semanticProfileSource")
     provider_selection_unit = config.get("providerSelectionUnit")
     execution_profile = config.get("executionProfile")
     resolved_plan_path = config.get("resolvedPlanPath")
     raw_providers = config.get("providers")
+    environment_capabilities = config.get("environmentCapabilities")
+    environment_profiles = config.get("environmentExecutionProfiles")
     if (not isinstance(manifest_path, str) or not manifest_path
+            or not isinstance(semantic_profile_path, str) or not semantic_profile_path
             or not isinstance(configured_fragment_id, str) or not configured_fragment_id
-            or semantic_profile_source != "requirement-manifest"
+            or semantic_profile_source != "translated-report"
             or provider_selection_unit != "fragment"
             or not isinstance(execution_profile, str) or not execution_profile
             or not isinstance(resolved_plan_path, str) or not resolved_plan_path
-            or not isinstance(raw_providers, list)):
+            or not isinstance(raw_providers, list)
+            or not isinstance(environment_capabilities, list)
+            or environment_capabilities != sorted(set(environment_capabilities))
+            or not all(isinstance(item, str) and item for item in environment_capabilities)
+            or not isinstance(environment_profiles, list)
+            or environment_profiles != sorted(set(environment_profiles))
+            or not all(isinstance(item, str) and item for item in environment_profiles)):
         raise ValueError("requirement-driven L2 registry paths/profile/providers are invalid")
     from .l2_eligibility import load_l2_requirement_manifest
+    from .l2_semantic_profile import profile_from_finding
     manifest = load_l2_requirement_manifest(manifest_path)
+    raw_report = json.loads(Path(semantic_profile_path).read_text(encoding="utf-8"))
+    raw_findings = raw_report.get("findings") if isinstance(raw_report, Mapping) else None
+    profile_matches = [] if not isinstance(raw_findings, list) else [
+        profile_from_finding(item) for item in raw_findings
+        if isinstance(item, Mapping)
+        and isinstance(item.get("fragment"), Mapping)
+        and (item["fragment"].get("id") or item["fragment"].get("fragmentId"))
+        == configured_fragment_id
+    ]
+    if len(profile_matches) != 1:
+        raise ValueError("requirement-driven L2 semantic profile join is not total")
+    semantic_profile = profile_matches[0]
     providers = tuple(provider_from_dict(item) for item in raw_providers
                       if isinstance(item, Mapping))
     if len(providers) != len(raw_providers):
@@ -232,13 +256,18 @@ def _requirement_driven_l2_validator(
         if requirement.fragment_id in by_fragment:
             raise ValueError("L2 requirement manifest contains duplicate fragment IDs")
         by_fragment[requirement.fragment_id] = requirement
-    explicit = ExplicitL2Bindings(tuple(item for item in providers if item.binding_kind == "explicit"))
-    capabilities = L2RuntimeCapabilities(tuple(item for item in providers if item.binding_kind != "explicit"))
+    explicit = ExplicitL2Bindings(tuple(
+        item for item in providers if item.binding_kind is L2BindingKind.EXPLICIT))
+    capabilities = L2RuntimeCapabilities(
+        tuple(item for item in providers if item.binding_kind is not L2BindingKind.EXPLICIT),
+        tuple(environment_capabilities), tuple(environment_profiles),
+    )
     resolver = L2ValidatorResolver()
     requirement = by_fragment.get(configured_fragment_id)
     plan = (None if requirement is None else
             resolver.resolve(requirement, capabilities, explicit,
-                             execution_profile=execution_profile))
+                             execution_profile=execution_profile,
+                             profile=semantic_profile))
     if plan is not None:
         write_resolved_execution_plan(resolved_plan_path, plan)
     selected_provider_ids = {

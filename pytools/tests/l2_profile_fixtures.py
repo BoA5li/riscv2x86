@@ -7,7 +7,23 @@ from riscv2x86_py.l2_semantic_profile import (
 
 _CAPABILITIES = {
     L2PatternKind.SCALAR: ("logical_operand_observation", "shell_observation"),
+    L2PatternKind.BRANCH: ("control_flow_observation", "logical_operand_observation",
+                           "shell_observation"),
+    L2PatternKind.JUMP: ("control_flow_observation", "logical_operand_observation",
+                         "shell_observation"),
+    L2PatternKind.MEMORY_LOAD: ("logical_operand_observation",
+                                "object_relative_memory_observation", "shell_observation"),
+    L2PatternKind.MEMORY_STORE: ("logical_operand_observation",
+                                 "object_relative_memory_observation", "shell_observation"),
+    L2PatternKind.FENCE: ("ordering_observation", "shell_observation"),
+    L2PatternKind.INSTRUCTION_VISIBILITY_FENCE: (
+        "instruction_visibility_observation", "shell_observation"),
+    L2PatternKind.PRIVILEGED_READ: ("privileged_state_observation", "shell_observation"),
+    L2PatternKind.PRIVILEGED_WRITE: ("privileged_state_observation", "shell_observation"),
     L2PatternKind.COMPOSITE: ("composite_fragment_observation", "shell_observation"),
+    L2PatternKind.ATOMIC: ("atomic_outcome_observation",
+                           "object_relative_memory_observation", "shell_observation"),
+    L2PatternKind.UNKNOWN: (),
 }
 
 

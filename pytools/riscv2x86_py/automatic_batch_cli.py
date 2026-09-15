@@ -14,7 +14,7 @@ from typing import Mapping
 from .batch_evaluation_cli import BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, run_batch_evaluation
 from .l2_dimensions import L2Dimension
 from .l2_validator_resolution import (
-    L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA, provider_from_dict,
+    L2BindingKind, L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA, provider_from_dict,
 )
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
@@ -354,20 +354,21 @@ def _privileged_binding(
 
 def _explicit_l2_providers(
     source: Path, source_root: Path, provider_root: Path | None,
-) -> tuple[dict[str, object], ...]:
+) -> tuple[tuple[dict[str, object], ...], tuple[str, ...]]:
     """Load a source-bound provider plug-in manifest without guessing bindings."""
     if provider_root is None:
-        return ()
+        return (), ()
     relative = source.relative_to(source_root).as_posix()
     path = (provider_root / (relative + ".l2-providers.json")).resolve()
     if not path.is_file():
-        return ()
+        return (), ()
     try:
         path.relative_to(provider_root)
     except ValueError as exc:
         raise ValueError("explicit L2 provider manifest escapes its directory") from exc
     value = json.loads(path.read_text(encoding="utf-8"))
     fields = {"schemaVersion", "sourceRelativePath", "sourceDigest",
+              "environmentCapabilities",
               "providers", "manifestIdentity"}
     if not isinstance(value, Mapping) or set(value) != fields:
         raise ValueError("explicit L2 provider manifest fields are incomplete or unknown")
@@ -378,17 +379,22 @@ def _explicit_l2_providers(
             or identity != _identity(payload)):
         raise ValueError("explicit L2 provider manifest identity/source binding is invalid")
     raw_providers = value.get("providers")
+    environment_capabilities = value.get("environmentCapabilities")
     if not isinstance(raw_providers, list) or not raw_providers:
         raise ValueError("explicit L2 provider manifest requires providers")
+    if (not isinstance(environment_capabilities, list)
+            or environment_capabilities != sorted(set(environment_capabilities))
+            or not all(isinstance(item, str) and item for item in environment_capabilities)):
+        raise ValueError("explicit L2 provider environment capabilities are invalid")
     providers = []
     for raw in raw_providers:
         if not isinstance(raw, Mapping):
             raise ValueError("explicit L2 provider descriptor is malformed")
         parsed = provider_from_dict(raw)
-        if parsed.binding_kind != "explicit":
+        if parsed.binding_kind is not L2BindingKind.EXPLICIT:
             raise ValueError("explicit L2 provider manifest contains a non-explicit provider")
         providers.append(dict(raw))
-    return tuple(providers)
+    return tuple(providers), tuple(environment_capabilities)
 
 
 def prepare_automatic_inventory(
@@ -454,7 +460,9 @@ def prepare_automatic_inventory(
         case_dir = inventory / "cases" / case_id
         explicit = _explicit_harness(source, source_root, harness_root)
         privileged_binding = privileged_bindings[source]
-        explicit_l2_providers = _explicit_l2_providers(source, source_root, provider_root)
+        explicit_l2_providers, explicit_environment_capabilities = _explicit_l2_providers(
+            source, source_root, provider_root,
+        )
         try:
             has_main, functions = inspect_entry_points(source)
             inspection_error = ""
@@ -532,10 +540,9 @@ def prepare_automatic_inventory(
                 "observationContract": observation_contract,
                 "observableDimensions": dimensions,
                 "semanticLimitations": limitations} }
-            l2_auto_possible = bool(
-                mode == "scalar-functions" and functions
-                and all(
-                    isinstance(item.get("arity"), int) and 1 <= int(item["arity"]) <= 3
+            l2_operand_possible = bool(
+                functions and any(
+                    isinstance(item.get("arity"), int) and 1 <= int(item["arity"]) <= 4
                     and isinstance(item.get("l2OperandBoundary"), Mapping)
                     and item["l2OperandBoundary"].get("complete") is True
                     for item in functions
@@ -551,14 +558,8 @@ def prepare_automatic_inventory(
                     "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2",
                     "timeoutSeconds": timeout, "seed": 20260910,
                     "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
-            effect_mode = (
-                mode if mode in {"memory-object-functions", "branch-domain-functions"}
-                else "fence-functions" if mode == "scalar-functions" and functions
-                and all(item.get("arity") == 0 and item.get("returnType") == "void"
-                        for item in functions)
-                else "scalar-effect-functions" if l2_auto_possible else ""
-            )
-            effect_config = {
+            def effect_config(effect_mode):
+                return {
                 "schemaVersion": "riscv2x86.auto-l2-effect-runner.v1",
                 "mode": effect_mode,
                 "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
@@ -568,52 +569,95 @@ def prepare_automatic_inventory(
                 "replayDirectory": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-effects",
                 "timeoutSeconds": timeout,
                 "qemuBinary": shutil.which("qemu-riscv64") or "qemu-riscv64"}
+            execution_profiles = ["rv64gc-user-to-x86_64-user"]
+            def provider(provider_id, dimensions, patterns, capabilities,
+                         validator_type, config, binding_kind="automatic", fragment_ids=()):
+                return {
+                    "providerId": provider_id,
+                    "supportedDimensions": sorted(dimensions),
+                    "supportedPatterns": sorted(patterns),
+                    "requiredCapabilities": sorted(capabilities),
+                    "executionProfiles": execution_profiles,
+                    "bindingKind": binding_kind,
+                    "validatorType": validator_type,
+                    "configSchemaVersion": str(config.get("schemaVersion") or ""),
+                    "config": config, "fragmentIds": sorted(fragment_ids),
+                }
             l2_providers = []
-            if l2_auto_possible:
-                l2_providers.append({
-                    "providerId": "automatic-l2-operand-v1",
-                    "dimensions": [L2Dimension.LOGICAL_OPERANDS.value],
-                    "bindingKind": "automatic",
-                    "validatorType": "automatic-l2-operand-differential",
-                    "config": operand_config, "fragmentIds": [],
-                })
-            if effect_mode:
-                effect_dimensions = {L2Dimension.SHELL_SEMANTICS}
-                if effect_mode == "memory-object-functions":
-                    effect_dimensions.add(L2Dimension.MEMORY_EFFECTS)
-                elif effect_mode == "branch-domain-functions":
-                    effect_dimensions.add(L2Dimension.CONTROL_FLOW)
-                elif effect_mode == "fence-functions":
-                    effect_dimensions.add(L2Dimension.MEMORY_EFFECTS)
-                l2_providers.append({
-                    "providerId": "automatic-l2-effect-v1",
-                    "dimensions": sorted(item.value for item in effect_dimensions),
-                    "bindingKind": "automatic",
-                    "validatorType": "automatic-l2-effect-differential",
-                    "config": effect_config, "fragmentIds": [],
-                })
+            l2_environment_capabilities = set(explicit_environment_capabilities)
+            if l2_operand_possible:
+                l2_environment_capabilities.add("logical_operand_observation")
+                l2_providers.append(provider(
+                    "automatic-l2-operand-v2", [L2Dimension.LOGICAL_OPERANDS.value],
+                    ["branch", "composite", "jump", "memory_load", "memory_store", "scalar"],
+                    ["logical_operand_observation"],
+                    "automatic-l2-operand-differential", operand_config,
+                ))
+            if l2_operand_possible:
+                l2_environment_capabilities.add("shell_observation")
+                l2_providers.append(provider(
+                    "automatic-l2-scalar-effect-v2", [L2Dimension.SHELL_SEMANTICS.value],
+                    ["jump", "scalar"], ["shell_observation"],
+                    "automatic-l2-effect-differential",
+                    effect_config("scalar-effect-functions"),
+                ))
+            if has_four_argument_function:
+                l2_environment_capabilities.update(("control_flow_observation",
+                                                    "shell_observation"))
+                l2_providers.append(provider(
+                    "automatic-l2-branch-effect-v2",
+                    [L2Dimension.CONTROL_FLOW.value, L2Dimension.SHELL_SEMANTICS.value],
+                    ["branch"], ["control_flow_observation", "shell_observation"],
+                    "automatic-l2-effect-differential",
+                    effect_config("branch-domain-functions"),
+                ))
+            if has_memory_objects:
+                l2_environment_capabilities.update(("object_relative_memory_observation",
+                                                    "shell_observation"))
+                l2_providers.append(provider(
+                    "automatic-l2-memory-effect-v2",
+                    [L2Dimension.MEMORY_EFFECTS.value, L2Dimension.SHELL_SEMANTICS.value],
+                    ["memory_load", "memory_store"],
+                    ["object_relative_memory_observation", "shell_observation"],
+                    "automatic-l2-effect-differential",
+                    effect_config("memory-object-functions"),
+                ))
+            if functions and any(item.get("arity") == 0 and item.get("returnType") == "void"
+                                 for item in functions):
+                l2_environment_capabilities.update(("ordering_observation",
+                                                    "shell_observation"))
+                l2_providers.append(provider(
+                    "automatic-l2-fence-effect-v2",
+                    [L2Dimension.MEMORY_EFFECTS.value, L2Dimension.SHELL_SEMANTICS.value],
+                    ["fence"],
+                    ["ordering_observation", "shell_observation"],
+                    "automatic-l2-effect-differential", effect_config("fence-functions"),
+                ))
             if privileged_binding is not None:
-                l2_providers.append({
-                    "providerId": "explicit-privileged-" + str(privileged_binding["identity"]),
-                    "dimensions": sorted((L2Dimension.PRIVILEGED_STATE.value,
-                                          L2Dimension.TRAP_SEMANTICS.value)),
-                    "bindingKind": "explicit",
-                    "validatorType": "l2-privileged-real-runner",
-                    "config": privileged_binding["config"], "fragmentIds": [],
-                })
+                l2_environment_capabilities.add("privileged_state_observation")
+                l2_providers.append(provider(
+                    "explicit-privileged-" + str(privileged_binding["identity"]),
+                    [L2Dimension.PRIVILEGED_STATE.value, L2Dimension.TRAP_SEMANTICS.value],
+                    ["privileged_read", "privileged_write"],
+                    ["privileged_state_observation"], "l2-privileged-real-runner",
+                    privileged_binding["config"], binding_kind="explicit",
+                ))
             l2_providers.extend(explicit_l2_providers)
             l2_providers.sort(key=lambda item: str(item["providerId"]))
             validators["L2"] = {
                 "type": "requirement-driven",
                 "config": {
-                    "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
+                    "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v3",
                     "requirementManifestPath": "${TRANSLATED_REPORT}.l2-requirements.json",
+                    "semanticProfilePath": "${TRANSLATED_REPORT}",
                     "fragmentId": "${FRAGMENT_ID}",
                     # L1 harness mode remains program-level.  L2 selection is
                     # deliberately keyed by the authoritative per-fragment
                     # profile carried by the requirement and resolved plan.
-                    "semanticProfileSource": "requirement-manifest",
+                    "semanticProfileSource": "translated-report",
                     "providerSelectionUnit": "fragment",
+                    "environmentCapabilities": sorted(l2_environment_capabilities),
+                    "environmentExecutionProfiles": execution_profiles,
                     "executionProfile": "rv64gc-user-to-x86_64-user",
                     "resolvedPlanPath": "${REPLAY_DIR}/${ATTEMPT_ID}-l2-resolved-plan.json",
                     "providers": l2_providers,

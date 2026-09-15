@@ -99,24 +99,34 @@ def test_incomplete_authority_is_inconclusive_not_semantic_failure(tmp_path):
     profile = profile_dict()
     requirement_path = tmp_path / "requirements.json"
     from riscv2x86_py.l2_eligibility import classify_l2_requirements
-    requirement_path.write_text(json.dumps(classify_l2_requirements({"findings": [{
+    translated_report = {"findings": [{
         "translationOutcome": "emitted", "translationReasonCodes": [],
         "fragment": {"id": "fragment:1", "inputs": [{"name": "lhs"}],
                      "outputs": [{"name": "out"}], "clobbers": []},
         "l2SemanticProfile": profile,
-    }]})))
+    }]}
+    requirement_path.write_text(json.dumps(classify_l2_requirements(translated_report)))
+    report_path = tmp_path / "translated-report.json"
+    report_path.write_text(json.dumps(translated_report))
     payload = {
         "schemaVersion": "riscv2x86.validation-runtime-registry.v2", "version": "test-v1",
         "validators": {"L2": {"type": "requirement-driven", "config": {
-            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
+            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v3",
             "requirementManifestPath": str(requirement_path), "fragmentId": "fragment:1",
-            "semanticProfileSource": "requirement-manifest",
+            "semanticProfilePath": str(report_path),
+            "semanticProfileSource": "translated-report",
             "providerSelectionUnit": "fragment",
+            "environmentCapabilities": ["logical_operand_observation"],
+            "environmentExecutionProfiles": ["rv64gc-user-to-x86_64-user"],
             "executionProfile": "rv64gc-user-to-x86_64-user",
             "resolvedPlanPath": str(tmp_path / "plan.json"), "providers": [{
-                "providerId": "operand", "dimensions": ["logical_operands"],
+                "providerId": "operand", "supportedDimensions": ["logical_operands"],
+                "supportedPatterns": ["scalar"],
+                "requiredCapabilities": ["logical_operand_observation"],
+                "executionProfiles": ["rv64gc-user-to-x86_64-user"],
                 "bindingKind": "automatic", "validatorType": "test-provider",
-                "config": {}, "fragmentIds": [],
+                "configSchemaVersion": "test-provider.v1",
+                "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
             }],
         }}},
     }

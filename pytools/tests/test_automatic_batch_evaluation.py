@@ -90,9 +90,10 @@ def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path,
     assert request["comparisonPolicy"] == "riscv2x86.comparison-policy.architectural.v1"
     l2 = request["runtimeRegistryTemplate"]["validators"]["L2"]
     assert l2["type"] == "requirement-driven"
-    assert [(item["providerId"], item["dimensions"]) for item in l2["config"]["providers"]] == [
-        ("automatic-l2-effect-v1", ["shell_semantics"]),
-        ("automatic-l2-operand-v1", ["logical_operands"]),
+    assert [(item["providerId"], item["supportedDimensions"])
+            for item in l2["config"]["providers"]] == [
+        ("automatic-l2-operand-v2", ["logical_operands"]),
+        ("automatic-l2-scalar-effect-v2", ["shell_semantics"]),
     ]
 
 
@@ -464,13 +465,20 @@ def test_inventory_loads_content_bound_explicit_l2_provider(tmp_path, monkeypatc
     frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
     provider_root = tmp_path / "l2-providers"; provider_root.mkdir()
     provider = {
-        "providerId": "explicit-operand-v1", "dimensions": ["logical_operands"],
+        "providerId": "explicit-operand-v2",
+        "supportedDimensions": ["logical_operands"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
         "bindingKind": "explicit", "validatorType": "automatic-l2-operand-differential",
-        "config": {"custom": "configuration"}, "fragmentIds": [],
+        "configSchemaVersion": "test.explicit-provider.v1",
+        "config": {"schemaVersion": "test.explicit-provider.v1",
+                   "custom": "configuration"}, "fragmentIds": [],
     }
     manifest = {
-        "schemaVersion": "riscv2x86.explicit-l2-providers.v1",
+        "schemaVersion": "riscv2x86.explicit-l2-providers.v2",
         "sourceRelativePath": "add.c", "sourceDigest": auto._digest(source),
+        "environmentCapabilities": ["logical_operand_observation"],
         "providers": [provider],
     }
     manifest["manifestIdentity"] = auto._identity(manifest)
@@ -489,6 +497,37 @@ def test_inventory_loads_content_bound_explicit_l2_provider(tmp_path, monkeypatc
     providers = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L2"]["config"]["providers"]
     assert providers == [provider]
     assert payload["programs"][0]["explicitL2ProviderCount"] == 1
+
+
+@pytest.mark.parametrize(("function", "expected_provider"), [
+    ({"name": "branch", "arity": 4, "returnType": "uint64_t",
+      "parameterTypes": ["uint64_t"] * 4, "pointerParameters": []},
+     "automatic-l2-branch-effect-v2"),
+    ({"name": "load", "arity": 1, "returnType": "uint64_t",
+      "parameterTypes": ["uint64_t *"], "pointerParameters": [0]},
+     "automatic-l2-memory-effect-v2"),
+])
+def test_inventory_registers_non_scalar_providers_by_capability(
+    tmp_path, monkeypatch, function, expected_provider,
+):
+    source = tmp_path / "case.c"; source.write_text("int case_fn(void){return 0;}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    function = dict(function)
+    function["l2OperandBoundary"] = {"complete": True}
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda _source: (False, (function,)))
+
+    auto.prepare_automatic_inventory(source, tmp_path / "inventory", frontend=frontend)
+    descriptor = json.loads(next(
+        (tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json")
+    ).read_text())
+    config = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L2"]["config"]
+    providers = {item["providerId"]: item for item in config["providers"]}
+
+    assert "automatic-l2-operand-v2" in providers
+    assert expected_provider in providers
+    assert providers["automatic-l2-operand-v2"]["supportedPatterns"] == [
+        "branch", "composite", "jump", "memory_load", "memory_store", "scalar",
+    ]
 
 
 def test_explicit_harness_cannot_escape_manifest_directory(tmp_path, monkeypatch):

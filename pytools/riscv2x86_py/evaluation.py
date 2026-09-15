@@ -344,7 +344,11 @@ def _materialize_l2_resolution_plans(
         raise ValueError("requirement-driven L2 registry config is malformed")
     raw_providers = config.get("providers")
     execution_profile = config.get("executionProfile")
-    if not isinstance(raw_providers, list) or not isinstance(execution_profile, str) or not execution_profile:
+    available_capabilities = config.get("environmentCapabilities")
+    environment_profiles = config.get("environmentExecutionProfiles")
+    if (not isinstance(raw_providers, list) or not isinstance(execution_profile, str)
+            or not execution_profile or not isinstance(available_capabilities, list)
+            or not isinstance(environment_profiles, list)):
         raise ValueError("requirement-driven L2 provider catalogue/profile is invalid")
     providers = tuple(provider_from_dict(item) for item in raw_providers
                       if isinstance(item, Mapping))
@@ -353,10 +357,28 @@ def _materialize_l2_resolution_plans(
     from .l2_eligibility import load_l2_requirement_manifest
     manifest_path = report_path.with_name(report_path.name + ".l2-requirements.json")
     manifest = load_l2_requirement_manifest(manifest_path)
+    from .l2_semantic_profile import profile_from_finding
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    findings = report.get("findings") if isinstance(report, Mapping) else None
+    if not isinstance(findings, list):
+        raise ValueError("translated report findings are malformed")
+    profiles = {}
+    for finding in findings:
+        if not isinstance(finding, Mapping):
+            raise ValueError("translated report finding is malformed")
+        profile = profile_from_finding(finding)
+        if profile.fragment_id in profiles:
+            raise ValueError("translated report contains duplicate fragment profiles")
+        profiles[profile.fragment_id] = profile
     for attempt in archive.attempts:
+        profile = profiles.get(attempt.fragment_id)
+        if profile is None:
+            raise ValueError("L2 semantic profile is missing for translation attempt fragment")
         plan = resolve_fragment_execution_plan(
             manifest, providers, attempt.fragment_id,
-            execution_profile=execution_profile,
+            execution_profile=execution_profile, profile=profile,
+            available_capabilities=available_capabilities,
+            environment_execution_profiles=environment_profiles,
         )
         if plan is None:
             raise ValueError("L2 requirement is missing for translation attempt fragment")

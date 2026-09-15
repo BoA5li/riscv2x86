@@ -6,8 +6,11 @@ import pytest
 from riscv2x86_py.l2_dimensions import L2Dimension, L2EligibilityStatus
 from riscv2x86_py.l2_eligibility import classify_l2_requirements
 from riscv2x86_py.l2_validator_resolution import (
-    ExplicitL2Bindings, L2FragmentRequirement, L2RuntimeCapabilities,
+    ExplicitL2Bindings, L2BindingKind, L2FragmentRequirement, L2RuntimeCapabilities,
     L2ValidatorProvider, L2ValidatorResolver, validate_resolved_execution_plan,
+)
+from riscv2x86_py.l2_semantic_profile import (
+    L2PatternKind, l2_fragment_semantic_profile_from_dict,
 )
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
@@ -15,20 +18,33 @@ from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 from tests.l2_profile_fixtures import profile_dict
 
 
-def _requirement():
-    profile = profile_dict()
+def _requirement(kind=L2PatternKind.SCALAR, dimensions=None):
+    profile = profile_dict(kind=kind)
     return L2FragmentRequirement(
         "fragment:1", "sha256:" + "1" * 64,
-        (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+        dimensions or (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
         L2EligibilityStatus.ELIGIBLE,
         profile["profileIdentity"], profile["patternKind"],
         tuple(profile["requiredCapabilities"]),
     )
 
 
-def _provider(provider_id, kind, dimensions):
+def _provider(provider_id, kind, dimensions, *, patterns=(L2PatternKind.SCALAR,),
+              capabilities=("logical_operand_observation", "shell_observation")):
     return L2ValidatorProvider(
-        provider_id, tuple(dimensions), kind, "test-provider", {}, ()
+        provider_id, tuple(dimensions),
+        tuple(sorted(patterns, key=lambda item: item.value)),
+        tuple(sorted(capabilities)),
+        ("rv64gc-user-to-x86_64-user",), L2BindingKind(kind),
+        "test-provider", "test-provider.v1",
+        {"schemaVersion": "test-provider.v1"}, (),
+    )
+
+
+def _runtime(providers, capabilities=("logical_operand_observation", "shell_observation")):
+    return L2RuntimeCapabilities(
+        tuple(providers), tuple(sorted(capabilities)),
+        ("rv64gc-user-to-x86_64-user",),
     )
 
 
@@ -37,8 +53,9 @@ def test_resolver_prefers_explicit_provider_without_dropping_dimensions():
     explicit = _provider("explicit", "explicit", (L2Dimension.LOGICAL_OPERANDS,))
     shell = _provider("shell", "automatic", (L2Dimension.SHELL_SEMANTICS,))
     plan = L2ValidatorResolver().resolve(
-        _requirement(), L2RuntimeCapabilities((automatic, shell)),
+        _requirement(), _runtime((automatic, shell)),
         ExplicitL2Bindings((explicit,)), execution_profile="rv64gc-user-to-x86_64-user",
+        profile=l2_fragment_semantic_profile_from_dict(profile_dict()),
     )
     assert [item.dimension for item in plan.bindings] == list(_requirement().required_dimensions)
     assert plan.bindings[0].provider_id == "explicit"
@@ -52,11 +69,50 @@ def test_resolver_marks_missing_and_ambiguous_bindings_fail_closed():
         _provider("b", "automatic", (L2Dimension.LOGICAL_OPERANDS,)),
     )
     plan = L2ValidatorResolver().resolve(
-        _requirement(), L2RuntimeCapabilities(duplicate),
+        _requirement(), _runtime(duplicate),
         execution_profile="rv64gc-user-to-x86_64-user",
+        profile=l2_fragment_semantic_profile_from_dict(profile_dict()),
     )
     assert not plan.complete
     assert [item.binding_status.value for item in plan.bindings] == ["inconclusive", "not_run"]
+
+
+@pytest.mark.parametrize("pattern", [
+    L2PatternKind.BRANCH, L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE,
+])
+def test_operand_family_is_matched_per_declared_non_scalar_pattern(pattern):
+    requirement = _requirement(pattern, (L2Dimension.LOGICAL_OPERANDS,))
+    profile = l2_fragment_semantic_profile_from_dict(profile_dict(kind=pattern))
+    operand = _provider(
+        "operand-family", "automatic", (L2Dimension.LOGICAL_OPERANDS,),
+        patterns=(L2PatternKind.BRANCH, L2PatternKind.MEMORY_LOAD,
+                  L2PatternKind.MEMORY_STORE, L2PatternKind.SCALAR),
+        capabilities=("logical_operand_observation",),
+    )
+    plan = L2ValidatorResolver().resolve(
+        requirement, _runtime((operand,), ("logical_operand_observation",)),
+        execution_profile="rv64gc-user-to-x86_64-user", profile=profile,
+    )
+    assert plan.complete
+    assert plan.bindings[0].provider_id == "operand-family"
+    assert plan.bindings[0].matched_capabilities == ("logical_operand_observation",)
+
+
+def test_missing_environment_capability_is_reported_on_binding():
+    requirement = _requirement(dimensions=(L2Dimension.LOGICAL_OPERANDS,))
+    profile = l2_fragment_semantic_profile_from_dict(profile_dict())
+    operand = _provider(
+        "operand", "automatic", (L2Dimension.LOGICAL_OPERANDS,),
+        capabilities=("logical_operand_observation",),
+    )
+    plan = L2ValidatorResolver().resolve(
+        requirement, _runtime((operand,), ()),
+        execution_profile="rv64gc-user-to-x86_64-user", profile=profile,
+    )
+    binding = plan.bindings[0]
+    assert binding.binding_status.value == "not_run"
+    assert binding.missing_capabilities == ("logical_operand_observation",)
+    assert "l2.environment.capability-missing" in binding.reason_codes
 
 
 def _manifest(path):
@@ -69,7 +125,9 @@ def _manifest(path):
     }]}
     value = classify_l2_requirements(report)
     path.write_text(json.dumps(value), encoding="utf-8")
-    return value
+    report_path = path.with_name("translated-report.json")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    return value, report_path
 
 
 def _factory(_config):
@@ -80,16 +138,19 @@ def _factory(_config):
 
 def _registry(tmp_path, providers):
     manifest = tmp_path / "requirements.json"
-    _manifest(manifest)
+    _value, report_path = _manifest(manifest)
     plan = tmp_path / "resolved-plan.json"
     payload = {
         "schemaVersion": "riscv2x86.validation-runtime-registry.v2",
         "version": "test-v1",
         "validators": {"L2": {"type": "requirement-driven", "config": {
-            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v2",
+            "schemaVersion": "riscv2x86.l2-requirement-driven-registry.v3",
             "requirementManifestPath": str(manifest), "fragmentId": "fragment:1",
-            "semanticProfileSource": "requirement-manifest",
+            "semanticProfilePath": str(report_path),
+            "semanticProfileSource": "translated-report",
             "providerSelectionUnit": "fragment",
+            "environmentCapabilities": ["logical_operand_observation", "shell_observation"],
+            "environmentExecutionProfiles": ["rv64gc-user-to-x86_64-user"],
             "executionProfile": "rv64gc-user-to-x86_64-user",
             "resolvedPlanPath": str(plan), "providers": providers,
         }}},
@@ -119,9 +180,13 @@ def _observation():
 
 def test_registry_consumes_manifest_and_persists_plan(tmp_path):
     providers = [{
-        "providerId": "both", "dimensions": ["logical_operands", "shell_semantics"],
+        "providerId": "both", "supportedDimensions": ["logical_operands", "shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation", "shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
         "bindingKind": "automatic", "validatorType": "test-provider",
-        "config": {}, "fragmentIds": [],
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
     }]
     registry, plan_path = _registry(tmp_path, providers)
     assert plan_path.is_file()
@@ -144,9 +209,13 @@ def test_registry_consumes_manifest_and_persists_plan(tmp_path):
 
 def test_registry_missing_required_provider_cannot_verify(tmp_path):
     providers = [{
-        "providerId": "operand", "dimensions": ["logical_operands"],
+        "providerId": "operand", "supportedDimensions": ["logical_operands"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
         "bindingKind": "automatic", "validatorType": "test-provider",
-        "config": {}, "fragmentIds": [],
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
     }]
     registry, _plan_path = _registry(tmp_path, providers)
     result = registry.validator_for(ValidationLevel.L2)(
@@ -162,9 +231,27 @@ def test_registry_missing_required_provider_cannot_verify(tmp_path):
 
 def test_provider_dimensions_reject_legacy_alias(tmp_path):
     providers = [{
-        "providerId": "legacy", "dimensions": ["operands"],
+        "providerId": "legacy", "supportedDimensions": ["operands"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
         "bindingKind": "automatic", "validatorType": "test-provider",
-        "config": {}, "fragmentIds": [],
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
     }]
     with pytest.raises(ValueError, match="unsupported L2 dimension"):
+        _registry(tmp_path, providers)
+
+
+def test_provider_parser_rejects_noncanonical_pattern_order(tmp_path):
+    providers = [{
+        "providerId": "bad-order", "supportedDimensions": ["logical_operands"],
+        "supportedPatterns": ["scalar", "branch"],
+        "requiredCapabilities": ["logical_operand_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "automatic", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }]
+    with pytest.raises(ValueError, match="patterns are non-canonical"):
         _registry(tmp_path, providers)

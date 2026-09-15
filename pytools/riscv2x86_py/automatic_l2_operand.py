@@ -178,7 +178,7 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
 def _wrapper(function: Mapping[str, object]) -> str:
     name, ret = str(function["name"]), str(function["returnType"])
     types = function["parameterTypes"]
-    if not _IDENT.fullmatch(name) or not isinstance(types, list) or not types or len(types) > 3:
+    if not _IDENT.fullmatch(name) or not isinstance(types, list) or not types or len(types) > 4:
         raise ValueError("automatic L2 scalar function shape is unsupported")
     declarations = ", ".join(str(item) for item in types)
     args = ",".join(f"({types[i]})v[i{i}]" for i in range(len(types)))

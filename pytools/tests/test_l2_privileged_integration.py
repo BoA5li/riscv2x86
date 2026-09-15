@@ -138,7 +138,9 @@ def test_content_addressed_binding_resolves_inputs_and_binds_capabilities(tmp_pa
                 if item["bindingKind"] == "explicit"]
     assert len(explicit) == 1
     assert explicit[0]["validatorType"] == "l2-privileged-real-runner"
-    assert explicit[0]["dimensions"] == ["privileged_state", "trap_semantics"]
+    assert explicit[0]["supportedDimensions"] == ["privileged_state", "trap_semantics"]
+    assert explicit[0]["supportedPatterns"] == ["privileged_read", "privileged_write"]
+    assert explicit[0]["requiredCapabilities"] == ["privileged_state_observation"]
     environment = json.loads((tmp_path / "inventory/config/target-environment.json").read_text())
     assert "qemu-system" in environment["sourceRunnerCapabilities"]
     assert "logical-csr-runtime" in environment["targetRunnerCapabilities"]
