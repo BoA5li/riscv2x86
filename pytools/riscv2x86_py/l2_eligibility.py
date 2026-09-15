@@ -10,20 +10,23 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Mapping, Sequence
 
 from .l2_dimensions import (
     L2Dimension, L2DimensionStatus, L2EligibilityStatus,
     parse_l2_dimensions,
 )
+from .l2_semantic_profile import L2PatternKind, profile_from_finding
 
 LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v1"
 LEGACY_L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v1"
 LEGACY_L2_VALIDATOR_PLAN_SCHEMA = "riscv2x86.l2-validator-plan.v1"
-L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v2"
-L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v2"
-L2_VALIDATOR_PLAN_SCHEMA = "riscv2x86.l2-validator-plan.v2"
-L2_DIMENSION_MIGRATION_VERSION = "l2-dimension-migration-v1"
+L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v3"
+L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v3"
+L2_VALIDATOR_PLAN_SCHEMA = "riscv2x86.l2-validator-plan.v3"
+L2_DIMENSION_MIGRATION_VERSION = "l2-semantic-profile-migration-v1"
+_SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _CANDIDATES = {"emitted", "strengthened", "functional_fallback"}
 _NO_CANDIDATE = {"keep", "needs_route", "unsupported", "failed", "not_attempted"}
@@ -44,6 +47,26 @@ _LEGACY_DIMENSION_MAP = {
     "privileged_state": L2Dimension.PRIVILEGED_STATE,
     "shell": L2Dimension.SHELL_SEMANTICS,
     "trap": L2Dimension.TRAP_SEMANTICS,
+}
+_PROFILE_DIMENSIONS = {
+    L2PatternKind.SCALAR: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.BRANCH: (L2Dimension.CONTROL_FLOW, L2Dimension.LOGICAL_OPERANDS,
+                           L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.JUMP: (L2Dimension.CONTROL_FLOW, L2Dimension.LOGICAL_OPERANDS,
+                         L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.MEMORY_LOAD: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.MEMORY_EFFECTS,
+                                L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.MEMORY_STORE: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.MEMORY_EFFECTS,
+                                 L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.FENCE: (L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.INSTRUCTION_VISIBILITY_FENCE: (
+        L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.PRIVILEGED_READ: (L2Dimension.PRIVILEGED_STATE,
+                                    L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.PRIVILEGED_WRITE: (L2Dimension.PRIVILEGED_STATE,
+                                     L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.ATOMIC: (L2Dimension.ATOMIC_MEMORY_ORDER, L2Dimension.LOGICAL_OPERANDS,
+                           L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
 }
 
 
@@ -115,6 +138,29 @@ class L2EligibilityClassifier:
         finding_id = f"finding:{index}:{fragment_id}"
         outcome = str(finding.get("translationOutcome") or "not_attempted")
         dimensions, diagnostics = _structured_dimensions(finding)
+        try:
+            semantic_profile = profile_from_finding(finding)
+            profile_diagnostics = (() if semantic_profile.complete else
+                                   ("l2.semantic-profile.incomplete",))
+            dimensions = tuple(sorted(
+                set(dimensions) | set(_PROFILE_DIMENSIONS.get(
+                    semantic_profile.pattern_kind, ())),
+                key=lambda item: item.value,
+            ))
+            if semantic_profile.pattern_kind is L2PatternKind.COMPOSITE:
+                expanded = set(dimensions)
+                if semantic_profile.memory_shape.reads or semantic_profile.memory_shape.writes:
+                    expanded.add(L2Dimension.MEMORY_EFFECTS)
+                if (semantic_profile.control_flow_shape.internal_branch
+                        or semantic_profile.control_flow_shape.direct_jump
+                        or semantic_profile.control_flow_shape.external):
+                    expanded.add(L2Dimension.CONTROL_FLOW)
+                if semantic_profile.privileged_shape.present:
+                    expanded.add(L2Dimension.PRIVILEGED_STATE)
+                dimensions = tuple(sorted(expanded, key=lambda item: item.value))
+        except ValueError:
+            semantic_profile = None
+            profile_diagnostics = ("l2.semantic-profile.missing-or-invalid",)
         if outcome in _NO_CANDIDATE:
             eligibility = L2EligibilityStatus.NOT_APPLICABLE
             disposition = L2DimensionStatus.NOT_APPLICABLE
@@ -124,10 +170,11 @@ class L2EligibilityClassifier:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = ("l2.translation-outcome-unknown",)
-        elif diagnostics or not fragment_id or not dimensions:
+        elif diagnostics or profile_diagnostics or not fragment_id or not dimensions:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
-            reason_codes = diagnostics or ("l2.classification-facts-incomplete",)
+            reason_codes = diagnostics or profile_diagnostics or (
+                "l2.classification-facts-incomplete",)
         else:
             eligibility = L2EligibilityStatus.ELIGIBLE
             disposition = L2DimensionStatus.NOT_RUN
@@ -148,6 +195,17 @@ class L2EligibilityClassifier:
             "findingId": finding_id,
             "fragmentId": fragment_id,
             "translationOutcome": outcome,
+            "semanticProfileIdentity": (
+                "" if semantic_profile is None else semantic_profile.profile_identity
+            ),
+            "patternKind": (
+                L2PatternKind.UNKNOWN.value if semantic_profile is None
+                else semantic_profile.pattern_kind.value
+            ),
+            "requiredCapabilities": (
+                [] if semantic_profile is None
+                else list(semantic_profile.required_capabilities)
+            ),
             "requiredDimensions": [item.value for item in dimensions],
             "eligibilityStatus": eligibility.value,
             "disposition": disposition.value,
@@ -208,6 +266,7 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
     if not isinstance(requirements, list):
         raise ValueError("L2 requirement manifest requirements must be an array")
     requirement_fields = {"schemaVersion", "findingId", "fragmentId", "translationOutcome",
+                          "semanticProfileIdentity", "patternKind", "requiredCapabilities",
                           "requiredDimensions", "eligibilityStatus", "disposition",
                           "reasonCodes", "validatorPlan", "requirementIdentity"}
     seen = set()
@@ -233,6 +292,24 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
             disposition = L2DimensionStatus(str(item.get("disposition")))
         except ValueError as exc:
             raise ValueError("L2 required dimensions or statuses are invalid") from exc
+        profile_identity = item.get("semanticProfileIdentity")
+        pattern_kind = item.get("patternKind")
+        capabilities = item.get("requiredCapabilities")
+        try:
+            parsed_kind = L2PatternKind(str(pattern_kind))
+        except ValueError as exc:
+            raise ValueError("L2 semantic profile pattern kind is invalid") from exc
+        if (not isinstance(profile_identity, str)
+                or (profile_identity and _SHA256.fullmatch(profile_identity) is None)
+                or not isinstance(capabilities, list)
+                or capabilities != sorted(set(capabilities))
+                or not all(isinstance(capability, str) and capability
+                           for capability in capabilities)):
+            raise ValueError("L2 semantic profile binding is invalid")
+        if eligibility is L2EligibilityStatus.ELIGIBLE and (
+                not profile_identity or parsed_kind is L2PatternKind.UNKNOWN
+                or not capabilities):
+            raise ValueError("eligible L2 requirement lacks a complete semantic profile")
         valid_pair = {
             L2EligibilityStatus.ELIGIBLE: L2DimensionStatus.NOT_RUN,
             L2EligibilityStatus.NOT_APPLICABLE: L2DimensionStatus.NOT_APPLICABLE,
@@ -267,7 +344,7 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
         raise ValueError("L2 dimension counts do not match requirements")
 
 
-def migrate_l2_requirement_v1_to_v2(value: Mapping[str, object]) -> dict[str, object]:
+def migrate_l2_requirement_v1_to_v3(value: Mapping[str, object]) -> dict[str, object]:
     """Explicitly migrate a strict v1 manifest; normal v2 parsing never aliases."""
     if value.get("schemaVersion") != LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA:
         raise ValueError("L2 requirement migration requires a v1 manifest")
@@ -326,16 +403,30 @@ def migrate_l2_requirement_v1_to_v2(value: Mapping[str, object]) -> dict[str, ob
         }.get(disposition)
         if eligibility is None:
             raise ValueError("legacy L2 planning disposition is invalid")
+        # A v1 manifest predates authoritative semantic profiles.  Migration
+        # records that absence explicitly and never upgrades an old eligible
+        # entry into a profile-backed executable requirement.
+        migrated_disposition = disposition
+        migrated_reasons = list(raw.get("reasonCodes") or ())
+        if eligibility is L2EligibilityStatus.ELIGIBLE:
+            eligibility = L2EligibilityStatus.INCONCLUSIVE
+            migrated_disposition = L2DimensionStatus.INCONCLUSIVE
+            migrated_reasons = sorted(set(migrated_reasons + [
+                "l2.semantic-profile.unavailable-after-v1-migration",
+            ]))
         validators = tuple(sorted({_DIMENSION_VALIDATOR[item] for item in dimensions}))
         item = {
             "schemaVersion": L2_FRAGMENT_REQUIREMENT_SCHEMA,
             "findingId": raw.get("findingId"),
             "fragmentId": raw.get("fragmentId"),
             "translationOutcome": raw.get("translationOutcome"),
+            "semanticProfileIdentity": "",
+            "patternKind": L2PatternKind.UNKNOWN.value,
+            "requiredCapabilities": [],
             "requiredDimensions": [dimension.value for dimension in dimensions],
             "eligibilityStatus": eligibility.value,
-            "disposition": disposition.value,
-            "reasonCodes": raw.get("reasonCodes"),
+            "disposition": migrated_disposition.value,
+            "reasonCodes": migrated_reasons,
             "validatorPlan": {
                 "schemaVersion": L2_VALIDATOR_PLAN_SCHEMA,
                 "level": "L2",
@@ -379,6 +470,16 @@ def migrate_l2_requirement_v1_to_v2(value: Mapping[str, object]) -> dict[str, ob
     result["manifestIdentity"] = _identity(result)
     validate_l2_requirement_manifest(result)
     return result
+
+
+def migrate_l2_requirement_v1_to_v2(value: Mapping[str, object]) -> dict[str, object]:
+    """Compatibility entry point for the historical public migration API.
+
+    The current output is v3.  In particular, this function never fabricates
+    an authoritative semantic profile for a pre-profile manifest; formerly
+    eligible entries are migrated to an explicit inconclusive state.
+    """
+    return migrate_l2_requirement_v1_to_v3(value)
 
 
 def load_l2_requirement_manifest(path: str | Path) -> Mapping[str, object]:
