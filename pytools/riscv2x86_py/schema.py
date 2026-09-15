@@ -411,6 +411,11 @@ class Finding:
     # serialization independently of the apply-time approval artifact.
     privilegedOutputManifest: Dict[str, Any] = field(default_factory=dict)
 
+    # Phase 12 L2-E0: authoritative per-fragment semantic profile.  This is
+    # produced from the normalized Phase-6A source model, never reconstructed
+    # by an evaluator from asm text or source names.
+    l2SemanticProfile: Dict[str, Any] = field(default_factory=dict)
+
     # Phase 8：验证结果。
     verificationStatus: str = ""
     verificationDetail: str = ""
