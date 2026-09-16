@@ -6,7 +6,8 @@ import sys
 import pytest
 
 from riscv2x86_py.evaluation import (
-    EVALUATION_REQUEST_SCHEMA, evaluation_request_from_dict,
+    EVALUATION_REQUEST_SCHEMA, _effective_validation_contract,
+    evaluation_request_from_dict,
     persist_evaluation_result, run_evaluation,
 )
 from riscv2x86_py.corpus_evaluation_cli import run_corpus_execution
@@ -20,10 +21,11 @@ from riscv2x86_py.translation_attempt import (
 )
 from riscv2x86_py.translation_validation import (
     TARGET_ENVIRONMENT_SCHEMA, TRANSLATION_VALIDATION_VERSION,
-    VALIDATION_PLAN_SCHEMA, TranslationValidationResult, ValidationProfile,
+    VALIDATION_PLAN_SCHEMA, TranslationArtifact, TranslationValidationResult,
+    ValidationPlan, ValidationProfile,
 )
 from riscv2x86_py.validation_runtime_registry import VALIDATION_RUNTIME_REGISTRY_SCHEMA
-from riscv2x86_py.validation_status import ValidationStatus
+from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 
 
 SOURCE = b'int f(int a){int out; asm("addi %0,%1,1"); return out;}\n'
@@ -45,16 +47,17 @@ def _setup(tmp_path: Path, *, target_build_success=True,
         validationOutcome=ValidationOutcome.FAILED.value,
         publicationOutcome=PublicationOutcome.WITHHELD.value,
     )
+    has_candidate = translation_outcome in {
+        TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
+        TranslationOutcome.FUNCTIONAL_FALLBACK,
+    }
     finding.translationAttemptArtifact = make_translation_attempt_artifact(
         fragment_id="fragment:0",
-        candidate_kind=("c" if translation_outcome is TranslationOutcome.EMITTED
+        candidate_kind=("c" if has_candidate
                         else translation_outcome.value),
-        candidate_route=("phase6f_rendered"
-                         if translation_outcome is TranslationOutcome.EMITTED else ""),
-        candidate_replacement=("out = a + 1;"
-                               if translation_outcome is TranslationOutcome.EMITTED else ""),
-        candidate_rule_name=("integer.addi"
-                             if translation_outcome is TranslationOutcome.EMITTED else ""),
+        candidate_route=("phase6f_rendered" if has_candidate else ""),
+        candidate_replacement=("out = a + 1;" if has_candidate else ""),
+        candidate_rule_name=("integer.addi" if has_candidate else ""),
         translation_outcome=translation_outcome,
         validation_outcome=ValidationOutcome.FAILED,
         publication_outcome=PublicationOutcome.WITHHELD,
@@ -128,6 +131,7 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert not (tmp_path / "target").exists()
     assert "out = a + 1;" in (work / "candidate-staging" / "case.c").read_text()
     assert (work / "build" / "target").is_file()
+
     assert result["status"] == "inconclusive"  # L0 runner intentionally absent.
     assert result["candidateManifestId"].startswith("sha256:")
     assert result["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
@@ -184,6 +188,68 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
         "programExecutionEvidenceIdentities": [],
         "executionSampleCount": 0,
     }]
+
+
+def test_functional_artifact_contracts_architectural_maximum_to_l0_l1():
+    plan = ValidationPlan(
+        "maximum-architectural", ValidationProfile.ARCHITECTURAL,
+        "qemu", "native", 7, 10, "registry-v1",
+    )
+    artifact = TranslationArtifact(
+        "fragment:0", "source", "translation", "constraint", "proof",
+        PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY, "shell", "runtime",
+        "v1", "recipe", (), "counter", "runtime-helper",
+    )
+    effective, policy, reason = _effective_validation_contract(
+        plan, artifact, "riscv2x86.comparison-policy.architectural.v1",
+    )
+    assert plan.profile is ValidationProfile.ARCHITECTURAL
+    assert effective.profile is ValidationProfile.FUNCTIONAL
+    assert [item.value for item in effective.required_levels] == ["L0", "L1"]
+    assert effective.plan_id == "maximum-architectural:effective-functional"
+    assert policy == "riscv2x86.l1-observable-comparison.v1"
+    assert reason == "artifact-functional-equivalence-only"
+
+
+def test_architectural_artifact_keeps_requested_architectural_contract():
+    plan = ValidationPlan(
+        "architectural", ValidationProfile.ARCHITECTURAL,
+        "qemu", "native", 7, 10, "registry-v1",
+    )
+    artifact = TranslationArtifact(
+        "fragment:0", "source", "translation", "constraint", "proof",
+        PreservationMode.ARCHITECTURE_EQUIVALENT, "shell", "runtime",
+        "v1", "recipe", (), "scalar", "inline-asm",
+    )
+    effective, policy, reason = _effective_validation_contract(
+        plan, artifact, "riscv2x86.comparison-policy.architectural.v1",
+    )
+    assert effective is plan
+    assert policy == "riscv2x86.comparison-policy.architectural.v1"
+    assert reason == ""
+
+
+def test_evaluation_records_functional_profile_contraction_per_attempt(tmp_path):
+    request, _, attempt = _setup(
+        tmp_path, translation_outcome=TranslationOutcome.FUNCTIONAL_FALLBACK,
+    )
+    request.translation_artifacts[attempt.finding_id][
+        "preservation_mode"
+    ] = "functional_equivalence_only"
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+    evaluated = result["attempts"][0]
+    assert evaluated["status"] == "inconclusive"  # No L0 runner in this fixture.
+    assert evaluated["reasonCodes"] == ["validation.layer-runner-missing:L0"]
+    assert "validation.profile-exceeds-preservation-claim" not in evaluated["reasonCodes"]
+    assert evaluated["requestedValidationProfile"] == "architectural"
+    assert evaluated["effectiveValidationProfile"] == "functional"
+    assert evaluated["profileSelectionReason"] == \
+        "artifact-functional-equivalence-only"
+    assert evaluated["requestedComparisonPolicy"] == \
+        "riscv2x86.comparison-policy.none.v1"
+    assert evaluated["effectiveComparisonPolicy"] == \
+        "riscv2x86.comparison-policy.none.v1"
+    assert evaluated["validation"]["profile"] == "functional"
 
 
 def test_unavailable_build_tool_is_persisted_as_inconclusive(tmp_path):

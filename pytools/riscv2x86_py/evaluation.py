@@ -1,7 +1,7 @@
 """End-to-end, replayable evaluation orchestration for translation attempts."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import os
@@ -25,16 +25,20 @@ from .l2_program_results import (
 )
 from .translation_artifact_binding import artifacts_from_report
 from .translation_validation import (
-    ProgramArtifact, TranslationValidationResult, load_target_environment,
+    ProgramArtifact, TranslationValidationResult, ValidationPlan,
+    ValidationProfile, load_target_environment,
     load_validation_plan, run_translation_validation,
     translation_artifact_from_dict,
+)
+from .l1_differential import (
+    ARCHITECTURAL_COMPARISON_POLICY, L1_COMPARISON_POLICY,
 )
 from .validation_runtime_registry import validation_runtime_registry_from_dict
 from .l2_validator_resolution import (
     provider_from_dict, resolve_fragment_execution_plan,
     write_resolved_execution_plan,
 )
-from .validation_status import ValidationStatus
+from .validation_status import PreservationMode, ValidationStatus
 
 
 LEGACY_EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v1"
@@ -52,6 +56,39 @@ _NON_CANDIDATE_STATUS = {
     TranslationOutcome.UNSUPPORTED: ValidationStatus.UNSUPPORTED,
     TranslationOutcome.KEEP: ValidationStatus.KEEP,
 }
+
+
+def _effective_validation_contract(
+    requested_plan: ValidationPlan, translation: object,
+    requested_comparison_policy: str,
+) -> tuple[ValidationPlan, str, str]:
+    """Close a pre-translation maximum profile against the typed artifact.
+
+    Automatic inventories are necessarily created before translation chooses a
+    strict or functional-only candidate. Their profile is therefore a maximum
+    requested level, not authority to escalate the eventual artifact claim.
+    Functional fallbacks are evaluated through L0/L1 and retain an explicit
+    reason for the per-attempt contraction. The strict validation entry point
+    remains fail-closed if a caller bypasses this orchestration step.
+    """
+    mode = getattr(translation, "preservation_mode", None)
+    if (mode is not PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY
+            or requested_plan.profile in {
+                ValidationProfile.BUILD, ValidationProfile.FUNCTIONAL,
+            }):
+        return requested_plan, requested_comparison_policy, ""
+    effective = replace(
+        requested_plan,
+        plan_id=requested_plan.plan_id + ":effective-functional",
+        profile=ValidationProfile.FUNCTIONAL,
+        experiment_contract_id="",
+    )
+    policy = (
+        L1_COMPARISON_POLICY
+        if requested_comparison_policy == ARCHITECTURAL_COMPARISON_POLICY
+        else requested_comparison_policy
+    )
+    return effective, policy, "artifact-functional-equivalence-only"
 
 
 def _canonical(value: object) -> bytes:
@@ -564,14 +601,23 @@ def run_evaluation(
                 raise ValueError("resolved runtime registry is malformed")
             registry_replay.write_text(json.dumps(registry_payload, indent=2, sort_keys=True) + "\n")
             registry = validation_runtime_registry_from_dict(registry_payload)
+            effective_plan, effective_policy, profile_reason = \
+                _effective_validation_contract(
+                    plan, translation, request.comparison_policy,
+                )
             validation = run_translation_validation(
-                translation, source_program, target_program, plan, environment, registry,
-                comparison_policy=request.comparison_policy,
+                translation, source_program, target_program, effective_plan,
+                environment, registry, comparison_policy=effective_policy,
             )
             per_attempt.append(_attempt_result(attempt, validation, validation.status,
                                                validation.reason_codes,
                                                (str(registry_replay.relative_to(work)),),
-                                               translation))
+                                               translation,
+                                               requested_profile=plan.profile.value,
+                                               effective_profile=effective_plan.profile.value,
+                                               profile_selection_reason=profile_reason,
+                                               requested_comparison_policy=request.comparison_policy,
+                                               effective_comparison_policy=effective_policy))
         except Exception as exc:
             failure = replay / (attempt.artifact_id.replace(":", "-") + "-failure.json")
             failure.write_text(json.dumps({
@@ -598,7 +644,11 @@ def run_evaluation(
 def _attempt_result(attempt: object, validation: TranslationValidationResult | None,
                     status: ValidationStatus, reasons: Sequence[str],
                     replay_artifacts: Sequence[str] = (),
-                    translation: object | None = None) -> dict[str, object]:
+                    translation: object | None = None, *,
+                    requested_profile: str = "", effective_profile: str = "",
+                    profile_selection_reason: str = "",
+                    requested_comparison_policy: str = "",
+                    effective_comparison_policy: str = "") -> dict[str, object]:
     return {
         "findingId": getattr(attempt, "finding_id"),
         "fragmentId": getattr(attempt, "fragment_id"),
@@ -606,6 +656,11 @@ def _attempt_result(attempt: object, validation: TranslationValidationResult | N
         "translationOutcome": getattr(attempt, "translation_outcome").value,
         "status": status.value,
         "validation": None if validation is None else validation.to_dict(),
+        "requestedValidationProfile": requested_profile,
+        "effectiveValidationProfile": effective_profile,
+        "profileSelectionReason": profile_selection_reason,
+        "requestedComparisonPolicy": requested_comparison_policy,
+        "effectiveComparisonPolicy": effective_comparison_policy,
         "translationArtifact": None if translation is None else {
             "fragment_id": translation.fragment_id,
             "source_model_identity": translation.source_model_identity,
