@@ -622,9 +622,16 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                         detail=json.dumps({"reasonCode":"L2_FENCE_PROOF_FACTS_MISSING"}))
                 fence_facts = fence_proof_facts_from_dict(raw_fence)
-                if (approval.get("rendererContractId") != fence_facts.target_contract_id
-                        or approval.get("rendererVersion") != fence_facts.target_contract_version
-                        or getattr(artifact, "recipe_id", "") != fence_facts.target_contract_id):
+                if (approval.get("rendererSemanticContractId")
+                        != fence_facts.target_semantic_contract_id
+                        or getattr(artifact, "renderer_semantic_contract_id", "")
+                        != fence_facts.target_semantic_contract_id
+                        or approval.get("rendererContractId")
+                        != fence_facts.target_renderer_contract_id
+                        or approval.get("rendererVersion")
+                        != fence_facts.target_renderer_version
+                        or getattr(artifact, "recipe_id", "")
+                        != fence_facts.target_renderer_contract_id):
                     return ValidationLayerResult(
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                         detail=json.dumps({"reasonCode":"L2_FENCE_TARGET_CONTRACT_MISMATCH"}))

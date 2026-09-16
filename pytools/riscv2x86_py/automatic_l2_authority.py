@@ -362,8 +362,10 @@ def _fence_authority(
         return None
     if (profile.pattern_kind is not L2PatternKind.FENCE or facts.fragment_id != fragment_id
             or not facts.complete
-            or approval.get("rendererContractId") != facts.target_contract_id
-            or approval.get("rendererVersion") != facts.target_contract_version):
+            or approval.get("rendererSemanticContractId")
+                != facts.target_semantic_contract_id
+            or approval.get("rendererContractId") != facts.target_renderer_contract_id
+            or approval.get("rendererVersion") != facts.target_renderer_version):
         return None
     relations = approved_fence_relations(facts)
     effects = tuple(sorted((
@@ -422,8 +424,10 @@ def _fence_authority_failure_reason(
         return "L2_FENCE_PROOF_FACTS_INVALID"
     if facts.fragment_id != fragment_id or not facts.complete:
         return "L2_FENCE_PROOF_FACTS_INCOMPLETE"
-    if (approval.get("rendererContractId") != facts.target_contract_id
-            or approval.get("rendererVersion") != facts.target_contract_version):
+    if (approval.get("rendererSemanticContractId")
+            != facts.target_semantic_contract_id
+            or approval.get("rendererContractId") != facts.target_renderer_contract_id
+            or approval.get("rendererVersion") != facts.target_renderer_version):
         return "L2_FENCE_TARGET_CONTRACT_MISMATCH"
     return "L2_FENCE_AUTHORITY_MATERIALIZATION_REJECTED"
 

@@ -30,7 +30,8 @@ from riscv2x86_py.translation_validation import ValidationLevel
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 
 
-_CONTRACT = "x86.gnu-att.mfence.full-system-seq-cst.v1"
+_SEMANTIC_CONTRACT = "x86.gnu-att.mfence.full-system-seq-cst.v1"
+_RENDERER_CONTRACT = "x86.gnu-att.mfence.full-system-seq-cst:x86.barrier.mfence"
 
 
 def _digest(data):
@@ -46,7 +47,9 @@ def _facts(**changes):
       source_ordering="seq_cst", source_scope="compiler",
       target_compiler_ordering=True, target_hardware_ordering=True,
       target_ordering="seq_cst", target_scope="system", relation_kind="strengthened",
-      target_contract_id=_CONTRACT, target_contract_version="renderer-v1",
+      target_semantic_contract_id=_SEMANTIC_CONTRACT,
+      target_renderer_contract_id=_RENDERER_CONTRACT,
+      target_renderer_version="renderer-v1",
       source_domain_complete=True, target_contract_approved=True,
       instruction_visibility=False, complete=True)
     values.update(changes)
@@ -76,8 +79,9 @@ def _finding(facts=None, *, kind=L2PatternKind.FENCE):
         "shellSemanticsPreserved":True, "sourceModelId":"model", "constraintsId":"constraints",
         "preservationDecisionId":"decision", "planId":"plan",
         "targetEnvironmentId":"environment", "targetCatalogVersion":"catalog",
-        "rendererContractId":facts.target_contract_id,
-        "rendererVersion":facts.target_contract_version,
+        "rendererSemanticContractId":facts.target_semantic_contract_id,
+        "rendererContractId":facts.target_renderer_contract_id,
+        "rendererVersion":facts.target_renderer_version,
         "l2FenceProofFacts":facts.to_dict()}}
 
 
@@ -87,12 +91,27 @@ def test_proof_export_consumes_structured_barrier_and_registered_contract():
       ordering=SimpleNamespace(value="seq_cst"), scope=SimpleNamespace(value="system"))
     facts = fence_proof_facts_from_source_model(
       "fragment:fence", SimpleNamespace(barrier=barrier),
-      {"rendererContractId":_CONTRACT, "rendererVersion":"renderer-v1"})
+      {"rendererSemanticContractId":_SEMANTIC_CONTRACT,
+       "rendererContractId":_RENDERER_CONTRACT, "rendererVersion":"renderer-v1"})
     assert facts is not None and facts.relation_kind == "exact"
     instruction_barrier = SimpleNamespace(**{**barrier.__dict__, "instruction_serializing":True})
     assert fence_proof_facts_from_source_model(
       "fragment:i", SimpleNamespace(barrier=instruction_barrier),
-      {"rendererContractId":_CONTRACT, "rendererVersion":"renderer-v1"}) is None
+      {"rendererSemanticContractId":_SEMANTIC_CONTRACT,
+       "rendererContractId":_RENDERER_CONTRACT, "rendererVersion":"renderer-v1"}) is None
+
+
+def test_proof_export_never_infers_semantics_from_renderer_identifier():
+    barrier = SimpleNamespace(present=True, complete=True, instruction_serializing=False,
+      compiler_barrier=True, hardware_memory_barrier=True,
+      ordering=SimpleNamespace(value="seq_cst"), scope=SimpleNamespace(value="system"))
+    approval = {"rendererContractId":_RENDERER_CONTRACT,
+                "rendererVersion":"renderer-v1"}
+    assert fence_proof_facts_from_source_model(
+      "fragment:fence", SimpleNamespace(barrier=barrier), approval) is None
+    approval["rendererSemanticContractId"] = "unregistered.semantic.contract.v1"
+    assert fence_proof_facts_from_source_model(
+      "fragment:fence", SimpleNamespace(barrier=barrier), approval) is None
 
 
 def test_approved_strengthened_relation_and_required_edge_pass():

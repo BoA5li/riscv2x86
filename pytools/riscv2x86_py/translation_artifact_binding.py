@@ -130,6 +130,9 @@ def translation_artifact_from_approval(
             approval.get("l2SemanticProfileIdentity") != profile_identity
             or approval.get("l2PatternKind") != pattern_kind):
         raise ValueError("approval/finding L2 semantic profile binding mismatch")
+    renderer_semantic_contract_id = approval.get("rendererSemanticContractId", "")
+    if not isinstance(renderer_semantic_contract_id, str):
+        raise ValueError("approval renderer semantic contract ID is invalid")
     return TranslationArtifact(
         fragment_id=attempt.fragment_id,
         source_model_identity=attempt.source_model_id,
@@ -149,6 +152,7 @@ def translation_artifact_from_approval(
         l2_authority_complete=attempt.l2_authority_complete,
         l2_semantic_profile_identity=profile_identity,
         l2_pattern_kind=pattern_kind,
+        renderer_semantic_contract_id=renderer_semantic_contract_id,
     )
 
 

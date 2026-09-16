@@ -143,6 +143,7 @@ class TranslationArtifact:
     l2_authority_complete: bool = False
     l2_semantic_profile_identity: str = ""
     l2_pattern_kind: str = ""
+    renderer_semantic_contract_id: str = ""
 
     def __post_init__(self) -> None:
         required = (

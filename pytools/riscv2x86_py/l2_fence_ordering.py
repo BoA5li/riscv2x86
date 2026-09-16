@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from .effect_relation import ApprovedEffectRelation, EffectOrderingRequirement
 
 
-L2_FENCE_PROOF_FACTS_SCHEMA = "riscv2x86.l2-fence-proof-facts.v1"
+L2_FENCE_PROOF_FACTS_SCHEMA = "riscv2x86.l2-fence-proof-facts.v2"
 L2_FENCE_OBSERVATION_SCHEMA = "riscv2x86.l2-fence-ordering-observation.v1"
 _ORDERINGS = {"relaxed", "consume", "acquire", "release", "acq_rel", "seq_cst"}
 _SCOPES = {"compiler", "thread", "system"}
@@ -43,8 +43,9 @@ class L2FenceProofFacts:
     target_ordering: str
     target_scope: str
     relation_kind: str
-    target_contract_id: str
-    target_contract_version: str
+    target_semantic_contract_id: str
+    target_renderer_contract_id: str
+    target_renderer_version: str
     source_domain_complete: bool
     target_contract_approved: bool
     instruction_visibility: bool
@@ -64,8 +65,10 @@ class L2FenceProofFacts:
             raise ValueError("fence proof scope is invalid")
         if self.relation_kind not in {"exact", "strengthened"}:
             raise ValueError("fence proof relation kind is invalid")
-        if not self.target_contract_id or not self.target_contract_version:
-            raise ValueError("fence proof target contract identity/version is missing")
+        if (not self.target_semantic_contract_id
+                or not self.target_renderer_contract_id
+                or not self.target_renderer_version):
+            raise ValueError("fence proof semantic/renderer contract binding is missing")
         closed = (self.source_domain_complete and self.target_contract_approved
                   and not self.instruction_visibility
                   and (self.source_compiler_ordering or self.source_hardware_ordering)
@@ -87,8 +90,10 @@ class L2FenceProofFacts:
           "targetCompilerOrdering":self.target_compiler_ordering,
           "targetHardwareOrdering":self.target_hardware_ordering,
           "targetOrdering":self.target_ordering, "targetScope":self.target_scope,
-          "relationKind":self.relation_kind, "targetContractId":self.target_contract_id,
-          "targetContractVersion":self.target_contract_version,
+          "relationKind":self.relation_kind,
+          "targetSemanticContractId":self.target_semantic_contract_id,
+          "targetRendererContractId":self.target_renderer_contract_id,
+          "targetRendererVersion":self.target_renderer_version,
           "sourceDomainComplete":self.source_domain_complete,
           "targetContractApproved":self.target_contract_approved,
           "instructionVisibility":self.instruction_visibility, "complete":self.complete}
@@ -111,10 +116,12 @@ def fence_proof_facts_from_source_model(
         return None
     source_ordering = str(getattr(getattr(barrier, "ordering", None), "value", ""))
     source_scope = str(getattr(getattr(barrier, "scope", None), "value", ""))
-    contract_id = str(approval.get("rendererContractId") or "")
-    contract_version = str(approval.get("rendererVersion") or "")
-    target = _CONTRACTS.get(contract_id)
-    if not source_ordering or not source_scope or target is None or not contract_version:
+    semantic_contract_id = str(approval.get("rendererSemanticContractId") or "")
+    renderer_contract_id = str(approval.get("rendererContractId") or "")
+    renderer_version = str(approval.get("rendererVersion") or "")
+    target = _CONTRACTS.get(semantic_contract_id)
+    if (not source_ordering or not source_scope or target is None
+            or not renderer_contract_id or not renderer_version):
         return None
     target_compiler, target_hardware, target_ordering, target_scope = target
     source_compiler = bool(getattr(barrier, "compiler_barrier", False))
@@ -128,7 +135,8 @@ def fence_proof_facts_from_source_model(
         fragment_id, "before:read", "fence:0", "after:write",
         source_compiler, source_hardware, source_ordering, source_scope,
         target_compiler, target_hardware, target_ordering, target_scope,
-        relation_kind, contract_id, contract_version, complete=True,
+        relation_kind, semantic_contract_id, renderer_contract_id,
+        renderer_version, complete=True,
         **facts,
     )
 
@@ -138,7 +146,8 @@ def fence_proof_facts_from_dict(value: Mapping[str, object]) -> L2FenceProofFact
       "afterEffectId", "sourceCompilerOrdering", "sourceHardwareOrdering",
       "sourceOrdering", "sourceScope", "targetCompilerOrdering",
       "targetHardwareOrdering", "targetOrdering", "targetScope", "relationKind",
-      "targetContractId", "targetContractVersion", "sourceDomainComplete",
+      "targetSemanticContractId", "targetRendererContractId",
+      "targetRendererVersion", "sourceDomainComplete",
       "targetContractApproved", "instructionVisibility", "complete", "factsIdentity"}
     if set(value) != fields:
         raise ValueError("fence proof facts fields are incomplete or unknown")
@@ -158,7 +167,8 @@ def fence_proof_facts_from_dict(value: Mapping[str, object]) -> L2FenceProofFact
         flag("sourceHardwareOrdering"), text("sourceOrdering"), text("sourceScope"),
         flag("targetCompilerOrdering"), flag("targetHardwareOrdering"),
         text("targetOrdering"), text("targetScope"), text("relationKind"),
-        text("targetContractId"), text("targetContractVersion"),
+        text("targetSemanticContractId"), text("targetRendererContractId"),
+        text("targetRendererVersion"),
         flag("sourceDomainComplete"), flag("targetContractApproved"),
         flag("instructionVisibility"), flag("complete"), text("factsIdentity"),
         text("schemaVersion"),
@@ -230,8 +240,10 @@ def fence_ordering_events(
     hardware = facts.source_hardware_ordering if side == "source" else facts.target_hardware_ordering
     ordering = facts.source_ordering if side == "source" else facts.target_ordering
     scope = facts.source_scope if side == "source" else facts.target_scope
-    contract_id = "source:fence-domain" if side == "source" else facts.target_contract_id
-    contract_version = facts.schema_version if side == "source" else facts.target_contract_version
+    contract_id = ("source:fence-domain" if side == "source"
+                   else facts.target_renderer_contract_id)
+    contract_version = (facts.schema_version if side == "source"
+                        else facts.target_renderer_version)
     return (
         L2FenceOrderingEvent(before, facts.fragment_id, "ReadMemory", "ordering:before",
                              {"value":"u64:0x1122334455667788"}, 0, ()),

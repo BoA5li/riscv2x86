@@ -3883,6 +3883,10 @@ def _translate_phase6_proof_pipeline(
             else "c")
     proof = selection.selected_plan.proof
     evidence = proof.evidence
+    renderer_semantic_contract_id = selection.selected_plan.plan.metadata.get(
+        "renderer_semantic_contract_id", "")
+    if not isinstance(renderer_semantic_contract_id, str):
+        renderer_semantic_contract_id = ""
     artifact = {
         "artifactVersion": "phase6-approval-v1", "proofStatus": "approved",
         "sourceFragmentId": context.fragment.id,
@@ -3897,6 +3901,10 @@ def _translate_phase6_proof_pipeline(
         "selectionTier": selection.selected_plan.selection_tier.name,
         "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version,
         "rendererContractId": rendered.renderer_contract_id,
+        # Keep the proof-selected semantic contract separate from the concrete
+        # renderer registration/plan binding.  L2 must never recover this fact
+        # by parsing a renderer ID or emitted assembly text.
+        "rendererSemanticContractId": renderer_semantic_contract_id,
         "rendererRegistryId": renderer_contract_registry.registry_id,
         "rendererRegistryVersion": renderer_contract_registry.version,
         "replacementKind": rendered.kind.value,
