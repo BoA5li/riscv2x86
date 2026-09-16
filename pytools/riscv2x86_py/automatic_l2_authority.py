@@ -18,6 +18,7 @@ from .l2_authority import (
     L2OperandAuthority,
     L2OrderingAuthority,
     L2SourceEffectAuthority,
+    L2InternalValueAuthority,
 )
 from .l2_control_flow import (
     bind_control_flow_authority,
@@ -30,6 +31,10 @@ from .l2_memory_object import (
 from .l2_fence_ordering import (
     approved_fence_relations,
     fence_proof_facts_from_dict,
+)
+from .l2_internal_value import (
+    bind_instrumentation_plan,
+    internal_value_proof_facts_from_dict,
 )
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 
@@ -97,7 +102,7 @@ def _scalar_authority(
     boundary = function.get("l2OperandBoundary")
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     if (not isinstance(boundary, Mapping) or boundary.get("complete") is not True
-            or not isinstance(outputs, list) or len(outputs) != 1
+            or not isinstance(outputs, list) or not outputs
             or not isinstance(inputs, list)):
         return None
     declarations = boundary.get("declarations")
@@ -107,17 +112,23 @@ def _scalar_authority(
     counts = boundary.get("declarationReferenceCounts")
     if (not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
             or not isinstance(params, list) or not isinstance(counts, Mapping)
-            or len(asm_ids) != 1 + len(inputs)):
+            or len(asm_ids) != len(outputs) + len(inputs)):
         return None
-    output_id, input_ids = asm_ids[0], asm_ids[1:]
-    if output_id != returned or sorted(input_ids) != sorted(params):
+    output_ids, input_ids = asm_ids[:len(outputs)], asm_ids[len(outputs):]
+    read_write_ids = [output_ids[index] for index, item in enumerate(outputs)
+                      if isinstance(item, Mapping)
+                      and str(item.get("constraint", "")).startswith("+")]
+    if returned not in output_ids or sorted(input_ids + read_write_ids) != sorted(params):
         return None
     expected = {item: asm_ids.count(item) + int(item == returned) for item in set(asm_ids)}
     if any(counts.get(item) != count for item, count in expected.items()):
         return None
     operands = []
     for index, (raw, declaration_id, access) in enumerate(
-            [(outputs[0], output_id, "output")]
+            [(item, output_ids[pos],
+              "read_write" if isinstance(item, Mapping)
+              and str(item.get("constraint", "")).startswith("+") else "output")
+             for pos, item in enumerate(outputs)]
             + [(item, input_ids[pos], "input") for pos, item in enumerate(inputs)]):
         declaration = declarations.get(declaration_id)
         if not isinstance(raw, Mapping) or not isinstance(declaration, Mapping):
@@ -138,7 +149,8 @@ def _scalar_authority(
             tied_to_operand_id="",
             early_clobber=bool(raw.get("isEarlyClobber")) or "&" in constraint,
             fixed_register_contract="",
-            escape_kind="function_return" if access == "output" else "function_argument",
+            escape_kind=("function_return" if declaration_id == returned else
+                         "function_argument" if declaration_id in params else "non_escaping"),
             declaration_id=str(declaration_id),
             parameter_index=params.index(declaration_id) if declaration_id in params else None,
             source_constraint=constraint,
@@ -157,8 +169,37 @@ def _scalar_authority(
     except ValueError:
         return None
     if profile.pattern_kind not in {
-            L2PatternKind.SCALAR, L2PatternKind.BRANCH, L2PatternKind.JUMP}:
+            L2PatternKind.SCALAR, L2PatternKind.BRANCH, L2PatternKind.JUMP,
+            L2PatternKind.COMPOSITE}:
         return None
+    internal_values = ()
+    instrumentation_plan_identity = ""
+    if profile.pattern_kind is L2PatternKind.COMPOSITE:
+        raw_internal = approval.get("l2InternalValueProofFacts")
+        if not isinstance(raw_internal, Mapping):
+            return None
+        try:
+            internal_facts = internal_value_proof_facts_from_dict(raw_internal)
+            if internal_facts.fragment_id != fragment_id:
+                return None
+            rewrite_end = finding.get("rewriteEndOffset")
+            instrumentation = bind_instrumentation_plan(
+                internal_facts, boundary,
+                insertion_offset=(rewrite_end if isinstance(rewrite_end, int)
+                                  and not isinstance(rewrite_end, bool)
+                                  and rewrite_end > 0 else None),
+            )
+        except (KeyError, ValueError):
+            return None
+        internal_values = tuple(sorted((L2InternalValueAuthority(
+            point.logical_value_id, point.type_contract.type_kind,
+            point.type_contract.width_bits, point.type_contract.signedness,
+            "operand" if output_ids[point.operand_index] == returned else "non_escaping",
+            True,
+        ) for point in instrumentation.points), key=lambda item: item.value_id))
+        if isinstance(approval, dict):
+            approval["l2InstrumentationPlan"] = instrumentation.to_dict()
+        instrumentation_plan_identity = instrumentation.plan_identity
     control_flow = ()
     proof_facts = None
     if profile.pattern_kind in {L2PatternKind.BRANCH, L2PatternKind.JUMP}:
@@ -199,15 +240,16 @@ def _scalar_authority(
             event_id, event_kind,
             "condition:0" if profile.pattern_kind is L2PatternKind.BRANCH else
             "transfer:0" if profile.pattern_kind is L2PatternKind.JUMP else
-            "continuation:return", True,
+            (("continuation:return|instrumentation:" + instrumentation_plan_identity)
+             if instrumentation_plan_identity else "continuation:return"), True,
         ))
     shell_identity = _shell_identity(approval, fragment_id)
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
-                            "v3", producer_digest),
+                            "v4", producer_digest),
         shell_identity, tuple(operands), (), tuple(source_effects), tuple(relations),
-        (), (), True, control_flow=control_flow,
+        (), (), True, control_flow=control_flow, internal_values=internal_values,
     )
 
 

@@ -527,7 +527,7 @@ def test_inventory_registers_non_scalar_providers_by_capability(
     assert "automatic-l2-operand-v2" in providers
     assert expected_provider in providers
     assert providers["automatic-l2-operand-v2"]["supportedPatterns"] == [
-        "branch", "composite", "jump", "scalar",
+        "branch", "jump", "scalar",
     ]
     if expected_provider == "automatic-l2-memory-object-v1":
         assert providers[expected_provider]["supportedDimensions"] == [
@@ -537,6 +537,34 @@ def test_inventory_registers_non_scalar_providers_by_capability(
             "logical_operand_observation", "object_relative_memory_observation",
             "shell_observation",
         ]
+
+
+def test_inventory_registers_one_composite_provider_for_operand_and_shell(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "sequence.c"
+    source.write_text("unsigned long sequence(unsigned long x){return x;}\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    boundary = {
+        "complete": True, "parameterDeclarationIds": ["x"],
+        "asmOperandDeclarationIds": ["tmp", "out", "x"],
+        "returnDeclarationId": "out", "declarations": {},
+        "declarationReferenceCounts": {}, "asmStatementEndOffset": 1,
+    }
+    function = {"name": "sequence", "arity": 1, "returnType": "unsigned long",
+                "parameterTypes": ["unsigned long"], "pointerParameters": [],
+                "l2OperandBoundary": boundary}
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda _source: (False, (function,)))
+    auto.prepare_automatic_inventory(source, tmp_path / "inventory", frontend=frontend)
+    descriptor = json.loads(next(
+        (tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json")
+    ).read_text())
+    providers = descriptor["request"]["runtimeRegistryTemplate"]["validators"]["L2"][
+        "config"]["providers"]
+    composite = next(item for item in providers
+                     if item["providerId"] == "automatic-l2-composite-operand-v1")
+    assert composite["supportedDimensions"] == ["logical_operands", "shell_semantics"]
+    assert composite["supportedPatterns"] == ["composite"]
 
 
 def test_explicit_harness_cannot_escape_manifest_directory(tmp_path, monkeypatch):

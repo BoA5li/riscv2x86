@@ -13,6 +13,7 @@ from .runtime_dependency_binding import resolve_runtime_contracts
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
 from .l2_authority import l2_authority_sidecar_from_dict
+from .l2_internal_value import instrumentation_plan_from_dict
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -96,18 +97,34 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     if len(asm_ids) != len(outputs) + len(inputs):
         return None, "L2_OPERAND_AST_SHELL_ARITY_MISMATCH"
     output_ids, input_ids = asm_ids[:len(outputs)], asm_ids[len(outputs):]
-    # This first automatic profile observes every input at the function boundary
-    # and exactly one output at return.  Internal temporaries are never omitted.
+    # Direct boundary observations need one returned output.  Composite
+    # fragments instead require a proof-owned instrumentation plan below.
     read_write_ids = [output_ids[index] for index, item in enumerate(outputs)
                       if isinstance(item, Mapping) and str(item.get("constraint") or "").startswith("+")]
-    if (len(outputs) != 1 or output_ids[0] != returned
+    approval = finding.get("approvalArtifact")
+    raw_instrumentation = approval.get("l2InstrumentationPlan") \
+        if isinstance(approval, Mapping) else None
+    instrumentation = None
+    if raw_instrumentation is not None:
+        if not isinstance(raw_instrumentation, Mapping):
+            return None, "L2_OPERAND_INSTRUMENTATION_PLAN_INVALID"
+        try:
+            instrumentation = instrumentation_plan_from_dict(raw_instrumentation)
+        except ValueError:
+            return None, "L2_OPERAND_INSTRUMENTATION_PLAN_INVALID"
+        if (instrumentation.fragment_id != getattr(artifact, "fragment_id", "")
+                or not instrumentation.complete
+                or not instrumentation.non_interference.complete):
+            return None, "L2_OPERAND_NON_INTERFERENCE_PROOF_MISSING"
+    if ((len(outputs) != 1 or output_ids[0] != returned) and instrumentation is None):
+        return None, "L2_OPERAND_INTERNAL_VALUE_REQUIRES_INSTRUMENTATION"
+    if (returned not in output_ids
             or sorted(input_ids + read_write_ids) != sorted(params)):
         return None, "L2_OPERAND_INTERNAL_VALUE_REQUIRES_INSTRUMENTATION"
     for declaration_id in set(asm_ids):
         expected_references = asm_ids.count(declaration_id) + int(returned == declaration_id)
         if reference_counts.get(declaration_id) != expected_references:
             return None, "L2_OPERAND_VALUE_ESCAPES_FUNCTION_BOUNDARY_MODEL"
-    approval = finding.get("approvalArtifact")
     if not isinstance(approval, Mapping) or approval.get("proofStatus") != "approved":
         return None, "L2_OPERAND_ARCHITECTURAL_PROOF_NOT_APPROVED"
     shell_identity = getattr(artifact, "shell_facts_identity", "")
@@ -172,6 +189,8 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         "proofIdentity": getattr(artifact, "proof_identity", ""),
         "operands": sidecar_operands,
         "effectRelationSetIdentity": sidecar.effect_relation_set_identity,
+        "instrumentationPlan": (None if instrumentation is None
+                                else instrumentation.to_dict()),
     }
     payload["authorityIdentity"] = sidecar.authority_identity
     return payload, ""
@@ -187,11 +206,99 @@ def _wrapper(function: Mapping[str, object]) -> str:
     loops = "".join(f"for(unsigned i{i}=0;i{i}<8;++i{i}){{" for i in range(len(types)))
     print_args = "".join(f'printf(";%016llx",(unsigned long long)v[i{i}]);' for i in range(len(types)))
     return "\n".join([
-        "#include <stdint.h>", "#include <stdio.h>", f"{ret} {name}({declarations});",
+        "#include <stdint.h>", "#include <stdio.h>", "#include <stdarg.h>",
+        "void __r2x_l2_observe(unsigned n,...){va_list a;va_start(a,n);printf(\"internal_trace\");for(unsigned i=0;i<n;++i)printf(\";%016llx\",va_arg(a,unsigned long long));printf(\"\\n\");va_end(a);}",
+        f"{ret} {name}({declarations});",
         "int main(void){ static const uint64_t v[8]={0,1,UINT64_MAX,UINT64_C(0x7fffffff),UINT64_C(0x80000000),UINT64_C(0xffffffff),UINT64_C(0x5a17d3e4c29b806f),UINT64_C(0xc4ceb9fe1a85ec53)};",
         loops, f"uint64_t out=(uint64_t){name}({args});", f'printf("operand_trace={name}");{print_args}printf(";%016llx\\n",(unsigned long long)out);',
         "}" * len(types), "return 0;}",
     ]) + "\n"
+
+
+def _instrumented_pair(source: Path, target: Path, report: Mapping[str, object],
+                       finding: Mapping[str, object], plan: Mapping[str, object],
+                       work: Path) -> tuple[Path, Path]:
+    """Materialize observation variants from proof/report byte boundaries only."""
+    points = plan.get("points")
+    source_offset = plan.get("sourceInsertionOffset")
+    if (not isinstance(points, list) or not points
+            or isinstance(source_offset, bool) or not isinstance(source_offset, int)):
+        raise ValueError("instrumentation plan is incomplete")
+    names = []
+    for point in points:
+        if not isinstance(point, Mapping) or not isinstance(point.get("declarationName"), str):
+            raise ValueError("instrumentation declaration binding is invalid")
+        names.append(str(point["declarationName"]))
+    source_bytes, target_bytes = source.read_bytes(), target.read_bytes()
+    findings = report.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError("translated findings are unavailable for target offset mapping")
+    source_resolved = source.resolve()
+    edits = []
+    for item in findings:
+        if not isinstance(item, Mapping):
+            continue
+        file_name = item.get("fileName") or item.get("file")
+        replacement = item.get("suggestedReplacement")
+        embedded_attempt = item.get("translationAttemptArtifact")
+        if (not isinstance(replacement, str) or not replacement) and isinstance(
+                embedded_attempt, Mapping):
+            replacement = embedded_attempt.get("candidateReplacement")
+        begin, end = item.get("rewriteBeginOffset"), item.get("rewriteEndOffset")
+        if (not isinstance(file_name, str) or not isinstance(replacement, str)
+                or not replacement or isinstance(begin, bool) or not isinstance(begin, int)
+                or isinstance(end, bool) or not isinstance(end, int)):
+            continue
+        try:
+            same_file = Path(file_name).resolve() == source_resolved
+        except OSError:
+            same_file = False
+        if same_file:
+            edits.append((begin, end, replacement.encode("utf-8")))
+    edits.sort()
+    if any(left[1] > right[0] for left, right in zip(edits, edits[1:])):
+        raise ValueError("instrumentation target mapping has overlapping edits")
+    expected = source_bytes
+    for begin, end, replacement in reversed(edits):
+        expected = expected[:begin] + replacement + expected[end:]
+    header_prefix = b""
+    if expected != target_bytes:
+        # Candidate materialization may prepend proof-declared headers.  A
+        # unique exact suffix preserves the byte mapping without parsing C.
+        if not target_bytes.endswith(expected):
+            raise ValueError("instrumentation target mapping is not content-exact")
+        header_prefix = target_bytes[:-len(expected)] if expected else target_bytes
+        if not header_prefix or not all(
+                line.startswith(b"#include <") and line.endswith(b">")
+                for line in header_prefix.rstrip(b"\n").splitlines()):
+            raise ValueError("instrumentation target header mapping is unapproved")
+    target_offset = len(header_prefix) + source_offset + sum(
+        len(replacement) - (end - begin)
+        for begin, end, replacement in edits if end <= source_offset
+    )
+    if source_offset > len(source_bytes) or target_offset > len(target_bytes):
+        raise ValueError("instrumentation insertion boundary exceeds candidate")
+    call = ("\n__r2x_l2_observe(" + str(len(names)) + "," +
+            ",".join("(unsigned long long)(" + name + ")" for name in names) + ");\n").encode()
+    declaration = b"#include <stdint.h>\nextern void __r2x_l2_observe(unsigned,...);\n"
+    source_instrumented = declaration + source_bytes[:source_offset] + call + source_bytes[source_offset:]
+    target_instrumented = declaration + target_bytes[:target_offset] + call + target_bytes[target_offset:]
+    source_path, target_path = work / "source-instrumented.c", work / "target-instrumented.c"
+    source_path.write_bytes(source_instrumented); target_path.write_bytes(target_instrumented)
+    return source_path, target_path
+
+
+def _internal_traces(text: str, width: int) -> tuple[tuple[int, ...], ...] | None:
+    rows = []
+    for line in text.splitlines():
+        if not line.startswith("internal_trace;"):
+            continue
+        fields = line[len("internal_trace;"):].split(";")
+        if len(fields) != width or any(re.fullmatch(r"[0-9a-f]{16}", item) is None
+                                       for item in fields):
+            return None
+        rows.append(tuple(int(item, 16) for item in fields))
+    return tuple(rows) if rows else None
 
 
 def _traces(text: str, name: str, arity: int) -> tuple[tuple[int, ...], ...] | None:
@@ -208,13 +315,21 @@ def _traces(text: str, name: str, arity: int) -> tuple[tuple[int, ...], ...] | N
 
 
 def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
-                         authority: Mapping[str, object]) -> list[dict[str, object]]:
+                         authority: Mapping[str, object],
+                         internal_rows: tuple[tuple[int, ...], ...] | None = None,
+                         ) -> list[dict[str, object]]:
     if rows is None:
         return []
     facts = authority["operands"]
     assert isinstance(facts, list)
     input_facts = [item for item in facts if item["accessMode"] == "input"]
     output_facts = [item for item in facts if item["accessMode"] in {"output", "read_write"}]
+    plan = authority.get("instrumentationPlan")
+    point_positions = {}
+    if isinstance(plan, Mapping) and isinstance(plan.get("points"), list):
+        point_positions = {item.get("operandIndex"): index
+                           for index, item in enumerate(plan["points"])
+                           if isinstance(item, Mapping)}
     result = []
     for sample_index, row in enumerate(rows):
         operands = []
@@ -226,10 +341,14 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
                              "widthBits": fact["widthBits"], "signedness": fact["signedness"]})
         for fact in output_facts:
             parameter_index = fact["parameterIndex"]
+            internal_position = point_positions.get(fact["operandIndex"])
+            after = (internal_rows[sample_index][internal_position]
+                     if internal_rows is not None and isinstance(internal_position, int)
+                     and sample_index < len(internal_rows) else row[-1])
             operands.append({"operandId": fact["operandId"], "access": fact["accessMode"],
                              "valueBefore": (f"0x{row[parameter_index]:016x}"
                                              if isinstance(parameter_index, int) else None),
-                             "valueAfter": f"0x{row[-1]:016x}",
+                             "valueAfter": f"0x{after:016x}",
                              "widthBits": fact["widthBits"], "signedness": fact["signedness"]})
         result.append({"sampleIndex": sample_index, "logicalOperands": operands})
     return result
@@ -287,21 +406,37 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             harness = work / "operand-harness.c"; harness.write_text(wrapper, encoding="utf-8")
             (replay / "operand-harness.c").write_text(wrapper, encoding="utf-8")
             (replay / "operand-authority.json").write_text(json.dumps(authority, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+            plan = authority.get("instrumentationPlan")
+            build_source, build_target = source, target
+            if isinstance(plan, Mapping):
+                build_source, build_target = _instrumented_pair(
+                    source, target, report, finding, plan, work,
+                )
+                (replay / "instrumentation-plan.json").write_text(
+                    json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                (replay / "source-instrumented.c").write_bytes(build_source.read_bytes())
+                (replay / "target-instrumented.c").write_bytes(build_target.read_bytes())
             dependencies = resolve_runtime_contracts((getattr(artifact, "runtime_contract_id"),))
             source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
-            left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(source),"-o",str(source_exe)),work,timeout)
-            right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
+            left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
+            right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
             if left_build.returncode or right_build.returncode:
                 detail={"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout); right=_run((str(target_exe),),work,timeout)
             arity=int(function["arity"]); source_rows=_traces(left.stdout,str(function_name),arity); target_rows=_traces(right.stdout,str(function_name),arity)
-            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":str(config["workDirectory"]).rsplit("/",1)[-1],"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity(source_rows),"targetTraceDigest":_identity(target_rows),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"sourceSamples":_sample_observations(source_rows,authority),"targetSamples":_sample_observations(target_rows,authority)}
-            if source_rows is None or target_rows is None:
+            point_count = len(plan.get("points", [])) if isinstance(plan, Mapping) else 0
+            source_internal = _internal_traces(left.stdout, point_count) if point_count else ()
+            target_internal = _internal_traces(right.stdout, point_count) if point_count else ()
+            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":str(config["workDirectory"]).rsplit("/",1)[-1],"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,authority,source_internal or None),"targetSamples":_sample_observations(target_rows,authority,target_internal or None)}
+            if (source_rows is None or target_rows is None
+                    or (point_count and (source_internal is None or target_internal is None
+                        or len(source_internal) != len(source_rows)
+                        or len(target_internal) != len(target_rows)))):
                 status=ValidationStatus.INCONCLUSIVE; observation["reasonCode"]="L2_OPERAND_TRACE_INCOMPLETE"
             elif left.returncode or right.returncode or left.stderr or right.stderr:
                 status=ValidationStatus.FAILED; observation["reasonCode"]="L2_OPERAND_EXECUTION_FAILED"
-            elif source_rows != target_rows:
+            elif source_rows != target_rows or source_internal != target_internal:
                 status=ValidationStatus.FAILED; observation["reasonCode"]="L2_OPERAND_VALUE_MISMATCH"
             else:
                 status=ValidationStatus.VERIFIED; observation["reasonCode"]=""

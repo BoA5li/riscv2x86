@@ -67,6 +67,8 @@ _PROFILE_DIMENSIONS = {
                                      L2Dimension.SHELL_SEMANTICS),
     L2PatternKind.ATOMIC: (L2Dimension.ATOMIC_MEMORY_ORDER, L2Dimension.LOGICAL_OPERANDS,
                            L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
+    L2PatternKind.COMPOSITE: (L2Dimension.LOGICAL_OPERANDS,
+                              L2Dimension.SHELL_SEMANTICS),
 }
 
 

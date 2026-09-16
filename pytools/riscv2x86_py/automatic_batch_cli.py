@@ -139,9 +139,18 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
             reference_counts[identity] = reference_counts.get(identity, 0) + 1
     parameter_ids = [str(item.get("id") or item.get("name") or "") for item in params]
     asm_ids: list[str] = []
+    asm_statement_end = -1
     if len(asm_nodes) == 1:
         asm_ids = [_decl_identity(item) for item in asm_nodes[0].get("inner", [])
                    if isinstance(item, Mapping)]
+        source_range = asm_nodes[0].get("range")
+        end = source_range.get("end") if isinstance(source_range, Mapping) else None
+        if isinstance(end, Mapping):
+            offset, token_length = end.get("offset"), end.get("tokLen")
+            if (isinstance(offset, int) and not isinstance(offset, bool)
+                    and isinstance(token_length, int) and not isinstance(token_length, bool)
+                    and token_length > 0):
+                asm_statement_end = offset + token_length
     return_id = ""
     if len(returns) == 1:
         children = [item for item in returns[0].get("inner", []) if isinstance(item, Mapping)]
@@ -157,13 +166,14 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
         and (returns_void or return_id in declarations)
     )
     return {
-        "schemaVersion": "riscv2x86.compiler-operand-boundary.v1",
+        "schemaVersion": "riscv2x86.compiler-operand-boundary.v2",
         "complete": complete,
         "parameterDeclarationIds": parameter_ids,
         "asmOperandDeclarationIds": asm_ids,
         "returnDeclarationId": return_id,
         "declarations": declarations,
         "declarationReferenceCounts": reference_counts,
+        "asmStatementEndOffset": asm_statement_end,
     }
 
 
@@ -552,6 +562,15 @@ def prepare_automatic_inventory(
                     for item in functions
                 )
             )
+            def composite_boundary(item):
+                boundary = item.get("l2OperandBoundary")
+                if not isinstance(boundary, Mapping):
+                    return False
+                asm_ids, params = (boundary.get("asmOperandDeclarationIds"),
+                                   boundary.get("parameterDeclarationIds"))
+                return (isinstance(asm_ids, list) and isinstance(params, list)
+                        and len(asm_ids) - len(params) > 1)
+            l2_composite_possible = any(composite_boundary(item) for item in functions)
             operand_config = {
                     "schemaVersion": "riscv2x86.auto-l2-operand-runner.v1",
                     "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
@@ -593,10 +612,20 @@ def prepare_automatic_inventory(
                 l2_environment_capabilities.add("logical_operand_observation")
                 l2_providers.append(provider(
                     "automatic-l2-operand-v2", [L2Dimension.LOGICAL_OPERANDS.value],
-                    ["branch", "composite", "jump", "scalar"],
+                    ["branch", "jump", "scalar"],
                     ["logical_operand_observation"],
                     "automatic-l2-operand-differential", operand_config,
                 ))
+                if l2_composite_possible:
+                    l2_environment_capabilities.add("composite_fragment_observation")
+                    l2_providers.append(provider(
+                        "automatic-l2-composite-operand-v1",
+                        [L2Dimension.LOGICAL_OPERANDS.value,
+                         L2Dimension.SHELL_SEMANTICS.value], ["composite"],
+                        ["composite_fragment_observation", "logical_operand_observation",
+                         "shell_observation"],
+                        "automatic-l2-operand-differential", operand_config,
+                    ))
             if l2_operand_possible:
                 l2_environment_capabilities.add("shell_observation")
                 l2_providers.append(provider(
