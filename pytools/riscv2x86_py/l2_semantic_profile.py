@@ -6,7 +6,7 @@ never examines source paths, function names, assembly text, or mnemonics.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from hashlib import sha256
 import json
@@ -389,6 +389,56 @@ def profile_from_source_model(
         fragment_id, kind, operand_shape, control_shape, memory_shape, ordering_shape,
         privileged_shape, internal_shape, execution_profile,
         tuple(sorted(_CAPABILITIES[kind])),
+    )
+
+
+def bind_approved_functional_profile(
+    profile: L2FragmentSemanticProfile,
+    approval: Mapping[str, object],
+) -> L2FragmentSemanticProfile:
+    """Close only the profile shape covered by a typed functional approval.
+
+    Strict privileged-state completeness and approved functional-relation
+    completeness are different authority domains.  A counter fallback may
+    intentionally lack strict architectural completeness while still carrying
+    a complete, versioned runtime-mediated relation.  This join consumes only
+    the proof artifact; it never infers eligibility from a CSR name, helper
+    spelling, source path, or assembly text.
+
+    Invalid or incomplete approvals leave the profile unchanged and therefore
+    fail closed in the eligibility classifier.
+    """
+    if profile.pattern_kind is not L2PatternKind.PRIVILEGED_READ:
+        return profile
+    string_fields = (
+        "sourceSemanticContractId", "targetSemanticContractId",
+        "runtimeContractId", "runtimeContractVersion",
+        "targetEnvironmentId", "targetCatalogVersion",
+    )
+    ignored = approval.get("ignoredSourceState")
+    non_equivalences = approval.get("knownNonEquivalences")
+    valid = (
+        approval.get("proofStatus") == "functional_approved"
+        and approval.get("functionalFallbackEnabled") is True
+        and approval.get("preservationMode") == "functional_equivalence_only"
+        and approval.get("architectureSemanticsPreserved") is False
+        and approval.get("sourceFragmentId") == profile.fragment_id
+        and all(isinstance(approval.get(name), str) and approval.get(name)
+                for name in string_fields)
+        and isinstance(ignored, list) and bool(ignored)
+        and ignored == sorted(set(ignored))
+        and all(isinstance(item, str) and item for item in ignored)
+        and isinstance(non_equivalences, list) and bool(non_equivalences)
+        and all(isinstance(item, str) and item for item in non_equivalences)
+    )
+    shape = profile.privileged_shape
+    if (not valid or not shape.present or not shape.reads_state
+            or shape.writes_state):
+        return profile
+    return replace(
+        profile,
+        privileged_shape=replace(shape, complete=True),
+        profile_identity="",
     )
 
 
