@@ -46,7 +46,9 @@ from .semantic_types import (
     PreservationDecision,
 )
 from .source_model import build_source_semantic_model, SourceSemanticModel
-from .l2_semantic_profile import profile_from_source_model
+from .l2_semantic_profile import (
+    bind_approved_functional_profile, profile_from_source_model,
+)
 from .l2_control_flow import control_flow_proof_facts_from_source_model
 from .l2_memory_object import memory_proof_facts_from_source_model
 from .l2_fence_ordering import fence_proof_facts_from_source_model
@@ -843,8 +845,10 @@ def _output(
 
     if context.sourceModel is not None and context.fragment.id:
         profile = profile_from_source_model(context.fragment.id, context.sourceModel)
-        output_metadata["l2SemanticProfile"] = profile.to_dict()
         approval = output_metadata.get("approvalArtifact")
+        if isinstance(approval, dict):
+            profile = bind_approved_functional_profile(profile, approval)
+        output_metadata["l2SemanticProfile"] = profile.to_dict()
         if isinstance(approval, dict):
             approval["l2SemanticProfileIdentity"] = profile.profile_identity
             approval["l2PatternKind"] = profile.pattern_kind.value
