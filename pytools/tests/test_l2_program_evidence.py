@@ -27,13 +27,22 @@ def _finding(fragment_id):
             "suggestedReplacement": ""}
 
 
-def _fragment_result(fragment_id, requirement, *, omit_dimension=False):
+def _fragment_result(
+    fragment_id, requirement, *, omit_dimension=False,
+    claim_scope=L2ClaimScope.ARCHITECTURAL,
+):
     dimensions = tuple(L2Dimension(item) for item in requirement["requiredDimensions"])
     results = tuple(L2DimensionResult.create(
         dimension=dimension, status=L2DimensionStatus.VERIFIED,
-        claim_scope=L2ClaimScope.ARCHITECTURAL, authority_identity=_id("a"),
+        claim_scope=claim_scope, authority_identity=_id("a"),
         source_observation_identity=SOURCE, target_observation_identity=TARGET,
         effect_relation_identity=_id("d"), execution_identity=EXECUTION,
+        relation_kind=("runtime_mediated" if claim_scope
+                       is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ""),
+        verified_properties=(("declared-return-relation",) if claim_scope
+                             is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ()),
+        not_claimed_properties=(("absolute-value-equivalence",) if claim_scope
+                                is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ()),
     ) for dimension in (dimensions[1:] if omit_dimension else dimensions))
     return L2FragmentResult.close(
         fragment_id=fragment_id, requirement_identity=requirement["requirementIdentity"],
@@ -85,6 +94,49 @@ def test_three_fragments_share_one_program_execution_sample(tmp_path):
         "fragment:0", "fragment:1", "fragment:2"]
     assert all(item["programExecutionEvidenceIdentities"] == [EXECUTION]
                for item in group["memberResults"])
+
+
+def test_uniform_functional_relation_is_verified_at_program_scope(tmp_path):
+    request, requirements = _setup(tmp_path, 1)
+    result = _fragment_result(
+        "fragment:0", requirements[0],
+        claim_scope=L2ClaimScope.APPROVED_FUNCTIONAL_RELATION,
+    )
+
+    linkage = _translation_evaluation_linkage(
+        request, tmp_path, [_attempt(0, "fragment:0", result)],
+    )
+    group = next(
+        item for item in linkage["validationGroups"] if item["level"] == "L2"
+    )
+
+    assert group["status"] == "verified"
+    assert group["l2GroupResult"]["requiredClaimScope"] == (
+        "approved_functional_relation"
+    )
+
+
+def test_mixed_claim_scopes_do_not_form_an_implicit_program_claim(tmp_path):
+    request, requirements = _setup(tmp_path, 2)
+    attempts = [
+        _attempt(0, "fragment:0", _fragment_result(
+            "fragment:0", requirements[0],
+            claim_scope=L2ClaimScope.ARCHITECTURAL,
+        )),
+        _attempt(1, "fragment:1", _fragment_result(
+            "fragment:1", requirements[1],
+            claim_scope=L2ClaimScope.APPROVED_FUNCTIONAL_RELATION,
+        )),
+    ]
+
+    group = next(
+        item for item in _translation_evaluation_linkage(
+            request, tmp_path, attempts,
+        )["validationGroups"]
+        if item["level"] == "L2"
+    )
+
+    assert group["status"] == "inconclusive"
 
 
 def test_independent_dimension_executions_are_all_retained(tmp_path):
