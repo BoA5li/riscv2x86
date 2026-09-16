@@ -210,3 +210,42 @@ def test_read_only_counter_with_possible_trap_is_not_classified_as_write():
     assert profile.pattern_kind is L2PatternKind.PRIVILEGED_READ
     assert profile.privileged_shape.reads_state
     assert not profile.privileged_shape.writes_state
+
+
+def test_single_operation_privileged_profile_does_not_require_unrelated_cfg_facts():
+    model = _source_model()
+    model.operands.complete = False
+    model.completeness.cfg_ok = False
+    model.control_flow.cfg_ok = False
+    model.privileged_state = SimpleNamespace(
+        read_only_counter=SimpleNamespace(csr_id="cycle"),
+        complete=True,
+        state=SimpleNamespace(
+            present=True,
+            csr_effects=(SimpleNamespace(
+                operation=SimpleNamespace(value="read")),),
+            return_effects=(), interrupt_effects=(),
+            address_translation_effects=(), virtualization_effects=(),
+            debug_effects=(),
+        ),
+    )
+
+    profile = profile_from_source_model("generic/counter:8:4", model)
+
+    assert profile.pattern_kind is L2PatternKind.PRIVILEGED_READ
+    assert not profile.internal_state_shape.has_internal_values
+    assert profile.internal_state_shape.complete
+    assert profile.internal_state_shape.escape_complete
+    assert profile.complete
+
+
+def test_multi_operation_profile_still_requires_internal_non_interference_facts():
+    model = _source_model()
+    model.value_program = SimpleNamespace(instructions=(object(), object()))
+    model.operands.complete = False
+
+    profile = profile_from_source_model("generic/composite:8:4", model)
+
+    assert profile.internal_state_shape.has_internal_values
+    assert not profile.internal_state_shape.escape_complete
+    assert not profile.complete
