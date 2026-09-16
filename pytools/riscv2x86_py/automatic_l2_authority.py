@@ -381,6 +381,53 @@ def _fence_authority(
     )
 
 
+def _fence_authority_failure_reason(
+    finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
+) -> str:
+    """Explain why a fence profile could not become proof-owned authority.
+
+    This is diagnostic only: it never manufactures proof facts or an approved
+    relation.  Keeping the cause in the translated report makes corpus results
+    auditable instead of collapsing every fail-closed fence into a generic
+    missing-relation result.
+    """
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
+        return "L2_FENCE_APPROVAL_ARTIFACT_MISSING"
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    if approval.get("proofStatus") != "approved" or not fragment_id:
+        return "L2_FENCE_PROOF_NOT_APPROVED"
+    matches = [item for item in functions
+               if item.get("name") == fragment.get("enclosingFunction")]
+    if len(matches) != 1:
+        return "L2_FENCE_FUNCTION_BINDING_AMBIGUOUS"
+    if matches[0].get("arity") != 0 or matches[0].get("returnType") != "void":
+        return "L2_FENCE_AUTOMATIC_HARNESS_SIGNATURE_UNSUPPORTED"
+    raw_profile = finding.get("l2SemanticProfile")
+    if not isinstance(raw_profile, Mapping):
+        return "L2_FENCE_SEMANTIC_PROFILE_MISSING"
+    try:
+        profile = l2_fragment_semantic_profile_from_dict(
+            raw_profile, expected_fragment_id=fragment_id)
+    except ValueError:
+        return "L2_FENCE_SEMANTIC_PROFILE_INVALID"
+    if profile.pattern_kind is not L2PatternKind.FENCE:
+        return "L2_FENCE_SEMANTIC_PROFILE_NOT_MEMORY_FENCE"
+    raw_facts = approval.get("l2FenceProofFacts")
+    if not isinstance(raw_facts, Mapping):
+        return "L2_FENCE_PROOF_FACTS_MISSING"
+    try:
+        facts = fence_proof_facts_from_dict(raw_facts)
+    except ValueError:
+        return "L2_FENCE_PROOF_FACTS_INVALID"
+    if facts.fragment_id != fragment_id or not facts.complete:
+        return "L2_FENCE_PROOF_FACTS_INCOMPLETE"
+    if (approval.get("rendererContractId") != facts.target_contract_id
+            or approval.get("rendererVersion") != facts.target_contract_version):
+        return "L2_FENCE_TARGET_CONTRACT_MISMATCH"
+    return "L2_FENCE_AUTHORITY_MATERIALIZATION_REJECTED"
+
+
 def materialize_automatic_l2_authority(
     report: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     frontend: str | Path,
@@ -398,6 +445,13 @@ def materialize_automatic_l2_authority(
                    or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))
         if sidecar is None:
+            raw_profile = finding.get("l2SemanticProfile")
+            if (isinstance(raw_profile, Mapping)
+                    and raw_profile.get("patternKind") == L2PatternKind.FENCE.value):
+                approval = finding.get("approvalArtifact")
+                if isinstance(approval, dict):
+                    approval["l2AuthorityMaterializationReasonCode"] = \
+                        _fence_authority_failure_reason(finding, functions)
             continue
         approval = finding.get("approvalArtifact")
         assert isinstance(approval, dict)

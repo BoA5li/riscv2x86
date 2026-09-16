@@ -63,6 +63,36 @@ def _run(argv: Sequence[str], cwd: Path, timeout: int) -> subprocess.CompletedPr
                           timeout=timeout, check=False)
 
 
+def _build_failure_detail(
+    source_build: subprocess.CompletedProcess[str],
+    target_build: subprocess.CompletedProcess[str],
+) -> dict[str, object]:
+    """Preserve which evidence executable failed and the exact diagnostics."""
+    source_failed = source_build.returncode != 0
+    target_failed = target_build.returncode != 0
+    if source_failed and target_failed:
+        reason = "L2_EFFECT_HARNESS_SOURCE_AND_TARGET_BUILD_FAILED"
+    elif source_failed:
+        reason = "L2_EFFECT_HARNESS_SOURCE_BUILD_FAILED"
+    elif target_failed:
+        reason = "L2_EFFECT_HARNESS_TARGET_BUILD_FAILED"
+    else:  # Defensive: callers must only use this for a failed build.
+        raise ValueError("effect harness build failure detail requested for successful builds")
+    return {
+        "reasonCode": reason,
+        "source": {
+            "returnCode": source_build.returncode,
+            "stderr": source_build.stderr,
+            "stdout": source_build.stdout,
+        },
+        "target": {
+            "returnCode": target_build.returncode,
+            "stderr": target_build.stderr,
+            "stdout": target_build.stdout,
+        },
+    }
+
+
 def _finding(report: Mapping[str, object], fragment_id: str) -> Mapping[str, object] | None:
     findings = report.get("findings")
     if not isinstance(findings, list):
@@ -91,6 +121,10 @@ def _approved_relations(
         return None, "L2_EFFECT_AUTHORITY_MISSING"
     raw = approval.get("l2AuthoritySidecar")
     if not isinstance(raw, Mapping):
+        materialization_reason = approval.get("l2AuthorityMaterializationReasonCode")
+        if (isinstance(materialization_reason, str)
+                and materialization_reason.startswith("L2_FENCE_")):
+            return None, materialization_reason
         return None, "L2_EFFECT_APPROVED_RELATION_MISSING"
     try:
         authority = l2_authority_sidecar_from_dict(
@@ -253,9 +287,13 @@ def _object_relative_memory_wrapper(
         else:
             args.append(f"({parameter_type})values[sample]")
     lines = ["#include <stdint.h>", "#include <stdio.h>", "#include <string.h>",
-             f"{return_type} {name}({params});", "int main(void){",
-             "static const uint64_t values[8]={" + ",".join(values) + "};",
-             f"for(unsigned sample=0;sample<{samples};++sample){{",
+             f"{return_type} {name}({params});", "int main(void){"]
+    # A pointer-only load has no scalar sample input.  Emitting the table in
+    # that case makes an otherwise valid generated harness fail under the
+    # deliberately strict -Werror build policy.
+    if scalar_indexes:
+        lines.append("static const uint64_t values[8]={" + ",".join(values) + "};")
+    lines += [f"for(unsigned sample=0;sample<{samples};++sample){{",
              f"_Alignas(16) unsigned char object[{size}], before[{size}];",
              f"for(unsigned i=0;i<{size};++i) object[i]=(unsigned char)(0x31u+i*17u);",
              f"memcpy(before,object,{size});", "uint64_t observed=0;", "int outside=0;"]
@@ -266,9 +304,19 @@ def _object_relative_memory_wrapper(
         lines += [f"observed=(uint64_t){invocation};",
                   f"outside=memcmp(before,object,{size})!=0;"]
     else:
+        # Render the complement of the approved write range without unsigned
+        # comparisons against zero.  GCC diagnoses ``i < 0`` as permanently
+        # false, and -Werror must remain enabled for generated evidence code.
+        range_end = offset + width
+        if offset == 0:
+            outside_range = f"i>={range_end}"
+        elif range_end == size:
+            outside_range = f"i<{offset}"
+        else:
+            outside_range = f"i<{offset}||i>={range_end}"
         lines += [invocation + ";",
                   f"memcpy(&observed,object+{offset},{width});",
-                  f"for(unsigned i=0;i<{size};++i) if((i<{offset}||i>={offset + width})"
+                  f"for(unsigned i=0;i<{size};++i) if(({outside_range})"
                   "&&object[i]!=before[i]) outside=1;"]
     mask = "UINT64_MAX" if width == 8 else f"((UINT64_C(1)<<{width * 8})-1)"
     lines += [f'observed&={mask};',
@@ -601,7 +649,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(source),"-o",str(source_exe)),work,timeout)
             right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
             if left_build.returncode or right_build.returncode:
-                detail={"reasonCode":"L2_EFFECT_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
+                detail = _build_failure_detail(left_build, right_build)
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
             right=_run((str(target_exe),),work,timeout)

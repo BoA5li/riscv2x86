@@ -3,13 +3,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from riscv2x86_py.automatic_l2_effect import (
-    _branch_events, _memory_events, _scalar_events, _shell_relation,
+    _branch_events, _build_failure_detail, _memory_events,
+    _object_relative_memory_wrapper, _scalar_events, _shell_relation,
 )
 from riscv2x86_py.effect_relation import ApprovedEffectRelation
 from riscv2x86_py.l2_authority import (
     L2AuthorityProducer, L2AuthoritySidecar, L2SourceEffectAuthority,
 )
 from hashlib import sha256
+import subprocess
 
 
 def _digest(value):
@@ -57,6 +59,38 @@ def test_store_trace_rejects_multiple_unmodelled_writes():
     function = {"name": "store", "returnType": "void"}
     stdout = "store:object=[0000000000000000,0000000000000000,0123456789abcdef,fedcba9876543210]\n"
     assert _memory_events(stdout, function) is None
+
+
+def _memory_authority():
+    return {"memoryObjects": [{"sizeBytes": 32}]}
+
+
+def test_pointer_only_load_harness_does_not_emit_unused_sample_values():
+    function = {"name": "read_word", "returnType": "uint64_t",
+                "parameterTypes": ["const uint64_t *"], "pointerParameters": [0]}
+    facts = SimpleNamespace(access_kind="load", byte_offset=0, width_bytes=8)
+    wrapper = _object_relative_memory_wrapper(function, _memory_authority(), facts)
+    assert "static const uint64_t values" not in wrapper
+
+
+def test_zero_offset_store_harness_avoids_unsigned_less_than_zero():
+    function = {"name": "write_word", "returnType": "void",
+                "parameterTypes": ["uint64_t *", "uint64_t"],
+                "pointerParameters": [0]}
+    facts = SimpleNamespace(access_kind="store", byte_offset=0, width_bytes=8)
+    wrapper = _object_relative_memory_wrapper(function, _memory_authority(), facts)
+    assert "i<0" not in wrapper
+    assert "i>=8" in wrapper
+
+
+def test_effect_build_failure_preserves_side_and_compiler_diagnostics():
+    source = subprocess.CompletedProcess(("rvcc",), 1, "source-out", "source-error")
+    target = subprocess.CompletedProcess(("cc",), 0, "", "")
+    detail = _build_failure_detail(source, target)
+    assert detail["reasonCode"] == "L2_EFFECT_HARNESS_SOURCE_BUILD_FAILED"
+    assert detail["source"] == {
+        "returnCode": 1, "stderr": "source-error", "stdout": "source-out"}
+    assert detail["target"]["returnCode"] == 0
 
 
 def test_branch_trace_records_continuation_class():

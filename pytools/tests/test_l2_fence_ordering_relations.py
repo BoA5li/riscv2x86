@@ -7,7 +7,9 @@ import pytest
 
 import riscv2x86_py.automatic_batch_cli as auto
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
-from riscv2x86_py.automatic_l2_effect import build_auto_l2_effect_validator
+from riscv2x86_py.automatic_l2_effect import (
+    _shell_relation, build_auto_l2_effect_validator,
+)
 from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.l2_fence_ordering import (
@@ -148,6 +150,22 @@ def test_fence_authority_materializes_three_anchors(tmp_path):
       "before:read", "fence:0", "after:write"}
     assert sidecar.ordering[0].before_effect_id == "before:read"
     assert sidecar.ordering[0].after_effect_id == "after:write"
+
+
+def test_missing_fence_proof_facts_preserve_precise_fail_closed_reason(tmp_path):
+    finding = _finding()
+    del finding["approvalArtifact"]["l2FenceProofFacts"]
+    frontend = tmp_path / "frontend"; frontend.write_bytes(b"frontend")
+    function = {"name":"synchronize_domain", "arity":0, "returnType":"void",
+                "parameterTypes":[], "pointerParameters":[],
+                "l2OperandBoundary":{"complete":True}}
+    assert materialize_automatic_l2_authority(
+      {"findings":[finding]}, [function], frontend) == 0
+    approval = finding["approvalArtifact"]
+    assert approval["l2AuthorityMaterializationReasonCode"] == \
+      "L2_FENCE_PROOF_FACTS_MISSING"
+    relation, reason = _shell_relation(finding, SimpleNamespace(fragment_id="fragment:fence"))
+    assert relation is None and reason == "L2_FENCE_PROOF_FACTS_MISSING"
 
 
 def test_contract_version_mismatch_is_inconclusive_before_execution(tmp_path):
