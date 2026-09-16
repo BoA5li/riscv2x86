@@ -139,14 +139,19 @@ class L2EligibilityClassifier:
         fragment_id = _fragment_id(finding)
         finding_id = f"finding:{index}:{fragment_id}"
         outcome = str(finding.get("translationOutcome") or "not_attempted")
-        dimensions, diagnostics = _structured_dimensions(finding)
+        legacy_dimensions, diagnostics = _structured_dimensions(finding)
+        dimensions = legacy_dimensions
         try:
             semantic_profile = profile_from_finding(finding)
             profile_diagnostics = (() if semantic_profile.complete else
                                    ("l2.semantic-profile.incomplete",))
+            # A v3 typed semantic profile is the authority for required
+            # dimensions. Legacy structured hints remain useful diagnostics,
+            # but may not silently enlarge the verification gate: those hints
+            # conflate helper calls, CSR effects and instruction visibility
+            # with ordinary memory/control-flow observations.
             dimensions = tuple(sorted(
-                set(dimensions) | set(_PROFILE_DIMENSIONS.get(
-                    semantic_profile.pattern_kind, ())),
+                _PROFILE_DIMENSIONS.get(semantic_profile.pattern_kind, ()),
                 key=lambda item: item.value,
             ))
             if semantic_profile.pattern_kind is L2PatternKind.COMPOSITE:

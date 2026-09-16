@@ -1,13 +1,16 @@
 import copy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
 from riscv2x86_py.l2_semantic_profile import (
-    L2PatternKind, l2_fragment_semantic_profile_from_dict,
+    L2ControlFlowShape, L2MemoryShape, L2OrderingShape, L2PatternKind,
+    L2PrivilegedShape, l2_fragment_semantic_profile_from_dict,
     profile_from_source_model,
 )
+from tests.l2_profile_fixtures import profile_dict
 from riscv2x86_py.translation_validation import TranslationArtifact
 from riscv2x86_py.validation_status import PreservationMode
 
@@ -143,3 +146,67 @@ def test_authoritative_memory_profile_closes_memory_requirement_without_text_hin
     assert result["requiredDimensions"] == [
         "logical_operands", "memory_effects", "shell_semantics",
     ]
+
+
+def test_privileged_profile_completeness_ignores_unrelated_shapes():
+    profile = l2_fragment_semantic_profile_from_dict(profile_dict(
+        "renamed/location:9:2", L2PatternKind.PRIVILEGED_READ))
+    profile = replace(
+        profile,
+        control_flow_shape=L2ControlFlowShape(
+            False, False, False, False, False, 0, False),
+        memory_shape=L2MemoryShape(False, False, False, False, False),
+        ordering_shape=L2OrderingShape(False, False, False, False),
+        privileged_shape=L2PrivilegedShape(True, True, False, True),
+        profile_identity="",
+    )
+    assert profile.complete
+    finding = _finding(profile.fragment_id, profile, control=True)
+    finding["translationReasonCodes"] = ["SM_TRAP", "SM_MEMORY_EFFECT"]
+    finding["fragment"]["clobbers"] = ["memory"]
+    result = L2EligibilityClassifier().classify(finding, 0)
+    assert result["eligibilityStatus"] == "eligible"
+    assert result["requiredDimensions"] == [
+        "privileged_state", "shell_semantics",
+    ]
+
+
+def test_instruction_visibility_profile_does_not_require_branch_dimension():
+    profile = l2_fragment_semantic_profile_from_dict(profile_dict(
+        "other/tree/member:31:7", L2PatternKind.INSTRUCTION_VISIBILITY_FENCE))
+    profile = replace(
+        profile,
+        control_flow_shape=L2ControlFlowShape(
+            False, False, False, True, False, 0, False),
+        ordering_shape=L2OrderingShape(False, True, True, True),
+        profile_identity="",
+    )
+    assert profile.complete
+    finding = _finding(profile.fragment_id, profile, control=True)
+    finding["fragment"]["hasExternalControlFlow"] = True
+    result = L2EligibilityClassifier().classify(finding, 0)
+    assert result["eligibilityStatus"] == "eligible"
+    assert result["requiredDimensions"] == [
+        "memory_effects", "shell_semantics",
+    ]
+
+
+def test_read_only_counter_with_possible_trap_is_not_classified_as_write():
+    model = _source_model()
+    model.privileged_state = SimpleNamespace(
+        read_only_counter=SimpleNamespace(csr_id="time"),
+        complete=True,
+        state=SimpleNamespace(
+            present=True,
+            csr_effects=(SimpleNamespace(
+                operation=SimpleNamespace(value="read")),),
+            trap_effects=(SimpleNamespace(kind="illegal-instruction"),),
+            return_effects=(), interrupt_effects=(),
+            address_translation_effects=(), virtualization_effects=(),
+            debug_effects=(),
+        ),
+    )
+    profile = profile_from_source_model("generic/counter:4:8", model)
+    assert profile.pattern_kind is L2PatternKind.PRIVILEGED_READ
+    assert profile.privileged_shape.reads_state
+    assert not profile.privileged_shape.writes_state

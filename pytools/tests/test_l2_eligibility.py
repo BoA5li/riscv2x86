@@ -54,7 +54,7 @@ def test_register_only_fragment_plans_operand_and_shell_composite():
     ]
 
 
-def test_memory_atomic_control_and_privileged_dimensions_route_to_all_families():
+def test_typed_profile_cannot_be_inflated_by_legacy_reason_or_surface_hints():
     fragment = {
         "id": "fragment:2", "outputs": [], "inputs": [], "clobbers": ["memory"],
         "controlFlowSurface": "LocalCFG", "hasLocalLabels": True,
@@ -62,13 +62,9 @@ def test_memory_atomic_control_and_privileged_dimensions_route_to_all_families()
     item = L2EligibilityClassifier().classify(_finding(
         fragment=fragment, privileged={"schemaVersion": "test"},
         reasons=("SM_ATOMIC_OPERATION", "SM_TRAP")), 1)
-    assert item["requiredDimensions"] == [
-        "atomic_memory_order", "control_flow", "logical_operands", "memory_effects",
-        "privileged_state", "shell_semantics", "trap_semantics",
-    ]
+    assert item["requiredDimensions"] == ["logical_operands", "shell_semantics"]
     assert item["validatorPlan"]["validatorTypes"] == [
-        "l2-concurrency-memory-model", "l2-effect-trace-differential",
-        "l2-logical-operand-differential", "l2-privileged-real-runner",
+        "l2-effect-trace-differential", "l2-logical-operand-differential",
     ]
 
 

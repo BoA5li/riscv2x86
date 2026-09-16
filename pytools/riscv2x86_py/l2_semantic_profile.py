@@ -189,10 +189,42 @@ class L2FragmentSemanticProfile:
 
     @property
     def complete(self) -> bool:
-        return (self.pattern_kind is not L2PatternKind.UNKNOWN
-                and self.operand_shape.complete and self.control_flow_shape.complete
-                and self.memory_shape.complete and self.ordering_shape.complete
-                and self.privileged_shape.complete and self.internal_state_shape.complete)
+        """Whether the facts required by this pattern are closed.
+
+        Completeness is pattern-specific. Requiring every shape for every
+        pattern made a proven CSR read depend on unrelated memory-order facts,
+        and made an instruction-visibility fence depend on branch authority.
+        Cross-cutting escape facts remain mandatory for every executable
+        profile; other shapes are required only where they define the pattern.
+        """
+        if self.pattern_kind is L2PatternKind.UNKNOWN:
+            return False
+        required = {
+            L2PatternKind.SCALAR: (
+                self.operand_shape.complete, self.control_flow_shape.complete),
+            L2PatternKind.BRANCH: (
+                self.operand_shape.complete, self.control_flow_shape.complete),
+            L2PatternKind.JUMP: (
+                self.operand_shape.complete, self.control_flow_shape.complete),
+            L2PatternKind.MEMORY_LOAD: (
+                self.operand_shape.complete, self.memory_shape.complete),
+            L2PatternKind.MEMORY_STORE: (
+                self.operand_shape.complete, self.memory_shape.complete),
+            L2PatternKind.FENCE: (self.ordering_shape.complete,),
+            L2PatternKind.INSTRUCTION_VISIBILITY_FENCE: (
+                self.ordering_shape.complete,),
+            L2PatternKind.PRIVILEGED_READ: (self.privileged_shape.complete,),
+            L2PatternKind.PRIVILEGED_WRITE: (self.privileged_shape.complete,),
+            L2PatternKind.COMPOSITE: (
+                self.operand_shape.complete, self.control_flow_shape.complete,
+                self.memory_shape.complete, self.ordering_shape.complete,
+                self.privileged_shape.complete),
+            L2PatternKind.ATOMIC: (
+                self.operand_shape.complete, self.memory_shape.complete,
+                self.ordering_shape.complete),
+        }[self.pattern_kind]
+        return (all(required) and self.internal_state_shape.complete
+                and self.internal_state_shape.escape_complete)
 
     def _payload(self, include_identity: bool) -> dict[str, object]:
         value = {"schemaVersion": self.schema_version, "fragmentId": self.fragment_id,
@@ -284,18 +316,25 @@ def profile_from_source_model(
         str(getattr(getattr(effect, "operation", None), "value", ""))
         for effect in csr_effects
     }
-    privileged_read = bool(getattr(privileged, "read_only_counter", None)) or bool(
+    read_only_counter = bool(getattr(privileged, "read_only_counter", None))
+    privileged_read = read_only_counter or bool(
         csr_operations & {"read", "read_write", "set_bits", "clear_bits"}
     )
-    privileged_write = bool(
-        csr_operations & {"write", "read_write", "set_bits", "clear_bits"}
-    ) or bool(
-        privileged_present and getattr(privileged, "state", None)
+    explicit_csr_write = bool(
+        csr_operations & {"write", "read_write", "set_bits", "clear_bits"})
+    non_counter_state_effect = bool(
+        privileged_present and not read_only_counter
+        and getattr(privileged, "state", None)
         and any(tuple(getattr(privileged.state, name, ()) or ()) for name in (
-            "trap_effects", "return_effects", "interrupt_effects",
+            "return_effects", "interrupt_effects",
             "address_translation_effects", "virtualization_effects", "debug_effects",
         ))
     )
+    # A possible trap while reading a CSR is a trap observation requirement,
+    # not evidence that the instruction writes privileged state. In particular,
+    # a proof-owned read-only counter route must stay PRIVILEGED_READ so its
+    # runtime-mediated relation can be selected.
+    privileged_write = explicit_csr_write or non_counter_state_effect
     privileged_shape = L2PrivilegedShape(
         privileged_present, privileged_read,
         privileged_write,
