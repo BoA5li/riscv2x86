@@ -49,6 +49,27 @@ def _dimension_claim_scope(artifact: object) -> L2ClaimScope:
     return L2ClaimScope.ARCHITECTURAL
 
 
+def _result_claim_scope(result: ValidationLayerResult, artifact: object) -> L2ClaimScope:
+    """Use a validator's typed lower claim without permitting scope escalation."""
+    artifact_scope = _dimension_claim_scope(artifact)
+    try:
+        detail = json.loads(result.detail)
+    except (TypeError, json.JSONDecodeError):
+        return artifact_scope
+    raw = detail.get("claimScope") if isinstance(detail, Mapping) else None
+    if not isinstance(raw, str):
+        return artifact_scope
+    try:
+        scope = L2ClaimScope(raw)
+    except ValueError:
+        return L2ClaimScope.NONE
+    if scope is L2ClaimScope.ARCHITECTURAL and artifact_scope is not L2ClaimScope.ARCHITECTURAL:
+        return L2ClaimScope.NONE
+    if scope is L2ClaimScope.APPROVED_FUNCTIONAL_RELATION and artifact_scope is L2ClaimScope.NONE:
+        return L2ClaimScope.NONE
+    return scope
+
+
 def _result_reason_codes(result: ValidationLayerResult) -> tuple[str, ...]:
     if result.status is ValidationStatus.VERIFIED:
         return ()
@@ -344,7 +365,7 @@ def _requirement_driven_l2_validator(
                 provider_results[binding.provider_id] = result
             result = provider_results[binding.provider_id]
             dimension_status = _dimension_status(result.status)
-            claim_scope = (_dimension_claim_scope(artifact)
+            claim_scope = (_result_claim_scope(result, artifact)
                            if dimension_status is L2DimensionStatus.VERIFIED
                            else L2ClaimScope.NONE)
             authority_identity = str(getattr(artifact, "l2_authority_identity", ""))

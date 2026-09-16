@@ -671,12 +671,15 @@ def prepare_automatic_inventory(
                     "automatic-l2-effect-differential", effect_config("fence-functions"),
                 ))
             if privileged_binding is not None:
-                l2_environment_capabilities.add("privileged_state_observation")
+                l2_environment_capabilities.update((
+                    "privileged_route_selection", "privileged_state_observation",
+                ))
                 l2_providers.append(provider(
                     "explicit-privileged-" + str(privileged_binding["identity"]),
                     [L2Dimension.PRIVILEGED_STATE.value, L2Dimension.TRAP_SEMANTICS.value],
                     ["privileged_read", "privileged_write"],
-                    ["privileged_state_observation"], "l2-privileged-real-runner",
+                    ["privileged_route_selection", "privileged_state_observation"],
+                    "l2-privileged-real-runner",
                     privileged_binding["config"], binding_kind="explicit",
                 ))
             l2_providers.extend(explicit_l2_providers)

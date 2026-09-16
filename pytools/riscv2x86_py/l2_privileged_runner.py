@@ -20,6 +20,10 @@ from .privileged_differential_validation import (
 )
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
+from .l2_privileged_routes import (
+    L2CsrAuthority, L2PrivilegedRouteKind, canonical_identity,
+    select_privileged_route,
+)
 
 
 LEGACY_PRIVILEGED_RUNNER_SCHEMA = "riscv2x86.l2-privileged-runner.v1"
@@ -28,6 +32,7 @@ PRIVILEGED_OBSERVATION_SCHEMA = "riscv2x86.privileged-observation.v1"
 PRIVILEGED_MANIFEST_SCHEMA = "riscv2x86.privileged-validation-manifest.v1"
 PRIVILEGED_INITIAL_STATE_SCHEMA = "riscv2x86.privileged-initial-state.v1"
 CSR_ROUTE_CONTRACT_SCHEMA = "riscv2x86.csr-route-contract.v1"
+CSR_ROUTE_CONTRACT_SCHEMA_V2 = "riscv2x86.csr-route-contract.v2"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SOURCE_KINDS = {"spike", "qemu-system", "controlled-linux-guest", "real-riscv"}
 _TARGET_KINDS = {"x86-logical-runtime", "x86-system-adapter", "x86-vmm-adapter",
@@ -122,6 +127,8 @@ class CsrRoute:
     domain_relation_proof_identity: str
     registered: bool
     source_write_observable: bool
+    route_kind: str = ""
+    authority: L2CsrAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -284,20 +291,40 @@ def load_csr_route_contract(path: str | Path) -> CsrRouteContract:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, Mapping): raise ValueError("CSR route contract must be an object")
     _fields(value, {"schemaVersion", "routes"}, "CSR route contract")
-    if value.get("schemaVersion") != CSR_ROUTE_CONTRACT_SCHEMA: raise ValueError("CSR route schema is unsupported")
+    schema = value.get("schemaVersion")
+    if schema not in {CSR_ROUTE_CONTRACT_SCHEMA, CSR_ROUTE_CONTRACT_SCHEMA_V2}:
+        raise ValueError("CSR route schema is unsupported")
     raw = value.get("routes")
     if not isinstance(raw, list): raise ValueError("CSR routes must be an array")
     routes = []
     for item in raw:
         if not isinstance(item, Mapping): raise ValueError("CSR route must be an object")
-        _fields(item, {"csrId", "category", "operation", "targetRoute", "observationDomainContractId",
-                       "domainRelationProofIdentity", "registered", "sourceWriteObservable"}, "CSR route")
+        legacy_fields = {"csrId", "category", "operation", "targetRoute", "observationDomainContractId",
+                         "domainRelationProofIdentity", "registered", "sourceWriteObservable"}
+        fields = legacy_fields if schema == CSR_ROUTE_CONTRACT_SCHEMA else legacy_fields | {"routeKind", "csrAuthority"}
+        _fields(item, fields, "CSR route")
+        authority = None
+        route_kind = ""
+        if schema == CSR_ROUTE_CONTRACT_SCHEMA_V2:
+            route_kind = _string(item, "routeKind", "CSR route")
+            try:
+                L2PrivilegedRouteKind(route_kind)
+            except ValueError as exc:
+                raise ValueError("CSR privileged route kind is unsupported") from exc
+            raw_authority = item.get("csrAuthority")
+            if not isinstance(raw_authority, Mapping):
+                raise ValueError("CSR route authority must be an object")
+            authority = L2CsrAuthority.from_dict(raw_authority)
+            if (authority.csr_identity != item.get("csrId")
+                    or authority.access_kind != item.get("operation")):
+                raise ValueError("CSR route and authority identity/access mismatch")
         route = CsrRoute(
             _string(item, "csrId", "CSR route"), _string(item, "category", "CSR route"),
             _string(item, "operation", "CSR route"), _string(item, "targetRoute", "CSR route"),
             _string(item, "observationDomainContractId", "CSR route", empty=True),
             _string(item, "domainRelationProofIdentity", "CSR route", empty=True),
             _boolean(item, "registered", "CSR route"), _boolean(item, "sourceWriteObservable", "CSR route"),
+            route_kind, authority,
         )
         if route.category not in _CATEGORIES or route.operation not in _OPERATIONS:
             raise ValueError("CSR route category/operation is unsupported")
@@ -305,6 +332,37 @@ def load_csr_route_contract(path: str | Path) -> CsrRouteContract:
     keys = tuple((item.csr_id, item.operation) for item in routes)
     if keys != tuple(sorted(set(keys))): raise ValueError("CSR routes must be unique and sorted")
     return CsrRouteContract(tuple(routes), dict(value))
+
+
+def _typed_route_selection(contract: CsrRouteContract, *, target_mode: str,
+                           environment: object, runtime_contract_id: str,
+                           runtime_contract_version: str, actual_privilege: str):
+    if contract.payload.get("schemaVersion") != CSR_ROUTE_CONTRACT_SCHEMA_V2:
+        return None
+    environment_identity = canonical_identity(environment)
+    runtime_identity = canonical_identity({
+        "runtimeContractId": runtime_contract_id,
+        "runtimeContractVersion": runtime_contract_version,
+    })
+    legacy_reasons = set(validate_csr_routes(
+        contract, target_mode=target_mode,
+        preservation_mode=DifferentialPreservationMode.STRICT,
+    ))
+    selections = []
+    for route in contract.routes:
+        assert route.authority is not None
+        unsupported = any(item.startswith("csr-route:" + route.csr_id + ":target-route-mode-invalid")
+                          for item in legacy_reasons)
+        selections.append(select_privileged_route(
+            authority=route.authority,
+            requested_kind=L2PrivilegedRouteKind(route.route_kind),
+            actual_environment_identity=environment_identity,
+            actual_runtime_contract_identity=runtime_identity,
+            actual_privilege=actual_privilege,
+            adapter_registered=route.registered,
+            target_route_supported=not unsupported,
+        ))
+    return tuple(selections)
 
 
 def load_privileged_manifest(path: str | Path) -> PrivilegedValidationManifest:
@@ -491,10 +549,45 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
             (manifest.runtime_contract_id, manifest.runtime_contract_version) !=
             (getattr(artifact, "runtime_contract_id", ""), getattr(artifact, "runtime_contract_version", ""))):
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C manifest identity mismatch")
+    selections = _typed_route_selection(
+        routes, target_mode=config.target_runner.target_execution_mode,
+        environment=kwargs.get("target_environment"),
+        runtime_contract_id=manifest.runtime_contract_id,
+        runtime_contract_version=config.target_runner.runtime_version,
+        actual_privilege=str(initial.get("privilegeMode", "")),
+    )
+    if selections is not None:
+        unresolved = [item for item in selections if not item.executable]
+        if unresolved:
+            payload = {
+                "schemaVersion": "riscv2x86.l2-privileged-route-result.v1",
+                "status": "inconclusive", "claimScope": "none",
+                "routeDispositions": [item.route_kind.value for item in selections],
+                "reasonCodes": sorted({reason for item in unresolved for reason in item.reason_codes}),
+                "routeSelectionIdentities": [item.selection_identity for item in selections],
+            }
+            return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                                         detail=json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        scopes = {item.claim_scope for item in selections}
+        if len(scopes) != 1:
+            return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                                         detail='{"reasonCode":"l2.privileged.mixed-claim-scopes"}')
+        selected_scope = next(iter(scopes))
+        if ((selected_scope.value == "architectural"
+             and manifest.preservation_mode is not DifferentialPreservationMode.STRICT)
+                or (selected_scope.value == "approved_functional_relation"
+                    and manifest.preservation_mode is not DifferentialPreservationMode.FUNCTIONAL)):
+            return ValidationLayerResult(
+                ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                detail='{"reasonCode":"l2.privileged.route-preservation-mode-mismatch"}',
+            )
     route_reasons = validate_csr_routes(routes, target_mode=config.target_runner.target_execution_mode,
                                         preservation_mode=manifest.preservation_mode)
     if route_reasons:
-        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, _digest(route_reasons),
+        route_status = (ValidationStatus.INCONCLUSIVE if selections is not None and
+                        not any("source-write-observable-effect-unpreserved" in item
+                                for item in route_reasons) else ValidationStatus.FAILED)
+        return ValidationLayerResult(ValidationLevel.L2, route_status, _digest(route_reasons),
                                      json.dumps(route_reasons, separators=(",", ":")))
     request = {"schemaVersion": config.schema_version, "initialState": initial,
                "initialStateIdentity": initial_identity, "preservationMode": manifest.preservation_mode.value,
@@ -531,6 +624,11 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
     detail = {
         "schemaVersion": "riscv2x86.l2-privileged-result.v2",
         "status": "verified" if result.approved else "failed",
+        "claimScope": (next(iter(scopes)).value if selections is not None else
+                       ("architectural" if manifest.preservation_mode is DifferentialPreservationMode.STRICT
+                        else "approved_functional_relation")),
+        "routeDispositions": ([] if selections is None else [item.route_kind.value for item in selections]),
+        "routeSelectionIdentities": ([] if selections is None else [item.selection_identity for item in selections]),
         "claimBoundary": (
             "architectural-privileged-state-equivalence"
             if manifest.preservation_mode is DifferentialPreservationMode.STRICT
