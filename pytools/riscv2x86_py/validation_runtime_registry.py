@@ -151,6 +151,15 @@ def _l2_privileged_real_runner_factory(config: Mapping[str, object]) -> LayerVal
     return build_l2_privileged_validator(load_l2_privileged_runner_config(config))
 
 
+def _explicit_l2_harness_factory(config: Mapping[str, object]) -> LayerValidator:
+    from .l2_explicit_harness import (
+        build_explicit_l2_harness_validator, load_explicit_l2_harness_runner_config,
+    )
+    return build_explicit_l2_harness_validator(
+        load_explicit_l2_harness_runner_config(config)
+    )
+
+
 def _l2_concurrency_memory_model_factory(config: Mapping[str, object]) -> LayerValidator:
     from .l2_concurrency_runner import build_l2_concurrency_validator, load_l2_concurrency_runner_config
     return build_l2_concurrency_validator(load_l2_concurrency_runner_config(config))
@@ -171,6 +180,7 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l2-logical-operand-differential": _l2_operand_differential_factory,
     "l2-effect-trace-differential": _l2_effect_trace_differential_factory,
     "l2-privileged-real-runner": _l2_privileged_real_runner_factory,
+    "l2-explicit-harness": _explicit_l2_harness_factory,
     "l2-concurrency-memory-model": _l2_concurrency_memory_model_factory,
     "l3-experiment-contract": _l3_experiment_contract_factory,
 }

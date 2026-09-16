@@ -108,6 +108,7 @@ class L2ValidatorProvider:
     config_schema_version: str
     config: Mapping[str, object]
     fragment_ids: tuple[str, ...] = ()
+    semantic_profile_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.provider_id or not self.validator_type:
@@ -123,9 +124,12 @@ class L2ValidatorProvider:
             raise ValueError("L2 provider dimensions/patterns must be unique and sorted")
         for values, label in ((self.required_capabilities, "capabilities"),
                               (self.execution_profiles, "execution profiles"),
-                              (self.fragment_ids, "fragment IDs")):
+                              (self.fragment_ids, "fragment IDs"),
+                              (self.semantic_profile_ids, "semantic profile IDs")):
             if values != tuple(sorted(set(values))) or any(not item for item in values):
                 raise ValueError(f"L2 validator provider {label} must be unique and sorted")
+        if any(_SHA256.fullmatch(item) is None for item in self.semantic_profile_ids):
+            raise ValueError("L2 validator provider semantic profile identity is invalid")
         if not self.required_capabilities or not self.execution_profiles:
             raise ValueError("L2 validator provider applicability contract is incomplete")
         if (not self.config_schema_version
@@ -152,6 +156,9 @@ class L2ValidatorProvider:
             reasons.add("l2.provider.pattern-unsupported")
         if not self.applies_to(requirement.fragment_id):
             reasons.add("l2.provider.fragment-not-bound")
+        if (self.semantic_profile_ids
+                and profile.profile_identity not in self.semantic_profile_ids):
+            reasons.add("l2.provider.semantic-profile-not-bound")
         if profile.execution_profile not in self.execution_profiles:
             reasons.add("l2.provider.execution-profile-unsupported")
         if profile.execution_profile not in environment.execution_profiles:
@@ -392,19 +399,21 @@ def provider_from_dict(value: Mapping[str, object]) -> L2ValidatorProvider:
     expected = {"providerId", "supportedDimensions", "supportedPatterns",
                 "requiredCapabilities", "executionProfiles", "bindingKind",
                 "validatorType", "configSchemaVersion", "config", "fragmentIds"}
-    if set(value) != expected:
+    if set(value) not in {frozenset(expected), frozenset(expected | {"semanticProfileIds"})}:
         raise ValueError("L2 validator provider fields are incomplete or unknown")
     dimensions = value.get("supportedDimensions")
     patterns = value.get("supportedPatterns")
     required = value.get("requiredCapabilities")
     profiles = value.get("executionProfiles")
     fragment_ids, config = value.get("fragmentIds"), value.get("config")
+    profile_ids = value.get("semanticProfileIds", [])
     if (not isinstance(dimensions, list) or not isinstance(patterns, list)
             or not isinstance(required, list) or not isinstance(profiles, list)
-            or not isinstance(fragment_ids, list) or not isinstance(config, Mapping)):
+            or not isinstance(fragment_ids, list) or not isinstance(profile_ids, list)
+            or not isinstance(config, Mapping)):
         raise ValueError("L2 validator provider dimensions/fragments/config are invalid")
     if not all(isinstance(item, str) and item for values in
-               (patterns, required, profiles, fragment_ids) for item in values):
+               (patterns, required, profiles, fragment_ids, profile_ids) for item in values):
         raise ValueError("L2 validator provider applicability values are invalid")
     if patterns != sorted(set(patterns)):
         raise ValueError("L2 validator provider patterns are non-canonical")
@@ -419,6 +428,7 @@ def provider_from_dict(value: Mapping[str, object]) -> L2ValidatorProvider:
         parsed_patterns, tuple(required), tuple(profiles), binding_kind,
         str(value.get("validatorType") or ""),
         str(value.get("configSchemaVersion") or ""), config, tuple(fragment_ids),
+        tuple(profile_ids),
     )
 
 

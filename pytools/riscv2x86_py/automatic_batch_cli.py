@@ -407,6 +407,9 @@ def _explicit_l2_providers(
         parsed = provider_from_dict(raw)
         if parsed.binding_kind is not L2BindingKind.EXPLICIT:
             raise ValueError("explicit L2 provider manifest contains a non-explicit provider")
+        if parsed.validator_type == "l2-explicit-harness":
+            from .l2_explicit_harness import validate_explicit_l2_harness_provider
+            validate_explicit_l2_harness_provider(parsed)
         providers.append(dict(raw))
     return tuple(providers), tuple(environment_capabilities)
 
