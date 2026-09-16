@@ -17,7 +17,7 @@ from .candidate_materialization import (
 )
 from .schema import TranslationOutcome
 from .translation_attempt import TranslationAttemptArchive, load_translation_attempt_archive
-from .l2_dimensions import parse_l2_dimensions
+from .l2_dimensions import L2ClaimScope, L2DimensionStatus, parse_l2_dimensions
 from .l2_results import L2FragmentResult
 from .l2_program_results import (
     ProgramExecutionEvidence, ProgramL2GroupResult, ProgramL2MemberResult,
@@ -987,11 +987,28 @@ def _translation_evaluation_linkage(
     required_fragment_ids = tuple(
         str(item["fragmentId"]) for item in required_l2_members
     )
+    required_scopes = {
+        item.fragment_result.claim_scope
+        for item in typed_l2_members
+        if item.required and item.fragment_result is not None
+        and item.fragment_result.status is L2DimensionStatus.VERIFIED
+    }
+    # Program closure must preserve the claim actually established by its
+    # required members.  A uniform approved-functional program is verified at
+    # that scope; forcing every group through an architectural gate incorrectly
+    # rewrote valid functional evidence as inconclusive.  Mixed-scope programs
+    # remain conservative until a typed composite-scope relation is available.
+    required_group_scope = (
+        next(iter(required_scopes))
+        if len(required_scopes) == 1
+        else L2ClaimScope.ARCHITECTURAL
+    )
     l2_group = ProgramL2GroupResult.close(
         program_id=request.source_relative_path,
         required_member_fragment_ids=required_fragment_ids,
         member_results=typed_l2_members,
         execution_evidence=program_execution_evidence,
+        required_claim_scope=required_group_scope,
     )
     l2_group_status = (
         "not_run" if not has_l2_requirement_manifest and not required_l2_members
