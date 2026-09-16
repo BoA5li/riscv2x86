@@ -7,7 +7,8 @@ import pytest
 from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
 from riscv2x86_py.l2_semantic_profile import (
     L2ControlFlowShape, L2MemoryShape, L2OrderingShape, L2PatternKind,
-    L2PrivilegedShape, l2_fragment_semantic_profile_from_dict,
+    L2PrivilegedShape, bind_approved_functional_profile,
+    l2_fragment_semantic_profile_from_dict,
     profile_from_source_model,
 )
 from tests.l2_profile_fixtures import profile_dict
@@ -249,3 +250,80 @@ def test_multi_operation_profile_still_requires_internal_non_interference_facts(
     assert profile.internal_state_shape.has_internal_values
     assert not profile.internal_state_shape.escape_complete
     assert not profile.complete
+
+
+def _functional_counter_approval(fragment_id: str) -> dict[str, object]:
+    return {
+        "proofStatus": "functional_approved",
+        "functionalFallbackEnabled": True,
+        "preservationMode": "functional_equivalence_only",
+        "architectureSemanticsPreserved": False,
+        "sourceFragmentId": fragment_id,
+        "sourceSemanticContractId": "riscv.counter.read.v1",
+        "targetSemanticContractId": "x86.monotonic-clock.v1",
+        "runtimeContractId": "runtime.monotonic-clock@v1",
+        "runtimeContractVersion": "v1",
+        "targetEnvironmentId": "environment:x86-user",
+        "targetCatalogVersion": "catalog-v1",
+        "ignoredSourceState": ["csr:time:absolute", "csr:time:epoch"],
+        "knownNonEquivalences": ["absolute values differ"],
+    }
+
+
+def test_functional_approval_closes_privileged_profile_without_architectural_claim():
+    fragment_id = "generic/counter:12:3"
+    model = _source_model()
+    model.privileged_state = SimpleNamespace(
+        read_only_counter=SimpleNamespace(csr_id="time"),
+        complete=False,
+        state=SimpleNamespace(
+            present=True,
+            csr_effects=(SimpleNamespace(
+                operation=SimpleNamespace(value="read")),),
+            return_effects=(), interrupt_effects=(),
+            address_translation_effects=(), virtualization_effects=(),
+            debug_effects=(),
+        ),
+    )
+    strict = profile_from_source_model(fragment_id, model)
+    assert strict.pattern_kind is L2PatternKind.PRIVILEGED_READ
+    assert not strict.privileged_shape.complete
+    assert not strict.complete
+
+    functional = bind_approved_functional_profile(
+        strict, _functional_counter_approval(fragment_id),
+    )
+
+    assert functional.privileged_shape.complete
+    assert functional.complete
+    assert functional.profile_identity != strict.profile_identity
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda value: value.pop("runtimeContractVersion"),
+    lambda value: value.update(sourceFragmentId="other:fragment"),
+    lambda value: value.update(architectureSemanticsPreserved=True),
+    lambda value: value.update(ignoredSourceState=[]),
+])
+def test_incomplete_functional_approval_cannot_close_privileged_profile(mutation):
+    fragment_id = "generic/counter:12:3"
+    model = _source_model()
+    model.privileged_state = SimpleNamespace(
+        read_only_counter=SimpleNamespace(csr_id="time"), complete=False,
+        state=SimpleNamespace(
+            present=True,
+            csr_effects=(SimpleNamespace(
+                operation=SimpleNamespace(value="read")),),
+            return_effects=(), interrupt_effects=(),
+            address_translation_effects=(), virtualization_effects=(),
+            debug_effects=(),
+        ),
+    )
+    profile = profile_from_source_model(fragment_id, model)
+    approval = _functional_counter_approval(fragment_id)
+    mutation(approval)
+
+    bound = bind_approved_functional_profile(profile, approval)
+
+    assert not bound.privileged_shape.complete
+    assert not bound.complete
