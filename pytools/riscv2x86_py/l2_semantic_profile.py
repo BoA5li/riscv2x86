@@ -342,10 +342,18 @@ def profile_from_source_model(
     )
     value_program = getattr(source_model, "value_program", None)
     operations = tuple(getattr(value_program, "instructions", ()) or ())
+    has_internal_values = len(operations) > 1
+    # Absence of an internal observation boundary is a closed fact, not a
+    # demand for unrelated operand/CFG evidence.  Requiring those facts made
+    # single-operation privileged fallbacks ineligible before their typed
+    # runtime relation could run.  Multi-operation fragments remain fail
+    # closed and still require both escape and CFG completeness.
     internal_shape = L2InternalStateShape(
-        len(operations) > 1, len(operations) > 1,
-        bool(getattr(getattr(source_model, "operands", None), "complete", False)),
-        bool(getattr(getattr(source_model, "completeness", None), "cfg_ok", False)),
+        has_internal_values, has_internal_values,
+        (not has_internal_values or bool(getattr(
+            getattr(source_model, "operands", None), "complete", False))),
+        (not has_internal_values or bool(getattr(
+            getattr(source_model, "completeness", None), "cfg_ok", False))),
     )
     if privileged_present and privileged_read and not privileged_write:
         kind = L2PatternKind.PRIVILEGED_READ
