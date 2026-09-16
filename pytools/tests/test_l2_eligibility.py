@@ -63,12 +63,12 @@ def test_memory_atomic_control_and_privileged_dimensions_route_to_all_families()
         fragment=fragment, privileged={"schemaVersion": "test"},
         reasons=("SM_ATOMIC_OPERATION", "SM_TRAP")), 1)
     assert item["requiredDimensions"] == [
-        "atomic_memory_order", "control_flow", "memory_effects", "privileged_state",
-        "shell_semantics", "trap_semantics",
+        "atomic_memory_order", "control_flow", "logical_operands", "memory_effects",
+        "privileged_state", "shell_semantics", "trap_semantics",
     ]
     assert item["validatorPlan"]["validatorTypes"] == [
         "l2-concurrency-memory-model", "l2-effect-trace-differential",
-        "l2-privileged-real-runner",
+        "l2-logical-operand-differential", "l2-privileged-real-runner",
     ]
 
 

@@ -10,7 +10,8 @@ import pytest
 
 from riscv2x86_py.batch_evaluation_cli import (
     BATCH_CASE_SCHEMA, BATCH_DESCRIPTOR_NAME, BATCH_TEMPLATE_SCHEMA,
-    _l2_disposition_counts, discover_batch_cases,
+    _l2_coverage_diagnostics, _l2_disposition_counts, _merge_l2_coverage,
+    discover_batch_cases,
     run_batch_evaluation,
 )
 from tests.test_evaluation_runner import _setup
@@ -95,6 +96,15 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     assert result["l2RequirementDispositionCounts"] == {}
     assert result["l2RequiredDimensionCounts"] == {}
     assert result["l2RequirementDenominator"] == 0
+    assert result["l2CoverageDiagnostics"] == {
+        "automaticProviderCoverage": {}, "explicitHarnessCoverage": {},
+        "runtimeAdapterCoverage": {},
+        "missingCapabilityCounts": {"resolved_plan_missing": 2},
+        "authorityMaterializationCounts": {},
+        "observationProductionCounts": {}, "relationApprovalCounts": {},
+    }
+    assert result["l2CoverageMetricDefinitions"]["providerCoverageUnit"] == (
+        "required fragment-dimension binding")
     assert [item["caseId"] for item in result["cases"]] == ["add-001", "shift-001"]
     assert (output / "cases/add-001/evaluation-result.json").is_file()
     assert (output / "cases/shift-001/evaluation-result.json").is_file()
@@ -116,6 +126,75 @@ def test_final_l2_member_disposition_replaces_manifest_not_run():
 
     assert _l2_disposition_counts(group, manifest) == {"verified": 1}
     assert _l2_disposition_counts({}, manifest) == {"not_run": 1}
+
+
+def test_l2_coverage_diagnostics_separate_provider_and_evidence_failures(tmp_path):
+    identity = lambda char: "sha256:" + char * 64
+    case_root = tmp_path / "case"; replay = case_root / "work/replay"; replay.mkdir(parents=True)
+    plan = {
+        "fragmentId": "fragment:renamed:0",
+        "bindings": [
+            {"dimension": "logical_operands", "bindingStatus": "resolved",
+             "bindingKind": "automatic", "missingCapabilities": []},
+            {"dimension": "control_flow", "bindingStatus": "resolved",
+             "bindingKind": "explicit", "missingCapabilities": []},
+            {"dimension": "memory_effects", "bindingStatus": "not_run",
+             "bindingKind": "", "missingCapabilities": ["object_relative_memory_observation"]},
+        ],
+    }
+    (replay / "one-l2-resolved-plan.json").write_text(json.dumps(plan))
+    # A replay/archive copy of the same plan is not another coverage sample.
+    (replay / "two-l2-resolved-plan.json").write_text(json.dumps(plan))
+    detail = {
+        "fragmentId": "fragment:renamed:0",
+        "dimensionResults": {
+            "logical_operands": {"status": "verified", "authorityIdentity": identity("a"),
+                "sourceObservationIdentity": identity("b"),
+                "targetObservationIdentity": identity("c"),
+                "effectRelationIdentity": identity("d")},
+            "control_flow": {"status": "failed", "authorityIdentity": identity("a"),
+                "sourceObservationIdentity": identity("e"),
+                "targetObservationIdentity": identity("f"),
+                "effectRelationIdentity": identity("d")},
+            "memory_effects": {"status": "not_run", "authorityIdentity": "",
+                "sourceObservationIdentity": "", "targetObservationIdentity": "",
+                "effectRelationIdentity": ""},
+        },
+    }
+    result = {"attempts": [{"validation": {"layers": [
+        {"level": "L2", "detail": json.dumps(detail)}]}}]}
+    coverage = _l2_coverage_diagnostics(result, case_root)
+    assert coverage["automaticProviderCoverage"] == {"verified": 1}
+    assert coverage["explicitHarnessCoverage"] == {"failed": 1}
+    assert coverage["runtimeAdapterCoverage"] == {}
+    assert coverage["missingCapabilityCounts"] == {
+        "object_relative_memory_observation": 1, "provider_unbound": 1}
+    assert coverage["authorityMaterializationCounts"] == {
+        "complete": 2, "incomplete": 1}
+    assert coverage["observationProductionCounts"] == {
+        "complete": 2, "not_produced": 1}
+    assert coverage["relationApprovalCounts"] == {"approved": 2, "not_approved": 1}
+
+
+def test_l2_coverage_aggregation_preserves_nonverified_round2_categories():
+    fields = {
+        "automaticProviderCoverage": {"verified": 9, "inconclusive": 1},
+        "explicitHarnessCoverage": {"verified": 2},
+        "runtimeAdapterCoverage": {"verified": 1, "not_run": 1},
+        "missingCapabilityCounts": {"instruction_visibility": 1},
+        "authorityMaterializationCounts": {"complete": 12, "incomplete": 2},
+        "observationProductionCounts": {"complete": 12, "not_produced": 2},
+        "relationApprovalCounts": {"approved": 12, "not_approved": 2},
+    }
+    merged = _merge_l2_coverage([
+        {"l2CoverageDiagnostics": fields},
+        {"l2CoverageDiagnostics": {
+            **fields, "missingCapabilityCounts": {"privileged_state_observation": 1}}},
+    ])
+    assert merged["automaticProviderCoverage"] == {"inconclusive": 2, "verified": 18}
+    assert merged["missingCapabilityCounts"] == {
+        "instruction_visibility": 1, "privileged_state_observation": 1}
+    assert merged["relationApprovalCounts"] == {"approved": 24, "not_approved": 4}
 
 
 def test_batch_separates_no_candidate_from_target_build_failure(tmp_path):

@@ -22,7 +22,7 @@ from .l2_dimensions import L2Dimension
 
 
 BATCH_CASE_SCHEMA = "riscv2x86.batch-evaluation-case.v1"
-BATCH_RESULT_SCHEMA = "riscv2x86.batch-evaluation-result.v2"
+BATCH_RESULT_SCHEMA = "riscv2x86.batch-evaluation-result.v3"
 BATCH_TEMPLATE_SCHEMA = "riscv2x86.batch-evaluation-template.v1"
 BATCH_DESCRIPTOR_NAME = "riscv2x86-evaluation.json"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.-]+")
@@ -253,6 +253,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         and isinstance(linkage.get("programExecutionEvidence"), list) else []
     )
     l2_dispositions = _l2_disposition_counts(l2_group, manifest_dispositions)
+    coverage = _l2_coverage_diagnostics(result, case_root)
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -276,7 +277,130 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
+        "l2CoverageDiagnostics": coverage,
     }
+
+
+def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> dict[str, object]:
+    """Explain L2 coverage at the fragment-dimension unit.
+
+    Resolved plans establish provider selection; closed dimension results establish
+    whether authority, observations, relations, and comparison evidence formed.
+    """
+    provider_counts = {kind: Counter() for kind in
+                       ("automatic", "explicit", "runtime_adapter")}
+    missing_capabilities: Counter[str] = Counter()
+    authority: Counter[str] = Counter()
+    observations: Counter[str] = Counter()
+    relations: Counter[str] = Counter()
+    dimension_results: dict[tuple[str, str], Mapping[str, object]] = {}
+    seen_bindings: dict[tuple[str, str], tuple[str, str, tuple[str, ...]]] = {}
+    for attempt in result.get("attempts", []):
+        validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
+        for layer in validation.get("layers", []) if isinstance(validation, Mapping) else []:
+            if not isinstance(layer, Mapping) or layer.get("level") != "L2":
+                continue
+            try:
+                detail = json.loads(str(layer.get("detail", "")))
+            except json.JSONDecodeError:
+                continue
+            raw = detail.get("dimensionResults") if isinstance(detail, Mapping) else None
+            fragment_id = detail.get("fragmentId") if isinstance(detail, Mapping) else None
+            if isinstance(fragment_id, str) and isinstance(raw, Mapping):
+                for dimension, value in raw.items():
+                    if isinstance(dimension, str) and isinstance(value, Mapping):
+                        dimension_results[(fragment_id, dimension)] = value
+    plan_count = 0
+    for path in sorted(case_root.rglob("*-l2-resolved-plan.json")):
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            missing_capabilities["invalid_execution_plan"] += 1
+            continue
+        if not isinstance(plan, Mapping) or not isinstance(plan.get("bindings"), list):
+            missing_capabilities["invalid_execution_plan"] += 1
+            continue
+        plan_count += 1
+        fragment_id = str(plan.get("fragmentId", ""))
+        for binding in plan["bindings"]:
+            if not isinstance(binding, Mapping):
+                missing_capabilities["invalid_binding"] += 1
+                continue
+            dimension = str(binding.get("dimension", ""))
+            status = str(binding.get("bindingStatus", "inconclusive"))
+            kind = str(binding.get("bindingKind", ""))
+            raw_missing = binding.get("missingCapabilities")
+            missing_tuple = tuple(sorted(item for item in raw_missing
+                                         if isinstance(item, str) and item)) \
+                if isinstance(raw_missing, list) else ()
+            binding_key = (fragment_id, dimension)
+            signature = (status, kind, missing_tuple)
+            previous = seen_bindings.get(binding_key)
+            if previous is not None:
+                if previous != signature:
+                    missing_capabilities["ambiguous_binding_plan"] += 1
+                continue
+            seen_bindings[binding_key] = signature
+            result_item = dimension_results.get((fragment_id, dimension))
+            outcome = (str(result_item.get("status", "inconclusive"))
+                       if isinstance(result_item, Mapping) else status)
+            if kind in provider_counts:
+                provider_counts[kind][outcome] += 1
+            else:
+                missing_capabilities["provider_unbound"] += 1
+            for capability in missing_tuple:
+                missing_capabilities[capability] += 1
+            if result_item is None:
+                authority["not_materialized"] += 1
+                observations["not_produced"] += 1
+                relations["not_approved"] += 1
+                continue
+            authority_id = result_item.get("authorityIdentity")
+            authority["complete" if isinstance(authority_id, str) and
+                      re.fullmatch(r"sha256:[0-9a-f]{64}", authority_id)
+                      else "incomplete"] += 1
+            source_id, target_id = (result_item.get("sourceObservationIdentity"),
+                                    result_item.get("targetObservationIdentity"))
+            source_ok = isinstance(source_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", source_id)
+            target_ok = isinstance(target_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", target_id)
+            observations["complete" if source_ok and target_ok else
+                         "missing_source" if not source_ok and target_ok else
+                         "missing_target" if source_ok and not target_ok else
+                         "not_produced"] += 1
+            relation_id = result_item.get("effectRelationIdentity")
+            relations["approved" if isinstance(relation_id, str) and
+                      re.fullmatch(r"sha256:[0-9a-f]{64}", relation_id)
+                      else "not_approved"] += 1
+    if plan_count == 0:
+        missing_capabilities["resolved_plan_missing"] += 1
+    return {
+        "unit": "fragment-dimension",
+        "automaticProviderCoverage": dict(sorted(provider_counts["automatic"].items())),
+        "explicitHarnessCoverage": dict(sorted(provider_counts["explicit"].items())),
+        "runtimeAdapterCoverage": dict(sorted(provider_counts["runtime_adapter"].items())),
+        "missingCapabilityCounts": dict(sorted(missing_capabilities.items())),
+        "authorityMaterializationCounts": dict(sorted(authority.items())),
+        "observationProductionCounts": dict(sorted(observations.items())),
+        "relationApprovalCounts": dict(sorted(relations.items())),
+    }
+
+
+def _merge_l2_coverage(items: object) -> dict[str, object]:
+    fields = ("automaticProviderCoverage", "explicitHarnessCoverage",
+              "runtimeAdapterCoverage", "missingCapabilityCounts",
+              "authorityMaterializationCounts", "observationProductionCounts",
+              "relationApprovalCounts")
+    totals = {field: Counter() for field in fields}
+    for item in items if isinstance(items, list) else []:
+        coverage = item.get("l2CoverageDiagnostics") if isinstance(item, Mapping) else None
+        if not isinstance(coverage, Mapping):
+            continue
+        for field in fields:
+            raw = coverage.get(field)
+            if isinstance(raw, Mapping):
+                totals[field].update({str(key): int(value) for key, value in raw.items()
+                                      if isinstance(value, int) and not isinstance(value, bool)})
+    return {field: dict(sorted(totals[field].items())) for field in fields}
 
 
 def _l2_disposition_counts(
@@ -456,6 +580,14 @@ def run_batch_evaluation(
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),
             "l2RequirementDenominator": sum(l2_requirement_dispositions.values()),
+            "l2CoverageDiagnostics": _merge_l2_coverage(completed),
+            "l2CoverageMetricDefinitions": {
+                "providerCoverageUnit": "required fragment-dimension binding",
+                "authorityMaterializationUnit": "required fragment-dimension",
+                "observationProductionUnit": "required fragment-dimension",
+                "relationApprovalUnit": "required fragment-dimension",
+                "missingCapabilityUnit": "unresolved fragment-dimension capability",
+            },
             "statisticalUnits": {"translationCoverage": "fragment",
                                  "l2RequirementCoverage": "fragment",
                                  "validationRates": "program",
