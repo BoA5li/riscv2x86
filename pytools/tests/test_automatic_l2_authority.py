@@ -3,6 +3,7 @@ from pathlib import Path
 from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
+from riscv2x86_py.l2_semantic_profile import L2PatternKind
 from tests.l2_profile_fixtures import profile_dict
 
 
@@ -74,3 +75,41 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
     assert sidecar.complete
     assert sidecar.operands[0].escape_kind == "function_return"
     assert len(sidecar.approved_effect_relations) == 64
+
+
+def test_functional_counter_authority_is_typed_and_runtime_mediated(tmp_path: Path):
+    finding = {
+        "fragment": {"id": "fragment", "enclosingFunction": "read_clock",
+                     "outputs": [], "inputs": []},
+        "translationOutcome": "functional_fallback",
+        "approvalArtifact": {
+            "proofStatus": "functional_approved",
+            "functionalFallbackEnabled": True,
+            "preservationMode": "functional_equivalence_only",
+            "architectureSemanticsPreserved": False,
+            "sourceSemanticContractId": "riscv.time.observation.v1",
+            "targetSemanticContractId": "x86.monotonic-time.observation.v1",
+            "runtimeContractId": "riscv2x86_rt_monotonic_time_ns@v1",
+            "runtimeContractVersion": "v1",
+            "targetEnvironmentId": "environment",
+            "targetCatalogVersion": "catalog",
+            "sourceModelId": "model", "constraintsId": "constraints",
+            "preservationDecisionId": "decision", "planId": "plan",
+            "ignoredSourceState": ["csr:time:absolute-value", "csr:time:epoch"],
+            "knownNonEquivalences": ["absolute values are not comparable"],
+        },
+        "l2SemanticProfile": profile_dict(
+            "fragment", L2PatternKind.PRIVILEGED_READ),
+    }
+    frontend = tmp_path / "frontend"
+    frontend.write_bytes(b"frontend")
+    assert materialize_automatic_l2_authority(
+        {"findings": [finding]}, [], frontend) == 1
+    sidecar = l2_authority_sidecar_from_dict(
+        finding["approvalArtifact"]["l2AuthoritySidecar"])
+    assert sidecar.complete
+    assert len(sidecar.runtime_contracts) == 1
+    assert {item.relation_kind for item in sidecar.approved_effect_relations} == {
+        "runtime_mediated"
+    }
+    assert all(item.escape_kind == "non_escaping" for item in sidecar.ignored_state)

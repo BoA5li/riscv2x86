@@ -286,6 +286,7 @@ def _typed_writeback_binding_reason(
     profile_levels = {
         ValidationProfile.BUILD: ("L0",),
         ValidationProfile.FUNCTIONAL: ("L0", "L1"),
+        ValidationProfile.FUNCTIONAL_RELATION: ("L0", "L1", "L2"),
         ValidationProfile.ARCHITECTURAL: ("L0", "L1", "L2"),
         ValidationProfile.MICROARCH: ("L0", "L1", "L2", "L3"),
     }

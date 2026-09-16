@@ -3171,6 +3171,17 @@ def _render_instruction_stream_functional_helper(
         "helperRequiredHeader": contract.required_header,
         "helperRuntimeLibrary": contract.runtime_library,
         "helperRuntimeManifestVersion": RUNTIME_HELPER_MANIFEST_VERSION,
+        "architectureSemanticsPreserved": False,
+        "shellSemanticsPreserved": False,
+        "microarchitectureSemanticsPreserved": False,
+        "ignoredSourceState": [
+            "instruction-stream-sync:cross-thread-publication",
+            "instruction-stream-sync:global-visibility",
+        ],
+        "knownNonEquivalences": [
+            "cross-thread code publication is not preserved by the local-thread helper",
+            "architectural instruction-visibility equivalence is not claimed",
+        ],
     }
     return _output(
         kind="functional_c", replacement=replacement, context=context,

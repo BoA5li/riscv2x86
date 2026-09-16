@@ -67,20 +67,22 @@ def _effective_validation_contract(
     Automatic inventories are necessarily created before translation chooses a
     strict or functional-only candidate. Their profile is therefore a maximum
     requested level, not authority to escalate the eventual artifact claim.
-    Functional fallbacks are evaluated through L0/L1 and retain an explicit
-    reason for the per-attempt contraction. The strict validation entry point
+    Functional fallbacks are evaluated through L0/L1 and, when the requested
+    maximum includes L2, through a typed approved-functional-relation L2. They
+    retain an explicit reason for the per-attempt contraction. The strict validation entry point
     remains fail-closed if a caller bypasses this orchestration step.
     """
     mode = getattr(translation, "preservation_mode", None)
     if (mode is not PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY
             or requested_plan.profile in {
                 ValidationProfile.BUILD, ValidationProfile.FUNCTIONAL,
+                ValidationProfile.FUNCTIONAL_RELATION,
             }):
         return requested_plan, requested_comparison_policy, ""
     effective = replace(
         requested_plan,
-        plan_id=requested_plan.plan_id + ":effective-functional",
-        profile=ValidationProfile.FUNCTIONAL,
+        plan_id=requested_plan.plan_id + ":effective-functional-relation",
+        profile=ValidationProfile.FUNCTIONAL_RELATION,
         experiment_contract_id="",
     )
     policy = (
@@ -88,7 +90,7 @@ def _effective_validation_contract(
         if requested_comparison_policy == ARCHITECTURAL_COMPARISON_POLICY
         else requested_comparison_policy
     )
-    return effective, policy, "artifact-functional-equivalence-only"
+    return effective, policy, "artifact-approved-functional-relation"
 
 
 def _canonical(value: object) -> bytes:

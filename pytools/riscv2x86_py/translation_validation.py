@@ -28,6 +28,10 @@ TRANSLATION_VALIDATION_VERSION = "riscv2x86.translation-validation.v2"
 class ValidationProfile(str, Enum):
     BUILD = "build"
     FUNCTIONAL = "functional"
+    # L0/L1 plus an L2 comparison whose maximum claim is an approved,
+    # explicitly bounded functional relation.  This is deliberately distinct
+    # from ARCHITECTURAL so a fallback can be measured without claim escalation.
+    FUNCTIONAL_RELATION = "functional_relation"
     ARCHITECTURAL = "architectural"
     MICROARCH = "microarch"
 
@@ -113,6 +117,9 @@ class TargetEnvironment:
 _PROFILE_LEVELS = {
     ValidationProfile.BUILD: (ValidationLevel.L0,),
     ValidationProfile.FUNCTIONAL: (ValidationLevel.L0, ValidationLevel.L1),
+    ValidationProfile.FUNCTIONAL_RELATION: (
+        ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
+    ),
     ValidationProfile.ARCHITECTURAL: (
         ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
     ),

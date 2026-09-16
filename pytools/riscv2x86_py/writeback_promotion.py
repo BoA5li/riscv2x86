@@ -34,6 +34,7 @@ _EMITTED = {
 _PROFILE_LEVELS = {
     ValidationProfile.BUILD: ("L0",),
     ValidationProfile.FUNCTIONAL: ("L0", "L1"),
+    ValidationProfile.FUNCTIONAL_RELATION: ("L0", "L1", "L2"),
     ValidationProfile.ARCHITECTURAL: ("L0", "L1", "L2"),
     ValidationProfile.MICROARCH: ("L0", "L1", "L2", "L3"),
 }
@@ -197,7 +198,9 @@ def _profile_reason(evaluation: CompletedEvaluation, attempt: EvaluatedAttempt) 
         PreservationMode.ARCHITECTURE_EQUIVALENT: ValidationProfile.ARCHITECTURAL,
         PreservationMode.MICROARCHITECTURE_INTENT_PRESERVED: ValidationProfile.MICROARCH,
     }[translation.preservation_mode]
-    order = tuple(ValidationProfile)
+    # Functional-relation evidence is intentionally not a publication level.
+    order = (ValidationProfile.BUILD, ValidationProfile.FUNCTIONAL,
+             ValidationProfile.ARCHITECTURAL, ValidationProfile.MICROARCH)
     if order.index(result.profile) < order.index(minimum):
         return "promotion.validation-profile-insufficient"
     if (translation.preservation_mode is PreservationMode.ARCHITECTURE_EQUIVALENT

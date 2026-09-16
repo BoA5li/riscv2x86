@@ -105,6 +105,26 @@ def _provider_observation_identities(result: ValidationLayerResult) -> tuple[str
     )
 
 
+def _provider_claim_properties(
+    result: ValidationLayerResult,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Read a provider's explicit functional claim boundary."""
+    try:
+        detail = json.loads(result.detail)
+    except (TypeError, json.JSONDecodeError):
+        return (), ()
+    if not isinstance(detail, Mapping):
+        return (), ()
+    verified, not_claimed = (detail.get("verifiedProperties"),
+                             detail.get("notClaimedProperties"))
+    if (not isinstance(verified, list) or not verified
+            or not all(isinstance(item, str) and item for item in verified)
+            or not isinstance(not_claimed, list) or not not_claimed
+            or not all(isinstance(item, str) and item for item in not_claimed)):
+        return (), ()
+    return tuple(sorted(set(verified))), tuple(sorted(set(not_claimed)))
+
+
 def _l0_build_matrix_factory(config: Mapping[str, object]) -> LayerValidator:
     # Delayed import avoids a translation_validation -> registry -> L0 cycle.
     from .l0_build_matrix import build_l0_validator, load_l0_build_matrix
@@ -134,6 +154,15 @@ def _automatic_l2_operand_factory(config: Mapping[str, object]) -> LayerValidato
 def _automatic_l2_effect_factory(config: Mapping[str, object]) -> LayerValidator:
     from .automatic_l2_effect import build_auto_l2_effect_validator
     return build_auto_l2_effect_validator(config)
+
+
+def _automatic_l2_functional_relation_factory(
+    config: Mapping[str, object],
+) -> LayerValidator:
+    from .automatic_l2_functional_relation import (
+        build_auto_l2_functional_relation_validator,
+    )
+    return build_auto_l2_functional_relation_validator(config)
 
 
 def _l2_operand_differential_factory(config: Mapping[str, object]) -> LayerValidator:
@@ -175,6 +204,7 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "automatic-l1-functional-differential": _automatic_l1_factory,
     "automatic-l2-operand-differential": _automatic_l2_operand_factory,
     "automatic-l2-effect-differential": _automatic_l2_effect_factory,
+    "automatic-l2-functional-relation": _automatic_l2_functional_relation_factory,
     "l0-build-matrix": _l0_build_matrix_factory,
     "l1-functional-differential": _l1_differential_factory,
     "l2-logical-operand-differential": _l2_operand_differential_factory,
@@ -385,6 +415,7 @@ def _requirement_driven_l2_validator(
             source_identity = str(getattr(kwargs.get("source_observation"), "identity", ""))
             target_identity = str(getattr(kwargs.get("target_observation"), "identity", ""))
             provider_source, provider_target = _provider_observation_identities(result)
+            provider_verified, provider_not_claimed = _provider_claim_properties(result)
             if not source_identity:
                 source_identity = provider_source
             if not target_identity:
@@ -452,11 +483,13 @@ def _requirement_driven_l2_validator(
                     else "exact" if claim_scope is L2ClaimScope.ARCHITECTURAL else ""
                 ),
                 verified_properties=(
+                    provider_verified or
                     tuple(getattr(artifact, "l2_verified_properties", ())) or
                     (("declared-return-relation",) if claim_scope is
                      L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ())
                 ),
                 not_claimed_properties=(
+                    provider_not_claimed or
                     tuple(getattr(artifact, "l2_not_claimed_properties", ())) or
                     (("architectural-state-equivalence",) if claim_scope is
                      L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ())

@@ -540,7 +540,7 @@ def prepare_automatic_inventory(
                 limitations = sorted(set(limitations) | {
                     "control-flow-event-trace-not-observed-by-l1",
                 })
-            validators["L1"] = {"type": "automatic-l1-functional-differential", "config": {
+            l1_config = {
                 "schemaVersion": "riscv2x86.auto-l1-runner.v3", "mode": mode,
                 "sourcePath": "${SOURCE_PATH}", "sourceDigest": "${SOURCE_DIGEST}",
                 "targetPath": "${TARGET_PATH}", "targetDigest": "${TARGET_DIGEST}",
@@ -556,7 +556,10 @@ def prepare_automatic_inventory(
                                   else explicit["inputDomainId"]),
                 "observationContract": observation_contract,
                 "observableDimensions": dimensions,
-                "semanticLimitations": limitations} }
+                "semanticLimitations": limitations}
+            validators["L1"] = {
+                "type": "automatic-l1-functional-differential", "config": l1_config,
+            }
             l2_operand_possible = bool(
                 functions and any(
                     isinstance(item.get("arity"), int) and 1 <= int(item["arity"]) <= 4
@@ -684,6 +687,38 @@ def prepare_automatic_inventory(
                     ["privileged_route_selection", "privileged_state_observation"],
                     "l2-privileged-real-runner",
                     privileged_binding["config"], binding_kind="explicit",
+                ))
+            # Functional fallbacks use the same executable observation boundary
+            # as L1, but close a separately typed runtime-mediated L2 relation.
+            # Applicability is profile/capability based, never path/name based.
+            if allow_functional_fallbacks:
+                l2_environment_capabilities.update((
+                    "instruction_visibility", "privileged_state_observation",
+                    "shell_observation",
+                ))
+                functional_relation_config = {
+                    "schemaVersion":
+                        "riscv2x86.auto-l2-functional-relation-runner.v1",
+                    "translatedReport": "${TRANSLATED_REPORT}",
+                    "l1Config": {
+                        **l1_config,
+                        "workDirectory":
+                            "${WORK_DIR}/automatic-l2-functional/${ATTEMPT_ID}",
+                        "replayDirectory":
+                            "${REPLAY_DIR}/${ATTEMPT_ID}-l2-functional",
+                    },
+                }
+                l2_providers.append(provider(
+                    "automatic-l2-functional-relation-v1",
+                    [L2Dimension.MEMORY_EFFECTS.value,
+                     L2Dimension.PRIVILEGED_STATE.value,
+                     L2Dimension.SHELL_SEMANTICS.value],
+                    ["instruction_visibility_fence", "privileged_read"],
+                    ["instruction_visibility", "privileged_state_observation",
+                     "shell_observation"],
+                    "automatic-l2-functional-relation",
+                    functional_relation_config,
+                    binding_kind="runtime_adapter",
                 ))
             l2_providers.extend(explicit_l2_providers)
             l2_providers.sort(key=lambda item: str(item["providerId"]))

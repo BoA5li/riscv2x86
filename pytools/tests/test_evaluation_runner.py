@@ -22,7 +22,7 @@ from riscv2x86_py.translation_attempt import (
 from riscv2x86_py.translation_validation import (
     TARGET_ENVIRONMENT_SCHEMA, TRANSLATION_VALIDATION_VERSION,
     VALIDATION_PLAN_SCHEMA, TranslationArtifact, TranslationValidationResult,
-    ValidationPlan, ValidationProfile,
+    ValidationLevel, ValidationPlan, ValidationProfile,
 )
 from riscv2x86_py.validation_runtime_registry import VALIDATION_RUNTIME_REGISTRY_SCHEMA
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
@@ -190,7 +190,7 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     }]
 
 
-def test_functional_artifact_contracts_architectural_maximum_to_l0_l1():
+def test_functional_artifact_contracts_architectural_maximum_to_functional_relation():
     plan = ValidationPlan(
         "maximum-architectural", ValidationProfile.ARCHITECTURAL,
         "qemu", "native", 7, 10, "registry-v1",
@@ -204,11 +204,15 @@ def test_functional_artifact_contracts_architectural_maximum_to_l0_l1():
         plan, artifact, "riscv2x86.comparison-policy.architectural.v1",
     )
     assert plan.profile is ValidationProfile.ARCHITECTURAL
-    assert effective.profile is ValidationProfile.FUNCTIONAL
-    assert [item.value for item in effective.required_levels] == ["L0", "L1"]
-    assert effective.plan_id == "maximum-architectural:effective-functional"
+    assert effective.profile is ValidationProfile.FUNCTIONAL_RELATION
+    assert effective.required_levels == (
+        ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
+    )
+    assert [item.value for item in effective.required_levels] == ["L0", "L1", "L2"]
+    assert effective.plan_id == \
+        "maximum-architectural:effective-functional-relation"
     assert policy == "riscv2x86.l1-observable-comparison.v1"
-    assert reason == "artifact-functional-equivalence-only"
+    assert reason == "artifact-approved-functional-relation"
 
 
 def test_architectural_artifact_keeps_requested_architectural_contract():
@@ -242,14 +246,14 @@ def test_evaluation_records_functional_profile_contraction_per_attempt(tmp_path)
     assert evaluated["reasonCodes"] == ["validation.layer-runner-missing:L0"]
     assert "validation.profile-exceeds-preservation-claim" not in evaluated["reasonCodes"]
     assert evaluated["requestedValidationProfile"] == "architectural"
-    assert evaluated["effectiveValidationProfile"] == "functional"
+    assert evaluated["effectiveValidationProfile"] == "functional_relation"
     assert evaluated["profileSelectionReason"] == \
-        "artifact-functional-equivalence-only"
+        "artifact-approved-functional-relation"
     assert evaluated["requestedComparisonPolicy"] == \
         "riscv2x86.comparison-policy.none.v1"
     assert evaluated["effectiveComparisonPolicy"] == \
         "riscv2x86.comparison-policy.none.v1"
-    assert evaluated["validation"]["profile"] == "functional"
+    assert evaluated["validation"]["profile"] == "functional_relation"
 
 
 def test_unavailable_build_tool_is_persisted_as_inconclusive(tmp_path):

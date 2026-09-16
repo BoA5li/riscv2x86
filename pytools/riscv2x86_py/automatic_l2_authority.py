@@ -19,6 +19,8 @@ from .l2_authority import (
     L2OrderingAuthority,
     L2SourceEffectAuthority,
     L2InternalValueAuthority,
+    L2IgnoredStateAuthority,
+    L2RuntimeContractBinding,
 )
 from .l2_control_flow import (
     bind_control_flow_authority,
@@ -383,6 +385,93 @@ def _fence_authority(
     )
 
 
+def _functional_relation_authority(
+    finding: Mapping[str, object], producer_digest: str,
+) -> L2AuthoritySidecar | None:
+    """Materialize only proof-declared functional relations.
+
+    This path consumes the renderer's versioned semantic/runtime contracts. It
+    never derives a relation from a mnemonic, file name, helper spelling, or C
+    text.  The deliberately narrow property set is what prevents a successful
+    fallback from becoming architectural L2 evidence.
+    """
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
+        return None
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    raw_profile = finding.get("l2SemanticProfile")
+    if (not fragment_id or approval.get("proofStatus") != "functional_approved"
+            or approval.get("preservationMode") != "functional_equivalence_only"
+            or approval.get("functionalFallbackEnabled") is not True
+            or approval.get("architectureSemanticsPreserved") is not False
+            or not isinstance(raw_profile, Mapping)):
+        return None
+    try:
+        profile = l2_fragment_semantic_profile_from_dict(
+            raw_profile, expected_fragment_id=fragment_id)
+    except ValueError:
+        return None
+    if profile.pattern_kind not in {
+            L2PatternKind.PRIVILEGED_READ,
+            L2PatternKind.INSTRUCTION_VISIBILITY_FENCE}:
+        return None
+    runtime_id = approval.get("runtimeContractId")
+    runtime_version = approval.get("runtimeContractVersion")
+    source_contract = approval.get("sourceSemanticContractId")
+    target_contract = approval.get("targetSemanticContractId")
+    ignored = approval.get("ignoredSourceState")
+    non_equivalences = approval.get("knownNonEquivalences")
+    if (not all(isinstance(item, str) and item for item in (
+            runtime_id, runtime_version, source_contract, target_contract))
+            or not isinstance(ignored, list) or not ignored
+            or ignored != sorted(set(ignored))
+            or not all(isinstance(item, str) and item for item in ignored)
+            or not isinstance(non_equivalences, list) or not non_equivalences
+            or not all(isinstance(item, str) and item for item in non_equivalences)):
+        return None
+    contract_identity = _identity({
+        "schemaVersion": "riscv2x86.functional-runtime-contract-binding.v1",
+        "runtimeContractId": runtime_id,
+        "runtimeContractVersion": runtime_version,
+        "sourceSemanticContractId": source_contract,
+        "targetSemanticContractId": target_contract,
+        "targetEnvironmentId": approval.get("targetEnvironmentId", ""),
+        "targetCatalogVersion": approval.get("targetCatalogVersion", ""),
+    })
+    runtime = L2RuntimeContractBinding(
+        str(runtime_id), str(runtime_version), contract_identity, True)
+    if profile.pattern_kind is L2PatternKind.PRIVILEGED_READ:
+        dimensions = (
+            ("functional:privileged-state", "PrivilegedRead", "csr:declared",
+             ("csr_value",)),
+            ("functional:shell", "RuntimeInvocation", "shell:runtime-adapter",
+             ("kind",)),
+        )
+    else:
+        dimensions = (
+            ("functional:instruction-visibility", "InstructionVisibility",
+             "instruction-stream:local", ("kind",)),
+            ("functional:shell", "RuntimeInvocation", "shell:runtime-adapter",
+             ("kind",)),
+        )
+    effects = tuple(L2SourceEffectAuthority(effect_id, kind, subject, True)
+                    for effect_id, kind, subject, _requirements in dimensions)
+    relations = tuple(ApprovedEffectRelation(
+        "relation:" + effect_id, effect_id, ("target:" + effect_id,),
+        "runtime_mediated", requirements, (), str(runtime_id), True,
+    ) for effect_id, _kind, _subject, requirements in dimensions)
+    ignored_state = tuple(L2IgnoredStateAuthority(
+        item, "declared-functional-non-equivalence", "non_escaping", True,
+    ) for item in ignored)
+    return L2AuthoritySidecar(
+        fragment_id, L2AuthorityProducer(
+            "translation-proof-sidecar", "functional-relation-authority", "v1",
+            producer_digest),
+        _shell_identity(approval, fragment_id), (), (), effects, relations,
+        (runtime,), ignored_state, True,
+    )
+
+
 def _fence_authority_failure_reason(
     finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
 ) -> str:
@@ -445,7 +534,8 @@ def materialize_automatic_l2_authority(
     for finding in findings:
         if not isinstance(finding, dict):
             continue
-        sidecar = (_fence_authority(finding, functions, producer_digest)
+        sidecar = (_functional_relation_authority(finding, producer_digest)
+                   or _fence_authority(finding, functions, producer_digest)
                    or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))
         if sidecar is None:
