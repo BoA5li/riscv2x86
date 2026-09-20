@@ -483,13 +483,18 @@ def _metric_summary(report: PlatformReport, metric: MetricContract, contract: Ex
                     (metric.direction == "decrease" and high < 0) or
                     (metric.direction == "nonzero" and (low > 0 or high < 0)))
     accepted = direction_ok and abs(standardized) >= metric.minimum_absolute_effect_size
+    # A finite sample that does not establish the declared effect is not by
+    # itself evidence of the opposite effect. Reserve FAILED for a confidence
+    # interval wholly supporting the contrary direction.
+    contradicted = ((metric.direction == "increase" and high < 0) or
+                    (metric.direction == "decrease" and low > 0))
     return {"metricId": metric.metric_id, "side": report.side, "method": metric.statistical_test,
             "sampleCount": len(baseline), "baselineMedian": statistics.median(baseline),
             "treatmentMedian": statistics.median(treatment), "baselineMean": statistics.mean(baseline),
             "treatmentMean": statistics.mean(treatment), "baselineVariance": baseline_variance,
             "treatmentVariance": variance,
             "effect": effect, "standardizedEffect": standardized, "confidenceInterval": [low, high],
-            "accepted": accepted}
+            "accepted": accepted, "contradicted": contradicted}
 
 
 def _run_command(command: Sequence[str], stdin: str, timeout: int) -> CommandResult:
@@ -504,33 +509,34 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
     base = (run_l2_concurrency_differential(config.base_concurrency_config, **kwargs)
             if config.base_l2_kind == "concurrency" else run_l2_effect_trace_differential(config.base_effect_config, **kwargs))
     if base.status is not ValidationStatus.VERIFIED:
-        return base
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                     detail="L3 prerequisite L2 evidence unavailable: " + base.status.value)
     plan = kwargs.get("validation_plan")
     if getattr(plan, "profile", None) is not ValidationProfile.MICROARCH:
-        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail="L3 requires microarch validation profile")
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 requires microarch validation profile")
     if kwargs.get("comparison_policy") != config.comparison_policy:
-        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail="L3 comparison policy mismatch")
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 comparison policy mismatch")
     try:
         path = Path(config.contract_path)
         if _file_digest(path) != config.contract_digest:
-            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail="experiment contract digest mismatch")
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment contract digest mismatch")
         contract = load_experiment_contract(path)
     except OSError as exc:
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment contract unavailable: " + str(exc))
     except (ValueError, json.JSONDecodeError) as exc:
-        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail="experiment contract invalid: " + str(exc))
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment contract invalid: " + str(exc))
     artifact = kwargs.get("translation_artifact")
     if (contract.experiment_id != getattr(plan, "experiment_contract_id", "") or
             contract.translation_plan_id != getattr(artifact, "translation_plan_id", "") or
             contract.proof_identity != getattr(artifact, "proof_identity", "")):
-        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail="experiment/plan/proof binding mismatch")
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment/plan/proof binding mismatch")
     for command in (config.source_command, config.target_command):
         if not (Path(command[0]).is_file() or shutil.which(command[0])):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail="L3 controlled runner unavailable: " + command[0])
     command_runner = kwargs.get("l3_command_runner", _run_command)
     if not callable(command_runner):
-        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail="L3 command runner invalid")
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 command runner invalid")
     reports = []
     summaries = []
     request = {"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "experimentId": contract.experiment_id,
@@ -544,16 +550,16 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
         current = dict(request, side=side, runnerId=runner_id)
         try:
             result = command_runner(command, json.dumps(current, sort_keys=True), config.timeout_seconds)
-        except OSError as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " runner unavailable: " + str(exc))
         if result.timed_out:
-            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, detail=side + " runner timed out")
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail=side + " runner timed out")
         if result.returncode == 75:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " required measurement capability unavailable: " + result.stderr)
         if result.returncode:
-            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED,
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " runner failed: " + result.stderr)
         try:
             raw = json.loads(result.stdout)
@@ -561,7 +567,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                 raise ValueError("report root must be an object")
             report = parse_platform_report(raw, side=side, runner_id=runner_id, contract=contract)
         except (ValueError, json.JSONDecodeError) as exc:
-            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED,
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " report invalid: " + str(exc))
         if not _environment_matches(report.environment, requirements):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
@@ -573,7 +579,10 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
         platform_summaries = [_metric_summary(report, metric, contract) for metric in contract.metrics]
         summaries.extend(platform_summaries)
         if any(not item["accepted"] for item in platform_summaries):
-            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, report.identity,
+            status = (ValidationStatus.FAILED if any(item["contradicted"] for item in platform_summaries)
+                      else ValidationStatus.INCONCLUSIVE)
+            return ValidationLayerResult(ValidationLevel.L3, status,
+                                         report.identity if status is ValidationStatus.FAILED else "",
                                          json.dumps({"side": side, "rawSampleSummary": platform_summaries}, sort_keys=True))
         binary = Path(command[0]) if Path(command[0]).is_file() else Path(str(shutil.which(command[0])))
         reports.append({"side": side, "report": report.identity, "runnerId": runner_id,

@@ -69,6 +69,8 @@ def _report(request, *, bad=None):
     treatment = [20 + (i % 3) for i in range(20)] if source else [140 + (i % 5) for i in range(20)]
     if bad == "statistics" and not source:
         treatment = [80 + (i % 5) for i in range(20)]
+    if bad == "ambiguous-statistics" and not source:
+        treatment = list(baseline)
     accesses = [ACCESS]
     if bad == "extra-access" and not source:
         accesses = [ACCESS, dict(ACCESS, eventId="access-2", offset=128)]
@@ -128,6 +130,13 @@ def test_environment_mismatch_is_inconclusive_not_success(tmp_path, monkeypatch)
     assert "controlled environment" in result.detail
 
 
+def test_unresolved_statistical_effect_is_inconclusive_not_failure(tmp_path, monkeypatch):
+    result = _run(tmp_path, monkeypatch, bad="ambiguous-statistics")
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert result.evidence_identity == ""
+    assert '"accepted": false' in result.detail
+
+
 def test_raw_cross_isa_values_are_not_compared(tmp_path, monkeypatch):
     # Source effects are about 10 units; target effects are about 40. Both retain
     # the predeclared positive conclusion, so raw cycles are deliberately incomparable.
@@ -165,6 +174,70 @@ def test_measurement_capability_unavailable_is_inconclusive(tmp_path, monkeypatc
     )
     assert result.status is ValidationStatus.INCONCLUSIVE
     assert "capability unavailable" in result.detail
+
+
+@pytest.mark.parametrize("failure,expected", [
+    ("timeout", "timed out"),
+    ("runner-error", "runner failed"),
+    ("invalid-json", "report invalid"),
+    ("invalid-schema", "report invalid"),
+])
+def test_infrastructure_failure_never_counts_as_semantic_failure(tmp_path, monkeypatch, failure, expected):
+    path, digest, _ = _write(tmp_path)
+    monkeypatch.setattr(subject, "run_l2_effect_trace_differential", lambda *_a, **_k:
+                        ValidationLayerResult(ValidationLevel.L2, ValidationStatus.VERIFIED,
+                                              "sha256:" + "d" * 64, "L2 passed"))
+
+    def command_runner(_command, stdin, _timeout):
+        if failure == "timeout":
+            return subject.CommandResult(-1, "", "timeout", True)
+        if failure == "runner-error":
+            return subject.CommandResult(2, "", "runner crashed")
+        if failure == "invalid-json":
+            return subject.CommandResult(0, "{", "")
+        report = _report(json.loads(stdin))
+        report.pop("metricSamples")
+        return subject.CommandResult(0, json.dumps(report), "")
+
+    result = subject.run_l3_experiment_validation(
+        _config(path, digest),
+        validation_plan=SimpleNamespace(profile=ValidationProfile.MICROARCH,
+                                        experiment_contract_id="cache-direction-v1"),
+        translation_artifact=SimpleNamespace(translation_plan_id="plan-3", proof_identity=PROOF),
+        comparison_policy=ARCHITECTURAL_COMPARISON_POLICY, l3_command_runner=command_runner,
+    )
+    assert result.level is ValidationLevel.L3
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert result.evidence_identity == ""
+    assert expected in result.detail
+
+
+def test_stale_or_invalid_contract_is_inconclusive(tmp_path, monkeypatch):
+    path, digest, _ = _write(tmp_path)
+    monkeypatch.setattr(subject, "run_l2_effect_trace_differential", lambda *_a, **_k:
+                        ValidationLayerResult(ValidationLevel.L2, ValidationStatus.VERIFIED))
+    path.write_text("{", encoding="utf-8")
+    kwargs = dict(validation_plan=SimpleNamespace(profile=ValidationProfile.MICROARCH,
+                                                  experiment_contract_id="cache-direction-v1"),
+                  translation_artifact=SimpleNamespace(translation_plan_id="plan-3", proof_identity=PROOF),
+                  comparison_policy=ARCHITECTURAL_COMPARISON_POLICY)
+    stale = subject.run_l3_experiment_validation(_config(path, digest), **kwargs)
+    assert stale.status is ValidationStatus.INCONCLUSIVE
+    assert "digest mismatch" in stale.detail
+    new_digest = "sha256:" + sha256(path.read_bytes()).hexdigest()
+    invalid = subject.run_l3_experiment_validation(_config(path, new_digest), **kwargs)
+    assert invalid.status is ValidationStatus.INCONCLUSIVE
+    assert "contract invalid" in invalid.detail
+
+
+def test_missing_l2_prerequisite_is_l3_inconclusive(tmp_path, monkeypatch):
+    path, digest, _ = _write(tmp_path)
+    monkeypatch.setattr(subject, "run_l2_effect_trace_differential", lambda *_a, **_k:
+                        ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED))
+    result = subject.run_l3_experiment_validation(_config(path, digest))
+    assert result.level is ValidationLevel.L3
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert "prerequisite L2" in result.detail
 
 
 def test_partial_order_cycle_is_rejected(tmp_path):
