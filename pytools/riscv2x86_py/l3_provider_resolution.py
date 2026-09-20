@@ -16,6 +16,7 @@ from .l3_experiment_runner import (
     EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA,
     EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA, load_experiment_contract,
     EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA,
+    EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA,
 )
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
@@ -98,6 +99,8 @@ def provider_from_dict(value: Mapping[str, object]) -> L3ValidatorProvider:
         raise ValueError("explicit L3 provider needs fragment/profile identity")
     if kind == "automatic" and (fragments or profile_ids):
         raise ValueError("automatic L3 provider cannot silently use exact bindings")
+    if "side_channel_speculation" in dimensions and kind != "explicit":
+        raise ValueError("specialized L3 properties require exact explicit provider binding")
     return L3ValidatorProvider(provider_id, kind, validator_type, dict(value["config"]),
                                classes, dimensions, source, target, profiles, schemas,
                                fragments, profile_ids)
@@ -148,10 +151,11 @@ def _contract_covers_properties(contract: object, profile: object) -> bool:
     if "performance_trend" in dimensions and ("statistical" not in classes or
             not contract.metrics and contract.payload["schemaVersion"] != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
         return False
-    # No v2 approved side-channel/speculation criterion exists yet. Do not
-    # claim this dimension from generic timing or control-flow measurements.
     if "side_channel_speculation" in dimensions:
-        return False
+        return (contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA and
+                "side_channel_speculation" in classes and bool(contract.payload.get("specializedExperiment")) and
+                {"cross-ISA-hardware-equivalence", "identical-cache-or-timing-parameters"} <=
+                set(profile.not_claimed_properties))
     return bool(dimensions)
 
 
@@ -213,6 +217,10 @@ def resolve_l3_execution_plan(
         if provider.validator_type not in validator_types:
             reasons.add("l3.provider.unregistered")
             continue
+        if ("side_channel_speculation" in {item.dimension for item in profile.required_properties} and
+                provider.binding_kind != "explicit"):
+            reasons.add("l3.specialized.explicit-provider-required")
+            continue
         if provider.binding_kind == "explicit" and (provider.fragment_ids or provider.profile_ids):
             if (profile.fragment_id not in provider.fragment_ids
                     and profile.profile_identity not in provider.profile_ids):
@@ -255,6 +263,7 @@ def resolve_l3_execution_plan(
                                                        EXPERIMENT_CONTRACT_TRACE_SCHEMA,
                                                        EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA,
                                                        EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA}
+                                                       | {EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA}
                 or contract.intent_profile_identity != profile.profile_identity
                 or contract.requirement_identity != requirement["requirementIdentity"]
                 or contract.approved_target_relation_identity != profile.approved_target_relation_identity
@@ -266,6 +275,26 @@ def resolve_l3_execution_plan(
             if provider.binding_kind == "explicit":
                 explicit_contract_errors.add("l3.contract.binding-mismatch")
             continue
+        if contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA:
+            from .l3_specialized_experiment import mechanism_route_status
+            specialized = contract.payload["specializedExperiment"]
+            if (provider.binding_kind != "explicit" or
+                    provider.config.get("schemaVersion") != "riscv2x86.l3-experiment-runner.v2"):
+                reasons.add("l3.specialized.explicit-runner-not-configured")
+                continue
+            if (specialized["fragmentId"] != profile.fragment_id or
+                    specialized["profileIdentity"] != profile.profile_identity or
+                    specialized["sourceArtifactDigest"] != source_artifact_digest or
+                    specialized["targetArtifactDigest"] != target_artifact_digest or
+                    specialized["targetEnvironmentIdentity"] != environment_identity):
+                reasons.add("l3.specialized.profile-artifact-or-environment-stale")
+                continue
+            route_reasons = mechanism_route_status(
+                specialized, provider.config.get("specializedMechanismRegistry"),
+                {"source": source_capabilities, "target": target_capabilities})
+            if route_reasons:
+                reasons.update(route_reasons)
+                continue
         if not _contract_covers_properties(contract, profile):
             reasons.add("l3.contract.properties-uncovered")
             if provider.binding_kind == "explicit":
@@ -285,6 +314,13 @@ def resolve_l3_execution_plan(
     if explicit_contract_errors:
         return _result(requirement, status="inconclusive", reason_codes=explicit_contract_errors)
     if not matches:
+        if ("side_channel_speculation" in {item.dimension for item in profile.required_properties} and
+                not explicit_contract_errors and not any(r.startswith("l3.capability.") or
+                                                        r.startswith("l3.runner.") or
+                                                        r.endswith("-capability-missing") or
+                                                        r.endswith("-environment-stale") for r in reasons)):
+            return _result(requirement, status="needs_route",
+                           reason_codes=reasons or {"l3.specialized.approved-target-mechanism-missing"})
         return _result(requirement, status="inconclusive",
                        reason_codes=reasons or {"l3.provider.missing"})
     best = min(item[0] for item in matches)
@@ -358,7 +394,9 @@ def build_l3_capability_registry_validator(
                 (root / (plan["executionIdentity"].replace(":", "-") + ".json")).write_text(
                     json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             if plan["bindingStatus"] != "resolved":
-                return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                status = (ValidationStatus.NEEDS_ROUTE if plan["bindingStatus"] == "needs_route"
+                          else ValidationStatus.INCONCLUSIVE)
+                return ValidationLayerResult(ValidationLevel.L3, status,
                                              detail=json.dumps(plan, sort_keys=True))
             provider = next(x for x in providers if x.provider_id == plan["providerId"])
             # Pin executable and any command-local files immediately before the
