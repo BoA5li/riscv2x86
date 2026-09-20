@@ -255,6 +255,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
     l2_dispositions = _l2_disposition_counts(l2_group, manifest_dispositions)
     coverage = _l2_coverage_diagnostics(result, case_root)
     l3_campaigns = []
+    l3_statistical = []
     for attempt in result.get("attempts", []):
         validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
         for layer in validation.get("layers", []) if isinstance(validation, Mapping) else []:
@@ -271,6 +272,12 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
                     else detail.get("campaignResult") if isinstance(detail, Mapping) else None)
             if isinstance(item, Mapping) and item.get("schemaVersion") == "riscv2x86.l3-concurrency-campaign-result.v1":
                 l3_campaigns.append(dict(item))
+            statistical_item = (detail if isinstance(detail, Mapping) and
+                detail.get("schemaVersion") == "riscv2x86.l3-statistical-experiment-result.v1" else
+                detail.get("statisticalResult") if isinstance(detail, Mapping) else None)
+            if (isinstance(statistical_item, Mapping) and
+                    statistical_item.get("schemaVersion") == "riscv2x86.l3-statistical-experiment-result.v1"):
+                l3_statistical.append(dict(statistical_item))
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -292,6 +299,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         if isinstance(l2_group, Mapping) else 0,
         "l2ProgramExecutionSamples": l2_execution_samples,
         "l3ConcurrencyCampaignResults": l3_campaigns,
+        "l3StatisticalExperimentResults": l3_statistical,
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
@@ -549,8 +557,10 @@ def run_batch_evaluation(
         l2_privileged_claims = Counter()
         l2_execution_sample_keys: set[tuple[str, str, str]] = set()
         l3_campaign_results = []
+        l3_statistical_results = []
         for item in completed:
             l3_campaign_results.extend(item.get("l3ConcurrencyCampaignResults", []))
+            l3_statistical_results.extend(item.get("l3StatisticalExperimentResults", []))
             l2_requirement_dispositions.update(item.get("l2RequirementDispositionCounts", {}))
             l2_required_dimensions.update(item.get("l2RequiredDimensionCounts", {}))
             l2_privileged_claims.update(item.get("l2PrivilegedFragmentClaimCounts", {}))
@@ -597,6 +607,7 @@ def run_batch_evaluation(
             },
             "l2ProgramExecutionSampleCount": len(l2_execution_sample_keys),
             "l3ConcurrencyCampaignSampleCount": 0,
+            "l3StatisticalExperimentSampleCount": 0,
             "l2PrivilegedFragmentClaimCounts": dict(sorted(l2_privileged_claims.items())),
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),
@@ -622,7 +633,13 @@ def run_batch_evaluation(
             group = aggregate_campaign_results(l3_campaign_results)
             payload["l3ConcurrencyCampaignSampleCount"] = group["campaignSampleCount"]
             payload["l3ConcurrencyCampaignGroupIdentity"] = group["groupIdentity"]
+        if l3_statistical_results:
+            from .l3_statistical_experiment import aggregate_statistical_results
+            group = aggregate_statistical_results(l3_statistical_results)
+            payload["l3StatisticalExperimentSampleCount"] = group["experimentSampleCount"]
+            payload["l3StatisticalExperimentGroupIdentity"] = group["groupIdentity"]
         payload["statisticalUnits"]["l3ConcurrencyCampaign"] = "unique programId + campaignIdentity"
+        payload["statisticalUnits"]["l3StatisticalExperiment"] = "unique programId + experimentIdentity; within-program paired experiment rounds"
         identity_value = dict(payload); identity_value.pop("batchIdentity")
         payload["batchIdentity"] = _identity(identity_value)
         (output / "batch-evaluation.json").write_text(

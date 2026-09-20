@@ -15,6 +15,7 @@ from .l3_intent_requirements import (
 from .l3_experiment_runner import (
     EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA,
     EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA, load_experiment_contract,
+    EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA,
 )
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
@@ -144,8 +145,8 @@ def _contract_covers_properties(contract: object, profile: object) -> bool:
             contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA and
             not contract.payload.get("campaignContract")):
         return False
-    if "performance_trend" in dimensions and ("statistical" not in classes
-                                               or not contract.metrics):
+    if "performance_trend" in dimensions and ("statistical" not in classes or
+            not contract.metrics and contract.payload["schemaVersion"] != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
         return False
     # No v2 approved side-channel/speculation criterion exists yet. Do not
     # claim this dimension from generic timing or control-flow measurements.
@@ -252,7 +253,8 @@ def resolve_l3_execution_plan(
             continue
         if (contract.payload["schemaVersion"] not in {EXPERIMENT_CONTRACT_BOUND_SCHEMA,
                                                        EXPERIMENT_CONTRACT_TRACE_SCHEMA,
-                                                       EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA}
+                                                       EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA,
+                                                       EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA}
                 or contract.intent_profile_identity != profile.profile_identity
                 or contract.requirement_identity != requirement["requirementIdentity"]
                 or contract.approved_target_relation_identity != profile.approved_target_relation_identity

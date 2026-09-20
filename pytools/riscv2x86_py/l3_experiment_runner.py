@@ -30,10 +30,12 @@ EXPERIMENT_CONTRACT_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v1
 EXPERIMENT_CONTRACT_BOUND_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v2"
 EXPERIMENT_CONTRACT_TRACE_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v3"
 EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v4"
+EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v5"
 EXPERIMENT_RUNNER_SCHEMA = "riscv2x86.l3-experiment-runner.v1"
 EXPERIMENT_REPORT_SCHEMA = "riscv2x86.l3-experiment-report.v1"
 EXPERIMENT_REPORT_TRACE_SCHEMA = "riscv2x86.l3-experiment-report.v2"
 EXPERIMENT_REPORT_CAMPAIGN_SCHEMA = "riscv2x86.l3-experiment-report.v3"
+EXPERIMENT_REPORT_STATISTICAL_SCHEMA = "riscv2x86.l3-experiment-report.v4"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PRESERVATION = {
     "microarchitecture_intent_preserved", "microarchitecture_strengthened", "best_effort",
@@ -171,7 +173,8 @@ class ExperimentContract:
             raise ValueError("memory-access experiment requires a logical access pattern")
         if "control_flow" in self.experiment_classes and not self.required_control_flow:
             raise ValueError("control-flow experiment requires logical control events")
-        if "statistical" in self.experiment_classes and not self.metrics:
+        if ("statistical" in self.experiment_classes and not self.metrics and
+                self.payload["schemaVersion"] != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
             raise ValueError("statistical experiment requires metrics")
         if self.sample_count <= 1 or self.warmup_count < 0 or not self.complete:
             raise ValueError("sample/warmup/complete contract is invalid")
@@ -225,6 +228,7 @@ class PlatformReport:
     logical_trace: Mapping[str, object] | None = None
     machine_trace: Mapping[str, object] | None = None
     campaign_observation: Mapping[str, object] | None = None
+    statistical_observation: Mapping[str, object] | None = None
 
     @property
     def identity(self) -> str:
@@ -309,13 +313,15 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
               "targetEnvironmentRequirements", "knownNonEquivalences", "complete"}
     schema = value.get("schemaVersion")
     if schema not in {EXPERIMENT_CONTRACT_SCHEMA, EXPERIMENT_CONTRACT_BOUND_SCHEMA,
-                      EXPERIMENT_CONTRACT_TRACE_SCHEMA, EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA}:
+                      EXPERIMENT_CONTRACT_TRACE_SCHEMA, EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA,
+                      EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA}:
         raise ValueError("experiment contract schema unsupported")
     _fields(value, fields | ({"intentProfileIdentity", "requirementIdentity",
                              "approvedTargetRelationIdentity", "programId"}
                              if schema != EXPERIMENT_CONTRACT_SCHEMA else set()) |
             ({"traceContract"} if schema == EXPERIMENT_CONTRACT_TRACE_SCHEMA else set()) |
-            ({"campaignContract"} if schema == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA else set()), "experiment contract")
+            ({"campaignContract"} if schema == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA else set()) |
+            ({"statisticalExperiment"} if schema == EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA else set()), "experiment contract")
     profile_identity = ""
     requirement_identity = ""
     relation_identity = ""
@@ -338,6 +344,17 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
         parse_campaign(value["campaignContract"])
         if "synchronization" not in value["experimentClasses"]:
             raise ValueError("campaign requires synchronization experiment class")
+    if schema == EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA:
+        from .l3_statistical_experiment import parse_experiment
+        experiment = parse_experiment(value["statisticalExperiment"])
+        if ("statistical" not in value["experimentClasses"] or
+                experiment["programId"] != program_id or experiment["proofIdentity"] != value["proofIdentity"] or
+                value["metrics"] != [] or value["sampleCount"] != experiment["roundCount"] or
+                value["randomSeed"] != experiment["randomSeed"] or
+                value["warmupCount"] != experiment["warmupsPerRound"] or
+                value["noisePolicy"] != experiment["exclusionRule"] or
+                value["calibrationProtocol"] != "paired-round-cluster-bootstrap-v1"):
+            raise ValueError("statistical experiment proof/program/class or legacy metric binding mismatch")
     raw_metrics = value.get("metrics")
     if not isinstance(raw_metrics, list):
         raise ValueError("metrics must be an array")
@@ -423,14 +440,17 @@ def parse_platform_report(value: Mapping[str, object], *, side: str, runner_id: 
                           contract: ExperimentContract) -> PlatformReport:
     trace_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_TRACE_SCHEMA
     campaign_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA
+    statistical_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA
     _fields(value, {"schemaVersion", "side", "runnerId", "contractIdentity", "calibrationProtocol",
                     "randomSeed", "affinityPolicy", "noisePolicy",
                     "warmupsCompleted", "environment", "logicalAccesses", "controlFlow",
                     "syncObservations", "metricSamples"} |
             ({"logicalTrace", "machineTrace"} if trace_enabled else set()) |
-            ({"campaignObservation"} if campaign_enabled else set()), "L3 report")
+            ({"campaignObservation"} if campaign_enabled else set()) |
+            ({"statisticalObservation"} if statistical_enabled else set()), "L3 report")
     if value.get("schemaVersion") != (EXPERIMENT_REPORT_TRACE_SCHEMA if trace_enabled else
-                                      EXPERIMENT_REPORT_CAMPAIGN_SCHEMA if campaign_enabled else EXPERIMENT_REPORT_SCHEMA):
+                                      EXPERIMENT_REPORT_CAMPAIGN_SCHEMA if campaign_enabled else
+                                      EXPERIMENT_REPORT_STATISTICAL_SCHEMA if statistical_enabled else EXPERIMENT_REPORT_SCHEMA):
         raise ValueError("L3 report schema unsupported")
     if (_string(value, "side", "report") != side or _string(value, "runnerId", "report") != runner_id or
             _string(value, "contractIdentity", "report") != contract.identity):
@@ -470,6 +490,7 @@ def parse_platform_report(value: Mapping[str, object], *, side: str, runner_id: 
         value["logicalTrace"] if trace_enabled else None,
         value["machineTrace"] if trace_enabled else None,
         value["campaignObservation"] if campaign_enabled else None,
+        value["statisticalObservation"] if statistical_enabled else None,
     )
 
 
@@ -579,6 +600,18 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             contract.proof_identity != getattr(artifact, "proof_identity", "")):
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment/plan/proof binding mismatch")
     campaign_contract = contract.payload.get("campaignContract")
+    statistical_contract = contract.payload.get("statisticalExperiment")
+    if statistical_contract is not None:
+        for side in ("source", "target"):
+            if (kwargs.get("l3_" + side + "_environment_identity") != statistical_contract[side + "EnvironmentIdentity"] or
+                    getattr(kwargs.get(side + "_program_artifact"), "artifact_digest", None) !=
+                    statistical_contract[side + "ArtifactDigest"] or
+                    kwargs.get("l3_" + side + "_compiler_digest") != statistical_contract[side + "CompilerDigest"]):
+                return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                             detail=side + " statistical environment/artifact/compiler binding unavailable")
+        if "cross-ISA-absolute-cycle-equality-not-claimed" not in contract.known_non_equivalences:
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="L3 statistical raw counter claim boundary missing")
     if campaign_contract is not None:
         if (config.base_l2_kind != "concurrency" or campaign_contract["programId"] != contract.program_id or
                 campaign_contract["approvedRelationIdentity"] != contract.approved_target_relation_identity or
@@ -658,6 +691,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
     reports = []
     trace_reports = {}
     campaign_reports = {}
+    statistical_reports = {}
     summaries = []
     request = {"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "experimentId": contract.experiment_id,
                "contractIdentity": contract.identity, "sampleCount": contract.sample_count,
@@ -708,8 +742,19 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             except ValueError as exc:
                 return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                              detail=side + " campaign observation invalid: " + str(exc))
+        if statistical_contract is not None:
+            from .l3_statistical_experiment import parse_observation
+            try:
+                statistical_reports[side] = parse_observation(report.statistical_observation,
+                                                              statistical_contract, side, runner_id)
+            except ValueError as exc:
+                return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                             detail=side + " statistical observation invalid: " + str(exc))
         reasons = _logical_checks(report, contract)
         if reasons:
+            if statistical_contract is not None and "calibration-or-warmup-mismatch" in reasons:
+                return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                             detail=side + " experiment calibration/warmup protocol mismatch")
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, report.identity,
                                          side + ": " + json.dumps(reasons, separators=(",", ":")))
         platform_summaries = [_metric_summary(report, metric, contract) for metric in contract.metrics]
@@ -729,6 +774,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "runnerCommand": _digest(list(command)), "runnerBinary": _file_digest(binary)})
     trace_identities = {}
     campaign_result = None
+    statistical_result = None
     if trace_contract is not None:
         from .l3_attributed_traces import compare_traces
         try:
@@ -748,6 +794,15 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             return ValidationLayerResult(ValidationLevel.L3, status,
                                          campaign_result["resultIdentity"] if status is ValidationStatus.FAILED else "",
                                          json.dumps(campaign_result, sort_keys=True))
+    if statistical_contract is not None:
+        from .l3_statistical_experiment import evaluate_experiment
+        statistical_result = evaluate_experiment(statistical_contract, statistical_reports["source"],
+                                                  statistical_reports["target"])
+        if statistical_result["status"] != "verified":
+            status = ValidationStatus.FAILED if statistical_result["status"] == "failed" else ValidationStatus.INCONCLUSIVE
+            return ValidationLayerResult(ValidationLevel.L3, status,
+                                         statistical_result["resultIdentity"] if status is ValidationStatus.FAILED else "",
+                                         json.dumps(statistical_result, sort_keys=True))
     evidence = _digest({"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "baseEvidence": base.evidence_identity,
                         "contractIdentity": contract.identity, "contractDigest": config.contract_digest,
                         "intentProfileIdentity": contract.intent_profile_identity,
@@ -755,11 +810,13 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "reports": reports, "statistics": summaries, "traceIdentities": trace_identities,
                         "attributionVerifierBinary": verifier_digest if trace_contract is not None else "",
                         "campaignResultIdentity": campaign_result["resultIdentity"] if campaign_result else "",
+                        "statisticalResultIdentity": statistical_result["resultIdentity"] if statistical_result else "",
                         "knownNonEquivalences": contract.known_non_equivalences})
     detail = json.dumps({
         "conclusion": "logical access/control-flow intent and per-platform statistical conclusions satisfy the experiment contract",
         "statisticalSummary": summaries, "traceIdentities": trace_identities,
         "campaignResult": campaign_result,
+        "statisticalResult": statistical_result,
         "environments": [item["environment"] for item in reports],
         "knownNonEquivalences": contract.known_non_equivalences,
     }, sort_keys=True)
