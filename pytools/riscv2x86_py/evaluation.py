@@ -608,6 +608,7 @@ def run_evaluation(
                     plan, translation, request.comparison_policy,
                 )
             l3_manifest = None
+            l3_profile = None
             if effective_plan.profile is ValidationProfile.MICROARCH:
                 from .l3_intent_requirements import parse_l3_requirement_manifest
                 sidecar = report.with_name(report.name + ".l3-requirements.json")
@@ -615,10 +616,20 @@ def run_evaluation(
                     l3_manifest = parse_l3_requirement_manifest(
                         json.loads(sidecar.read_text(encoding="utf-8"))
                     ).to_dict()
+                translated = json.loads(report.read_text(encoding="utf-8"))
+                findings = translated.get("findings") if isinstance(translated, Mapping) else None
+                if isinstance(findings, list):
+                    matches = [item.get("l3IntentProfile") for item in findings
+                               if isinstance(item, Mapping) and isinstance(item.get("fragment"), Mapping)
+                               and item["fragment"].get("id") == attempt.fragment_id]
+                    if len(matches) == 1 and isinstance(matches[0], Mapping):
+                        l3_profile = matches[0]
             validation = run_translation_validation(
                 translation, source_program, target_program, effective_plan,
                 environment, registry, comparison_policy=effective_policy,
                 l3_requirement_manifest=l3_manifest,
+                l3_intent_profile=l3_profile,
+                l3_plan_directory=str(replay) if effective_plan.profile is ValidationProfile.MICROARCH else None,
             )
             per_attempt.append(_attempt_result(attempt, validation, validation.status,
                                                validation.reason_codes,

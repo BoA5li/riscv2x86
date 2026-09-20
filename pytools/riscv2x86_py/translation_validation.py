@@ -455,6 +455,8 @@ def run_translation_validation(
     target_observation: ExecutionObservation | None = None,
     comparison_policy: str = "riscv2x86.comparison-policy.none.v1",
     l3_requirement_manifest: Mapping[str, object] | None = None,
+    l3_intent_profile: Mapping[str, object] | None = None,
+    l3_plan_directory: str | None = None,
 ) -> TranslationValidationResult:
     """Run registered validation layers in mandatory L0 → L3 order.
 
@@ -531,7 +533,9 @@ def run_translation_validation(
             source_observation=source_observation,
             target_observation=target_observation,
             comparison_policy=comparison_policy,
-            **({"l3_requirement_manifest": l3_requirement_manifest}
+            **({"l3_requirement_manifest": l3_requirement_manifest,
+                "l3_intent_profile": l3_intent_profile,
+                "l3_plan_directory": l3_plan_directory}
                if level is ValidationLevel.L3 else {}),
         )
         if not isinstance(layer, ValidationLayerResult) or layer.level is not level:

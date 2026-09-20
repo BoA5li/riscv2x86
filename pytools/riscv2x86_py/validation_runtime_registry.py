@@ -546,6 +546,14 @@ def validation_runtime_registry_from_dict(
         if not isinstance(raw_descriptor, Mapping):
             raise ValueError("validation runner descriptor is malformed")
         runner_type = raw_descriptor.get("type")
+        if runner_type == "l3-capability-provider-registry":
+            if level is not ValidationLevel.L3 or schema_version != VALIDATION_RUNTIME_REGISTRY_SCHEMA:
+                raise ValueError("L3 capability registry requires L3 and registry schema v2")
+            if set(raw_descriptor) != {"type", "config"} or not isinstance(raw_descriptor.get("config"), Mapping):
+                raise ValueError("L3 capability registry descriptor is malformed")
+            from .l3_provider_resolution import build_l3_capability_registry_validator
+            validators[level] = build_l3_capability_registry_validator(raw_descriptor["config"], factories)
+            continue
         if runner_type == "requirement-driven":
             if level is not ValidationLevel.L2 or schema_version != VALIDATION_RUNTIME_REGISTRY_SCHEMA:
                 raise ValueError("requirement-driven validation is only supported for L2 in registry v2")
