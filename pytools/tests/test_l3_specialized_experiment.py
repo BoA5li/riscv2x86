@@ -11,9 +11,9 @@ from riscv2x86_py import l3_specialized_experiment as spec
 from riscv2x86_py import l3_experiment_runner as runner
 from riscv2x86_py.l3_intent_requirements import _hash, classify_l3_requirements
 from riscv2x86_py.l3_provider_resolution import PROVIDER_SCHEMA, provider_from_dict, resolve_l3_execution_plan
-from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
+from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY, L1_COMPARISON_POLICY
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel, ValidationProfile
-from riscv2x86_py.validation_status import ValidationStatus
+from riscv2x86_py.validation_status import ValidationStatus, PreservationMode
 from pytools.tests.test_l3_experiment_runner import _contract, _report
 
 H = "sha256:" + "a" * 64
@@ -173,6 +173,7 @@ def test_v6_runner_requires_explicit_mechanism_environment_and_report(tmp_path,m
     registered = registry(c)
     config=runner.ExperimentRunnerConfig("effect",None,object(),str(path),digest,
         "source:runner","target:runner",("/bin/true",),("/bin/true",),10,
+        comparison_policy=L1_COMPARISON_POLICY,
         schema_version=runner.EXPERIMENT_RUNNER_SPECIALIZED_SCHEMA,
         specialized_mechanism_registry=registered,
         specialized_capabilities={"source":["controlled-experiment"],"target":["controlled-experiment"]})
@@ -180,9 +181,7 @@ def test_v6_runner_requires_explicit_mechanism_environment_and_report(tmp_path,m
         ValidationLayerResult(ValidationLevel.L2,ValidationStatus.VERIFIED,H,"L2"))
     import riscv2x86_py.l3_intent_requirements as intents
     monkeypatch.setattr(intents,"parse_l3_requirement_manifest",lambda *_:
-        SimpleNamespace(requirements=[{"fragmentId":c["fragmentId"],"eligibilityStatus":"eligible",
-            "profileIdentity":profile["profileIdentity"],"requirementIdentity":req["requirementIdentity"],
-            "proofIdentity":PROOF,"programId":c["programId"],"approvedTargetRelationIdentity":H}]))
+        SimpleNamespace(requirements=[req]))
     bad=None
     def command(_cmd,stdin,_timeout):
         request=json.loads(stdin)
@@ -198,15 +197,24 @@ def test_v6_runner_requires_explicit_mechanism_environment_and_report(tmp_path,m
         if bad=="warmup" and request["side"]=="target":
             output["warmupsCompleted"]=0
         return runner.CommandResult(0,json.dumps(output))
-    kwargs={"validation_plan":SimpleNamespace(profile=ValidationProfile.MICROARCH,
+    kwargs={"validation_plan":SimpleNamespace(profile=ValidationProfile.MICROARCH_DIAGNOSTIC,
                 experiment_contract_id=outer["experimentId"]),
         "translation_artifact":SimpleNamespace(translation_plan_id=outer["translationPlanId"],
-                                                proof_identity=PROOF,fragment_id=c["fragmentId"]),
+                                                proof_identity=PROOF,fragment_id=c["fragmentId"],
+                                                identity=H,preservation_mode=PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY),
         "source_program_artifact":SimpleNamespace(artifact_digest=H),
         "target_program_artifact":SimpleNamespace(artifact_digest=H),
-        "target_environment":TARGET_ENV,"l3_requirement_manifest":{},
-        "comparison_policy":ARCHITECTURAL_COMPARISON_POLICY,"l3_command_runner":command}
+        "target_environment":TARGET_ENV,"l3_requirement_manifest":{},"l3_intent_profile":profile,
+        "prior_layer_results":tuple(ValidationLayerResult(level,ValidationStatus.VERIFIED,H,
+            json.dumps({"claimScope":"approved_functional_relation"}) if level is ValidationLevel.L2 else "")
+            for level in (ValidationLevel.L0,ValidationLevel.L1,ValidationLevel.L2)),
+        "comparison_policy":L1_COMPARISON_POLICY,"l3_command_runner":command}
     assert runner.run_l3_experiment_validation(config,**kwargs).status is ValidationStatus.VERIFIED
+    prerequisites = kwargs["prior_layer_results"]
+    kwargs["prior_layer_results"] = (*prerequisites[:2], ValidationLayerResult(
+        ValidationLevel.L2, ValidationStatus.VERIFIED, H, json.dumps({"claimScope": "architectural"})))
+    assert runner.run_l3_experiment_validation(config,**kwargs).status is ValidationStatus.INCONCLUSIVE
+    kwargs["prior_layer_results"] = prerequisites
     bad="target"
     assert runner.run_l3_experiment_validation(config,**kwargs).status is ValidationStatus.FAILED
     bad="report"

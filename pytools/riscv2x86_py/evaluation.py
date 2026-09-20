@@ -73,6 +73,11 @@ def _effective_validation_contract(
     remains fail-closed if a caller bypasses this orchestration step.
     """
     mode = getattr(translation, "preservation_mode", None)
+    if (requested_plan.profile is ValidationProfile.MICROARCH_DIAGNOSTIC and
+            mode is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY):
+        policy = (L1_COMPARISON_POLICY if requested_comparison_policy == ARCHITECTURAL_COMPARISON_POLICY
+                  else requested_comparison_policy)
+        return requested_plan, policy, "artifact-bounded-l3-diagnostic"
     if (mode is not PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY
             or requested_plan.profile in {
                 ValidationProfile.BUILD, ValidationProfile.FUNCTIONAL,
@@ -609,7 +614,7 @@ def run_evaluation(
                 )
             l3_manifest = None
             l3_profile = None
-            if effective_plan.profile is ValidationProfile.MICROARCH:
+            if effective_plan.profile in {ValidationProfile.MICROARCH, ValidationProfile.MICROARCH_DIAGNOSTIC}:
                 from .l3_intent_requirements import parse_l3_requirement_manifest
                 sidecar = report.with_name(report.name + ".l3-requirements.json")
                 if sidecar.is_file():
@@ -629,7 +634,8 @@ def run_evaluation(
                 environment, registry, comparison_policy=effective_policy,
                 l3_requirement_manifest=l3_manifest,
                 l3_intent_profile=l3_profile,
-                l3_plan_directory=str(replay) if effective_plan.profile is ValidationProfile.MICROARCH else None,
+                l3_plan_directory=str(replay) if effective_plan.profile in {
+                    ValidationProfile.MICROARCH, ValidationProfile.MICROARCH_DIAGNOSTIC} else None,
             )
             per_attempt.append(_attempt_result(attempt, validation, validation.status,
                                                validation.reason_codes,

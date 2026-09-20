@@ -257,6 +257,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
     l3_campaigns = []
     l3_statistical = []
     l3_specialized = []
+    l3_fragments = []
     for attempt in result.get("attempts", []):
         validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
         for layer in validation.get("layers", []) if isinstance(validation, Mapping) else []:
@@ -268,6 +269,19 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
                     detail = json.loads(detail["providerDetail"])
             except (TypeError, json.JSONDecodeError):
                 continue
+            fragment_result = detail.get("fragmentResult") if isinstance(detail, Mapping) else None
+            if isinstance(fragment_result, Mapping):
+                from .l3_evidence_closure import parse_fragment, parse_dimension
+                reports = detail.get("platformReports")
+                if isinstance(reports, Mapping) and set(reports) == {"source", "target"}:
+                    try:
+                        fragment = parse_fragment(fragment_result)
+                        for result_dimension in fragment["dimensionResults"].values():
+                            parse_dimension(result_dimension, source_report=reports["source"],
+                                            target_report=reports["target"])
+                        l3_fragments.append(dict(fragment))
+                    except (ValueError, TypeError, KeyError):
+                        program_levels["L3"] = "inconclusive"
             item = (detail if isinstance(detail, Mapping) and
                     detail.get("schemaVersion") == "riscv2x86.l3-concurrency-campaign-result.v1"
                     else detail.get("campaignResult") if isinstance(detail, Mapping) else None)
@@ -285,6 +299,33 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
             if (isinstance(specialized_item, Mapping) and
                     specialized_item.get("schemaVersion") == "riscv2x86.l3-specialized-result.v1"):
                 l3_specialized.append(dict(specialized_item))
+    l3_programs = []
+    sidecars = list((case_root / "work").rglob("*.l3-requirements.json"))
+    if program_levels["L3"] == "verified" and not l3_fragments:
+        program_levels["L3"] = "inconclusive"
+    if l3_fragments and len(sidecars) != 1:
+        program_levels["L3"] = "inconclusive"
+    if len(sidecars) == 1:
+        from .l3_intent_requirements import parse_l3_requirement_manifest
+        from .l3_evidence_closure import close_program
+        manifest = parse_l3_requirement_manifest(json.loads(sidecars[0].read_text(encoding="utf-8")))
+        grouped = {}
+        for item in manifest.requirements:
+            if item["eligibilityStatus"] == "eligible":
+                grouped.setdefault(item["programId"], []).append(item)
+        for program_id, required in sorted(grouped.items()):
+            members = [x for x in l3_fragments if x["programId"] == program_id]
+            scopes = {x["claimScope"] for x in members}
+            scope = ("target_experiment_diagnostic" if any(x["translationOutcome"] == "functional_fallback"
+                     for x in required) else "architectural_intent")
+            if scopes - {scope}:
+                program_levels["L3"] = "inconclusive"
+                continue
+            group = close_program(program_id, sorted({x["fragmentId"] for x in required}), members,
+                                  claim_scope=scope)
+            l3_programs.append(group)
+            program_levels["L3"] = ("diagnostic_verified" if group["status"] == "verified" and
+                                    scope == "target_experiment_diagnostic" else group["status"])
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -308,6 +349,8 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "l3ConcurrencyCampaignResults": l3_campaigns,
         "l3StatisticalExperimentResults": l3_statistical,
         "l3SpecializedExperimentResults": l3_specialized,
+        "l3FragmentResults": l3_fragments,
+        "l3ProgramResults": l3_programs,
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
@@ -619,6 +662,12 @@ def run_batch_evaluation(
             "l3ConcurrencyCampaignSampleCount": 0,
             "l3StatisticalExperimentSampleCount": 0,
             "l3SpecializedExperimentSampleCount": 0,
+            "l3ArchitecturalIntentVerifiedProgramCount": sum(
+                1 for item in completed for result in item.get("l3ProgramResults", [])
+                if result["claimScope"] == "architectural_intent" and result["status"] == "verified"),
+            "l3TargetDiagnosticVerifiedProgramCount": sum(
+                1 for item in completed for result in item.get("l3ProgramResults", [])
+                if result["claimScope"] == "target_experiment_diagnostic" and result["status"] == "verified"),
             "l2PrivilegedFragmentClaimCounts": dict(sorted(l2_privileged_claims.items())),
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),

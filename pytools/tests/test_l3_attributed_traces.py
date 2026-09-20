@@ -169,6 +169,8 @@ def test_v3_runner_checks_attribution_and_retains_old_contracts(tmp_path, monkey
           "l3_target_binary_path": "/bin/true", "l3_attribution_proof_verifier": lambda *_: True,
           "l3_attribution_proof_verifier_binary_path": "/bin/true",
           "l3_attribution_proof_verifier_binary_digest": BIN}
+    from pytools.tests.l3_closure_test_support import prerequisites
+    prerequisites(kw, monkeypatch, value, dimension="access_pattern", property_id="property:access")
     assert runner.run_l3_experiment_validation(config, **kw).status is ValidationStatus.VERIFIED
     broken = True
     assert runner.run_l3_experiment_validation(config, **kw).status is ValidationStatus.FAILED

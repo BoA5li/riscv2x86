@@ -180,6 +180,12 @@ def test_v4_integrates_l2_evidence_and_program_binary_binding(tmp_path, monkeypa
         "l3_campaign_semantic_facts_identity": H,
         "l3_requirement_manifest": {}, "comparison_policy": ARCHITECTURAL_COMPARISON_POLICY,
         "l3_command_runner": execute}
+    from pytools.tests.l3_closure_test_support import prerequisites
+    prerequisites(kwargs, monkeypatch, base, dimension="synchronization", property_id="property:sync",
+                  unit="campaign")
+    kwargs["prior_layer_results"] = (*kwargs["prior_layer_results"][:2],
+        ValidationLayerResult(ValidationLevel.L2, ValidationStatus.VERIFIED, H,
+                              json.dumps({"claimScope": "architectural", "contractIdentity": H})))
     assert runner.run_l3_experiment_validation(config, **kwargs).status is ValidationStatus.VERIFIED
     bad = True
     assert runner.run_l3_experiment_validation(config, **kwargs).status is ValidationStatus.FAILED

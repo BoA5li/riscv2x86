@@ -265,7 +265,8 @@ def test_v2_contract_requires_matching_intent_and_requirement_evidence(tmp_path,
                                intentProfileIdentity=profile["profileIdentity"],
                                requirementIdentity=requirement["requirementIdentity"],
                                approvedTargetRelationIdentity=relation,
-                               programId="program:cache")
+                               programId="program:cache",
+                               knownNonEquivalences=["raw-cycle-equivalence"])
     path = tmp_path / "experiment.json"
     path.write_text(json.dumps(bound_contract), encoding="utf-8")
     digest = "sha256:" + sha256(path.read_bytes()).hexdigest()
@@ -282,6 +283,9 @@ def test_v2_contract_requires_matching_intent_and_requirement_evidence(tmp_path,
     missing = subject.run_l3_experiment_validation(_config(path, digest), **kwargs)
     assert missing.status is ValidationStatus.INCONCLUSIVE
     assert "requirement unavailable" in missing.detail
+    from pytools.tests.l3_closure_test_support import prerequisites
+    kwargs["l3_intent_profile"] = profile
+    prerequisites(kwargs, monkeypatch, bound_contract, mock_profile=False)
     verified = subject.run_l3_experiment_validation(_config(path, digest),
                                                     l3_requirement_manifest=manifest, **kwargs)
     assert verified.status is ValidationStatus.VERIFIED

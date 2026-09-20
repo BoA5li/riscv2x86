@@ -172,6 +172,9 @@ def test_v5_l3_runner_consumes_raw_preregistered_rounds(tmp_path, monkeypatch):
           "l3_source_compiler_digest": H, "l3_target_compiler_digest": H,
           "l3_requirement_manifest": {}, "comparison_policy": ARCHITECTURAL_COMPARISON_POLICY,
           "l3_command_runner": execute}
+    from pytools.tests.l3_closure_test_support import prerequisites
+    prerequisites(kw, monkeypatch, value, dimension="performance_trend", property_id="property:trend",
+                  unit="program")
     assert runner.run_l3_experiment_validation(config, **kw).status is ValidationStatus.VERIFIED
     bad = "source"
     assert runner.run_l3_experiment_validation(config, **kw).status is ValidationStatus.INCONCLUSIVE

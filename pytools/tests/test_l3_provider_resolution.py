@@ -207,9 +207,11 @@ def test_registered_new_validator_type_needs_no_resolver_edits(tmp_path):
               "l3_intent_profile": profile, "l3_requirement_manifest": manifest,
               "l3_plan_directory": str(tmp_path / "plans")}
     result = validator(**kwargs)
-    assert result.status is ValidationStatus.VERIFIED
+    # A provider may be added without changing the resolver, but a bare
+    # `verified` token cannot stand in for closed per-property evidence.
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert "evidence-closure-invalid" in result.detail
     assert list((tmp_path / "plans").glob("*.json"))
-    assert "executionIdentity" in result.detail
     no_manifest = validator(**dict(kwargs, l3_requirement_manifest=None))
     assert no_manifest.status is ValidationStatus.INCONCLUSIVE
 
@@ -222,7 +224,7 @@ def test_registered_new_validator_type_needs_no_resolver_edits(tmp_path):
                                         "targetCapabilities": ["target-trace"],
                                         "environmentId": "environment:0"}}},
     }, validator_factories={"other-registered": fake_factory})
-    assert registry.validator_for(ValidationLevel.L3)(**kwargs).status is ValidationStatus.VERIFIED
+    assert registry.validator_for(ValidationLevel.L3)(**kwargs).status is ValidationStatus.INCONCLUSIVE
 
 
 def test_no_intent_does_not_bind_and_invalid_provider_is_rejected(tmp_path):

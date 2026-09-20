@@ -335,6 +335,31 @@ def _validation_maps(
             typed_l2 = False
             if isinstance(detail, str) and detail.startswith("{"):
                 payload = json.loads(detail)
+                if item.get("level") == "L3" and item_status == "verified":
+                    from .l3_evidence_closure import parse_fragment
+                    raw = payload.get("fragmentResult")
+                    if raw is None and isinstance(payload.get("providerDetail"), str):
+                        try:
+                            raw = json.loads(payload["providerDetail"]).get("fragmentResult")
+                        except (ValueError, AttributeError):
+                            raw = None
+                    try:
+                        closed = parse_fragment(raw)
+                        if closed["status"] != "verified":
+                            raise ValueError("L3 fragment has incomplete properties")
+                        reports = payload.get("platformReports")
+                        if reports is None and isinstance(payload.get("providerDetail"), str):
+                            reports = json.loads(payload["providerDetail"]).get("platformReports")
+                        if not isinstance(reports, Mapping) or set(reports) != {"source", "target"}:
+                            raise ValueError("L3 source/target reports unavailable")
+                        from .l3_evidence_closure import parse_dimension
+                        for dimension in closed["dimensionResults"].values():
+                            parse_dimension(dimension, source_report=reports["source"],
+                                            target_report=reports["target"])
+                        layer_map["L3"] = ("verified" if closed["claimScope"] == "architectural_intent"
+                                           else "diagnostic_verified")
+                    except (ValueError, KeyError, TypeError):
+                        layer_map["L3"] = "inconclusive"
                 if (item.get("level") == "L2"
                         and payload.get("schemaVersion") == L2_FRAGMENT_RESULT_SCHEMA):
                     fragment_result = L2FragmentResult.from_dict(payload)
@@ -375,6 +400,9 @@ def _validation_maps(
                         dimensions[dimension] = status
             if item.get("level") == "L2" and not typed_l2:
                 layer_map["L2"] = "inconclusive"
+            if item.get("level") == "L3" and item_status == "verified" and not (
+                    isinstance(detail, str) and detail.startswith("{")):
+                layer_map["L3"] = "inconclusive"
         maps.append(layer_map); dimension_maps.append(dimensions); scope_maps.append(scopes)
         execution_maps.append(execution)
     result = {}
@@ -383,7 +411,8 @@ def _validation_maps(
             continue
         statuses = [item.get(level, "inconclusive") for item in maps]
         result[level] = ("failed" if "failed" in statuses else
-                         "inconclusive" if "inconclusive" in statuses else "verified")
+                         "inconclusive" if "inconclusive" in statuses else
+                         "diagnostic_verified" if "diagnostic_verified" in statuses else "verified")
     dimension_result = {}
     for dimension in sorted(set(name for item in dimension_maps for name in item)):
         statuses = [item.get(dimension, "inconclusive") for item in dimension_maps]
@@ -689,6 +718,11 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
             units, verified, conditional,
             manifest.bootstrap, level + ":conditional",
         )
+    metrics["l3TargetExperimentDiagnosticRate"] = _cluster_metric(
+        units, lambda row: row["layers"].get("L3") == "diagnostic_verified",
+        lambda row: "L3" in row["layers"], manifest.bootstrap,
+        "L3:target-experiment-diagnostic",
+    )
     metrics["l2EligibilityCoverage"] = _cluster_metric(
         fragments, lambda row: row["l2EligibilityClassified"], lambda _row: True,
         manifest.bootstrap, "L2:eligibility-coverage",
@@ -854,6 +888,9 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
             "numerator": "approved functional-relation verified fragments"},
         "l2DiagnosticPassedRate": {"unit": "fragment", "denominator": "L2 eligible fragments",
             "numerator": "fragments with at least one diagnostic-only verified required dimension"},
+        "l3TargetExperimentDiagnosticRate": {"unit": "program/group",
+            "denominator": "declared validation units containing L3",
+            "numerator": "closed target-only experiment diagnostic units; excluded from architectural L3 verified"},
         "l2InconclusiveRate": {"unit": "fragment", "denominator": "L2 eligible fragments",
             "numerator": "attempted fragments without complete required-dimension comparison evidence"},
         "needsRouteOrUnsupportedRate": {"unit": "fragment", "denominator": "all corpus oracle fragments",

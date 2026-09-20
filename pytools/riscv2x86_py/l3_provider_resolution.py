@@ -418,12 +418,35 @@ def build_l3_capability_registry_validator(
                                              detail="l3.provider.protocol-error")
             if result.status is ValidationStatus.VERIFIED:
                 _sha(result.evidence_identity, "L3 provider evidence identity")
+                from .l3_evidence_closure import parse_fragment
+                try:
+                    provider_detail = json.loads(result.detail)
+                    fragment = parse_fragment(provider_detail["fragmentResult"])
+                    reports = provider_detail["platformReports"]
+                    if not isinstance(reports, Mapping) or set(reports) != {"source", "target"}:
+                        raise ValueError("L3 provider source/target report bodies missing")
+                    from .l3_evidence_closure import parse_dimension
+                    for dimension in fragment["dimensionResults"].values():
+                        parse_dimension(dimension, source_report=reports["source"],
+                                        target_report=reports["target"])
+                    if (fragment["status"] != "verified" or fragment["fragmentId"] != fragment_id or
+                            fragment["requirementIdentity"] != requirement["requirementIdentity"] or
+                            fragment["profileIdentity"] != requirement["profileIdentity"] or
+                            any(x["contractIdentity"] != plan["contractIdentity"] or
+                                x["sourceArtifactIdentity"] != plan["sourceArtifactDigest"] or
+                                x["targetArtifactIdentity"] != plan["targetArtifactDigest"]
+                                for x in fragment["dimensionResults"].values())):
+                        raise ValueError("L3 provider dimension closure does not match execution plan")
+                except (ValueError, KeyError, TypeError) as exc:
+                    return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                                 detail="l3.provider.evidence-closure-invalid: " + str(exc))
                 return ValidationLayerResult(
                     ValidationLevel.L3, ValidationStatus.VERIFIED,
                     _hash({"executionIdentity": plan["executionIdentity"],
                            "providerEvidenceIdentity": result.evidence_identity}),
                     json.dumps({"executionIdentity": plan["executionIdentity"],
                                 "providerEvidenceIdentity": result.evidence_identity,
+                                "fragmentResult": fragment,
                                 "providerDetail": result.detail}, sort_keys=True))
             return result
         except (ValueError, OSError, KeyError, TypeError) as exc:

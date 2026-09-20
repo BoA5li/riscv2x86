@@ -13,7 +13,7 @@ import statistics
 import subprocess
 from typing import Callable, Mapping, Sequence
 
-from .l1_differential import ARCHITECTURAL_COMPARISON_POLICY
+from .l1_differential import ARCHITECTURAL_COMPARISON_POLICY, L1_COMPARISON_POLICY
 from .l2_concurrency_runner import (
     L2ConcurrencyRunnerConfig, load_l2_concurrency_runner_config,
     run_l2_concurrency_differential,
@@ -23,7 +23,7 @@ from .l2_effect_trace_differential import (
     run_l2_effect_trace_differential,
 )
 from .translation_validation import ValidationLayerResult, ValidationLevel, ValidationProfile
-from .validation_status import ValidationStatus
+from .validation_status import ValidationStatus, PreservationMode
 
 
 EXPERIMENT_CONTRACT_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v1"
@@ -201,7 +201,8 @@ class ExperimentRunnerConfig:
     specialized_capabilities: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {EXPERIMENT_RUNNER_SCHEMA, EXPERIMENT_RUNNER_SPECIALIZED_SCHEMA} or self.comparison_policy != ARCHITECTURAL_COMPARISON_POLICY:
+        if self.schema_version not in {EXPERIMENT_RUNNER_SCHEMA, EXPERIMENT_RUNNER_SPECIALIZED_SCHEMA} or self.comparison_policy not in {
+                ARCHITECTURAL_COMPARISON_POLICY, L1_COMPARISON_POLICY}:
             raise ValueError("L3 runner schema/policy is invalid")
         if self.schema_version == EXPERIMENT_RUNNER_SCHEMA and (self.specialized_mechanism_registry is not None or
                                                                    self.specialized_capabilities is not None):
@@ -606,16 +607,23 @@ def _run_command(command: Sequence[str], stdin: str, timeout: int) -> CommandRes
 
 
 def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: object) -> ValidationLayerResult:
-    base = (run_l2_concurrency_differential(config.base_concurrency_config, **kwargs)
+    prior_layers = kwargs.get("prior_layer_results")
+    base = (prior_layers[2] if isinstance(prior_layers, tuple) and len(prior_layers) == 3
+            and isinstance(prior_layers[2], ValidationLayerResult) and prior_layers[2].level is ValidationLevel.L2
+            else run_l2_concurrency_differential(config.base_concurrency_config, **kwargs)
             if config.base_l2_kind == "concurrency" else run_l2_effect_trace_differential(config.base_effect_config, **kwargs))
     if base.status is not ValidationStatus.VERIFIED:
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                      detail="L3 prerequisite L2 evidence unavailable: " + base.status.value)
     plan = kwargs.get("validation_plan")
-    if getattr(plan, "profile", None) is not ValidationProfile.MICROARCH:
+    if getattr(plan, "profile", None) not in {ValidationProfile.MICROARCH, ValidationProfile.MICROARCH_DIAGNOSTIC}:
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 requires microarch validation profile")
     if kwargs.get("comparison_policy") != config.comparison_policy:
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 comparison policy mismatch")
+    if ((getattr(plan, "profile", None) is ValidationProfile.MICROARCH_DIAGNOSTIC) !=
+            (config.comparison_policy == L1_COMPARISON_POLICY)):
+        return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                     detail="L3 diagnostic comparison policy/profile mismatch")
     try:
         path = Path(config.contract_path)
         if _file_digest(path) != config.contract_digest:
@@ -738,9 +746,39 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                     or matches[0]["approvedTargetRelationIdentity"] !=
                     contract.approved_target_relation_identity):
                 raise ValueError("L3 contract/profile/requirement binding mismatch")
+            requirement = matches[0]
         except ValueError as exc:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail="L3 requirement unavailable or stale: " + str(exc))
+        # L0/L1 are supplied by the orchestrator, rather than inferred from an
+        # L2 runner that can also be called in isolation.
+        prior = kwargs.get("prior_layer_results")
+        if (not isinstance(prior, tuple) or len(prior) != 3 or
+                tuple(x.level for x in prior) != (ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2) or
+                any(x.status is not ValidationStatus.VERIFIED or not _SHA256.fullmatch(x.evidence_identity)
+                    for x in prior)):
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="l3.closure.prerequisite-evidence-missing")
+        try:
+            l2_detail = json.loads(prior[2].detail)
+            l2_scope = l2_detail["claimScope"]
+            if l2_scope not in {"architectural", "approved_functional_relation"}:
+                raise ValueError("L2 claim scope is not approved")
+            from .l2_results import L2_FRAGMENT_RESULT_SCHEMA, L2FragmentResult
+            if l2_detail.get("schemaVersion") == L2_FRAGMENT_RESULT_SCHEMA:
+                typed_l2 = L2FragmentResult.from_dict(l2_detail)
+                if (typed_l2.evidence_identity != prior[2].evidence_identity or
+                        typed_l2.fragment_id != getattr(artifact, "fragment_id", None) or
+                        typed_l2.status.value != "verified"):
+                    raise ValueError("L2 typed fragment evidence is stale or incomplete")
+        except (ValueError, KeyError, TypeError):
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="l3.closure.l2-claim-scope-unavailable")
+        diagnostic = getattr(plan, "profile", None) is ValidationProfile.MICROARCH_DIAGNOSTIC
+        if (diagnostic != (l2_scope == "approved_functional_relation") or
+                diagnostic != (getattr(artifact, "preservation_mode", None) is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY)):
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="l3.closure.l2-claim-scope-mismatch")
     for command in (config.source_command, config.target_command):
         if not (Path(command[0]).is_file() or shutil.which(command[0])):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
@@ -749,6 +787,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
     if not callable(command_runner):
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 command runner invalid")
     reports = []
+    report_bodies = {}
     trace_reports = {}
     campaign_reports = {}
     statistical_reports = {}
@@ -787,6 +826,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
         if not _environment_matches(report.environment, requirements):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " controlled environment does not satisfy contract")
+        report_bodies[side] = asdict(report)
         if trace_contract is not None:
             from .l3_attributed_traces import parse_logical_trace, parse_machine_trace
             try:
@@ -882,6 +922,77 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             return ValidationLayerResult(ValidationLevel.L3, status,
                                          specialized_result["resultIdentity"] if status is ValidationStatus.FAILED else "",
                                          json.dumps(specialized_result, sort_keys=True))
+    fragment_closure = None
+    if contract.requirement_identity:
+        from .l3_evidence_closure import close_fragment, identity as closure_identity
+        try:
+            from .l3_intent_requirements import parse_l3_intent_profile
+            profile = parse_l3_intent_profile(kwargs.get("l3_intent_profile"),
+                                             fragment_id=requirement["fragmentId"])
+            if (profile.profile_identity != contract.intent_profile_identity or
+                    not set(profile.not_claimed_properties) <= set(contract.known_non_equivalences)):
+                raise ValueError("L3 intent limitations are missing from approved contract")
+            artifact_id = getattr(artifact, "identity", None)
+            source_artifact_id = getattr(kwargs.get("source_program_artifact"), "artifact_digest", None)
+            target_artifact_id = getattr(kwargs.get("target_program_artifact"), "artifact_digest", None)
+            for name, value in (("translation artifact", artifact_id), ("source artifact", source_artifact_id),
+                                ("target artifact", target_artifact_id)):
+                if not isinstance(value, str) or not _SHA256.fullmatch(value):
+                    raise ValueError(name + " identity unavailable")
+            l2_scope = json.loads(prior[2].detail)["claimScope"]
+            scope = ("target_experiment_diagnostic" if l2_scope == "approved_functional_relation"
+                     else "architectural_intent")
+            report_ids = {x["side"]: x["report"] for x in reports}
+            environment_ids = {x["side"]: closure_identity(x["environment"]) for x in reports}
+            execution_id = closure_identity({"programId": requirement["programId"], "reports": report_ids,
+                                             "runners": reports,
+                                             "sourceArtifact": source_artifact_id,
+                                             "targetArtifact": target_artifact_id})
+            comparison = {
+                "access_pattern": (trace_identities or {"logicalAccesses": report_ids})
+                                  if contract.required_access_pattern else None,
+                "control_flow": (trace_identities or {"controlFlow": report_ids})
+                                if contract.required_control_flow else None,
+                "synchronization": (campaign_result or {"syncObservations": report_ids})
+                                   if contract.required_sync_semantics else None,
+                "performance_trend": statistical_result or (summaries if contract.metrics else None),
+                "side_channel_speculation": specialized_result,
+            }
+            dimensions = []
+            for prop in requirement["requiredProperties"]:
+                evidence = comparison.get(prop["dimension"])
+                if evidence is None:
+                    continue  # Missing required property closes as inconclusive.
+                payload = {"schemaVersion": "riscv2x86.l3-dimension-result.v1",
+                           "fragmentId": requirement["fragmentId"], "programId": requirement["programId"],
+                           "propertyId": prop["propertyId"], "dimension": prop["dimension"], "unit": prop["unit"],
+                           "status": "verified", "claimScope": scope,
+                           "requirementIdentity": requirement["requirementIdentity"],
+                           "profileIdentity": contract.intent_profile_identity,
+                           "contractIdentity": contract.identity, "translationArtifactIdentity": artifact_id,
+                           "sourceArtifactIdentity": source_artifact_id,
+                           "targetArtifactIdentity": target_artifact_id,
+                           "sourceReportIdentity": report_ids["source"],
+                           "targetReportIdentity": report_ids["target"],
+                           "sourceEnvironmentIdentity": environment_ids["source"],
+                           "targetEnvironmentIdentity": environment_ids["target"],
+                           "executionIdentity": execution_id,
+                           "comparisonEvidenceIdentity": closure_identity({"property": prop, "comparison": evidence,
+                               "source": report_ids["source"], "target": report_ids["target"]}),
+                           "l0EvidenceIdentity": prior[0].evidence_identity,
+                           "l1EvidenceIdentity": prior[1].evidence_identity,
+                           "l2EvidenceIdentity": prior[2].evidence_identity, "l2ClaimScope": l2_scope,
+                           "declaredLimitations": list(profile.not_claimed_properties),
+                           "uncoveredEffects": [], "reasonCodes": []}
+                dimensions.append(dict(payload, resultIdentity=closure_identity(payload)))
+            fragment_closure = close_fragment(requirement, dimensions, claim_scope=scope)
+            if fragment_closure["status"] != "verified":
+                return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                             detail=json.dumps({"reasonCode": "l3.closure.required-property-missing",
+                                                                "fragmentResult": fragment_closure}, sort_keys=True))
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="l3.closure.evidence-unavailable: " + str(exc))
     evidence = _digest({"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "baseEvidence": base.evidence_identity,
                         "contractIdentity": contract.identity, "contractDigest": config.contract_digest,
                         "intentProfileIdentity": contract.intent_profile_identity,
@@ -893,7 +1004,8 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "specializedResultIdentity": specialized_result["resultIdentity"] if specialized_result else "",
                         "specializedMechanismRegistryIdentity": _digest(config.specialized_mechanism_registry)
                         if specialized_result else "",
-                        "knownNonEquivalences": contract.known_non_equivalences})
+                        "knownNonEquivalences": contract.known_non_equivalences,
+                        "fragmentResultIdentity": fragment_closure["resultIdentity"] if fragment_closure else ""})
     detail = json.dumps({
         "conclusion": "logical access/control-flow intent and per-platform statistical conclusions satisfy the experiment contract",
         "statisticalSummary": summaries, "traceIdentities": trace_identities,
@@ -902,6 +1014,8 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
         "specializedResult": specialized_result,
         "environments": [item["environment"] for item in reports],
         "knownNonEquivalences": contract.known_non_equivalences,
+        "fragmentResult": fragment_closure,
+        "platformReports": report_bodies if fragment_closure else None,
     }, sort_keys=True)
     return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.VERIFIED, evidence, detail)
 

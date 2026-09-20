@@ -34,6 +34,7 @@ class ValidationProfile(str, Enum):
     FUNCTIONAL_RELATION = "functional_relation"
     ARCHITECTURAL = "architectural"
     MICROARCH = "microarch"
+    MICROARCH_DIAGNOSTIC = "microarch_diagnostic"
 
 
 class ValidationLevel(str, Enum):
@@ -124,6 +125,10 @@ _PROFILE_LEVELS = {
         ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
     ),
     ValidationProfile.MICROARCH: (
+        ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
+        ValidationLevel.L3,
+    ),
+    ValidationProfile.MICROARCH_DIAGNOSTIC: (
         ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2,
         ValidationLevel.L3,
     ),
@@ -219,7 +224,7 @@ class ValidationPlan:
             raise ValueError("target runner is unsupported")
         if self.seed < 0 or self.timeout_seconds <= 0:
             raise ValueError("validation seed/timeout is invalid")
-        if self.profile is ValidationProfile.MICROARCH and not self.experiment_contract_id:
+        if self.profile in {ValidationProfile.MICROARCH, ValidationProfile.MICROARCH_DIAGNOSTIC} and not self.experiment_contract_id:
             raise ValueError("microarch profile requires an experiment contract")
 
     @property
@@ -398,6 +403,8 @@ def _validate_profile(artifact: TranslationArtifact, plan: ValidationPlan) -> st
             and plan.profile in {ValidationProfile.ARCHITECTURAL,
                                  ValidationProfile.MICROARCH}):
         return "validation.profile-exceeds-preservation-claim"
+    if plan.profile is ValidationProfile.MICROARCH_DIAGNOSTIC and artifact.preservation_mode is not PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY:
+        return "validation.diagnostic-profile-requires-functional-fallback"
     return None
 
 
@@ -533,7 +540,7 @@ def run_translation_validation(
             source_observation=source_observation,
             target_observation=target_observation,
             comparison_policy=comparison_policy,
-            **({"l3_requirement_manifest": l3_requirement_manifest,
+            **({"prior_layer_results": tuple(layers), "l3_requirement_manifest": l3_requirement_manifest,
                 "l3_intent_profile": l3_intent_profile,
                 "l3_plan_directory": l3_plan_directory}
                if level is ValidationLevel.L3 else {}),
