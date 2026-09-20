@@ -13,7 +13,8 @@ from .l3_intent_requirements import (
     L3IntentKind, parse_l3_intent_profile, parse_l3_requirement_manifest, _hash,
 )
 from .l3_experiment_runner import (
-    EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA, load_experiment_contract,
+    EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA,
+    EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA, load_experiment_contract,
 )
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import ValidationStatus
@@ -139,7 +140,9 @@ def _contract_covers_properties(contract: object, profile: object) -> bool:
     if "control_flow" in dimensions and ("control_flow" not in classes
                                          or not contract.required_control_flow):
         return False
-    if "synchronization" in dimensions and not contract.required_sync_semantics:
+    if "synchronization" in dimensions and (not contract.required_sync_semantics or
+            contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA and
+            not contract.payload.get("campaignContract")):
         return False
     if "performance_trend" in dimensions and ("statistical" not in classes
                                                or not contract.metrics):
@@ -247,7 +250,9 @@ def resolve_l3_execution_plan(
             if provider.binding_kind == "explicit":
                 explicit_contract_errors.add("l3.contract.version-mismatch")
             continue
-        if (contract.payload["schemaVersion"] not in {EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA}
+        if (contract.payload["schemaVersion"] not in {EXPERIMENT_CONTRACT_BOUND_SCHEMA,
+                                                       EXPERIMENT_CONTRACT_TRACE_SCHEMA,
+                                                       EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA}
                 or contract.intent_profile_identity != profile.profile_identity
                 or contract.requirement_identity != requirement["requirementIdentity"]
                 or contract.approved_target_relation_identity != profile.approved_target_relation_identity

@@ -254,6 +254,23 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
     )
     l2_dispositions = _l2_disposition_counts(l2_group, manifest_dispositions)
     coverage = _l2_coverage_diagnostics(result, case_root)
+    l3_campaigns = []
+    for attempt in result.get("attempts", []):
+        validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
+        for layer in validation.get("layers", []) if isinstance(validation, Mapping) else []:
+            if not isinstance(layer, Mapping) or layer.get("level") != "L3":
+                continue
+            try:
+                detail = json.loads(layer.get("detail", ""))
+                if isinstance(detail, Mapping) and isinstance(detail.get("providerDetail"), str):
+                    detail = json.loads(detail["providerDetail"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            item = (detail if isinstance(detail, Mapping) and
+                    detail.get("schemaVersion") == "riscv2x86.l3-concurrency-campaign-result.v1"
+                    else detail.get("campaignResult") if isinstance(detail, Mapping) else None)
+            if isinstance(item, Mapping) and item.get("schemaVersion") == "riscv2x86.l3-concurrency-campaign-result.v1":
+                l3_campaigns.append(dict(item))
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -274,6 +291,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "l2ProgramExecutionSampleCount": int(l2_group.get("executionSampleCount", 0))
         if isinstance(l2_group, Mapping) else 0,
         "l2ProgramExecutionSamples": l2_execution_samples,
+        "l3ConcurrencyCampaignResults": l3_campaigns,
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
@@ -530,7 +548,9 @@ def run_batch_evaluation(
         l2_required_dimensions = Counter()
         l2_privileged_claims = Counter()
         l2_execution_sample_keys: set[tuple[str, str, str]] = set()
+        l3_campaign_results = []
         for item in completed:
+            l3_campaign_results.extend(item.get("l3ConcurrencyCampaignResults", []))
             l2_requirement_dispositions.update(item.get("l2RequirementDispositionCounts", {}))
             l2_required_dimensions.update(item.get("l2RequiredDimensionCounts", {}))
             l2_privileged_claims.update(item.get("l2PrivilegedFragmentClaimCounts", {}))
@@ -576,6 +596,7 @@ def run_batch_evaluation(
                 "verified": sum(int(item.get("l2VerifiedMemberCount", 0)) for item in completed),
             },
             "l2ProgramExecutionSampleCount": len(l2_execution_sample_keys),
+            "l3ConcurrencyCampaignSampleCount": 0,
             "l2PrivilegedFragmentClaimCounts": dict(sorted(l2_privileged_claims.items())),
             "l2RequirementDispositionCounts": dict(sorted(l2_requirement_dispositions.items())),
             "l2RequiredDimensionCounts": dict(sorted(l2_required_dimensions.items())),
@@ -596,6 +617,12 @@ def run_batch_evaluation(
             "cases": [{key: value for key, value in item.items() if key != "attempts"}
                       for item in completed],
         }
+        if l3_campaign_results:
+            from .l3_concurrency_campaign import aggregate_campaign_results
+            group = aggregate_campaign_results(l3_campaign_results)
+            payload["l3ConcurrencyCampaignSampleCount"] = group["campaignSampleCount"]
+            payload["l3ConcurrencyCampaignGroupIdentity"] = group["groupIdentity"]
+        payload["statisticalUnits"]["l3ConcurrencyCampaign"] = "unique programId + campaignIdentity"
         identity_value = dict(payload); identity_value.pop("batchIdentity")
         payload["batchIdentity"] = _identity(identity_value)
         (output / "batch-evaluation.json").write_text(

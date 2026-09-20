@@ -29,14 +29,16 @@ from .validation_status import ValidationStatus
 EXPERIMENT_CONTRACT_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v1"
 EXPERIMENT_CONTRACT_BOUND_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v2"
 EXPERIMENT_CONTRACT_TRACE_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v3"
+EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v4"
 EXPERIMENT_RUNNER_SCHEMA = "riscv2x86.l3-experiment-runner.v1"
 EXPERIMENT_REPORT_SCHEMA = "riscv2x86.l3-experiment-report.v1"
 EXPERIMENT_REPORT_TRACE_SCHEMA = "riscv2x86.l3-experiment-report.v2"
+EXPERIMENT_REPORT_CAMPAIGN_SCHEMA = "riscv2x86.l3-experiment-report.v3"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PRESERVATION = {
     "microarchitecture_intent_preserved", "microarchitecture_strengthened", "best_effort",
 }
-_EXPERIMENT_CLASSES = {"memory_access", "control_flow", "statistical"}
+_EXPERIMENT_CLASSES = {"memory_access", "control_flow", "statistical", "synchronization"}
 _METHODS = {"bootstrap_median_effect_v1", "mean_effect_ci_v1"}
 _DIRECTIONS = {"increase", "decrease", "nonzero"}
 _ENV_FIELDS = {"cpuModel", "microcode", "kernel", "emulator", "emulatorArguments", "governor",
@@ -222,6 +224,7 @@ class PlatformReport:
     metric_samples: Mapping[str, tuple[tuple[float, ...], tuple[float, ...]]]
     logical_trace: Mapping[str, object] | None = None
     machine_trace: Mapping[str, object] | None = None
+    campaign_observation: Mapping[str, object] | None = None
 
     @property
     def identity(self) -> str:
@@ -305,12 +308,14 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
               "randomSeed", "affinityPolicy", "noisePolicy", "sourceEnvironmentRequirements",
               "targetEnvironmentRequirements", "knownNonEquivalences", "complete"}
     schema = value.get("schemaVersion")
-    if schema not in {EXPERIMENT_CONTRACT_SCHEMA, EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA}:
+    if schema not in {EXPERIMENT_CONTRACT_SCHEMA, EXPERIMENT_CONTRACT_BOUND_SCHEMA,
+                      EXPERIMENT_CONTRACT_TRACE_SCHEMA, EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA}:
         raise ValueError("experiment contract schema unsupported")
     _fields(value, fields | ({"intentProfileIdentity", "requirementIdentity",
                              "approvedTargetRelationIdentity", "programId"}
                              if schema != EXPERIMENT_CONTRACT_SCHEMA else set()) |
-            ({"traceContract"} if schema == EXPERIMENT_CONTRACT_TRACE_SCHEMA else set()), "experiment contract")
+            ({"traceContract"} if schema == EXPERIMENT_CONTRACT_TRACE_SCHEMA else set()) |
+            ({"campaignContract"} if schema == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA else set()), "experiment contract")
     profile_identity = ""
     requirement_identity = ""
     relation_identity = ""
@@ -328,6 +333,11 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
         trace_contract = parse_trace_contract(value["traceContract"])
         if trace_contract["fragmentId"] == "":
             raise ValueError("trace contract fragment missing")
+    if schema == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA:
+        from .l3_concurrency_campaign import parse_campaign
+        parse_campaign(value["campaignContract"])
+        if "synchronization" not in value["experimentClasses"]:
+            raise ValueError("campaign requires synchronization experiment class")
     raw_metrics = value.get("metrics")
     if not isinstance(raw_metrics, list):
         raise ValueError("metrics must be an array")
@@ -412,12 +422,15 @@ def load_l3_experiment_runner_config(value: Mapping[str, object]) -> ExperimentR
 def parse_platform_report(value: Mapping[str, object], *, side: str, runner_id: str,
                           contract: ExperimentContract) -> PlatformReport:
     trace_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_TRACE_SCHEMA
+    campaign_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA
     _fields(value, {"schemaVersion", "side", "runnerId", "contractIdentity", "calibrationProtocol",
                     "randomSeed", "affinityPolicy", "noisePolicy",
                     "warmupsCompleted", "environment", "logicalAccesses", "controlFlow",
                     "syncObservations", "metricSamples"} |
-            ({"logicalTrace", "machineTrace"} if trace_enabled else set()), "L3 report")
-    if value.get("schemaVersion") != (EXPERIMENT_REPORT_TRACE_SCHEMA if trace_enabled else EXPERIMENT_REPORT_SCHEMA):
+            ({"logicalTrace", "machineTrace"} if trace_enabled else set()) |
+            ({"campaignObservation"} if campaign_enabled else set()), "L3 report")
+    if value.get("schemaVersion") != (EXPERIMENT_REPORT_TRACE_SCHEMA if trace_enabled else
+                                      EXPERIMENT_REPORT_CAMPAIGN_SCHEMA if campaign_enabled else EXPERIMENT_REPORT_SCHEMA):
         raise ValueError("L3 report schema unsupported")
     if (_string(value, "side", "report") != side or _string(value, "runnerId", "report") != runner_id or
             _string(value, "contractIdentity", "report") != contract.identity):
@@ -456,6 +469,7 @@ def parse_platform_report(value: Mapping[str, object], *, side: str, runner_id: 
         _strings(value.get("syncObservations"), "syncObservations"), samples,
         value["logicalTrace"] if trace_enabled else None,
         value["machineTrace"] if trace_enabled else None,
+        value["campaignObservation"] if campaign_enabled else None,
     )
 
 
@@ -564,6 +578,27 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             contract.translation_plan_id != getattr(artifact, "translation_plan_id", "") or
             contract.proof_identity != getattr(artifact, "proof_identity", "")):
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment/plan/proof binding mismatch")
+    campaign_contract = contract.payload.get("campaignContract")
+    if campaign_contract is not None:
+        if (config.base_l2_kind != "concurrency" or campaign_contract["programId"] != contract.program_id or
+                campaign_contract["approvedRelationIdentity"] != contract.approved_target_relation_identity or
+                getattr(artifact, "fragment_id", None) not in campaign_contract["memberFragmentIds"] or
+                kwargs.get("l3_campaign_semantic_facts_identity") != campaign_contract["semanticFactsIdentity"]):
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="L3 campaign program/member/semantic-facts/L2 prerequisite mismatch")
+        try:
+            base_detail = json.loads(base.detail)
+            if base_detail["contractIdentity"] != campaign_contract["l2ConcurrencyContractIdentity"]:
+                raise ValueError("L2 concurrency evidence contract identity mismatch")
+            for side in ("source", "target"):
+                if kwargs.get("l3_" + side + "_environment_identity") != campaign_contract[side + "Platform"]["environmentIdentity"]:
+                    raise ValueError(side + " independent environment identity unavailable or stale")
+                program_artifact = kwargs.get(side + "_program_artifact")
+                if getattr(program_artifact, "artifact_digest", None) != campaign_contract[side + "Compilation"]["artifactDigest"]:
+                    raise ValueError(side + " compiled program artifact mismatch")
+        except (ValueError, TypeError, KeyError) as exc:
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="L3 campaign prerequisite/binary binding unavailable: " + str(exc))
     trace_contract = contract.payload.get("traceContract")
     if trace_contract is not None and (trace_contract["authorityIdentity"] != getattr(artifact, "l2_authority_identity", None)
                                        or trace_contract["fragmentId"] != getattr(artifact, "fragment_id", None)):
@@ -622,6 +657,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 command runner invalid")
     reports = []
     trace_reports = {}
+    campaign_reports = {}
     summaries = []
     request = {"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "experimentId": contract.experiment_id,
                "contractIdentity": contract.identity, "sampleCount": contract.sample_count,
@@ -665,6 +701,13 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                 return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                              detail=side + " attributed trace invalid: " + str(exc))
             trace_reports[side] = {"logicalTrace": report.logical_trace, "machineTrace": report.machine_trace}
+        if campaign_contract is not None:
+            from .l3_concurrency_campaign import parse_observation
+            try:
+                campaign_reports[side] = parse_observation(report.campaign_observation, campaign_contract, side, runner_id)
+            except ValueError as exc:
+                return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                             detail=side + " campaign observation invalid: " + str(exc))
         reasons = _logical_checks(report, contract)
         if reasons:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED, report.identity,
@@ -685,6 +728,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "environment": report.environment,
                         "runnerCommand": _digest(list(command)), "runnerBinary": _file_digest(binary)})
     trace_identities = {}
+    campaign_result = None
     if trace_contract is not None:
         from .l3_attributed_traces import compare_traces
         try:
@@ -696,16 +740,26 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.FAILED,
                                          _digest({"contract": contract.identity, "traces": trace_identities, "reasons": reasons}),
                                          json.dumps({"attributedTraceMismatch": reasons, "traceIdentities": trace_identities}, sort_keys=True))
+    if campaign_contract is not None:
+        from .l3_concurrency_campaign import evaluate_campaign
+        campaign_result = evaluate_campaign(campaign_contract, campaign_reports["source"], campaign_reports["target"])
+        if campaign_result["status"] != "verified":
+            status = (ValidationStatus.FAILED if campaign_result["status"] == "failed" else ValidationStatus.INCONCLUSIVE)
+            return ValidationLayerResult(ValidationLevel.L3, status,
+                                         campaign_result["resultIdentity"] if status is ValidationStatus.FAILED else "",
+                                         json.dumps(campaign_result, sort_keys=True))
     evidence = _digest({"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "baseEvidence": base.evidence_identity,
                         "contractIdentity": contract.identity, "contractDigest": config.contract_digest,
                         "intentProfileIdentity": contract.intent_profile_identity,
                         "requirementIdentity": contract.requirement_identity,
                         "reports": reports, "statistics": summaries, "traceIdentities": trace_identities,
                         "attributionVerifierBinary": verifier_digest if trace_contract is not None else "",
+                        "campaignResultIdentity": campaign_result["resultIdentity"] if campaign_result else "",
                         "knownNonEquivalences": contract.known_non_equivalences})
     detail = json.dumps({
         "conclusion": "logical access/control-flow intent and per-platform statistical conclusions satisfy the experiment contract",
         "statisticalSummary": summaries, "traceIdentities": trace_identities,
+        "campaignResult": campaign_result,
         "environments": [item["environment"] for item in reports],
         "knownNonEquivalences": contract.known_non_equivalences,
     }, sort_keys=True)
