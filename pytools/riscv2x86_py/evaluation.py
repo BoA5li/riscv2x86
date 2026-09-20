@@ -607,9 +607,18 @@ def run_evaluation(
                 _effective_validation_contract(
                     plan, translation, request.comparison_policy,
                 )
+            l3_manifest = None
+            if effective_plan.profile is ValidationProfile.MICROARCH:
+                from .l3_intent_requirements import parse_l3_requirement_manifest
+                sidecar = report.with_name(report.name + ".l3-requirements.json")
+                if sidecar.is_file():
+                    l3_manifest = parse_l3_requirement_manifest(
+                        json.loads(sidecar.read_text(encoding="utf-8"))
+                    ).to_dict()
             validation = run_translation_validation(
                 translation, source_program, target_program, effective_plan,
                 environment, registry, comparison_policy=effective_policy,
+                l3_requirement_manifest=l3_manifest,
             )
             per_attempt.append(_attempt_result(attempt, validation, validation.status,
                                                validation.reason_codes,

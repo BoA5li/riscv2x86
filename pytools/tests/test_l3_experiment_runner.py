@@ -11,6 +11,7 @@ import riscv2x86_py.l3_experiment_runner as subject
 from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel, ValidationProfile
 from riscv2x86_py.validation_status import ValidationStatus
+from riscv2x86_py.l3_intent_requirements import _hash as l3_hash, classify_l3_requirements
 
 
 PROOF = "sha256:" + "c" * 64
@@ -238,6 +239,62 @@ def test_missing_l2_prerequisite_is_l3_inconclusive(tmp_path, monkeypatch):
     assert result.level is ValidationLevel.L3
     assert result.status is ValidationStatus.INCONCLUSIVE
     assert "prerequisite L2" in result.detail
+
+
+def test_v2_contract_requires_matching_intent_and_requirement_evidence(tmp_path, monkeypatch):
+    fragment_id = "fragment:cache-experiment"
+    relation = "sha256:" + "a" * 64
+    profile = {"schemaVersion": "riscv2x86.l3-intent-profile.v1",
+               "fragmentId": fragment_id, "programId": "program:cache",
+               "intentKind": "performance_trend", "experimentClasses": ["performance_trend"],
+               "sourceIntent": "same per-platform timing direction",
+               "approvedTargetRelationIdentity": relation,
+               "requiredProperties": [{"propertyId": "property:direction", "dimension": "performance_trend",
+                                       "unit": "program"}],
+               "sourceCapabilities": ["controlled-timing"], "targetCapabilities": ["controlled-timing"],
+               "observationBoundary": {"kind": "proof-region", "identity": "sha256:" + "b" * 64},
+               "notClaimedProperties": ["raw-cycle-equivalence"],
+               "producer": {"kind": "translation-proof", "producerIdentity": "sha256:" + "e" * 64,
+                            "proofIdentity": PROOF}, "complete": True}
+    profile["profileIdentity"] = l3_hash(profile)
+    manifest = classify_l3_requirements({"findings": [
+        {"fragment": {"id": fragment_id}, "translationOutcome": "emitted", "l3IntentProfile": profile}
+    ]}).to_dict()
+    requirement = manifest["requirements"][0]
+    bound_contract = _contract(schemaVersion=subject.EXPERIMENT_CONTRACT_BOUND_SCHEMA,
+                               intentProfileIdentity=profile["profileIdentity"],
+                               requirementIdentity=requirement["requirementIdentity"],
+                               approvedTargetRelationIdentity=relation,
+                               programId="program:cache")
+    path = tmp_path / "experiment.json"
+    path.write_text(json.dumps(bound_contract), encoding="utf-8")
+    digest = "sha256:" + sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(subject, "run_l2_effect_trace_differential", lambda *_a, **_k:
+                        ValidationLayerResult(ValidationLevel.L2, ValidationStatus.VERIFIED,
+                                              "sha256:" + "d" * 64))
+    kwargs = dict(validation_plan=SimpleNamespace(profile=ValidationProfile.MICROARCH,
+                                                  experiment_contract_id="cache-direction-v1"),
+                  translation_artifact=SimpleNamespace(fragment_id=fragment_id,
+                                                       translation_plan_id="plan-3", proof_identity=PROOF),
+                  comparison_policy=ARCHITECTURAL_COMPARISON_POLICY,
+                  l3_command_runner=lambda _c, s, _t: subject.CommandResult(0,
+                                        json.dumps(_report(json.loads(s)))))
+    missing = subject.run_l3_experiment_validation(_config(path, digest), **kwargs)
+    assert missing.status is ValidationStatus.INCONCLUSIVE
+    assert "requirement unavailable" in missing.detail
+    verified = subject.run_l3_experiment_validation(_config(path, digest),
+                                                    l3_requirement_manifest=manifest, **kwargs)
+    assert verified.status is ValidationStatus.VERIFIED
+    assert verified.evidence_identity
+    stale = json.loads(json.dumps(manifest))
+    stale["requirements"][0]["proofIdentity"] = "sha256:" + "0" * 64
+    stale["requirements"][0]["requirementIdentity"] = l3_hash({
+        k: v for k, v in stale["requirements"][0].items() if k != "requirementIdentity"})
+    stale["manifestIdentity"] = l3_hash({"schemaVersion": stale["schemaVersion"],
+                                         "requirements": stale["requirements"]})
+    rejected = subject.run_l3_experiment_validation(_config(path, digest),
+                                                    l3_requirement_manifest=stale, **kwargs)
+    assert rejected.status is ValidationStatus.INCONCLUSIVE
 
 
 def test_partial_order_cycle_is_rejected(tmp_path):

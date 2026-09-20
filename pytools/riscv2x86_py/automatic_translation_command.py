@@ -8,6 +8,7 @@ import sys
 import json
 
 from .l2_eligibility import classify_l2_requirements
+from .l3_intent_requirements import classify_l3_requirements
 from .automatic_batch_cli import inspect_entry_points
 from .automatic_l2_authority import materialize_automatic_l2_authority
 from .schema import load_report
@@ -76,8 +77,12 @@ def main() -> int:
             report.with_name(report.name + ".l2-requirements.json").write_text(
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
             )
+            l3 = classify_l3_requirements(translated)
+            report.with_name(report.name + ".l3-requirements.json").write_text(
+                json.dumps(l3.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("L2 requirement classification failed: " + str(exc), file=sys.stderr)
+            print("Requirement classification failed: " + str(exc), file=sys.stderr)
             return 2
     return back.returncode
 

@@ -27,6 +27,7 @@ from .validation_status import ValidationStatus
 
 
 EXPERIMENT_CONTRACT_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v1"
+EXPERIMENT_CONTRACT_BOUND_SCHEMA = "riscv2x86.microarchitecture-experiment-contract.v2"
 EXPERIMENT_RUNNER_SCHEMA = "riscv2x86.l3-experiment-runner.v1"
 EXPERIMENT_REPORT_SCHEMA = "riscv2x86.l3-experiment-report.v1"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -144,6 +145,10 @@ class ExperimentContract:
     known_non_equivalences: tuple[str, ...]
     complete: bool
     payload: Mapping[str, object]
+    intent_profile_identity: str = ""
+    requirement_identity: str = ""
+    approved_target_relation_identity: str = ""
+    program_id: str = ""
 
     @property
     def identity(self) -> str:
@@ -295,9 +300,24 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
               "requiredSyncSemantics", "metrics", "calibrationProtocol", "sampleCount", "warmupCount",
               "randomSeed", "affinityPolicy", "noisePolicy", "sourceEnvironmentRequirements",
               "targetEnvironmentRequirements", "knownNonEquivalences", "complete"}
-    _fields(value, fields, "experiment contract")
-    if value.get("schemaVersion") != EXPERIMENT_CONTRACT_SCHEMA:
+    schema = value.get("schemaVersion")
+    if schema not in {EXPERIMENT_CONTRACT_SCHEMA, EXPERIMENT_CONTRACT_BOUND_SCHEMA}:
         raise ValueError("experiment contract schema unsupported")
+    _fields(value, fields | ({"intentProfileIdentity", "requirementIdentity",
+                             "approvedTargetRelationIdentity", "programId"}
+                             if schema == EXPERIMENT_CONTRACT_BOUND_SCHEMA else set()), "experiment contract")
+    profile_identity = ""
+    requirement_identity = ""
+    relation_identity = ""
+    program_id = ""
+    if schema == EXPERIMENT_CONTRACT_BOUND_SCHEMA:
+        profile_identity = _string(value, "intentProfileIdentity", "contract")
+        requirement_identity = _string(value, "requirementIdentity", "contract")
+        relation_identity = _string(value, "approvedTargetRelationIdentity", "contract")
+        program_id = _string(value, "programId", "contract")
+        if not all(_SHA256.fullmatch(item) for item in
+                   (profile_identity, requirement_identity, relation_identity)):
+            raise ValueError("L3 contract intent/requirement identities invalid")
     raw_metrics = value.get("metrics")
     if not isinstance(raw_metrics, list):
         raise ValueError("metrics must be an array")
@@ -348,7 +368,7 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
         _string(value, "affinityPolicy", "contract"), _string(value, "noisePolicy", "contract"),
         dict(source_env), dict(target_env),
         _strings(value.get("knownNonEquivalences"), "knownNonEquivalences", nonempty=True),
-        complete, dict(value),
+        complete, dict(value), profile_identity, requirement_identity, relation_identity, program_id,
     )
 
 
@@ -530,6 +550,23 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             contract.translation_plan_id != getattr(artifact, "translation_plan_id", "") or
             contract.proof_identity != getattr(artifact, "proof_identity", "")):
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="experiment/plan/proof binding mismatch")
+    if contract.requirement_identity:
+        from .l3_intent_requirements import parse_l3_requirement_manifest
+        try:
+            manifest = parse_l3_requirement_manifest(kwargs.get("l3_requirement_manifest"))
+            matches = [item for item in manifest.requirements
+                       if item["fragmentId"] == getattr(artifact, "fragment_id", None)]
+            if (len(matches) != 1 or matches[0]["eligibilityStatus"] != "eligible"
+                    or matches[0]["profileIdentity"] != contract.intent_profile_identity
+                    or matches[0]["requirementIdentity"] != contract.requirement_identity
+                    or matches[0]["proofIdentity"] != contract.proof_identity
+                    or matches[0]["programId"] != contract.program_id
+                    or matches[0]["approvedTargetRelationIdentity"] !=
+                    contract.approved_target_relation_identity):
+                raise ValueError("L3 contract/profile/requirement binding mismatch")
+        except ValueError as exc:
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="L3 requirement unavailable or stale: " + str(exc))
     for command in (config.source_command, config.target_command):
         if not (Path(command[0]).is_file() or shutil.which(command[0])):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
@@ -590,6 +627,8 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "runnerCommand": _digest(list(command)), "runnerBinary": _file_digest(binary)})
     evidence = _digest({"schemaVersion": EXPERIMENT_RUNNER_SCHEMA, "baseEvidence": base.evidence_identity,
                         "contractIdentity": contract.identity, "contractDigest": config.contract_digest,
+                        "intentProfileIdentity": contract.intent_profile_identity,
+                        "requirementIdentity": contract.requirement_identity,
                         "reports": reports, "statistics": summaries, "knownNonEquivalences": contract.known_non_equivalences})
     detail = json.dumps({
         "conclusion": "logical access/control-flow intent and per-platform statistical conclusions satisfy the experiment contract",
