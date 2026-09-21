@@ -3,9 +3,11 @@ from __future__ import annotations
 from riscv2x86_py.pcode_ir import (
     CanonicalInsn,
     Op,
-    Var,
-    VarKind,
     _summarize_instructions,
+)
+from riscv2x86_py.source_model import (
+    SourceOperationKind,
+    _operation_semantics_are_opaque,
 )
 
 
@@ -91,3 +93,21 @@ def test_unresolved_conditional_target_remains_fail_closed() -> None:
     assert summary.has_return is None
     assert summary.has_indirect_control_flow is None
     assert summary.has_timing_source is None
+
+
+def test_only_complete_typed_atomic_closes_generic_opacity() -> None:
+    assert _operation_semantics_are_opaque(
+        operation_kind=SourceOperationKind.OPAQUE,
+        atomic_present=True,
+        atomic_complete=False,
+    )
+    assert _operation_semantics_are_opaque(
+        operation_kind=SourceOperationKind.OPAQUE,
+        atomic_present=False,
+        atomic_complete=True,
+    )
+    assert not _operation_semantics_are_opaque(
+        operation_kind=SourceOperationKind.OPAQUE,
+        atomic_present=True,
+        atomic_complete=True,
+    )
