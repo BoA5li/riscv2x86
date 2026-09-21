@@ -435,15 +435,11 @@ class SourceSemanticModel:
             or self.control_flow.has_unknown_target
             or self.control_flow.has_indirect_control_flow is None
         )
-        opaque_operation = self.operation.kind in {
-            SourceOperationKind.OPAQUE,
-            SourceOperationKind.UNKNOWN,
-        }
-        # Atomic lowering has its own typed operation contract.  Once that
-        # contract is present and complete, the generic operation category is
-        # no longer opaque to Phase 6B; incomplete atomics remain fail-closed.
-        atomic_semantics_closed = self.atomic.present and self.atomic.complete
-        opaque = opaque_operation and not atomic_semantics_closed
+        opaque = _operation_semantics_are_opaque(
+            operation_kind=self.operation.kind,
+            atomic_present=self.atomic.present,
+            atomic_complete=self.atomic.complete,
+        )
         stack_frame_unknown = (
             (self.registers.reads_or_writes_stack_pointer or
              self.registers.reads_or_writes_frame_pointer) and
@@ -770,6 +766,26 @@ def _missing_width_facts_for_registers(
             missing.add(register)
 
     return tuple(sorted(missing))
+
+def _operation_semantics_are_opaque(
+    *,
+    operation_kind: SourceOperationKind,
+    atomic_present: bool,
+    atomic_complete: bool,
+) -> bool:
+    """Return whether Phase 6B must treat the operation as opaque.
+
+    Atomic lowering owns a stronger typed contract than the generic operation
+    category.  It closes opacity only when the atomic contract is both present
+    and complete; every incomplete or merely suspected atomic remains closed.
+    """
+    opaque_operation = operation_kind in {
+        SourceOperationKind.OPAQUE,
+        SourceOperationKind.UNKNOWN,
+    }
+    atomic_semantics_closed = atomic_present and atomic_complete
+    return opaque_operation and not atomic_semantics_closed
+
 
 def build_source_semantic_model(
     *,
