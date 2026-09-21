@@ -49,3 +49,43 @@ def test_operand_completeness_keeps_csr_state_when_authority_is_incomplete():
     assert not _authoritative_csr_state_registers(SimpleNamespace(
         csr_effects=(effect,), csr_operand_bindings=(mismatched,),
     ))
+
+
+def test_completeness_queries_only_compiler_operand_carriers():
+    from riscv2x86_py.source_model import _build_completeness_model
+
+    class MissingAll:
+        structurally_valid = True
+
+        @staticmethod
+        def missing_operand_bindings(registers):
+            return tuple(registers)
+
+        @staticmethod
+        def missing_width_facts_for_registers(registers):
+            return tuple(registers)
+
+    model = _build_completeness_model(
+        runtime_facts_available=True,
+        runtime_status=MissingAll(),
+        control_flow=SimpleNamespace(cfg_ok=True),
+        memory=SimpleNamespace(has_unknown_barrier=False),
+        microarch=SimpleNamespace(),
+        registers=SimpleNamespace(
+            referenced_registers=frozenset({"a0", "vendor_counter_7"}),
+            writes_registers=frozenset({"a0"}),
+            has_unresolved_register_identity=False,
+        ),
+        summary=SimpleNamespace(
+            has_tail_call=False,
+            has_timing_source=False,
+            has_cache_operation=False,
+            has_speculation_control=False,
+        ),
+        authoritative_architectural_state_registers=frozenset({
+            "vendor_counter_7"
+        }),
+    )
+    assert model.missing_operand_binding_registers == ("a0",)
+    assert model.missing_operand_width_registers == ("a0",)
+    assert model.missing_output_binding_registers == ("a0",)
