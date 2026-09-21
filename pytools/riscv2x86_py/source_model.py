@@ -1524,7 +1524,7 @@ def _authoritative_csr_state_registers(
             or not effect_id.endswith(":" + csr_id)
         ):
             continue
-        state_id = canonicalize_riscv_register_name(csr_id[len(prefix):])
+        state_id = _normalize_register_name(csr_id[len(prefix):])
         if state_id:
             identities.add(state_id)
     return frozenset(identities)
