@@ -1,5 +1,6 @@
 """Regression test for the proof-gated RV64 register-only add path."""
 
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from riscv2x86_py.pcode_ir import (
 )
 from riscv2x86_py.phase6c_constraints import (
     TargetEnvironment,
+    TargetConstraintReasonCode,
     derive_target_constraints,
 )
 from riscv2x86_py.phase6d_common import (
@@ -69,13 +71,14 @@ _LOCAL_BRANCH_SELECT_CONTRACT_ID = "x86.gnu-att.local-branch-select.compare.u32-
 _LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID = "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
 
 
-def _build_rv64_add_model():
+def _build_rv64_add_model(*, source_cc_clobber: bool = False):
     fragment = AsmFragment(
         outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
         inputs=[
             AsmOperand(constraint="r", exprText="lhs"),
             AsmOperand(constraint="r", exprText="rhs"),
         ],
+        clobbers=["cc"] if source_cc_clobber else [],
         isVolatile=True,
     )
     operation = Op(
@@ -106,12 +109,114 @@ def _build_rv64_add_model():
     )
 
 
+def test_source_cc_clobber_is_preserved_as_shell_not_unknown_isa_state() -> None:
+    """A GNU shell clobber must reach the target proof without becoming ISA state.
+
+    The neutral model deliberately contains no source mnemonic or function
+    name.  Applicability therefore depends only on typed semantic and shell
+    facts, matching the production Phase-6 contract.
+    """
+    model = _build_rv64_add_model(source_cc_clobber=True)
+    assert model.shell.has_cc_clobber is True
+    assert model.implicit_state.reads_condition_codes is False
+    assert model.implicit_state.writes_condition_codes is False
+    assert model.implicit_state.reads_implicit_machine_state is False
+    assert model.implicit_state.writes_implicit_machine_state is False
+
+    plan = next(
+        candidate
+        for candidate in generate_candidate_plans(model)
+        if candidate.metadata.get("renderer_semantic_contract_id") == _CONTRACT_ID
+    )
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    derived = derive_target_constraints(
+        source_model=model,
+        candidate_plan=plan,
+        target_environment=environment,
+    )
+    assert derived.success
+    assert derived.constraints is not None
+    assert derived.constraints.preserve_cc_clobber is True
+
+    proof = run_semantic_proof_gate(
+        source_model=model,
+        preservation_decision=model.preservation,
+        candidate_plan=plan,
+        constraints=derived.constraints,
+        target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            supported_plan_kinds=frozenset({plan.kind}),
+            semantic_contract_ids=frozenset({_CONTRACT_ID}),
+            version="cc-shell-separation-test-v1",
+        ),
+        compiler_capabilities=CompilerCapabilityModel(
+            supports_gnu_inline_asm=True,
+            supports_asm_goto=False,
+        ),
+    )
+    assert proof.approved
+    assert proof.evidence is not None
+
+    approved = ApprovedTargetLoweringPlan(
+        plan=plan,
+        constraints=derived.constraints,
+        proof=proof,
+        source_model_id=proof.evidence.source_model_id,
+        preservation_decision_id=proof.evidence.preservation_decision_id,
+        target_environment_id=proof.evidence.target_environment_id,
+        selection_policy_id="phase6e.semantic-fidelity",
+        selection_policy_version="1",
+        selection_tier=SelectionTier.X86_INLINE_ASM,
+    )
+    renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+    assert renderer_contract is not None
+    rendered = render_approved_target_lowering(Phase6FRenderRequest(
+        approved_plan=approved,
+        target_environment=environment,
+        renderer_context=RendererContext(
+            contracts_by_plan_id={plan.plan_id: renderer_contract},
+            operand_bindings={0: "out", 1: "lhs", 2: "rhs"},
+        ),
+    ))
+    assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+    assert '"cc"' in rendered.emitted_text
+
+
+def test_real_unknown_implicit_machine_state_remains_fail_closed() -> None:
+    """Separating shell cc must not weaken the architectural-state gate."""
+    model = _build_rv64_add_model(source_cc_clobber=True)
+    model = replace(
+        model,
+        implicit_state=replace(
+            model.implicit_state,
+            writes_implicit_machine_state=True,
+        ),
+    )
+    plan = next(
+        candidate
+        for candidate in generate_candidate_plans(model)
+        if candidate.metadata.get("renderer_semantic_contract_id") == _CONTRACT_ID
+    )
+    derived = derive_target_constraints(
+        source_model=model,
+        candidate_plan=plan,
+        target_environment=TargetEnvironment.fixed_sysv_amd64_gnu_att(),
+    )
+    assert not derived.success
+    assert derived.constraints is None
+    assert (
+        TargetConstraintReasonCode.X86_INLINE_ASM_IMPLICIT_STATE_UNSUPPORTED
+        in derived.reason_codes
+    )
+
+
 def _build_rv64_local_branch_select_model(comparison_opcode="INT_EQUAL"):
     """Build a typed three-block local branch/select, without asm text."""
     fragment = AsmFragment(
         outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
         inputs=[AsmOperand(constraint="r", exprText=name)
                 for name in ("left", "right", "when_equal", "when_not_equal")],
+        clobbers=["cc"],
         isVolatile=True,
     )
     a0 = Var(VarKind.REG, "register", 10, 8, "a0")
@@ -185,6 +290,7 @@ def test_rv64_local_branch_select_is_proof_bound_and_renderable() -> None:
         )))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
     assert rendered.emitted_text is not None and "cmpq" in rendered.emitted_text and "je 1f" in rendered.emitted_text
+    assert '"cc"' in rendered.emitted_text
     assert rendered.renderer_contract_id == renderer_contract.contract_id
 
 
@@ -194,6 +300,7 @@ def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -
         outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
         inputs=[AsmOperand(constraint="r", exprText="init"),
                 AsmOperand(constraint="r", exprText="alt")],
+        clobbers=["cc"],
         isVolatile=True,
     )
     a0 = Var(VarKind.REG, "register", 10, 8, "a0")
@@ -246,7 +353,7 @@ def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -
         RendererContext({plan.plan_id: renderer_contract}, {0: "out", 1: "init", 2: "alt"}),
     ))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
-    assert rendered.emitted_text == '__asm__ volatile ("movq %1, %0" : "=r"(out) : "r"(init), "r"(alt) : );'
+    assert rendered.emitted_text == '__asm__ volatile ("movq %1, %0" : "=r"(out) : "r"(init), "r"(alt) : "cc");'
 
 
 def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None:

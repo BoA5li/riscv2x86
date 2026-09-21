@@ -874,8 +874,7 @@ def _local_unconditional_jump_recipe(approved: ApprovedTargetLoweringPlan):
     if (contract is None or jump is None or
             contract.value_operation_kind is not SourceValueOperationKind.COPY or
             not c.control_flow_constraint.preserve_control_flow or
-            c.control_flow_constraint.preserve_condition_codes or
-            c.preserve_cc_clobber):
+            c.control_flow_constraint.preserve_condition_codes):
         return None
     by_index = {item.source_operand_index: item for item in c.operand_constraints}
     result = by_index.get(jump.result_operand_index)

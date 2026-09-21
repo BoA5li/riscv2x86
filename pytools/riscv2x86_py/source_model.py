@@ -512,6 +512,7 @@ class SourceSemanticModel:
                 stack_frame is not None and stack_frame.virtual_private_frame_eligible
             ),
             has_exact_abi_wrapper_eligibility=abi_wrapper_route and shell_known and not self.shell.is_volatile and not self.shell.has_memory_clobber and not self.shell.has_cc_clobber and not self.shell.has_asm_goto,
+            requires_cc_clobber_preservation=self.shell.has_cc_clobber,
             has_stack_address_rebinding_eligibility=(
                 stack_frame is not None and
                 stack_frame.stack_address_rebinding_eligible
@@ -5563,9 +5564,23 @@ def _build_implicit_state_model(
     Build implicit architectural-state semantic facts.
 
     This implementation is intentionally conservative:
-      * shell.has_cc_clobber is authoritative shell evidence for cc write;
+      * GNU ``"cc"`` is retained exclusively by SourceShellModel.  It is a
+        compiler-visible clobber contract, not evidence that the RISC-V ISA
+        fragment writes an otherwise unknown architectural state object;
       * stack/frame pointer effects are derived from structured register model;
       * unrecognized implicit machine state remains incomplete.
+
+    Keeping these domains separate is essential.  Target x86 integer
+    lowerings commonly modify EFLAGS and must therefore carry a ``"cc"``
+    clobber, but that preservation obligation is discharged through
+    ``PlanRequirement.PRESERVE_CC_CLOBBER``.  Treating the source shell fact as
+    ``writes_implicit_machine_state`` would reject the same proof-capable x86
+    inline-asm route before that obligation can be checked.
+
+    A future ISA analyzer that discovers a real implicit architectural-state
+    effect must materialize it as an authoritative SourceImplicitStateModel
+    fact.  Such a fact remains fail-closed in Phase 6C; this adapter does not
+    infer or erase it from shell syntax.
     """
     reads_stack_pointer = (
         "sp" in registers.reads_registers
@@ -5589,15 +5604,16 @@ def _build_implicit_state_model(
 
     # General RISC-V GPR reads/writes are explicit value operands, not
     # implicit machine state.  Treating a0/a1/a2 as "special" incorrectly
-    # blocks every ordinary register-only lowering.  Stack/frame and shell
-    # cc effects remain explicit above; genuinely unmodelled special state is
-    # represented by unresolved-register analysis rather than a GPR list.
+    # blocks every ordinary register-only lowering.  Stack/frame effects stay
+    # explicit here, while the GNU cc contract stays in SourceShellModel;
+    # genuinely unmodelled special state is represented by unresolved-register
+    # analysis rather than a GPR list.
     special_reads: tuple[str, ...] = ()
     special_writes: tuple[str, ...] = ()
 
     return SourceImplicitStateModel(
         reads_condition_codes=False,
-        writes_condition_codes=shell.has_cc_clobber,
+        writes_condition_codes=False,
 
         reads_stack_pointer=reads_stack_pointer,
         writes_stack_pointer=writes_stack_pointer,
@@ -5606,7 +5622,7 @@ def _build_implicit_state_model(
         writes_frame_pointer=writes_frame_pointer,
 
         reads_implicit_machine_state=False,
-        writes_implicit_machine_state=shell.has_cc_clobber,
+        writes_implicit_machine_state=False,
 
         reads_special_register_names=special_reads,
         writes_special_register_names=special_writes,

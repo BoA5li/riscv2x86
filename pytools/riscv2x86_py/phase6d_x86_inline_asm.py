@@ -65,7 +65,7 @@ def prove(r):
                  jump.width_bits, jump.entry_block_address, jump.target_block_address) or
                 not c.control_flow_constraint.preserve_control_flow or
                 c.control_flow_constraint.preserve_condition_codes or
-                c.preserve_cc_clobber):
+                c.preserve_cc_clobber is not s.shell.has_cc_clobber):
             return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
         result = operands.get(jump.result_operand_index)
         selected = operands.get(jump.selected_input_operand_index)

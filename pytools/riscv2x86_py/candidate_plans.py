@@ -135,6 +135,11 @@ class Phase6BCandidateFacts:
     has_stack_address_rebinding_eligibility: bool = False
     has_virtual_private_frame_eligibility: bool = False
     has_exact_abi_wrapper_eligibility: bool = False
+    # Compiler-shell obligation.  This is deliberately not an implicit ISA
+    # state fact: it tells candidate generation whether a target route whose
+    # own instructions do not modify flags must nevertheless carry the source
+    # GNU ``"cc"`` clobber through proof and rendering.
+    requires_cc_clobber_preservation: bool = False
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
@@ -587,6 +592,14 @@ def _generate_cfg_candidates(
             reason_codes=("x86-local-branch-select-candidate",),
         )]
     if facts.has_proven_local_unconditional_jump:
+        requirements = {
+            PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+            PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+            PlanRequirement.PRESERVE_CONTROL_FLOW,
+            PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
+        }
+        if facts.requires_cc_clobber_preservation:
+            requirements.add(PlanRequirement.PRESERVE_CC_CLOBBER)
         return [_plan(
             plan_id="x86.local-unconditional-jump-copy",
             kind=TargetLoweringKind.X86_GNU_INLINE_ASM,
@@ -594,12 +607,7 @@ def _generate_cfg_candidates(
             priority_tier=PlanPriorityTier.X86_INLINE_ASM,
             deterministic_rank=34,
             required_features=frozenset({"x86:gpr_inline_asm"}),
-            requirements=frozenset({
-                PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
-                PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
-                PlanRequirement.PRESERVE_CONTROL_FLOW,
-                PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
-            }),
+            requirements=frozenset(requirements),
             metadata={
                 "strategy": "x86_local_unconditional_jump_copy_inline_asm",
                 "renderer_semantic_contract_id":
