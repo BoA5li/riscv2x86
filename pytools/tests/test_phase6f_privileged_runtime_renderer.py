@@ -320,10 +320,10 @@ def test_phase7_requires_privileged_manifest_artifact_and_audits_text():
     assert phase7_gate_inline_asm(fragment, rejected_microarch)
 
 
-def test_translate_emits_privileged_dependency_and_audit_manifest():
+def test_translate_does_not_bypass_authoritative_csr_pipeline():
     from riscv2x86_py.translate import translate
     _source, environment, contract, registry, _approved = _approved_strict()
-    manifest, renderer_registry = _renderer_registry(
+    _manifest, renderer_registry = _renderer_registry(
         contract, registry, TargetLoweringKind.COUNTER_OBSERVATION_ADAPTER
     )
     fragment, block, cfg, summary, state, observability, facts = _counter_inputs()
@@ -336,9 +336,14 @@ def test_translate_emits_privileged_dependency_and_audit_manifest():
         privileged_runtime_registry=registry,
         renderer_contract_registry=renderer_registry,
     )
-    assert output.kind == "privileged_runtime"
-    artifact = output.metadata["approvalArtifact"]
-    assert artifact["privilegedRendererManifestId"] == manifest.manifest_id
-    assert artifact["requiredHeaders"] == ["riscv2x86_privileged_runtime.h"]
-    assert artifact["requiredLibraries"] == ["riscv2x86_privileged_runtime"]
-    assert artifact["preservationMode"] == "architecture_equivalent"
+    # A legacy privileged renderer registration must not bypass the CSR
+    # production chain.  This fixture deliberately lacks the typed CSR
+    # operand join and state dataflow required by that chain.
+    assert output.kind == "needs_route"
+    assert output.replacement == ""
+    assert output.metadata["csrProofInvoked"] is False
+    assert output.metadata["csrPlanCandidates"] == ()
+    assert "csr-6a.effect-binding-cardinality-mismatch" in (
+        output.metadata["csrPipelineReasonCodes"]
+    )
+    assert "approvalArtifact" not in output.metadata
