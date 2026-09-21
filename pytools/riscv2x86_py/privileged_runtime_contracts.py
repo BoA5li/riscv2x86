@@ -16,7 +16,7 @@ from .privileged_state_adapter import SourcePrivilegedSemanticModel
 
 
 PRIVILEGED_RUNTIME_REGISTRY_SCHEMA = (
-    "riscv2x86.privileged-runtime-registry.v2"
+    "riscv2x86.privileged-runtime-registry.v3"
 )
 PRIVILEGED_EFFECT_MAPPING_SCHEMA = "riscv2x86.privileged-effect-mapping.v1"
 PRIVILEGED_MAPPING_REGISTRY_SCHEMA = "riscv2x86.privileged-mapping-registry.v1"
