@@ -40,7 +40,7 @@ def prove_strict_effects(source, constraint):
     if contract.environment_route_kind is not route_kind:
         return (
             None,
-            SemanticProofReasonCode.PRIVILEGED_EFFECT_COVERAGE_UNPROVEN,
+            SemanticProofReasonCode.PRIVILEGED_TARGET_SIDE_EFFECT_UNPROVEN,
             "environment-route-kind",
         )
     if route_kind is PrivilegedEnvironmentRouteKind.ECALL:
