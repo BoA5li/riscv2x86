@@ -138,7 +138,7 @@ def test_end_to_end_materializes_and_builds_without_prebuilt_target(tmp_path):
     assert result["attempts"][0]["reasonCodes"] == ["validation.layer-runner-missing:L0"]
     assert (work / result["replayArtifact"]).is_file()
     linkage = result["translationEvaluationLink"]
-    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v3"
+    assert linkage["schemaVersion"] == "riscv2x86.translation-evaluation-link.v4"
     assert linkage["translatedReportDigest"].startswith("sha256:")
     assert linkage["attemptArchiveDigest"].startswith("sha256:")
     joined = linkage["findings"][0]

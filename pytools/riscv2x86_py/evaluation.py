@@ -46,7 +46,7 @@ EVALUATION_REQUEST_SCHEMA = "riscv2x86.evaluation-request.v2"
 LEGACY_EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v1"
 EVALUATION_RESULT_SCHEMA = "riscv2x86.evaluation-result.v2"
 EVALUATION_REPLAY_SCHEMA = "riscv2x86.evaluation-replay.v1"
-TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v3"
+TRANSLATION_EVALUATION_LINK_SCHEMA = "riscv2x86.translation-evaluation-link.v4"
 _EMITTED = {
     TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
     TranslationOutcome.FUNCTIONAL_FALLBACK,
@@ -802,6 +802,12 @@ def _translation_evaluation_linkage(
     if l2_path.is_file():
         from .l2_eligibility import load_l2_requirement_manifest
         l2_requirements = load_l2_requirement_manifest(l2_path)
+    l3_path = report_path.with_name(report_path.name + ".l3-requirements.json")
+    l3_requirements: object = None
+    if l3_path.is_file():
+        from .l3_intent_requirements import parse_l3_requirement_manifest
+        l3_requirements = parse_l3_requirement_manifest(
+            json.loads(l3_path.read_text(encoding="utf-8"))).to_dict()
     requirement_by_finding = {
         str(item.get("findingId")): item
         for item in (l2_requirements.get("requirements", [])
@@ -1072,6 +1078,11 @@ def _translation_evaluation_linkage(
         ),
         "l2RequirementManifestDigest": _digest_file(l2_path) if l2_path.is_file() else "",
         "l2Requirements": l2_requirements,
+        "l3RequirementManifestPath": (
+            l3_path.relative_to(work).as_posix() if l3_path.is_file() else ""
+        ),
+        "l3RequirementManifestDigest": _digest_file(l3_path) if l3_path.is_file() else "",
+        "l3Requirements": l3_requirements,
         "programExecutionEvidence": [
             item.to_dict() for item in program_execution_evidence
         ],

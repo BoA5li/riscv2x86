@@ -61,3 +61,16 @@ def test_real_driver_profiles_are_explicit_cli_contracts():
         )
         assert result.returncode == 0
         assert marker in result.stdout
+
+
+def test_l3_ci_separates_deterministic_contracts_from_controlled_hardware():
+    workflow = (ROOT / ".github/workflows/phase13-l3-aggregation-and-ci.yml").read_text()
+    assert "contracts-and-coverage:" in workflow
+    assert "test_l3_batch_coverage.py" in workflow
+    assert "controlled-experiments:" in workflow
+    assert "configured-experiments:" in workflow
+    assert "l3.environment.controlled-runner-unavailable" in workflow
+    assert "'status': status" in workflow
+    assert "'architecturalIntentVerified': False" in workflow
+    assert "--l3-provider-directory" in workflow
+    assert "if: always()" in workflow

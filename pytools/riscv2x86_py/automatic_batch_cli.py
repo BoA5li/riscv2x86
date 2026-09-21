@@ -16,6 +16,7 @@ from .l2_dimensions import L2Dimension
 from .l2_validator_resolution import (
     L2BindingKind, L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA, provider_from_dict,
 )
+from .l3_provider_resolution import provider_from_dict as l3_provider_from_dict
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
 EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
@@ -420,6 +421,8 @@ def prepare_automatic_inventory(
     harness_directory: str | Path | None = None,
     privileged_config_directory: str | Path | None = None,
     l2_provider_directory: str | Path | None = None,
+    l3_provider_directory: str | Path | None = None,
+    l3_diagnostic: bool = False,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
     sources = ([root] if root.is_file() else
@@ -437,6 +440,11 @@ def prepare_automatic_inventory(
                      else Path(l2_provider_directory).resolve())
     if provider_root is not None and not provider_root.is_dir():
         raise ValueError("explicit L2 provider directory is unavailable")
+    l3_root = None if l3_provider_directory is None else Path(l3_provider_directory).resolve()
+    if l3_root is not None and not l3_root.is_dir():
+        raise ValueError("L3 provider directory is unavailable")
+    if l3_diagnostic and l3_root is None:
+        raise ValueError("L3 diagnostic profile requires a provider directory")
     if not sources:
         raise ValueError("automatic evaluation found no C sources")
     if inventory.exists():
@@ -480,6 +488,37 @@ def prepare_automatic_inventory(
         explicit_l2_providers, explicit_environment_capabilities = _explicit_l2_providers(
             source, source_root, provider_root,
         )
+        l3_binding = None
+        if l3_root is not None:
+            binding_path = l3_root / (relative + ".l3-providers.json")
+            if binding_path.is_file():
+                raw_binding = json.loads(binding_path.read_text(encoding="utf-8"))
+                required_fields = {"schemaVersion", "sourceRelativePath", "sourceDigest",
+                                   "executionProfile", "environmentId", "sourceCapabilities",
+                                   "targetCapabilities", "providers", "manifestIdentity"}
+                if (not isinstance(raw_binding, Mapping) or set(raw_binding) != required_fields
+                        or raw_binding["schemaVersion"] != "riscv2x86.l3-batch-provider-binding.v1"
+                        or raw_binding["sourceRelativePath"] != relative
+                        or raw_binding["sourceDigest"] != _digest(source)
+                        or raw_binding["environmentId"] != environment_id
+                        or raw_binding["executionProfile"] != "rv64gc-user-to-x86_64-user"
+                        or raw_binding["manifestIdentity"] != _identity({
+                            key: value for key, value in raw_binding.items()
+                            if key != "manifestIdentity"})):
+                    raise ValueError("L3 provider binding is stale or malformed: " + str(binding_path))
+                for key in ("sourceCapabilities", "targetCapabilities"):
+                    values = raw_binding[key]
+                    if (not isinstance(values, list) or values != sorted(set(values))
+                            or any(not isinstance(value, str) or not value for value in values)):
+                        raise ValueError("L3 provider capabilities are malformed")
+                providers = raw_binding["providers"]
+                if not isinstance(providers, list) or not providers:
+                    raise ValueError("L3 provider list must be nonempty")
+                parsed = [l3_provider_from_dict(item) for item in providers]
+                ids = [item.provider_id for item in parsed]
+                if ids != sorted(set(ids)):
+                    raise ValueError("L3 providers must be sorted and unique")
+                l3_binding = raw_binding
         try:
             has_main, functions = inspect_entry_points(source)
             inspection_error = ""
@@ -745,6 +784,20 @@ def prepare_automatic_inventory(
                 profile = "architectural"
                 plan["profile"] = profile
                 plan["planId"] = f"auto-{case_id}-{profile}-v1"
+        if l3_binding is not None:
+            if "L2" not in validators or "L1" not in validators:
+                raise ValueError("L3 experiment requires registered L0-L2 prerequisites")
+            profile = "microarch_diagnostic" if l3_diagnostic else "microarch"
+            plan.update(profile=profile, planId=f"auto-{case_id}-{profile}-v1",
+                        experimentContractId="resolved-per-fragment")
+            validators["L3"] = {"type": "l3-capability-provider-registry", "config": {
+                "schemaVersion": "riscv2x86.l3-capability-provider-registry.v1",
+                "providers": l3_binding["providers"],
+                "executionProfile": l3_binding["executionProfile"],
+                "environmentId": l3_binding["environmentId"],
+                "sourceCapabilities": l3_binding["sourceCapabilities"],
+                "targetCapabilities": l3_binding["targetCapabilities"],
+            }}
         _write_json(case_dir / "validation-plan.json", plan)
         request = {"schemaVersion": "riscv2x86.evaluation-request.v2",
                    "sourceRoot": str(source_root), "sourceRelativePath": relative,
@@ -786,11 +839,14 @@ def prepare_automatic_inventory(
                         "privilegedBindingPath": ("" if privileged_binding is None
                                                    else privileged_binding["path"]),
                         "explicitL2ProviderCount": len(explicit_l2_providers),
+                        "l3ProviderCount": len(l3_binding["providers"]) if l3_binding else 0,
+                        "l3BindingDigest": _digest(binding_path) if l3_binding else "",
                         "validationProfile": profile})
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
                "statisticsUnits": {"L1": "program", "L2Requirements": "fragment",
                                     "L2SemanticProfile": "fragment",
+                                    "L3Intent": "fragment", "L3Execution": "program/entry/campaign",
                                     "translation": "fragment",
                                     "bootstrapCluster": "program"}}
     _write_json(inventory / "automatic-inventory.json", payload)
@@ -811,6 +867,10 @@ def main() -> int:
                         help="directory containing <source>.c.privileged.json bindings")
     parser.add_argument("--l2-provider-directory",
                         help="directory containing <source>.c.l2-providers.json bindings")
+    parser.add_argument("--l3-provider-directory",
+                        help="directory containing <source>.c.l3-providers.json bindings")
+    parser.add_argument("--l3-diagnostic", action="store_true",
+                        help="run explicitly bound target-only experiment diagnostics")
     args = parser.parse_args()
     output = Path(args.output_directory).resolve()
     inventory = output.with_name(output.name + "-inventory")
@@ -820,7 +880,9 @@ def main() -> int:
                                     allow_functional_fallbacks=args.allow_functional_fallbacks,
                                     harness_directory=args.harness_directory,
                                     privileged_config_directory=args.privileged_config_directory,
-                                    l2_provider_directory=args.l2_provider_directory)
+                                    l2_provider_directory=args.l2_provider_directory,
+                                    l3_provider_directory=args.l3_provider_directory,
+                                    l3_diagnostic=args.l3_diagnostic)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
         print(json.dumps({"status": "inconclusive", "reasonCode": "automatic.configuration-error",

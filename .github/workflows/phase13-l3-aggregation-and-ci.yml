@@ -1,0 +1,108 @@
+name: Phase 13 L3 coverage and controlled experiments
+
+on:
+  push:
+    branches: [phase13-l3-aggregation-and-ci]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 3 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  contracts-and-coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-test.txt
+      - name: Run versioned contracts, closed evidence, batch and paper metrics
+        env:
+          PYTHONPATH: pytools
+        run: |
+          python -m pytest -q --junitxml=l3-unit-results.xml \
+            pytools/tests/test_l3_intent_requirements.py \
+            pytools/tests/test_l3_provider_resolution.py \
+            pytools/tests/test_l3_attributed_traces.py \
+            pytools/tests/test_l3_concurrency_campaign.py \
+            pytools/tests/test_l3_statistical_experiment.py \
+            pytools/tests/test_l3_specialized_experiment.py \
+            pytools/tests/test_l3_evidence_closure.py \
+            pytools/tests/test_l3_batch_coverage.py \
+            pytools/tests/test_l3_experiment_runner.py \
+            pytools/tests/test_batch_evaluation_cli.py \
+            pytools/tests/test_paper_evaluation.py \
+            pytools/tests/test_automatic_batch_evaluation.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l3-unit-results-${{ github.run_id }}
+          path: l3-unit-results.xml
+          if-no-files-found: warn
+
+  controlled-experiments:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record hardware campaign availability
+        env:
+          CONTRACT_PATH: ${{ vars.L3_CONTROLLED_CONTRACT_PATH }}
+          RUNNER_ID: ${{ vars.L3_CONTROLLED_RUNNER_ID }}
+        run: |
+          mkdir -p l3-controlled
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          contract = os.environ.get('CONTRACT_PATH', '')
+          runner = os.environ.get('RUNNER_ID', '')
+          # Hosted CI cannot attest an external machine, even when a
+          # contract path was configured. Controlled runs use the job below.
+          status = 'not_run'
+          reason = 'l3.environment.controlled-runner-unavailable'
+          Path('l3-controlled/availability.json').write_text(json.dumps({
+              'schemaVersion': 'riscv2x86.l3-ci-availability.v1',
+              'status': status, 'reasonCode': reason,
+              'requestedContractPath': contract, 'requestedRunnerId': runner,
+              'architecturalIntentVerified': False,
+          }, indent=2, sort_keys=True) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: l3-controlled-availability-${{ github.run_id }}
+          path: l3-controlled/availability.json
+          if-no-files-found: error
+
+  configured-experiments:
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') &&
+      vars.L3_CONTROLLED_RUNNER_LABEL != '' &&
+      vars.L3_CONTROLLED_CORPUS != '' &&
+      vars.L3_CONTROLLED_FRONTEND != '' &&
+      vars.L3_CONTROLLED_PROVIDERS != ''
+    runs-on: ${{ vars.L3_CONTROLLED_RUNNER_LABEL }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run exact-bound controlled L3 contracts
+        env:
+          PYTHONPATH: pytools
+          L3_CORPUS: ${{ vars.L3_CONTROLLED_CORPUS }}
+          L3_FRONTEND: ${{ vars.L3_CONTROLLED_FRONTEND }}
+          L3_PROVIDERS: ${{ vars.L3_CONTROLLED_PROVIDERS }}
+        run: |
+          python -m riscv2x86_py.automatic_batch_cli \
+            --input "$L3_CORPUS" --frontend "$L3_FRONTEND" \
+            --l3-provider-directory "$L3_PROVIDERS" \
+            --output-directory l3-controlled-evaluation --jobs 1 \
+            --timeout-seconds 600
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: l3-configured-results-${{ github.run_id }}
+          path: l3-controlled-evaluation/
+          if-no-files-found: warn

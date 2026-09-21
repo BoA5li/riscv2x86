@@ -168,6 +168,12 @@ def test_paper_metrics_use_oracle_denominators_and_program_cluster_bootstrap(tmp
     result = aggregate_paper_corpus(manifest, manifest_directory=tmp_path)
     assert result["integrityStatus"] == "verified"
     assert result["metrics"]["recognitionCoverage"]["estimate"] == 1.0
+    assert result["metrics"]["l3IntentClassificationCoverage"]["denominator"] == 2
+    assert result["metrics"]["l3IntentClassificationCoverage"]["numerator"] == 0
+    assert result["metrics"]["l3UnconditionalArchitecturalIntentVerifiedRate"]["denominator"] == 2
+    assert result["metrics"]["l3UnconditionalArchitecturalIntentVerifiedRate"]["numerator"] == 0
+    assert result["metricDefinitions"]["l3NotRunRate"]["denominator"] == "L3 eligible fragments"
+    assert result["metrics"]["l3UnconditionalArchitecturalIntentVerifiedRate"]["clusters"] == 1
     assert result["metrics"]["modelingCoverage"]["estimate"] == 0.5
     assert result["metrics"]["candidateCoverage"]["estimate"] == 0.5
     assert result["metrics"]["l2VerifiedRate"]["estimate"] == 1.0

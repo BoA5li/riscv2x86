@@ -22,7 +22,7 @@ from .l2_dimensions import L2Dimension
 
 
 BATCH_CASE_SCHEMA = "riscv2x86.batch-evaluation-case.v1"
-BATCH_RESULT_SCHEMA = "riscv2x86.batch-evaluation-result.v3"
+BATCH_RESULT_SCHEMA = "riscv2x86.batch-evaluation-result.v4"
 BATCH_TEMPLATE_SCHEMA = "riscv2x86.batch-evaluation-template.v1"
 BATCH_DESCRIPTOR_NAME = "riscv2x86-evaluation.json"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.-]+")
@@ -200,7 +200,12 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
     program_levels = {}
     for level, statuses in sorted(level_statuses.items()):
         program_levels[level] = ("failed" if "failed" in statuses else
-                                 "inconclusive" if "inconclusive" in statuses else "verified")
+                                 "inconclusive" if "inconclusive" in statuses else
+                                 "unsupported" if "unsupported" in statuses else
+                                 "needs_route" if "needs_route" in statuses else
+                                 "not_run" if "not_run" in statuses else
+                                 "verified" if all(x == "verified" for x in statuses)
+                                 else "inconclusive")
     for level in ("L0", "L1", "L2", "L3"):
         program_levels.setdefault(level, "not_run")
     outcomes = sorted({
@@ -326,6 +331,12 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
             l3_programs.append(group)
             program_levels["L3"] = ("diagnostic_verified" if group["status"] == "verified" and
                                     scope == "target_experiment_diagnostic" else group["status"])
+    from .l3_coverage import summarize_l3_case
+    try:
+        l3_coverage = summarize_l3_case(result, l3_fragments)
+    except (ValueError, TypeError, KeyError) as exc:
+        l3_coverage = {"error": "l3.coverage.evidence-invalid: " + str(exc)}
+        program_levels["L3"] = "inconclusive"
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
@@ -351,6 +362,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "l3SpecializedExperimentResults": l3_specialized,
         "l3FragmentResults": l3_fragments,
         "l3ProgramResults": l3_programs,
+        "l3Coverage": l3_coverage,
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
         "l2RequiredDimensionCounts": l2_dimensions,
@@ -706,6 +718,10 @@ def run_batch_evaluation(
         payload["statisticalUnits"]["l3ConcurrencyCampaign"] = "unique programId + campaignIdentity"
         payload["statisticalUnits"]["l3StatisticalExperiment"] = "unique programId + experimentIdentity; within-program paired experiment rounds"
         payload["statisticalUnits"]["l3SpecializedExperiment"] = "unique programId + registered experimentIdentity"
+        from .l3_coverage import merge_l3_coverage
+        payload["l3Coverage"] = merge_l3_coverage(completed)
+        payload["statisticalUnits"]["l3Intent"] = "independent recognized fragment"
+        payload["statisticalUnits"]["l3Experiment"] = "program/entry or independent campaign"
         identity_value = dict(payload); identity_value.pop("batchIdentity")
         payload["batchIdentity"] = _identity(identity_value)
         (output / "batch-evaluation.json").write_text(

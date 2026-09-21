@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -385,7 +386,9 @@ def build_l3_capability_registry_validator(
                 target_artifact_digest=target_artifact.artifact_digest,
                 validator_types=set(factories) - {"l3-capability-provider-registry"},
                 translation_plan_id=getattr(artifact, "translation_plan_id", ""),
-                experiment_contract_id=getattr(kwargs.get("validation_plan"), "experiment_contract_id", ""),
+                experiment_contract_id=("" if getattr(kwargs.get("validation_plan"),
+                    "experiment_contract_id", "") == "resolved-per-fragment" else
+                    getattr(kwargs.get("validation_plan"), "experiment_contract_id", "")),
             )
             directory = kwargs.get("l3_plan_directory")
             if directory is not None:
@@ -407,7 +410,14 @@ def build_l3_capability_registry_validator(
                     or list(_binary_fingerprints(target_command)) != plan["targetRunnerBinaries"]):
                 return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                              detail="l3.runner.stale")
-            result = factories[provider.validator_type](provider.config)(**kwargs)
+            from .l3_experiment_runner import load_experiment_contract
+            contract = load_experiment_contract(path)
+            selected_kwargs = dict(kwargs)
+            original_plan = kwargs.get("validation_plan")
+            if getattr(original_plan, "experiment_contract_id", "") == "resolved-per-fragment":
+                selected_kwargs["validation_plan"] = replace(
+                    original_plan, experiment_contract_id=contract.experiment_id)
+            result = factories[provider.validator_type](provider.config)(**selected_kwargs)
             if ("sha256:" + sha256(path.read_bytes()).hexdigest() != digest
                     or list(_binary_fingerprints(source_command)) != plan["sourceRunnerBinaries"]
                     or list(_binary_fingerprints(target_command)) != plan["targetRunnerBinaries"]):
@@ -446,9 +456,20 @@ def build_l3_capability_registry_validator(
                            "providerEvidenceIdentity": result.evidence_identity}),
                     json.dumps({"executionIdentity": plan["executionIdentity"],
                                 "providerEvidenceIdentity": result.evidence_identity,
+                                "providerId": provider.provider_id,
+                                "providerKind": provider.binding_kind,
+                                "providerInvoked": True,
+                                "contractSchemaVersion": contract.payload["schemaVersion"],
                                 "fragmentResult": fragment,
                                 "providerDetail": result.detail}, sort_keys=True))
-            return result
+            return ValidationLayerResult(
+                ValidationLevel.L3, result.status, result.evidence_identity,
+                json.dumps({"executionIdentity": plan["executionIdentity"],
+                            "providerId": provider.provider_id,
+                            "providerKind": provider.binding_kind,
+                            "providerInvoked": True,
+                            "contractSchemaVersion": contract.payload["schemaVersion"],
+                            "providerDetail": result.detail}, sort_keys=True))
         except (ValueError, OSError, KeyError, TypeError) as exc:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail="l3.provider.resolution-unavailable: " + str(exc))

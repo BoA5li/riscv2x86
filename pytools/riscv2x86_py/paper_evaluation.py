@@ -20,7 +20,7 @@ from .l2_program_results import ProgramExecutionEvidence
 
 
 PAPER_CORPUS_SCHEMA = "riscv2x86.paper-corpus-manifest.v1"
-PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v4"
+PAPER_REPORT_SCHEMA = "riscv2x86.paper-evaluation-report.v5"
 PAPER_EXECUTION_SCHEMA = "riscv2x86.paper-corpus-execution.v1"
 PAPER_POLICY = "riscv2x86.paper-metrics.v2"
 _SHA_PREFIX = "sha256:"
@@ -492,6 +492,10 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
     base = Path(manifest_directory).resolve(); fragments = []; units = []; errors = []; environments = {}
     fragment_validation: dict[str, dict[str, object]] = {}
     eligibility_classification: dict[str, str] = {}
+    l3_requirements: dict[str, Mapping[str, object]] = {}
+    l3_fragment_evidence: dict[str, Mapping[str, object]] = {}
+    l3_invoked: set[str] = set()
+    l3_contract_versions: set[str] = set()
     seen_oracles: set[str] = set()
     l2_execution_sample_keys: set[tuple[str, str, str]] = set()
     for program in manifest.programs:
@@ -570,6 +574,49 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                         eligibility_classification[str(requirement["fragmentId"])] = str(
                             requirement["eligibilityStatus"]
                         )
+                if isinstance(linkage, Mapping) and isinstance(linkage.get("l3Requirements"), Mapping):
+                    from .l3_intent_requirements import parse_l3_requirement_manifest
+                    l3_manifest = parse_l3_requirement_manifest(linkage["l3Requirements"])
+                    for requirement in l3_manifest.requirements:
+                        fid = str(requirement["fragmentId"])
+                        if fid in l3_requirements and l3_requirements[fid] != requirement:
+                            raise ValueError("conflicting L3 fragment requirements")
+                        l3_requirements[fid] = requirement
+                for attempt_result in evaluation.get("attempts", []):
+                    if not isinstance(attempt_result, Mapping):
+                        continue
+                    fid = attempt_result.get("fragmentId")
+                    validation = attempt_result.get("validation")
+                    for layer in validation.get("layers", []) if isinstance(validation, Mapping) else []:
+                        if not isinstance(layer, Mapping) or layer.get("level") != "L3":
+                            continue
+                        try:
+                            detail = json.loads(layer.get("detail", ""))
+                        except (TypeError, ValueError):
+                            continue
+                        if not isinstance(detail, Mapping):
+                            continue
+                        if detail.get("providerInvoked") is True and isinstance(fid, str):
+                            l3_invoked.add(fid)
+                        if isinstance(detail.get("contractSchemaVersion"), str):
+                            l3_contract_versions.add(detail["contractSchemaVersion"])
+                        closed = detail.get("fragmentResult")
+                        if isinstance(closed, Mapping) and isinstance(fid, str):
+                            from .l3_evidence_closure import parse_fragment, parse_dimension
+                            closed = parse_fragment(closed)
+                            if closed["fragmentId"] != fid:
+                                raise ValueError("L3 fragment attribution mismatch")
+                            provider_detail = detail.get("providerDetail")
+                            body = json.loads(provider_detail) if isinstance(provider_detail, str) else detail
+                            reports = body.get("platformReports") if isinstance(body, Mapping) else None
+                            if not isinstance(reports, Mapping) or set(reports) != {"source", "target"}:
+                                raise ValueError("L3 source and target reports missing")
+                            for dimension in closed["dimensionResults"].values():
+                                parse_dimension(dimension, source_report=reports["source"],
+                                                target_report=reports["target"])
+                            if fid in l3_fragment_evidence and l3_fragment_evidence[fid] != closed:
+                                raise ValueError("conflicting L3 fragment results")
+                            l3_fragment_evidence[fid] = closed
                 raw_execution_evidence = (
                     linkage.get("programExecutionEvidence", [])
                     if isinstance(linkage, Mapping) else []
@@ -693,6 +740,31 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
             "l2Layers": dict(layers) if isinstance(layers, Mapping) else {},
             "l2DimensionRecords": dimension_records,
         })
+        fid = str(fragment["fragmentId"])
+        l3_requirement = l3_requirements.get(fid)
+        l3_status = (str(l3_requirement["eligibilityStatus"]) if l3_requirement else "unclassified")
+        l3_evidence = l3_fragment_evidence.get(fid)
+        valid_evidence = (l3_requirement is not None and l3_status == "eligible" and
+                          l3_evidence is not None and
+                          l3_evidence["requirementIdentity"] == l3_requirement["requirementIdentity"] and
+                          set(l3_evidence["dimensionResults"]) ==
+                          {x["propertyId"] for x in l3_requirement["requiredProperties"]} and
+                          not l3_evidence["uncoveredEffects"])
+        l3_complete = bool(valid_evidence and all(
+            value["status"] in {"verified", "failed"} and value["evidenceIdentity"]
+            for value in l3_evidence["dimensionResults"].values()))
+        fragment.update({"l3EligibilityStatus": l3_status,
+                         "l3Eligible": l3_status == "eligible",
+                         "l3Attempted": fid in l3_invoked or bool(valid_evidence),
+                         "l3CompleteExecution": l3_complete,
+                         "l3ArchitecturalIntentVerified": bool(l3_complete and
+                            l3_evidence["status"] == "verified" and
+                            l3_evidence["claimScope"] == "architectural_intent"),
+                         "l3TargetDiagnosticVerified": bool(l3_complete and
+                            l3_evidence["status"] == "verified" and
+                            l3_evidence["claimScope"] == "target_experiment_diagnostic"),
+                         "l3RequiredProperties": (list(l3_requirement["requiredProperties"])
+                                                 if l3_requirement else [])})
     metrics = {}
     for name in _COVERAGE:
         metrics[name + "Coverage"] = _cluster_metric(
@@ -723,6 +795,32 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         lambda row: "L3" in row["layers"], manifest.bootstrap,
         "L3:target-experiment-diagnostic",
     )
+    l3_specs = {
+        "l3IntentClassificationCoverage": (lambda row: row["l3EligibilityStatus"] not in {"unclassified", "inconclusive"}, lambda row: True),
+        "l3EligibleRate": (lambda row: row["l3Eligible"], lambda row: True),
+        "l3NotApplicableRate": (lambda row: row["l3EligibilityStatus"] == "not_applicable", lambda row: True),
+        "l3NeedsRouteRate": (lambda row: row["l3EligibilityStatus"] == "needs_route", lambda row: True),
+        "l3AttemptedCoverage": (lambda row: row["l3Attempted"], lambda row: row["l3Eligible"]),
+        "l3CompleteExecutionCoverage": (lambda row: row["l3CompleteExecution"], lambda row: row["l3Eligible"]),
+        "l3UnconditionalArchitecturalIntentVerifiedRate": (lambda row: row["l3ArchitecturalIntentVerified"], lambda row: True),
+        "l3ArchitecturalIntentVerifiedAmongRequired": (lambda row: row["l3ArchitecturalIntentVerified"], lambda row: row["l3Eligible"]),
+        "l3TargetDiagnosticVerifiedAmongRequired": (lambda row: row["l3TargetDiagnosticVerified"], lambda row: row["l3Eligible"]),
+        "l3InconclusiveRate": (lambda row: row["l3Attempted"] and not row["l3CompleteExecution"], lambda row: row["l3Eligible"]),
+        "l3NotRunRate": (lambda row: not row["l3Attempted"], lambda row: row["l3Eligible"]),
+    }
+    for name, (numerator, denominator) in l3_specs.items():
+        metrics[name] = _cluster_metric(fragments, numerator, denominator, manifest.bootstrap, name)
+    metrics["l3PrerecordedConclusionPreservationRate"] = _cluster_metric(
+        fragments, lambda row: row["l3ArchitecturalIntentVerified"],
+        lambda row: row["l3CompleteExecution"] and any(
+            x["dimension"] == "performance_trend" for x in row["l3RequiredProperties"]),
+        manifest.bootstrap, "L3:preregistered-conclusion")
+    l3_properties = sorted({x["dimension"] for row in fragments for x in row["l3RequiredProperties"]})
+    for dimension in l3_properties:
+        metrics["l3Property." + dimension + ".ArchitecturalVerifiedRate"] = _cluster_metric(
+            fragments, lambda row, dimension=dimension: row["l3ArchitecturalIntentVerified"],
+            lambda row, dimension=dimension: any(x["dimension"] == dimension for x in row["l3RequiredProperties"]),
+            manifest.bootstrap, "L3:" + dimension)
     metrics["l2EligibilityCoverage"] = _cluster_metric(
         fragments, lambda row: row["l2EligibilityClassified"], lambda _row: True,
         manifest.bootstrap, "L2:eligibility-coverage",
@@ -898,6 +996,37 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
     }
     for definition in metric_definitions.values():
         definition["bootstrapCluster"] = "program/entry"
+    from .l3_coverage import DEFINITIONS as L3_DEFINITIONS
+    l3_definition_map = {
+        "l3IntentClassificationCoverage": "intentClassification",
+        "l3EligibleRate": "eligibility",
+        "l3AttemptedCoverage": "attempted",
+        "l3CompleteExecutionCoverage": "completeExecution",
+        "l3UnconditionalArchitecturalIntentVerifiedRate": "architecturalIntentVerified",
+        "l3TargetDiagnosticVerifiedAmongRequired": "diagnosticVerified",
+        "l3InconclusiveRate": "inconclusive",
+        "l3NotRunRate": "notRun",
+    }
+    for metric_name, definition_name in l3_definition_map.items():
+        definition = L3_DEFINITIONS[definition_name]
+        metric_definitions[metric_name] = dict(definition, bootstrapCluster="program/entry")
+    for metric_name, status in (("l3NotApplicableRate", "not_applicable"),
+                                ("l3NeedsRouteRate", "needs_route")):
+        metric_definitions[metric_name] = {"unit": "fragment", "denominator": "all corpus oracle fragments",
+            "numerator": "fragments authoritatively classified " + status,
+            "bootstrapCluster": "program/entry"}
+    metric_definitions["l3ArchitecturalIntentVerifiedAmongRequired"] = {
+        "unit": "fragment", "denominator": "L3 eligible corpus fragments",
+        "numerator": "closed architectural-intent L3 verified fragments", "bootstrapCluster": "program/entry"}
+    metric_definitions["l3PrerecordedConclusionPreservationRate"] = {
+        "unit": "fragment", "denominator": "eligible preregistered performance-trend properties with complete source/target comparison evidence",
+        "numerator": "closed architectural-intent properties supporting the preregistered conclusion",
+        "bootstrapCluster": "program/entry"}
+    for dimension in l3_properties:
+        metric_definitions["l3Property." + dimension + ".ArchitecturalVerifiedRate"] = {
+            "unit": "fragment", "denominator": "oracle fragments requiring L3 " + dimension,
+            "numerator": "closed architectural-intent L3 verified fragments requiring " + dimension,
+            "bootstrapCluster": "program/entry"}
     for name in _COVERAGE:
         metric_definitions[name + "Coverage"] = {
             "unit": "fragment", "denominator": "all corpus oracle fragments",
@@ -942,6 +1071,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
               "l2ProgramExecutionSampleCount": len(l2_execution_sample_keys),
               "metrics": metrics, "dimensionMetrics": dimensions,
               "l2DimensionSummaries": l2_dimension_summaries,
+              "l3ContractSchemaVersions": sorted(l3_contract_versions),
               "translationOutcomeBreakdown": dict(sorted(outcomes.items())),
               "categorySummaries": category_summaries,
               "reasonCodeBreakdown": [{"reasonCode": key, "count": reasons[key]} for key in sorted(reasons)],

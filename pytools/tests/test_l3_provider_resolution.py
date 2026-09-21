@@ -113,6 +113,40 @@ def test_exact_binding_overrides_automatic_and_ambiguity_fails_closed(tmp_path):
     assert ambiguous["reasonCodes"] == ["l3.provider.ambiguous"]
 
 
+def test_batch_plan_resolves_approved_experiment_per_fragment(tmp_path):
+    from riscv2x86_py.translation_validation import ValidationPlan, ValidationProfile
+    profile, manifest = _facts()
+    path = tmp_path / "experiment.json"
+    provider = _provider(path, _contract(path, profile, manifest["requirements"][0]))
+    observed = []
+
+    def fake_factory(_config):
+        def run(**kwargs):
+            observed.append(kwargs["validation_plan"].experiment_contract_id)
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="controlled reports unavailable")
+        return run
+
+    registry = build_l3_capability_registry_validator({
+        "schemaVersion": REGISTRY_SCHEMA, "providers": [provider],
+        "executionProfile": "rv64-to-x86", "sourceCapabilities": ["source-trace"],
+        "targetCapabilities": ["target-trace"], "environmentId": "env",
+    }, {"l3-experiment-contract": fake_factory})
+    plan = ValidationPlan("plan:0", ValidationProfile.MICROARCH, "qemu", "native",
+                          7, 60, "registry", "resolved-per-fragment")
+    result = registry(translation_artifact=SimpleNamespace(fragment_id="fragment:0",
+        proof_identity=PROOF, translation_plan_id="plan:0"),
+        target_environment={"environmentId": "env"},
+        source_program_artifact=SimpleNamespace(artifact_digest=SOURCE),
+        target_program_artifact=SimpleNamespace(artifact_digest=TARGET),
+        validation_plan=plan, l3_requirement_manifest=manifest,
+        l3_intent_profile=profile)
+    assert observed == ["experiment:0"]
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    assert json.loads(result.detail)["providerInvoked"] is True
+    assert plan.experiment_contract_id == "resolved-per-fragment"
+
+
 def test_missing_capability_and_contract_version_and_stale_digest(tmp_path):
     profile, manifest = _facts()
     path = tmp_path / "experiment.json"
