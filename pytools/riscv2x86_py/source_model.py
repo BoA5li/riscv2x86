@@ -970,6 +970,13 @@ def build_source_semantic_model(
         registers=registers,
     )
 
+    # A typed, complete CSR effect/binding pair may identify architectural
+    # state that appears in IRSummary's register ledger but is not a GNU asm
+    # operand.  Keep the ledger intact; narrow only the operand-completeness
+    # query, and only with Phase-5 authority.
+    authoritative_csr_state_registers = (
+        _authoritative_csr_state_registers(privileged_state)
+    )
     completeness = _build_completeness_model(
         runtime_facts_available=runtime_facts_available,
         runtime_status=runtime_status,
@@ -978,6 +985,9 @@ def build_source_semantic_model(
         microarch=microarch,
         registers=registers,
         summary=analysis_summary,
+        authoritative_architectural_state_registers=(
+            authoritative_csr_state_registers
+        ),
     )
 
     stack_frame_model = _build_stack_frame_model(
@@ -1475,6 +1485,51 @@ def _build_register_model(
         ),
     )
 
+def _authoritative_csr_state_registers(
+    privileged_state: SourcePrivilegedStateModel | None,
+) -> FrozenSet[str]:
+    """Return CSR state identities proved not to be GNU operand identities.
+
+    IRSummary records architectural CSR state in the same register ledger as
+    ordinary value carriers.  Excluding such a name from operand completeness
+    is sound only when Phase 5 provides a complete typed effect, a complete
+    operand binding, and an effect identity that binds the two.  The mapping is
+    namespace based for every riscv.csr.* identity; it contains no instruction
+    or CSR-name allow-list.
+    """
+    if privileged_state is None:
+        return frozenset()
+
+    effects = tuple(getattr(privileged_state, "csr_effects", ()) or ())
+    bindings = tuple(
+        getattr(privileged_state, "csr_operand_bindings", ()) or ()
+    )
+    if not effects or len(effects) != len(bindings):
+        return frozenset()
+
+    identities: set[str] = set()
+    prefix = "riscv.csr."
+    for effect, binding in zip(effects, bindings):
+        if (
+            not getattr(effect, "complete", False)
+            or not getattr(binding, "complete", False)
+        ):
+            continue
+        csr_id = str(getattr(effect, "csr_id", "") or "").strip().lower()
+        effect_id = str(
+            getattr(binding, "source_effect_id", "") or ""
+        ).strip().lower()
+        if (
+            not csr_id.startswith(prefix)
+            or not effect_id.endswith(":" + csr_id)
+        ):
+            continue
+        state_id = canonicalize_riscv_register_name(csr_id[len(prefix):])
+        if state_id:
+            identities.add(state_id)
+    return frozenset(identities)
+
+
 def _build_completeness_model(
     *,
     runtime_facts_available: bool,
@@ -1484,19 +1539,26 @@ def _build_completeness_model(
     microarch: SourceMicroArchModel,
     registers: SourceRegisterModel,
     summary: IRSummary,
+    authoritative_architectural_state_registers: FrozenSet[str] = frozenset(),
 ) -> SourceAnalysisCompletenessModel:
     """
     Completeness checks only describe source evidence quality.
 
     They do not decide target-plan validity and do not infer target constraints.
     """
-    referenced_registers = tuple(
-        sorted(registers.referenced_registers)
+    # Architectural state identities are not compiler operands.  This set is
+    # accepted only from the complete typed CSR join above; absent or partial
+    # authority therefore preserves the original fail-closed diagnostics.
+    operand_registers = (
+        registers.referenced_registers
+        - authoritative_architectural_state_registers
     )
-
-    written_registers = tuple(
-        sorted(registers.writes_registers)
+    output_registers = (
+        registers.writes_registers
+        - authoritative_architectural_state_registers
     )
+    referenced_registers = tuple(sorted(operand_registers))
+    written_registers = tuple(sorted(output_registers))
 
     if runtime_status.structurally_valid:
         missing_operand_bindings = (
