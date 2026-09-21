@@ -151,3 +151,56 @@ def test_v1_manifest_requires_explicit_migration_and_records_provenance(tmp_path
     assert migrated["requirements"][0]["requiredDimensions"] == [
         "logical_operands", "shell_semantics",
     ]
+
+
+def _memory_requirement_finding():
+    finding = _finding()
+    finding["l2SemanticProfile"] = profile_dict(
+        "fragment:1", L2PatternKind.MEMORY_STORE)
+    finding["approvalArtifact"] = {}
+    return finding
+
+
+def test_memory_requirement_is_not_eligible_without_materialized_authority():
+    item = L2EligibilityClassifier().classify(_memory_requirement_finding(), 0)
+    assert item["eligibilityStatus"] == "inconclusive"
+    assert item["disposition"] == "inconclusive"
+    assert item["reasonCodes"] == [
+        "l2.memory-authority.materialization-record-missing",
+    ]
+
+
+def test_memory_requirement_preserves_materializer_rejection_reason():
+    finding = _memory_requirement_finding()
+    record = {
+        "schemaVersion": "riscv2x86.l2-authority-materialization.v1",
+        "fragmentId": "fragment:1",
+        "authorityKind": "object_relative_memory",
+        "status": "rejected",
+        "reasonCode": "L2_MEMORY_PROOF_FACTS_INCOMPLETE",
+        "authorityIdentity": "",
+    }
+    record["materializationIdentity"] = _identity(record)
+    finding["approvalArtifact"]["l2AuthorityMaterialization"] = record
+    item = L2EligibilityClassifier().classify(finding, 0)
+    assert item["eligibilityStatus"] == "inconclusive"
+    assert item["reasonCodes"] == ["L2_MEMORY_PROOF_FACTS_INCOMPLETE"]
+
+
+def test_memory_requirement_rejects_stale_materialization_record():
+    finding = _memory_requirement_finding()
+    record = {
+        "schemaVersion": "riscv2x86.l2-authority-materialization.v1",
+        "fragmentId": "fragment:1",
+        "authorityKind": "object_relative_memory",
+        "status": "materialized",
+        "reasonCode": "L2_MEMORY_AUTHORITY_MATERIALIZED",
+        "authorityIdentity": "sha256:" + "1" * 64,
+        "materializationIdentity": "sha256:" + "2" * 64,
+    }
+    finding["approvalArtifact"]["l2AuthorityMaterialization"] = record
+    item = L2EligibilityClassifier().classify(finding, 0)
+    assert item["eligibilityStatus"] == "inconclusive"
+    assert item["reasonCodes"] == [
+        "l2.memory-authority.materialization-record-invalid",
+    ]

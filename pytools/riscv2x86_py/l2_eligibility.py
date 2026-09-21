@@ -132,6 +132,49 @@ def _structured_dimensions(finding: Mapping[str, object]) -> tuple[tuple[L2Dimen
     return tuple(sorted(dimensions, key=lambda item: item.value)), ()
 
 
+def _memory_authority_eligibility_reason(
+    finding: Mapping[str, object], fragment_id: str,
+) -> str:
+    """Require the exact authority result produced by the materializer."""
+    approval = finding.get("approvalArtifact")
+    if not isinstance(approval, Mapping):
+        return "l2.memory-authority.approval-missing"
+    record = approval.get("l2AuthorityMaterialization")
+    fields = {
+        "schemaVersion", "fragmentId", "authorityKind", "status",
+        "reasonCode", "authorityIdentity", "materializationIdentity",
+    }
+    if not isinstance(record, Mapping) or set(record) != fields:
+        return "l2.memory-authority.materialization-record-missing"
+    payload = dict(record)
+    identity = payload.pop("materializationIdentity", None)
+    if (record.get("schemaVersion") != "riscv2x86.l2-authority-materialization.v1"
+            or record.get("fragmentId") != fragment_id
+            or record.get("authorityKind") != "object_relative_memory"
+            or identity != _identity(payload)):
+        return "l2.memory-authority.materialization-record-invalid"
+    if record.get("status") != "materialized":
+        reason = record.get("reasonCode")
+        return (str(reason) if isinstance(reason, str) and reason
+                else "l2.memory-authority.materialization-rejected")
+    authority_identity = record.get("authorityIdentity")
+    sidecar = approval.get("l2AuthoritySidecar")
+    if (_SHA256.fullmatch(str(authority_identity)) is None
+            or not isinstance(sidecar, Mapping)):
+        return "l2.memory-authority.sidecar-missing"
+    try:
+        from .l2_authority import l2_authority_sidecar_from_dict
+        parsed = l2_authority_sidecar_from_dict(
+            sidecar, expected_fragment_id=fragment_id)
+    except ValueError:
+        return "l2.memory-authority.sidecar-invalid"
+    if (not parsed.complete or parsed.authority_identity != authority_identity
+            or not parsed.memory_objects or not parsed.source_effects
+            or not parsed.approved_effect_relations):
+        return "l2.memory-authority.sidecar-incomplete"
+    return ""
+
+
 class L2EligibilityClassifier:
     """Classify translated findings without claiming that L2 was executed."""
 
@@ -168,6 +211,13 @@ class L2EligibilityClassifier:
         except ValueError:
             semantic_profile = None
             profile_diagnostics = ("l2.semantic-profile.missing-or-invalid",)
+        memory_authority_reason = ""
+        if (semantic_profile is not None
+                and semantic_profile.pattern_kind in {
+                    L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE,
+                }):
+            memory_authority_reason = _memory_authority_eligibility_reason(
+                finding, fragment_id)
         if outcome in _NO_CANDIDATE:
             eligibility = L2EligibilityStatus.NOT_APPLICABLE
             disposition = L2DimensionStatus.NOT_APPLICABLE
@@ -177,6 +227,10 @@ class L2EligibilityClassifier:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = ("l2.translation-outcome-unknown",)
+        elif memory_authority_reason:
+            eligibility = L2EligibilityStatus.INCONCLUSIVE
+            disposition = L2DimensionStatus.INCONCLUSIVE
+            reason_codes = (memory_authority_reason,)
         elif diagnostics or profile_diagnostics or not fragment_id or not dimensions:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE

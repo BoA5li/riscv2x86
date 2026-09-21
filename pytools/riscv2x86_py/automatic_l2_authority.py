@@ -315,6 +315,19 @@ def _memory_authority(
             str(declaration_id), params.index(declaration_id) if declaration_id in params else None,
             str(raw.get("constraint", "")), True,
         ))
+    expected_access = {
+        L2PatternKind.MEMORY_LOAD: "load",
+        L2PatternKind.MEMORY_STORE: "store",
+    }[profile.pattern_kind]
+    by_index = {item.operand_index: item for item in operands}
+    address_operand = by_index.get(facts.address_operand_index)
+    value_operand = by_index.get(facts.value_operand_index)
+    if (facts.access_kind != expected_access
+            or address_operand is None or address_operand.type_kind != "pointer"
+            or address_operand.access_mode != "address"
+            or value_operand is None or value_operand.type_kind != "integer"
+            or value_operand.width_bits != facts.width_bytes * 8):
+        return None
     try:
         memory_object, object_id = bind_memory_object_authority(facts, operands)
     except ValueError:
@@ -472,6 +485,96 @@ def _functional_relation_authority(
     )
 
 
+def _memory_authority_failure_reason(
+    finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
+) -> str:
+    """Return the first proof-owned reason that prevents memory authority.
+
+    This mirrors the materializer's closed contract.  It is diagnostic only:
+    no missing fact is interpreted as false and no object is reconstructed
+    from a raw address.
+    """
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
+        return "L2_MEMORY_APPROVAL_ARTIFACT_MISSING"
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    if (approval.get("proofStatus") != "approved"
+            or approval.get("architectureSemanticsPreserved") is False
+            or approval.get("shellSemanticsPreserved") is False
+            or not fragment_id):
+        return "L2_MEMORY_PROOF_NOT_APPROVED"
+    matches = [item for item in functions
+               if item.get("name") == fragment.get("enclosingFunction")]
+    if len(matches) != 1:
+        return "L2_MEMORY_FUNCTION_BINDING_AMBIGUOUS"
+    raw_profile = finding.get("l2SemanticProfile")
+    if not isinstance(raw_profile, Mapping):
+        return "L2_MEMORY_SEMANTIC_PROFILE_MISSING"
+    try:
+        profile = l2_fragment_semantic_profile_from_dict(
+            raw_profile, expected_fragment_id=fragment_id)
+    except ValueError:
+        return "L2_MEMORY_SEMANTIC_PROFILE_INVALID"
+    expected_access = {
+        L2PatternKind.MEMORY_LOAD: "load",
+        L2PatternKind.MEMORY_STORE: "store",
+    }.get(profile.pattern_kind)
+    if expected_access is None:
+        return "L2_MEMORY_SEMANTIC_PROFILE_NOT_SCALAR_MEMORY"
+    raw_facts = approval.get("l2MemoryProofFacts")
+    if not isinstance(raw_facts, Mapping):
+        return "L2_MEMORY_PROOF_FACTS_MISSING"
+    try:
+        facts = memory_proof_facts_from_dict(raw_facts)
+    except ValueError:
+        return "L2_MEMORY_PROOF_FACTS_INVALID"
+    if (facts.fragment_id != fragment_id or not facts.complete
+            or facts.access_kind != expected_access):
+        return "L2_MEMORY_PROOF_FACTS_INCOMPLETE"
+    boundary = matches[0].get("l2OperandBoundary")
+    if not isinstance(boundary, Mapping) or boundary.get("complete") is not True:
+        return "L2_MEMORY_OPERAND_BOUNDARY_INCOMPLETE"
+    outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
+    declarations = boundary.get("declarations")
+    asm_ids = boundary.get("asmOperandDeclarationIds")
+    params = boundary.get("parameterDeclarationIds")
+    if (not isinstance(outputs, list) or not isinstance(inputs, list)
+            or not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
+            or not isinstance(params, list) or len(asm_ids) != len(outputs) + len(inputs)):
+        return "L2_MEMORY_OPERAND_BINDING_INCOMPLETE"
+    if (facts.address_operand_index == facts.value_operand_index
+            or max(facts.address_operand_index, facts.value_operand_index) >= len(asm_ids)):
+        return "L2_MEMORY_OPERAND_INDEX_OUT_OF_RANGE"
+    address_declaration = declarations.get(asm_ids[facts.address_operand_index])
+    value_declaration = declarations.get(asm_ids[facts.value_operand_index])
+    if not isinstance(address_declaration, Mapping) or not isinstance(value_declaration, Mapping):
+        return "L2_MEMORY_DECLARATION_BINDING_MISSING"
+    if not _INTEGER_POINTER.fullmatch(str(address_declaration.get("type", "")).strip()):
+        return "L2_MEMORY_ADDRESS_NOT_TYPED_POINTER"
+    value_width = _width(str(value_declaration.get("type", "")))
+    if value_width != facts.width_bytes * 8:
+        return "L2_MEMORY_VALUE_WIDTH_MISMATCH"
+    if asm_ids[facts.address_operand_index] not in params:
+        return "L2_MEMORY_ADDRESS_NOT_FUNCTION_ARGUMENT"
+    return "L2_MEMORY_AUTHORITY_MATERIALIZATION_REJECTED"
+
+
+def _authority_materialization_record(
+    fragment_id: str, authority_kind: str, status: str, reason_code: str,
+    authority_identity: str = "",
+) -> dict[str, object]:
+    payload = {
+        "schemaVersion": "riscv2x86.l2-authority-materialization.v1",
+        "fragmentId": fragment_id,
+        "authorityKind": authority_kind,
+        "status": status,
+        "reasonCode": reason_code,
+        "authorityIdentity": authority_identity,
+    }
+    payload["materializationIdentity"] = _identity(payload)
+    return payload
+
+
 def _fence_authority_failure_reason(
     finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
 ) -> str:
@@ -538,14 +641,31 @@ def materialize_automatic_l2_authority(
                    or _fence_authority(finding, functions, producer_digest)
                    or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))
+        raw_profile = finding.get("l2SemanticProfile")
+        pattern_kind = (raw_profile.get("patternKind")
+                        if isinstance(raw_profile, Mapping) else "")
+        is_memory = pattern_kind in {
+            L2PatternKind.MEMORY_LOAD.value, L2PatternKind.MEMORY_STORE.value,
+        }
         if sidecar is None:
-            raw_profile = finding.get("l2SemanticProfile")
-            if (isinstance(raw_profile, Mapping)
-                    and raw_profile.get("patternKind") == L2PatternKind.FENCE.value):
-                approval = finding.get("approvalArtifact")
-                if isinstance(approval, dict):
-                    approval["l2AuthorityMaterializationReasonCode"] = \
-                        _fence_authority_failure_reason(finding, functions)
+            approval = finding.get("approvalArtifact")
+            if (pattern_kind == L2PatternKind.FENCE.value
+                    and isinstance(approval, dict)):
+                approval["l2AuthorityMaterializationReasonCode"] = \
+                    _fence_authority_failure_reason(finding, functions)
+            if is_memory and isinstance(approval, dict):
+                reason = _memory_authority_failure_reason(finding, functions)
+                approval["l2AuthorityMaterializationReasonCode"] = reason
+                raw_fragment = finding.get("fragment")
+                record_fragment_id = (
+                    str(raw_fragment.get("id") or raw_fragment.get("fragmentId") or "")
+                    if isinstance(raw_fragment, Mapping) else ""
+                )
+                approval["l2AuthorityMaterialization"] = \
+                    _authority_materialization_record(
+                        record_fragment_id, "object_relative_memory",
+                        "rejected", reason,
+                    )
             continue
         approval = finding.get("approvalArtifact")
         assert isinstance(approval, dict)
@@ -563,5 +683,14 @@ def materialize_automatic_l2_authority(
             approval["proofIdentity"] = _identity(proof_payload)
         approval["shellFactsIdentity"] = sidecar.shell_fact_identity
         approval["l2AuthoritySidecar"] = sidecar.to_dict()
+        if is_memory:
+            approval["l2AuthorityMaterializationReasonCode"] = \
+                "L2_MEMORY_AUTHORITY_MATERIALIZED"
+            approval["l2AuthorityMaterialization"] = \
+                _authority_materialization_record(
+                    sidecar.fragment_id, "object_relative_memory", "materialized",
+                    "L2_MEMORY_AUTHORITY_MATERIALIZED",
+                    sidecar.authority_identity,
+                )
         count += 1
     return count

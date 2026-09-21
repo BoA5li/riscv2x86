@@ -3,6 +3,7 @@ from pathlib import Path
 from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
+from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
 from riscv2x86_py.l2_semantic_profile import L2PatternKind
 from tests.l2_profile_fixtures import profile_dict
 
@@ -113,3 +114,88 @@ def test_functional_counter_authority_is_typed_and_runtime_mediated(tmp_path: Pa
         "runtime_mediated"
     }
     assert all(item.escape_kind == "non_escaping" for item in sidecar.ignored_state)
+
+
+def _memory_finding(fragment_id="memory-fragment"):
+    return {
+        "fragment": {
+            "id": fragment_id, "enclosingFunction": "store",
+            "outputs": [],
+            "inputs": [
+                {"constraint": "r", "symbolicName": "address"},
+                {"constraint": "r", "symbolicName": "value"},
+            ],
+        },
+        "translationOutcome": "emitted",
+        "approvalArtifact": {
+            "proofStatus": "approved", "architectureSemanticsPreserved": True,
+            "shellSemanticsPreserved": True, "sourceModelId": "model",
+            "constraintsId": "constraints", "preservationDecisionId": "decision",
+            "planId": "plan", "targetEnvironmentId": "environment",
+            "targetCatalogVersion": "catalog",
+        },
+        "l2SemanticProfile": profile_dict(
+            fragment_id, L2PatternKind.MEMORY_STORE),
+    }
+
+
+def _memory_function():
+    return {
+        "name": "store", "arity": 2, "returnType": "void",
+        "parameterTypes": ["uint64_t *", "uint64_t"],
+        "l2OperandBoundary": {
+            "complete": True,
+            "parameterDeclarationIds": ["address", "value"],
+            "asmOperandDeclarationIds": ["address", "value"],
+            "returnDeclarationId": "",
+            "declarationReferenceCounts": {"address": 1, "value": 1},
+            "declarations": {
+                "address": {"name": "address", "type": "uint64_t *"},
+                "value": {"name": "value", "type": "uint64_t"},
+            },
+        },
+    }
+
+
+def _memory_facts(fragment_id="memory-fragment", *, complete=True):
+    from riscv2x86_py.l2_memory_object import L2MemoryProofFacts
+    flags = dict(unique_object=complete, bounds_proven=complete,
+                 alignment_proven=complete, alias_complete=complete,
+                 non_atomic=complete)
+    return L2MemoryProofFacts(
+        fragment_id, "store", 0, 1, 8, 8, 8,
+        "function_argument", "function_call", "object:0",
+        memory_order="relaxed", complete=complete, **flags,
+    ).to_dict()
+
+
+def test_memory_materializer_records_content_bound_eligibility_authority(tmp_path: Path):
+    finding = _memory_finding()
+    finding["approvalArtifact"]["l2MemoryProofFacts"] = _memory_facts()
+    frontend = tmp_path / "frontend"
+    frontend.write_bytes(b"frontend")
+    assert materialize_automatic_l2_authority(
+        {"findings": [finding]}, [_memory_function()], frontend) == 1
+    record = finding["approvalArtifact"]["l2AuthorityMaterialization"]
+    sidecar = l2_authority_sidecar_from_dict(
+        finding["approvalArtifact"]["l2AuthoritySidecar"])
+    assert record["status"] == "materialized"
+    assert record["reasonCode"] == "L2_MEMORY_AUTHORITY_MATERIALIZED"
+    assert record["authorityIdentity"] == sidecar.authority_identity
+    assert record["materializationIdentity"].startswith("sha256:")
+    requirement = L2EligibilityClassifier().classify(finding, 0)
+    assert requirement["eligibilityStatus"] == "eligible"
+    assert requirement["disposition"] == "not_run"
+
+
+def test_memory_materializer_records_precise_fail_closed_reason(tmp_path: Path):
+    finding = _memory_finding()
+    finding["approvalArtifact"]["l2MemoryProofFacts"] = _memory_facts(complete=False)
+    frontend = tmp_path / "frontend"
+    frontend.write_bytes(b"frontend")
+    assert materialize_automatic_l2_authority(
+        {"findings": [finding]}, [_memory_function()], frontend) == 0
+    record = finding["approvalArtifact"]["l2AuthorityMaterialization"]
+    assert record["status"] == "rejected"
+    assert record["reasonCode"] == "L2_MEMORY_PROOF_FACTS_INCOMPLETE"
+    assert "l2AuthoritySidecar" not in finding["approvalArtifact"]
