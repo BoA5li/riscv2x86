@@ -22,6 +22,12 @@ PRIVILEGED_EFFECT_MAPPING_SCHEMA = "riscv2x86.privileged-effect-mapping.v1"
 PRIVILEGED_MAPPING_REGISTRY_SCHEMA = "riscv2x86.privileged-mapping-registry.v1"
 
 
+class PrivilegedEnvironmentRouteKind(str, Enum):
+    GENERIC = "generic"
+    ECALL = "ecall"
+    WFI = "wfi"
+
+
 class PrivilegedMappingRegistryKind(str, Enum):
     STATE = "state"
     TRAP = "trap"
@@ -207,6 +213,37 @@ def privileged_source_identity(model: SourcePrivilegedSemanticModel) -> str:
     return "sha256:" + sha256(payload.encode("utf-8")).hexdigest()
 
 
+def privileged_environment_route_kind(
+    model: SourcePrivilegedSemanticModel,
+) -> PrivilegedEnvironmentRouteKind:
+    """Classify only exact, single-operation environment routes.
+
+    This consumes Phase-6A typed effects and never examines mnemonic text.
+    Compound or ambiguous privileged fragments remain on the generic route.
+    """
+    if not isinstance(model, SourcePrivilegedSemanticModel) or model.state is None:
+        return PrivilegedEnvironmentRouteKind.GENERIC
+    state = model.state
+    other_effects = (
+        state.csr_effects,
+        state.return_effects,
+        state.address_translation_effects,
+        state.virtualization_effects,
+        state.debug_effects,
+    )
+    if any(other_effects):
+        return PrivilegedEnvironmentRouteKind.GENERIC
+    if len(state.trap_effects) == 1 and not state.interrupt_effects:
+        kind = getattr(state.trap_effects[0].kind, "value", None)
+        if kind == "environment_call":
+            return PrivilegedEnvironmentRouteKind.ECALL
+    if len(state.interrupt_effects) == 1 and not state.trap_effects:
+        kind = getattr(state.interrupt_effects[0].kind, "value", None)
+        if kind == "wait":
+            return PrivilegedEnvironmentRouteKind.WFI
+    return PrivilegedEnvironmentRouteKind.GENERIC
+
+
 def source_semantic_contract_identity(model: SourcePrivilegedSemanticModel) -> tuple[str, str]:
     state = model.state
     if state is None or not state.effect_model_version:
@@ -238,6 +275,10 @@ class PrivilegedRuntimeContract:
     target_environment_id: str
     runtime_symbol: str
     required_target_capability: str
+    environment_route_kind: PrivilegedEnvironmentRouteKind = (
+        PrivilegedEnvironmentRouteKind.GENERIC
+    )
+    environment_contract_id: str = "generic-privileged-environment.v1"
     supported_source_profiles: tuple[str, ...] = ("riscv_user_process",)
     supported_target_modes: tuple[str, ...] = ("x86_user_process",)
     supported_semantic_classes: tuple[str, ...] = ("counter_observation",)
@@ -302,10 +343,22 @@ class PrivilegedRuntimeContract:
             "interrupt_mapping_registry_id", "mmu_mapping_registry_id",
             "callable_identifier", "abi_contract_id", "memory_effect_contract_id",
             "control_flow_effect_contract_id", "unwind_policy_id",
+            "environment_contract_id",
         ):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or value != value.strip():
                 raise TypeError(f"{name} must be a non-empty stripped string")
+        if not isinstance(
+            self.environment_route_kind, PrivilegedEnvironmentRouteKind
+        ):
+            raise TypeError("environment route kind must be typed")
+        if (
+            self.environment_route_kind is PrivilegedEnvironmentRouteKind.WFI
+            and not self.preserves_microarchitecture_intent
+        ):
+            raise ValueError(
+                "wfi environment contracts must preserve wait intent"
+            )
         if tuple(sorted(set(self.required_headers))) != self.required_headers:
             raise ValueError("required headers must be unique and sorted")
         for name in ("required_libraries", "required_capabilities"):
@@ -418,7 +471,9 @@ class PrivilegedRuntimeRegistry:
     def _contract_key(contract):
         return (
             contract.supported_source_profiles[0], contract.supported_target_modes[0],
-            contract.supported_semantic_classes[0], contract.source_semantic_contract_id,
+            contract.supported_semantic_classes[0],
+            contract.environment_route_kind.value,
+            contract.source_semantic_contract_id,
             contract.source_semantic_version, contract.privilege_spec_version,
             contract.isa_extension_profile_id, contract.target_environment_id,
             contract.runtime_identity, contract.runtime_contract_version,
@@ -435,7 +490,9 @@ class PrivilegedRuntimeRegistry:
         runtime_identity, runtime_version = target_runtime_identity(source)
         key = (
             source.state.execution_profile.value, source.state.target_execution_mode.value,
-            source.semantic_classes[0].value, source_contract_id, source_contract_version,
+            source.semantic_classes[0].value,
+            privileged_environment_route_kind(source).value,
+            source_contract_id, source_contract_version,
             source.state.source_privilege_spec_version or "unknown",
             isa_extension_profile_identity(source), target_environment_identity(target_environment),
             runtime_identity, runtime_version,

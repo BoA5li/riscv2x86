@@ -34,6 +34,7 @@ from .privileged_runtime_contracts import (
     PrivilegedRuntimeContract,
     PrivilegedRuntimeRegistry,
     TargetCsrStateMapping, TargetTrapMapping, TargetInterruptMapping,
+    PrivilegedEnvironmentRouteKind,
     TargetAddressTranslationMapping, TargetVirtualizationMapping,
     TargetDebugMapping, TargetObservableEffectMapping,
     PrivilegedMappingRegistryKind, PrivilegedMappingRegistrySet,
@@ -351,6 +352,15 @@ def _runtime_contract(value: object) -> PrivilegedRuntimeContract:
         runtime_symbol=_text(item.get("runtimeSymbol"), "runtimeSymbol"),
         required_target_capability=_text(
             item.get("requiredTargetCapability"), "requiredTargetCapability"
+        ),
+        environment_route_kind=PrivilegedEnvironmentRouteKind(
+            _text(item.get("environmentRouteKind", "generic"),
+                  "environmentRouteKind")
+        ),
+        environment_contract_id=_text(
+            item.get("environmentContractId",
+                     "generic-privileged-environment.v1"),
+            "environmentContractId",
         ),
         source_execution_profile=_text(item.get("sourceExecutionProfile", "riscv_user_process"), "sourceExecutionProfile"),
         target_execution_mode=_text(item.get("targetExecutionMode", "x86_user_process"), "targetExecutionMode"),

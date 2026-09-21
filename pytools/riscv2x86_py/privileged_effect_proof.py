@@ -11,8 +11,16 @@ from .phase6d_common import (
     PrivilegedEffectProofEvidence,
     SemanticProofReasonCode,
 )
-from .privileged_runtime_contracts import source_effect_id
-from .privileged_state_analysis import AddressTranslationEffectKind
+from .privileged_runtime_contracts import (
+    PrivilegedEnvironmentRouteKind,
+    privileged_environment_route_kind,
+    source_effect_id,
+)
+from .privileged_state_analysis import (
+    AddressTranslationEffectKind,
+    InterruptEffectKind,
+    TrapEffectKind,
+)
 
 
 def _mapping_id(mapping: object) -> str:
@@ -28,6 +36,38 @@ def prove_strict_effects(source, constraint):
     state = source.state
     contract = constraint.runtime_contract
     evidence = []
+    route_kind = privileged_environment_route_kind(source)
+    if contract.environment_route_kind is not route_kind:
+        return (
+            None,
+            SemanticProofReasonCode.PRIVILEGED_EFFECT_COVERAGE_UNPROVEN,
+            "environment-route-kind",
+        )
+    if route_kind is PrivilegedEnvironmentRouteKind.ECALL:
+        effect = state.trap_effects[0]
+        if (
+            effect.kind is not TrapEffectKind.ENVIRONMENT_CALL
+            or not contract.environment_contract_id
+            or not contract.abi_contract_id
+        ):
+            return (
+                None,
+                SemanticProofReasonCode.PRIVILEGED_TRAP_MAPPING_UNPROVEN,
+                "ecall-environment-contract",
+            )
+    if route_kind is PrivilegedEnvironmentRouteKind.WFI:
+        effect = state.interrupt_effects[0]
+        if (
+            effect.kind is not InterruptEffectKind.WAIT
+            or not effect.wait_wakeup_relation
+            or not contract.environment_contract_id
+            or not contract.preserves_microarchitecture_intent
+        ):
+            return (
+                None,
+                SemanticProofReasonCode.PRIVILEGED_INTERRUPT_MAPPING_UNPROVEN,
+                "wfi-environment-contract",
+            )
 
     for effect in state.csr_effects:
         effect_id = source_effect_id("csr", effect.block_address, effect.operation_index)
@@ -73,6 +113,10 @@ def prove_strict_effects(source, constraint):
             or effect.source_privilege is None
             or effect.target_privilege is None
             or effect.saved_pc_binding is None
+            or (
+                route_kind is PrivilegedEnvironmentRouteKind.ECALL
+                and not mapping.target_error_or_result_mapping_id
+            )
         ):
             return None, SemanticProofReasonCode.PRIVILEGED_TRAP_MAPPING_UNPROVEN, effect_id
         evidence.append(PrivilegedEffectProofEvidence(
@@ -98,6 +142,13 @@ def prove_strict_effects(source, constraint):
             or not mapping.enable_pending_relation_id
             or not mapping.delegation_priority_relation_id
             or effect.interruptibility is None
+            or (
+                route_kind is PrivilegedEnvironmentRouteKind.WFI
+                and (
+                    not mapping.wait_wakeup_relation_id
+                    or not effect.wait_wakeup_relation
+                )
+            )
         ):
             return None, SemanticProofReasonCode.PRIVILEGED_INTERRUPT_MAPPING_UNPROVEN, effect_id
         evidence.append(PrivilegedEffectProofEvidence(

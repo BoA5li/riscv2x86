@@ -1364,7 +1364,16 @@ def generate_candidate_plans(
         elif semantic_classes == frozenset({
             PrivilegedSemanticClass.TRAP_SERVICE
         }):
-            strict_plan_id = "privileged-runtime.trap-service.v1"
+            from .privileged_runtime_contracts import (
+                PrivilegedEnvironmentRouteKind,
+                privileged_environment_route_kind,
+            )
+            environment_route = privileged_environment_route_kind(privileged)
+            strict_plan_id = (
+                "privileged-runtime.ecall-environment.v1"
+                if environment_route is PrivilegedEnvironmentRouteKind.ECALL
+                else "privileged-runtime.trap-service.v1"
+            )
             strict_kind = TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER
             strict_family = TargetLoweringFamily.PRIVILEGED_SERVICE_ABI
             strict_priority = PlanPriorityTier.PRIVILEGED_SERVICE_ABI
@@ -1372,7 +1381,16 @@ def generate_candidate_plans(
         elif semantic_classes == frozenset({
             PrivilegedSemanticClass.INTERRUPT_EVENT
         }):
-            strict_plan_id = "privileged-runtime.interrupt-event.v1"
+            from .privileged_runtime_contracts import (
+                PrivilegedEnvironmentRouteKind,
+                privileged_environment_route_kind,
+            )
+            environment_route = privileged_environment_route_kind(privileged)
+            strict_plan_id = (
+                "privileged-runtime.wfi-environment.v1"
+                if environment_route is PrivilegedEnvironmentRouteKind.WFI
+                else "privileged-runtime.interrupt-event.v1"
+            )
             strict_kind = TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER
             strict_family = TargetLoweringFamily.PRIVILEGED_EVENT
             strict_priority = PlanPriorityTier.PRIVILEGED_EVENT
@@ -1412,6 +1430,10 @@ def generate_candidate_plans(
                 "privileged_semantic_classes": tuple(sorted(
                     item.value for item in semantic_classes
                 )),
+                "environment_route_kind": (
+                    privileged_environment_route_kind(privileged).value
+                ),
+                "explicit_environment_contract_required": True,
             },
             rationale=("Complete privileged effects require one exact, "
                        "versioned target runtime contract.",),
