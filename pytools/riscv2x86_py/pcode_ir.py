@@ -1957,6 +1957,81 @@ def _is_proven_straight_line_direct_memory_fragment(
             return False
     return True
 
+def _is_proven_standalone_atomic_fragment(
+    insns: list[CanonicalInsn],
+) -> bool:
+    """Prove absence of unrelated special semantics for one decoded atomic.
+
+    Atomic memory/order semantics remain explicit obligations of the atomic
+    route.  This predicate proves only that the complete canonical operation
+    stream contains no return, tail call, indirect transfer, timing source,
+    cache operation, or speculation-control operation.
+    """
+    if len(insns) != 1:
+        return False
+
+    ins = insns[0]
+    mnemonic = (ins.atomic_mnemonic or "").strip().lower()
+    if (
+        not ins.has_atomic
+        or _ATOMIC_MNEMONIC_RE.fullmatch(mnemonic) is None
+        or not (ins.atomic_reads_mem or ins.atomic_writes_mem)
+        or ins.terminator_kind
+        or ins.has_branch_op
+        or ins.has_call_or_return_op
+        or ins.barrier_info is not None
+        or ins.has_unknown_barrier
+    ):
+        return False
+
+    # LOAD/STORE and ordinary integer data flow are the closed p-code
+    # vocabulary used to express LR/SC/AMO effects.  CALLOTHER is admitted
+    # only under the decoder-owned, strictly validated atomic classification;
+    # some lifters use it as the carrier for the indivisible operation.
+    allowed = (
+        _NON_SEMANTIC_CANONICAL_OPCODES
+        | _PROVEN_PURE_INTEGER_OPCODES
+        | {"LOAD", "STORE", "CALLOTHER"}
+    )
+    return all((op.opcode or "").upper() in allowed for op in ins.ops)
+
+
+def _is_proven_direct_conditional_branch_fragment(
+    insns: list[CanonicalInsn],
+) -> bool:
+    """Prove the finite direct conditional-transfer shape used by asm-goto.
+
+    A resolved CBRANCH has one taken target and an implicit fallthrough.  The
+    predicate intentionally excludes unresolved targets, mixed instruction
+    sequences, calls, indirect transfers, memory effects, atomics, barriers,
+    and every opcode outside the closed integer-condition vocabulary.
+    """
+    if len(insns) != 1:
+        return False
+
+    ins = insns[0]
+    if (
+        ins.terminator_kind != "CBRANCH"
+        or ins.direct_target is None
+        or not ins.has_branch_op
+        or ins.has_call_or_return_op
+        or ins.has_atomic
+        or ins.barrier_info is not None
+        or ins.has_unknown_barrier
+    ):
+        return False
+
+    allowed = (
+        _NON_SEMANTIC_CANONICAL_OPCODES
+        | _PROVEN_PURE_INTEGER_OPCODES
+        | {"CBRANCH"}
+    )
+    opcodes = [(op.opcode or "").upper() for op in ins.ops]
+    return opcodes.count("CBRANCH") == 1 and all(
+        opcode in allowed for opcode in opcodes
+    )
+
+
 def _summarize_instructions(
     insns: list[CanonicalInsn],
     *,
@@ -2068,6 +2143,8 @@ def _summarize_instructions(
             proven_pure_integer
             or _is_proven_straight_line_barrier_fragment(insns)
             or _is_proven_straight_line_direct_memory_fragment(insns)
+            or _is_proven_standalone_atomic_fragment(insns)
+            or _is_proven_direct_conditional_branch_fragment(insns)
         )
         else None
     )
@@ -2090,7 +2167,7 @@ def _summarize_instructions(
 
         # ===== Phase 6 fail-closed semantic proof fields =====
         #
-        # 仅在 canonical IR 被证明是纯整数直线代码时填写 False。
+        # 仅在 canonical IR 命中上述封闭、穷尽的形状证明时填写 False。
         # 其他情况保留 None，禁止将未知语义错误降级为安全语义。
         has_return=proven_false,
         has_tail_call=proven_false,
