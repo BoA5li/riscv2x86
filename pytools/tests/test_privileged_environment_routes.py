@@ -29,10 +29,17 @@ def test_generic_contract_does_not_implicitly_claim_ecall_or_wfi() -> None:
     assert contract.environment_contract_id == "generic-privileged-environment.v1"
 
 
-def test_ecall_requires_an_explicit_environment_identity() -> None:
+def test_ecall_requires_an_explicit_environment_identity_and_service_abi() -> None:
+    with pytest.raises(ValueError, match="explicit service ABI"):
+        _contract(
+            environment_route_kind=PrivilegedEnvironmentRouteKind.ECALL,
+            environment_contract_id="linux-rv64-ecall-to-runtime.v1",
+        )
+
     contract = _contract(
         environment_route_kind=PrivilegedEnvironmentRouteKind.ECALL,
         environment_contract_id="linux-rv64-ecall-to-runtime.v1",
+        abi_contract_id="linux-rv64-syscall-service-abi.v1",
     )
     assert contract.environment_route_kind is PrivilegedEnvironmentRouteKind.ECALL
     assert contract.environment_contract_id == "linux-rv64-ecall-to-runtime.v1"
