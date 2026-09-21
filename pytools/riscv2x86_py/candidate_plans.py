@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from typing import Mapping, Tuple
 from .source_model import SourceSemanticModel
 from .privileged_state_analysis import PrivilegedSemanticClass
+from .privileged_runtime_contracts import (
+    PrivilegedEnvironmentRouteKind,
+    privileged_environment_route_kind,
+)
 
 from .plan_types import (
     PlanPriorityTier,
@@ -1364,10 +1368,6 @@ def generate_candidate_plans(
         elif semantic_classes == frozenset({
             PrivilegedSemanticClass.TRAP_SERVICE
         }):
-            from .privileged_runtime_contracts import (
-                PrivilegedEnvironmentRouteKind,
-                privileged_environment_route_kind,
-            )
             environment_route = privileged_environment_route_kind(privileged)
             strict_plan_id = (
                 "privileged-runtime.ecall-environment.v1"
@@ -1381,10 +1381,6 @@ def generate_candidate_plans(
         elif semantic_classes == frozenset({
             PrivilegedSemanticClass.INTERRUPT_EVENT
         }):
-            from .privileged_runtime_contracts import (
-                PrivilegedEnvironmentRouteKind,
-                privileged_environment_route_kind,
-            )
             environment_route = privileged_environment_route_kind(privileged)
             strict_plan_id = (
                 "privileged-runtime.wfi-environment.v1"
