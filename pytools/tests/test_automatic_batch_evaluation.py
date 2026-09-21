@@ -700,3 +700,82 @@ def test_functional_fallback_cannot_claim_architecture_preservation():
     }
     with pytest.raises(ValueError, match="preservation mode"):
         translation_artifact_from_approval(attempt, approval)
+
+
+def test_multi_fragment_v2_boundary_registers_fragment_scoped_scalar_providers(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "multi.c"
+    source.write_text(
+        "unsigned long multi(unsigned long x){return x;}\n"
+    )
+    frontend = tmp_path / "riscv2x86"
+    frontend.write_text("x")
+    frontend.chmod(0o755)
+    # The compiler cannot close one function-level single-fragment boundary
+    # when multiple asm statements exist.  That must not suppress the
+    # fragment-scoped provider catalogue.
+    boundary = {
+        "schemaVersion": "riscv2x86.compiler-operand-boundary.v2",
+        "complete": False,
+        "parameterDeclarationIds": ["x"],
+        "asmOperandDeclarationIds": [],
+        "returnDeclarationId": "out",
+        "declarations": {
+            "x": {"name": "x", "type": "unsigned long"},
+            "tmp": {"name": "tmp", "type": "unsigned long"},
+            "out": {"name": "out", "type": "unsigned long"},
+        },
+        "declarationReferenceCounts": {"x": 1, "tmp": 2, "out": 2},
+        "asmStatementEndOffset": -1,
+    }
+    function = {
+        "name": "multi", "arity": 1, "returnType": "unsigned long",
+        "parameterTypes": ["unsigned long"], "pointerParameters": [],
+        "l2OperandBoundary": boundary,
+    }
+    monkeypatch.setattr(
+        auto, "inspect_entry_points", lambda _source: (False, (function,)))
+    auto.prepare_automatic_inventory(
+        source, tmp_path / "inventory", frontend=frontend)
+    descriptor = json.loads(next(
+        (tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json")
+    ).read_text())
+    providers = descriptor["request"]["runtimeRegistryTemplate"]["validators"][
+        "L2"]["config"]["providers"]
+    by_id = {item["providerId"]: item for item in providers}
+    assert {
+        "automatic-l2-operand-v2",
+        "automatic-l2-scalar-effect-v2",
+        "automatic-l2-control-flow-v1",
+    }.issubset(by_id)
+    assert by_id["automatic-l2-operand-v2"]["fragmentIds"] == []
+    assert by_id["automatic-l2-scalar-effect-v2"]["fragmentIds"] == []
+    # Incomplete multi-fragment boundaries do not manufacture a composite
+    # provider; composite/internal-value authority remains proof-gated.
+    assert "automatic-l2-composite-operand-v1" not in by_id
+
+
+def test_unversioned_incomplete_boundary_does_not_enable_automatic_provider(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "unknown.c"
+    source.write_text("unsigned long unknown(unsigned long x){return x;}\n")
+    frontend = tmp_path / "riscv2x86"
+    frontend.write_text("x")
+    frontend.chmod(0o755)
+    function = {
+        "name": "unknown", "arity": 1, "returnType": "unsigned long",
+        "parameterTypes": ["unsigned long"], "pointerParameters": [],
+        "l2OperandBoundary": {"complete": False},
+    }
+    monkeypatch.setattr(
+        auto, "inspect_entry_points", lambda _source: (False, (function,)))
+    auto.prepare_automatic_inventory(
+        source, tmp_path / "inventory", frontend=frontend)
+    descriptor = json.loads(next(
+        (tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json")
+    ).read_text())
+    providers = descriptor["request"]["runtimeRegistryTemplate"]["validators"][
+        "L2"]["config"]["providers"]
+    assert providers == []

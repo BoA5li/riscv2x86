@@ -599,21 +599,44 @@ def prepare_automatic_inventory(
             validators["L1"] = {
                 "type": "automatic-l1-functional-differential", "config": l1_config,
             }
-            l2_operand_possible = bool(
-                functions and any(
-                    isinstance(item.get("arity"), int) and 1 <= int(item["arity"]) <= 4
-                    and isinstance(item.get("l2OperandBoundary"), Mapping)
-                    and item["l2OperandBoundary"].get("complete") is True
-                    for item in functions
+            def fragment_observation_capable(item):
+                """Return whether the runner can resolve this function per fragment.
+
+                A complete boundary proves a single-fragment function immediately.
+                A compiler v2 boundary may be incomplete solely because the function
+                contains multiple asm statements; in that case the catalogue must
+                still expose the fragment-scoped runner.  Authority materialization
+                and the validator remain responsible for accepting or rejecting each
+                individual fragment.  Ad-hoc or unversioned incomplete boundaries do
+                not enable an automatic provider.
+                """
+                arity = item.get("arity")
+                boundary = item.get("l2OperandBoundary")
+                return bool(
+                    isinstance(arity, int) and not isinstance(arity, bool)
+                    and 1 <= arity <= 4
+                    and isinstance(boundary, Mapping)
+                    and (boundary.get("complete") is True
+                         or boundary.get("schemaVersion")
+                            == "riscv2x86.compiler-operand-boundary.v2")
                 )
-            )
+
+            # Providers describe executable observation capability, not proof
+            # completeness.  Empty fragmentIds deliberately means that the
+            # requirement-driven resolver applies the provider independently to
+            # every fragment/profile.  A missing per-fragment authority sidecar
+            # still yields inconclusive in the validator; it is never inferred
+            # from the function-level boundary.
+            l2_operand_possible = any(
+                fragment_observation_capable(item) for item in functions)
             def composite_boundary(item):
                 boundary = item.get("l2OperandBoundary")
                 if not isinstance(boundary, Mapping):
                     return False
                 asm_ids, params = (boundary.get("asmOperandDeclarationIds"),
                                    boundary.get("parameterDeclarationIds"))
-                return (isinstance(asm_ids, list) and isinstance(params, list)
+                return (boundary.get("complete") is True
+                        and isinstance(asm_ids, list) and isinstance(params, list)
                         and len(asm_ids) - len(params) > 1)
             l2_composite_possible = any(composite_boundary(item) for item in functions)
             operand_config = {
