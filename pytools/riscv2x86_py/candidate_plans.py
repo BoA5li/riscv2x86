@@ -1377,7 +1377,11 @@ def generate_candidate_plans(
             strict_kind = TargetLoweringKind.SYSCALL_OR_SERVICE_ABI_ADAPTER
             strict_family = TargetLoweringFamily.PRIVILEGED_SERVICE_ABI
             strict_priority = PlanPriorityTier.PRIVILEGED_SERVICE_ABI
-            strict_strategy = "exact_trap_service_abi"
+            strict_strategy = (
+                "exact_ecall_environment_service_abi"
+                if environment_route is PrivilegedEnvironmentRouteKind.ECALL
+                else "exact_trap_service_abi"
+            )
         elif semantic_classes == frozenset({
             PrivilegedSemanticClass.INTERRUPT_EVENT
         }):
@@ -1390,7 +1394,11 @@ def generate_candidate_plans(
             strict_kind = TargetLoweringKind.PRIVILEGED_EVENT_ADAPTER
             strict_family = TargetLoweringFamily.PRIVILEGED_EVENT
             strict_priority = PlanPriorityTier.PRIVILEGED_EVENT
-            strict_strategy = "exact_interrupt_event_runtime"
+            strict_strategy = (
+                "exact_wfi_wait_wakeup_runtime"
+                if environment_route is PrivilegedEnvironmentRouteKind.WFI
+                else "exact_interrupt_event_runtime"
+            )
         else:
             strict_plan_id = (
                 "privileged-runtime.csr-state.v1"
@@ -1429,7 +1437,10 @@ def generate_candidate_plans(
                 "environment_route_kind": (
                     privileged_environment_route_kind(privileged).value
                 ),
-                "explicit_environment_contract_required": True,
+                "explicit_environment_contract_required": (
+                    privileged_environment_route_kind(privileged)
+                    is not PrivilegedEnvironmentRouteKind.GENERIC
+                ),
             },
             rationale=("Complete privileged effects require one exact, "
                        "versioned target runtime contract.",),
