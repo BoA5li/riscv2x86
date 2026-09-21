@@ -22,6 +22,7 @@ from riscv2x86_py.phase6c_constraints import (
 )
 from riscv2x86_py.phase6d_common import (
     CompilerCapabilityModel,
+    SemanticProofReasonCode,
     TargetSemanticCatalog,
     run_semantic_proof_gate,
 )
@@ -210,10 +211,15 @@ def test_real_unknown_implicit_machine_state_remains_fail_closed() -> None:
     )
 
 
-def _build_rv64_local_branch_select_model(comparison_opcode="INT_EQUAL"):
+def _build_rv64_local_branch_select_model(
+        comparison_opcode="INT_EQUAL", *, early_clobber=False):
     """Build a typed three-block local branch/select, without asm text."""
     fragment = AsmFragment(
-        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        outputs=[AsmOperand(
+            constraint="=&r" if early_clobber else "=r",
+            exprText="out", isOutput=True,
+            isEarlyClobber=early_clobber,
+        )],
         inputs=[AsmOperand(constraint="r", exprText=name)
                 for name in ("left", "right", "when_equal", "when_not_equal")],
         clobbers=["cc"],
@@ -294,10 +300,90 @@ def test_rv64_local_branch_select_is_proof_bound_and_renderable() -> None:
     assert rendered.renderer_contract_id == renderer_contract.contract_id
 
 
+def test_rv64_local_branch_select_preserves_early_clobber_output() -> None:
+    """A source ``=&r`` contract remains ``=&r`` through proof and render."""
+    model = _build_rv64_local_branch_select_model(early_clobber=True)
+    plan = next(item for item in generate_candidate_plans(model)
+                if item.metadata.get("renderer_semantic_contract_id") ==
+                _LOCAL_BRANCH_SELECT_CONTRACT_ID)
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    derived = derive_target_constraints(
+        source_model=model, candidate_plan=plan, target_environment=environment)
+    assert derived.success and derived.constraints is not None
+    result = next(item for item in derived.constraints.operand_constraints
+                  if item.source_operand_index == 0)
+    assert result.early_clobber is True
+    proof = run_semantic_proof_gate(
+        source_model=model, preservation_decision=model.preservation,
+        candidate_plan=plan, constraints=derived.constraints,
+        target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            frozenset({plan.kind}), frozenset({_LOCAL_BRANCH_SELECT_CONTRACT_ID}),
+            "local-branch-select-early-clobber-test-v1"),
+        compiler_capabilities=CompilerCapabilityModel(True, False),
+    )
+    assert proof.approved
+    approved = ApprovedTargetLoweringPlan(
+        plan, derived.constraints, proof, proof.evidence.source_model_id,
+        proof.evidence.preservation_decision_id,
+        proof.evidence.target_environment_id,
+        "test", "1", SelectionTier.X86_INLINE_ASM,
+    )
+    renderer_contract = GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
+    assert renderer_contract is not None
+    rendered = render_approved_target_lowering(Phase6FRenderRequest(
+        approved, environment,
+        RendererContext(
+            {plan.plan_id: renderer_contract},
+            {0: "out", 1: "left", 2: "right", 3: "when_equal", 4: "when_not_equal"},
+        ),
+    ))
+    assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
+    assert rendered.emitted_text is not None
+    assert '"=&r"(out)' in rendered.emitted_text
+
+
+def test_rv64_local_branch_select_rejects_early_clobber_mismatch() -> None:
+    """Phase 6D rejects both dropping and inventing source early-clobber."""
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    for source_early_clobber, target_early_clobber in ((True, False), (False, True)):
+        model = _build_rv64_local_branch_select_model(
+            early_clobber=source_early_clobber)
+        plan = next(item for item in generate_candidate_plans(model)
+                    if item.metadata.get("renderer_semantic_contract_id") ==
+                    _LOCAL_BRANCH_SELECT_CONTRACT_ID)
+        derived = derive_target_constraints(
+            source_model=model, candidate_plan=plan,
+            target_environment=environment)
+        assert derived.success and derived.constraints is not None
+        tampered_operands = tuple(
+            replace(item, early_clobber=target_early_clobber)
+            if item.source_operand_index == 0 else item
+            for item in derived.constraints.operand_constraints
+        )
+        tampered_constraints = replace(
+            derived.constraints, operand_constraints=tampered_operands)
+        proof = run_semantic_proof_gate(
+            source_model=model, preservation_decision=model.preservation,
+            candidate_plan=plan, constraints=tampered_constraints,
+            target_environment=environment,
+            target_semantic_catalog=TargetSemanticCatalog(
+                frozenset({plan.kind}),
+                frozenset({_LOCAL_BRANCH_SELECT_CONTRACT_ID}),
+                "local-branch-select-early-clobber-negative-test-v1"),
+            compiler_capabilities=CompilerCapabilityModel(True, False),
+        )
+        assert not proof.approved
+        assert SemanticProofReasonCode.PLAN_CONTRACT_MISSING in proof.reason_codes
+
+
 def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -> None:
     """A direct local jump may elide only CFG-proven unreachable code."""
     fragment = AsmFragment(
-        outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
+        outputs=[AsmOperand(
+            constraint="=&r", exprText="out", isOutput=True,
+            isEarlyClobber=True,
+        )],
         inputs=[AsmOperand(constraint="r", exprText="init"),
                 AsmOperand(constraint="r", exprText="alt")],
         clobbers=["cc"],
@@ -353,7 +439,7 @@ def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -
         RendererContext({plan.plan_id: renderer_contract}, {0: "out", 1: "init", 2: "alt"}),
     ))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
-    assert rendered.emitted_text == '__asm__ volatile ("movq %1, %0" : "=r"(out) : "r"(init), "r"(alt) : "cc");'
+    assert rendered.emitted_text == '__asm__ volatile ("movq %1, %0" : "=&r"(out) : "r"(init), "r"(alt) : "cc");'
 
 
 def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None:

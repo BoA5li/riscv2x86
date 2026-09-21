@@ -95,6 +95,23 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             "renderer_semantic_contract_id": str(semantic_id),
         })
 
+    # Phase 6C owns the concrete GNU operand contract.  Keep the structured
+    # renderer contract and the generic target operand constraint in exact
+    # agreement, including early-clobber.  Some routes deliberately strengthen
+    # an output to early-clobber while local CFG routes carry the authoritative
+    # source shell value unchanged; neither case may be silently discarded by
+    # the route-specific applicability checks below.
+    contract_operands = {op.source_operand_index: op for op in operands}
+    target_by_index = {op.source_operand_index: op for op in target_operands}
+    if (set(contract_operands) != set(target_by_index) or any(
+            contract_operands[index].early_clobber is not
+            target_by_index[index].early_clobber
+            for index in contract_operands)):
+        return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
+            "renderer_semantic_contract_id": str(semantic_id),
+            "expected": "exact_early_clobber_binding",
+        })
+
     if semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1":
         program = getattr(candidate_plan, "metadata", {}).get("program_instruction_count")
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
@@ -165,13 +182,16 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
     if semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1":
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
         inputs = [op for op in target_operands if op.role.name == "INPUT"]
-        if (len(outputs) != 1 or len(inputs) != 4 or outputs[0].early_clobber or
+        if (len(outputs) != 1 or len(inputs) != 4 or
                 outputs[0].required_width_bits not in {32, 64} or
+                outputs[0].requires_fixed_register or
+                outputs[0].tied_to_source_operand_index is not None or
+                TargetOperandClass.GENERAL_REGISTER not in outputs[0].allowed_classes or
                 any(item.required_width_bits != outputs[0].required_width_bits or
                     item.early_clobber or item.requires_fixed_register or
                     item.tied_to_source_operand_index is not None or
                     TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
-                    for item in (*outputs, *inputs))):
+                    for item in inputs)):
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": semantic_id,
                 "expected": "output_and_four_uniform_gpr_inputs_for_local_branch_select",
@@ -181,13 +201,16 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
     if semantic_id == "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1":
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
         inputs = [op for op in target_operands if op.role.name == "INPUT"]
-        if (len(outputs) != 1 or not inputs or outputs[0].early_clobber or
+        if (len(outputs) != 1 or not inputs or
                 outputs[0].required_width_bits not in {32, 64} or
+                outputs[0].requires_fixed_register or
+                outputs[0].tied_to_source_operand_index is not None or
+                TargetOperandClass.GENERAL_REGISTER not in outputs[0].allowed_classes or
                 any(item.required_width_bits != outputs[0].required_width_bits or
                     item.early_clobber or item.requires_fixed_register or
                     item.tied_to_source_operand_index is not None or
                     TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes
-                    for item in (*outputs, *inputs))):
+                    for item in inputs)):
             return _fail(candidate_plan, "X86_INLINE_ASM_OPERAND_CONTRACT_MISMATCH", {
                 "renderer_semantic_contract_id": semantic_id,
                 "expected": "one_output_and_uniform_gpr_inputs_for_local_unconditional_jump",

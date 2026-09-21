@@ -834,7 +834,7 @@ def _local_branch_select_recipe(approved: ApprovedTargetLoweringPlan):
         select.true_value_operand_index, select.false_value_operand_index,
     )]
     if (result is None or result.role is not TargetOperandRole.OUTPUT or
-            result.early_clobber or result.required_width_bits not in {32, 64} or
+            result.required_width_bits not in {32, 64} or
             any(item is None or item.role is not TargetOperandRole.INPUT or
                 item.early_clobber or item.required_width_bits != result.required_width_bits or
                 item.requires_fixed_register or
@@ -881,7 +881,7 @@ def _local_unconditional_jump_recipe(approved: ApprovedTargetLoweringPlan):
     selected = by_index.get(jump.selected_input_operand_index)
     inputs = [item for item in c.operand_constraints if item.role is TargetOperandRole.INPUT]
     if (result is None or selected is None or result.role is not TargetOperandRole.OUTPUT or
-            selected.role is not TargetOperandRole.INPUT or result.early_clobber or
+            selected.role is not TargetOperandRole.INPUT or
             result.required_width_bits not in {32, 64} or
             any(item.early_clobber or item.requires_fixed_register or
                 TargetOperandClass.GENERAL_REGISTER not in item.allowed_classes or
