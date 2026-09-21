@@ -353,6 +353,13 @@ class PrivilegedRuntimeContract:
         ):
             raise TypeError("environment route kind must be typed")
         if (
+            self.environment_route_kind is PrivilegedEnvironmentRouteKind.ECALL
+            and self.abi_contract_id == "c-abi.v1"
+        ):
+            raise ValueError(
+                "ecall environment contracts require an explicit service ABI"
+            )
+        if (
             self.environment_route_kind is PrivilegedEnvironmentRouteKind.WFI
             and not self.preserves_microarchitecture_intent
         ):
