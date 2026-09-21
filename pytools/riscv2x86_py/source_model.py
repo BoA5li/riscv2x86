@@ -435,10 +435,15 @@ class SourceSemanticModel:
             or self.control_flow.has_unknown_target
             or self.control_flow.has_indirect_control_flow is None
         )
-        opaque = self.operation.kind in {
+        opaque_operation = self.operation.kind in {
             SourceOperationKind.OPAQUE,
             SourceOperationKind.UNKNOWN,
         }
+        # Atomic lowering has its own typed operation contract.  Once that
+        # contract is present and complete, the generic operation category is
+        # no longer opaque to Phase 6B; incomplete atomics remain fail-closed.
+        atomic_semantics_closed = self.atomic.present and self.atomic.complete
+        opaque = opaque_operation and not atomic_semantics_closed
         stack_frame_unknown = (
             (self.registers.reads_or_writes_stack_pointer or
              self.registers.reads_or_writes_frame_pointer) and
