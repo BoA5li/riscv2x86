@@ -1165,7 +1165,13 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
     jump = _ASM_GOTO_ZERO_TEST_RECIPES.get(semantic_id)
     flow = approved.constraints.structured_control_flow_contract
     operands = tuple(approved.constraints.operand_constraints)
-    if (jump is None or flow is None or
+    authority = None if flow is None else flow.asm_goto_authority
+    if (jump is None or flow is None or authority is None or
+            not authority.complete or
+            authority.condition_kind not in {"zero", "nonzero"} or
+            semantic_id != ("x86.gnu-att.asm-goto.b" +
+                            authority.condition_kind + ".u32-u64.v1") or
+            authority.rhs_binding is not None or authority.goto_outputs or
             flow.semantic_contract_id != semantic_id or
             not flow.uses_asm_goto or
             not approved.constraints.control_flow_constraint.preserve_asm_goto or
@@ -1188,6 +1194,11 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
         return None
     suffix = "l" if operand.required_width_bits == 32 else "q"
     label = flow.asm_goto_labels[0]
+    if (authority.lhs_binding != f"operand:{operand.source_operand_index}" or
+            authority.taken_label_identity != label.label or
+            authority.taken_successor_block != label.target_continuation_id or
+            authority.fallthrough_successor_block != flow.fallthrough_continuations[0]):
+        return None
     return (
         RendererContractKind.GNU_ASM_GOTO,
         GnuAsmGotoRecipe(

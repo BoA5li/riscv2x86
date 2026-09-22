@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..plan_types import TargetLoweringKind, TargetLoweringPlan
-from ..source_model import SourceSemanticModel
+from ..source_model import AsmGotoControlFlowAuthority, SourceSemanticModel
 
 if TYPE_CHECKING:
     from ..phase6c_constraints import TargetConstraintDerivationResult, TargetEnvironment
@@ -45,6 +45,7 @@ class StructuredControlFlowContract:
     has_exception_or_trap_edge: bool = False
     asm_goto_fallthrough_continuation_id: str | None = None
     asm_goto_successor_continuation_ids: tuple[str, ...] = ()
+    asm_goto_authority: AsmGotoControlFlowAuthority | None = None
 
 
 def _failure(plan, name, details=None):
@@ -92,7 +93,11 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
     # fact and Phase 6A exposed it through SourceSemanticModel.
     branch_operand = None
     if cf.has_asm_goto:
-        if (cf.asm_goto_condition_kind not in {"zero", "nonzero"} or
+        authority = cf.asm_goto_authority
+        if (authority is None or not authority.complete or
+                authority.fragment_id == "" or
+                authority.condition_kind != cf.asm_goto_condition_kind or
+                authority.condition_kind not in {"zero", "nonzero"} or
                 cf.asm_goto_condition_operand_index is None):
             return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_CONDITION_UNSUPPORTED")
         expected_binding = (
@@ -114,9 +119,21 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
                 branch_operand.tied_to_source_operand_index is not None or
                 branch_operand.fixed_register_name is not None or
                 source_model.memory.reads_memory or source_model.memory.writes_memory or
-                source_model.atomic.present or source_model.barrier.present or
-                source_model.shell.has_memory_clobber):
+                source_model.atomic.present or
+                (source_model.barrier.present and not (
+                    source_model.shell.has_memory_clobber and
+                    source_model.barrier.compiler_barrier and
+                    not source_model.barrier.hardware_memory_barrier and
+                    not source_model.barrier.instruction_serializing and
+                    not source_model.barrier.speculation_control))):
             return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_BRANCH_OPERAND_UNSAFE")
+        if (authority.lhs_binding !=
+                f"operand:{cf.asm_goto_condition_operand_index}" or
+                authority.rhs_binding is not None or authority.goto_outputs or
+                authority.clobbers != tuple(sorted(set(source_model.shell.normalized_clobbers))) or
+                authority.memory_effect != ("compiler_barrier" if
+                    source_model.shell.has_memory_clobber else "none")):
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_SOURCE_INCOMPLETE")
     continuations = tuple(TargetSuccessorContinuation(edge.source_block_address,
         edge.successor_address, edge.edge_kind,
         f"continuation:{edge.source_block_address:x}:{edge.successor_address:x}") for edge in cf.successors)
@@ -137,6 +154,13 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
         if (len(fallthrough) != 1 or not expected_successors or
                 actual_successors != expected_successors or
                 len(expected_successors) != len(labels) + 1):
+            return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
+        authority = cf.asm_goto_authority
+        if (authority is None or len(labels) != 1 or
+                authority.taken_label_identity != labels[0].label or
+                authority.taken_successor_block != labels[0].target_continuation_id or
+                authority.fallthrough_successor_block != fallthrough[0] or
+                authority.external_label_index != source_model.shell.goto_edges[0][2]):
             return _failure(candidate_plan, "STRUCTURED_CONTROL_FLOW_LABEL_BINDINGS_INCOMPLETE")
     else:
         fallthrough = tuple(item.target_continuation_id for item in continuations if item.edge_kind == "fallthrough")
@@ -161,7 +185,7 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
         cf.has_asm_goto, cf.has_multiple_exits, False, False,
         semantic_contract_id, branch_condition_binding_id, merge_requirements,
         False, cf.asm_goto_fallthrough_continuation_id,
-        cf.asm_goto_successor_continuation_ids)
+        cf.asm_goto_successor_continuation_ids, cf.asm_goto_authority)
     flow = TargetControlFlowConstraint(preserve_control_flow=True,
         preserve_asm_goto=cf.has_asm_goto)
     operands = () if branch_operand is None else (
@@ -175,7 +199,10 @@ def derive_structured_control_flow_constraints(source_model: SourceSemanticModel
     )
     return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id,
         environment=target_environment, structured_control_flow_contract=contract,
-        operand_constraints=operands, memory_constraint=TargetMemoryConstraint(),
+        operand_constraints=operands, memory_constraint=TargetMemoryConstraint(
+            requires_memory_clobber=source_model.shell.has_memory_clobber,
+            requires_compiler_barrier=source_model.shell.has_memory_clobber,
+        ),
         control_flow_constraint=flow,
         preserve_volatile=source_model.shell.is_volatile,
         # x86 TEST changes EFLAGS; this explicit target-shell fact is required

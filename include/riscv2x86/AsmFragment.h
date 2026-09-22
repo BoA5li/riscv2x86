@@ -52,8 +52,9 @@ struct AsmFragment {
     std::string asmGotoFallthroughContinuationId;
     std::vector<std::string> asmGotoSuccessorContinuationIds;
     bool asmGotoControlFlowComplete = false;
-    // Frontend-normalized narrow branch condition facts.  They identify the
-    // source shell binding, not a synthetic assembler/lift label.
+    // Deprecated compatibility fields. New frontends leave these empty:
+    // predicate authority is produced by the Phase-6A AST/CFG/decoder join,
+    // never by parsing rawAsmText.
     std::string asmGotoConditionKind;
     int asmGotoConditionOperandIndex = -1;
     bool isVolatile = false;

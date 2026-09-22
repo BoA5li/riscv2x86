@@ -88,6 +88,45 @@ class SourceAsmGotoLabelBinding:
 
 
 @dataclass(frozen=True)
+class AsmGotoControlFlowAuthority:
+    """Closed AST/CFG/decoder authority for one finite asm-goto branch."""
+    fragment_id: str
+    condition_kind: str
+    lhs_binding: str
+    rhs_binding: str | None
+    taken_label_identity: str
+    taken_successor_block: str
+    fallthrough_successor_block: str
+    external_label_index: int
+    goto_outputs: Tuple[str, ...]
+    clobbers: Tuple[str, ...]
+    memory_effect: str
+    complete: bool
+    reason_codes: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.condition_kind not in {"zero", "nonzero", "eq", "ne", "unsigned_lt"}:
+            raise ValueError("unsupported asm-goto condition authority")
+        if (not self.fragment_id or not self.lhs_binding or
+                not self.taken_label_identity or not self.taken_successor_block or
+                not self.fallthrough_successor_block or
+                isinstance(self.external_label_index, bool) or
+                not isinstance(self.external_label_index, int) or
+                self.external_label_index < 0 or
+                self.memory_effect not in {"none", "compiler_barrier"} or
+                self.goto_outputs != tuple(sorted(set(self.goto_outputs))) or
+                self.clobbers != tuple(sorted(set(self.clobbers))) or
+                self.reason_codes != tuple(sorted(set(self.reason_codes)))):
+            raise ValueError("invalid asm-goto control-flow authority")
+        closed = bool(
+            self.taken_successor_block != self.fallthrough_successor_block
+            and not self.reason_codes
+        )
+        if self.complete != closed:
+            raise ValueError("asm-goto authority completeness is inconsistent")
+
+
+@dataclass(frozen=True)
 class SourceControlFlowModel:
     """
     Structured source control-flow semantic snapshot.
@@ -132,6 +171,7 @@ class SourceControlFlowModel:
     asm_goto_successor_continuation_ids: Tuple[str, ...] = ()
     asm_goto_condition_kind: str | None = None
     asm_goto_condition_operand_index: int | None = None
+    asm_goto_authority: AsmGotoControlFlowAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -542,6 +582,10 @@ class SourceSemanticModel:
             has_proven_local_unconditional_jump=self.local_unconditional_jump is not None,
             asm_goto_condition_kind=self.control_flow.asm_goto_condition_kind,
             asm_goto_condition_operand_index=self.control_flow.asm_goto_condition_operand_index,
+            asm_goto_authority_complete=(
+                self.control_flow.asm_goto_authority is not None and
+                self.control_flow.asm_goto_authority.complete
+            ),
             has_atomic_semantics=self.atomic.present,
             # A shell-only compiler barrier accompanies ordinary memory
             # accesses frequently.  It is preserved by the memory contract,
@@ -787,6 +831,115 @@ def _operation_semantics_are_opaque(
     return opaque_operation and not atomic_semantics_closed
 
 
+def _build_asm_goto_control_flow_authority(
+    *, fragment: AsmFragment, shell: SourceShellModel, blocks: Sequence[Block],
+    cfg: CFGResult, runtime_status: RuntimeFactStatus,
+    operands: "SourceOperandModel", memory: "SourceMemoryModel",
+) -> AsmGotoControlFlowAuthority | None:
+    """Join frontend continuations with canonical predicate semantics.
+
+    No source template or mnemonic is inspected.  The accepted decoder shape
+    is a single direct CBRANCH whose predicate is either an explicitly bound
+    register, or INT_EQUAL/INT_NOTEQUAL of that register and integer zero.
+    """
+    if (not shell.has_asm_goto or not shell.asm_goto_control_flow_complete or
+            not _cfg_ok(cfg) or memory.reads_memory or memory.writes_memory or
+            len(shell.goto_edges) != 1 or len(shell.goto_labels) != 1 or
+            len(shell.asm_goto_successor_continuation_ids) != 2 or
+            not runtime_status.structurally_valid or not operands.complete):
+        return None
+
+    instructions = [item for block in blocks for item in block.instructions]
+    branch_instructions = [item for item in instructions
+                           if item.terminator_kind == "CBRANCH"]
+    if (len(instructions) != 1 or len(branch_instructions) != 1 or
+            branch_instructions[0].direct_target is None or
+            branch_instructions[0].has_call_or_return_op or
+            branch_instructions[0].has_atomic or
+            branch_instructions[0].barrier_info is not None or
+            branch_instructions[0].has_unknown_barrier):
+        return None
+    semantic_ops = [item for item in branch_instructions[0].ops
+                    if item.opcode.upper() not in {"IMARK"}]
+    branch_ops = [item for item in semantic_ops if item.opcode.upper() == "CBRANCH"]
+    if len(branch_ops) != 1:
+        return None
+    branch = branch_ops[0]
+    condition_inputs = [item for item in branch.inputs
+                        if getattr(item, "kind", None) is not VarKind.CONST]
+    if len(condition_inputs) != 1:
+        return None
+    condition = condition_inputs[0]
+    producers = {item.output: item for item in semantic_ops
+                 if item.output is not None and item.opcode.upper() != "CBRANCH"}
+    seen: set[object] = set()
+    while condition in producers and producers[condition].opcode.upper() == "COPY":
+        if condition in seen or len(producers[condition].inputs) != 1:
+            return None
+        seen.add(condition)
+        condition = producers[condition].inputs[0]
+
+    condition_kind = "nonzero"
+    register_value = condition
+    producer = producers.get(condition)
+    if producer is not None:
+        opcode = producer.opcode.upper()
+        if opcode not in {"INT_EQUAL", "INT_NOTEQUAL"} or len(producer.inputs) != 2:
+            return None
+        pairs = ((producer.inputs[0], producer.inputs[1]),
+                 (producer.inputs[1], producer.inputs[0]))
+        matches = [(register, constant) for register, constant in pairs
+                   if getattr(register, "kind", None) is VarKind.REG and
+                   getattr(constant, "kind", None) is VarKind.CONST and
+                   getattr(constant, "offset", None) == 0]
+        if len(matches) != 1:
+            return None
+        register_value = matches[0][0]
+        condition_kind = "zero" if opcode == "INT_EQUAL" else "nonzero"
+    if getattr(register_value, "kind", None) is not VarKind.REG:
+        return None
+
+    register_to_operand: dict[str, int] = {}
+    for register, index in runtime_status.rv_to_operand_index.items():
+        canonical = canonicalize_riscv_register_name(register)
+        if not canonical or canonical in register_to_operand:
+            return None
+        register_to_operand[canonical] = index
+    register = canonicalize_riscv_register_name(getattr(register_value, "name", ""))
+    operand_index = register_to_operand.get(register)
+    by_index = {item.source_operand_index: item for item in operands.operands}
+    operand = by_index.get(operand_index)
+    if (operand is None or operand.kind is not SourceOperandKind.REGISTER or
+            operand.access is not SourceOperandAccess.INPUT or
+            not operand.reads or operand.writes or operand.width_bits not in {32, 64} or
+            operand.signedness is SourceSignedness.UNKNOWN):
+        return None
+
+    edge = shell.goto_edges[0]
+    fallthrough = shell.asm_goto_fallthrough_continuation_id
+    taken = edge[3]
+    expected = {fallthrough, taken}
+    if (not fallthrough or not taken or taken == fallthrough or
+            set(shell.asm_goto_successor_continuation_ids) != expected):
+        return None
+    output_ids = tuple(sorted(
+        f"operand:{item.source_operand_index}" for item in operands.operands
+        if item.access in {SourceOperandAccess.OUTPUT, SourceOperandAccess.READ_WRITE}
+    ))
+    clobbers = tuple(sorted(set(shell.normalized_clobbers)))
+    return AsmGotoControlFlowAuthority(
+        fragment_id=str(fragment.id or fragment.fragmentId),
+        condition_kind=condition_kind,
+        lhs_binding=f"operand:{operand_index}", rhs_binding=None,
+        taken_label_identity=edge[1], taken_successor_block=taken,
+        fallthrough_successor_block=fallthrough,
+        external_label_index=edge[2], goto_outputs=output_ids,
+        clobbers=clobbers,
+        memory_effect=("compiler_barrier" if shell.has_memory_clobber else "none"),
+        complete=True,
+    )
+
+
 def build_source_semantic_model(
     *,
     fragment: AsmFragment,
@@ -848,6 +1001,19 @@ def build_source_semantic_model(
         runtime_facts=runtime_facts,
         runtime_status=runtime_status,
     )
+
+    asm_goto_authority = _build_asm_goto_control_flow_authority(
+        fragment=fragment, shell=shell, blocks=blocks, cfg=cfg,
+        runtime_status=runtime_status, operands=operands, memory=memory,
+    )
+    if asm_goto_authority is not None:
+        operand_index = int(asm_goto_authority.lhs_binding.rsplit(":", 1)[1])
+        control_flow = replace(
+            control_flow,
+            asm_goto_condition_kind=asm_goto_authority.condition_kind,
+            asm_goto_condition_operand_index=operand_index,
+            asm_goto_authority=asm_goto_authority,
+        )
 
     local_branch_select = _build_local_branch_select_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
@@ -1270,7 +1436,7 @@ def _build_control_flow_model(
 
 def _build_memory_model(
     summary: IRSummary,
-    runtime_facts: object,
+    runtime_facts: object = None,
 ) -> SourceMemoryModel:
     # ``IRSummary.atomic_mnemonics`` is legacy diagnostic/display data.  It
     # deliberately has no representation in the authoritative Phase-6A

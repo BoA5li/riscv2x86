@@ -39,8 +39,9 @@ class TranslationRuntimeFacts:
         default_factory=dict
     )
     provenance: str = ""
-    # Frontend-normalized host-C asm-goto facts.  Phase 4 transports these
-    # facts for lifting only; it must not rediscover them from asm text.
+    # Deprecated compatibility slots. New pipelines leave these unset:
+    # Phase 6A derives predicate authority by joining canonical decoder
+    # semantics with runtime operand bindings and frontend continuation facts.
     asm_goto_condition_operand_index: int | None = None
 
     # A source/frontend supplied proof certificate for the very narrow case

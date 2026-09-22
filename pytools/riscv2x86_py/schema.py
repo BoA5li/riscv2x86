@@ -310,6 +310,8 @@ class AsmFragment:
     asmGotoFallthroughContinuationId: str = ""
     asmGotoSuccessorContinuationIds: List[str] = field(default_factory=list)
     asmGotoControlFlowComplete: bool = False
+    # Deprecated compatibility fields. They are not accepted as predicate
+    # authority; Phase 6A performs the AST/CFG/decoder join.
     asmGotoConditionKind: str = ""
     asmGotoConditionOperandIndex: int = -1
     controlFlow: Optional[AsmControlFlowSurface] = None

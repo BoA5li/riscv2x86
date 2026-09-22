@@ -144,6 +144,7 @@ class Phase6BCandidateFacts:
     # own instructions do not modify flags must nevertheless carry the source
     # GNU ``"cc"`` clobber through proof and rendering.
     requires_cc_clobber_preservation: bool = False
+    asm_goto_authority_complete: bool = False
 
     def __post_init__(self) -> None:
         for field_name, value in self.__dict__.items():
@@ -571,6 +572,12 @@ def _generate_virtual_private_frame_candidates(facts: Phase6BCandidateFacts) -> 
 def _generate_cfg_candidates(
     facts: Phase6BCandidateFacts,
 ) -> list[TargetLoweringPlan]:
+    if facts.has_asm_goto_semantics and not facts.asm_goto_authority_complete:
+        return [_unsupported_candidate(
+            reason_code="asm-goto-control-flow-authority-incomplete",
+            rationale=("An asm-goto route requires a closed AST/CFG/decoder "
+                       "authority; template spelling is not admissible evidence."),
+        )]
     if facts.has_proven_local_branch_select:
         return [_plan(
             plan_id="x86.local-branch-select",
@@ -661,28 +668,6 @@ def _generate_cfg_candidates(
                 "memory, or register-only generators.",
             ),
             reason_codes=("control-flow-lowering-required",),
-        ),
-        _plan(
-            plan_id="helper.control-flow-contract",
-            kind=TargetLoweringKind.HELPER_CALL,
-            family=TargetLoweringFamily.HELPER,
-            priority_tier=PlanPriorityTier.HELPER,
-            deterministic_rank=20,
-            requirements=frozenset(
-                {
-                    *requirements,
-                    PlanRequirement.PROVE_HELPER_ABI_CONTRACT,
-                }
-            ),
-            metadata={
-                "strategy": "control_flow_helper",
-                "has_asm_goto": facts.has_asm_goto_semantics,
-            },
-            rationale=(
-                "A helper candidate is retained only as an ABI- and "
-                "control-flow-proof-obligated alternative.",
-            ),
-            reason_codes=("control-flow-helper-candidate",),
         ),
     ]
 

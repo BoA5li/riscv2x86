@@ -27,10 +27,16 @@ def prove(r):
         }
         kind = s.control_flow.asm_goto_condition_kind
         index = s.control_flow.asm_goto_condition_operand_index
+        authority = s.control_flow.asm_goto_authority
         expected_binding = None if index is None else f"asm-goto:{kind}:operand:{index}"
-        if (kind not in semantic_ids or index is None or
+        if (authority is None or not authority.complete or
+                contract.asm_goto_authority != authority or
+                kind not in semantic_ids or index is None or
                 s.control_flow.has_multiple_exits or
                 s.control_flow.has_non_local_control_dependency or
+                s.control_flow.has_call or s.control_flow.has_return is not False or
+                s.control_flow.has_tail_call is not False or
+                s.control_flow.has_indirect_control_flow is not False or
                 contract.state_merge_requirements or
                 contract.semantic_contract_id != semantic_ids[kind] or
                 r.candidate_plan.metadata.get("renderer_semantic_contract_id") != semantic_ids[kind] or
@@ -47,6 +53,24 @@ def prove(r):
                     contract.asm_goto_fallthrough_continuation_id or
                 any(item.source_continuation_id != item.target_continuation_id
                     for item in contract.asm_goto_labels) or
+                authority.lhs_binding != f"operand:{index}" or
+                authority.rhs_binding is not None or
+                authority.taken_label_identity != contract.asm_goto_labels[0].label or
+                authority.taken_successor_block !=
+                    contract.asm_goto_labels[0].target_continuation_id or
+                authority.fallthrough_successor_block !=
+                    contract.fallthrough_continuations[0] or
+                {authority.taken_successor_block,
+                 authority.fallthrough_successor_block} !=
+                    set(contract.asm_goto_successor_continuation_ids) or
+                authority.goto_outputs or
+                authority.clobbers != tuple(sorted(set(s.shell.normalized_clobbers))) or
+                authority.memory_effect != ("compiler_barrier" if
+                    s.shell.has_memory_clobber else "none") or
+                c.memory_constraint.requires_memory_clobber !=
+                    s.shell.has_memory_clobber or
+                c.memory_constraint.requires_compiler_barrier !=
+                    s.shell.has_memory_clobber or
                 not c.preserve_cc_clobber or
                 c.preserve_volatile != s.shell.is_volatile):
             return reject(r, SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
@@ -59,7 +83,13 @@ def prove(r):
                 target_operands[0].allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
                 target_operands[0].required_width_bits not in {32, 64} or
                 target_operands[0].required_width_bits != source.width_bits or
+                target_operands[0].required_signedness != source.signedness or
                 s.memory.reads_memory or s.memory.writes_memory or
-                s.atomic.present or s.barrier.present):
+                s.atomic.present or
+                (s.barrier.present and not (
+                    s.shell.has_memory_clobber and s.barrier.compiler_barrier and
+                    not s.barrier.hardware_memory_barrier and
+                    not s.barrier.instruction_serializing and
+                    not s.barrier.speculation_control))):
             return reject(r, SemanticProofReasonCode.CONTROL_FLOW_UNPRESERVED)
     return finalize(r,(PreservationConclusion.ARCHITECTURE_EQUIVALENT,PreservationConclusion.SHELL_PRESERVED))

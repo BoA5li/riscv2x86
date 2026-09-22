@@ -630,12 +630,13 @@ def materialize_template(frag: AsmFragment) -> MaterializedInlineAsm:
 
 
 def _asm_goto_condition_fact(frag: AsmFragment) -> tuple[str | None, int | None]:
-    """Transport a frontend host-C condition fact; never parse asm here."""
-    kind = getattr(frag, "asmGotoConditionKind", "") or None
-    index = getattr(frag, "asmGotoConditionOperandIndex", -1)
-    if kind not in {"zero", "nonzero"} or not isinstance(index, int) or index < 0:
-        return (None, None)
-    return (kind, index)
+    """Legacy fields are not predicate authority.
+
+    Condition semantics are established after decoding by Phase 6A. Keeping
+    this adapter closed prevents old report fields or hand-authored JSON from
+    bypassing the AST/CFG/decoder join.
+    """
+    return (None, None)
     
 def _build_pic_stub(frag: AsmFragment) -> str:
     """
