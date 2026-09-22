@@ -166,7 +166,7 @@ def test_memory_requirement_is_not_eligible_without_materialized_authority():
     assert item["eligibilityStatus"] == "inconclusive"
     assert item["disposition"] == "inconclusive"
     assert item["reasonCodes"] == [
-        "l2.memory-authority.materialization-record-missing",
+        "l2.memory-authority.decision-missing",
     ]
 
 
@@ -184,7 +184,7 @@ def test_memory_requirement_preserves_materializer_rejection_reason():
     finding["approvalArtifact"]["l2AuthorityMaterialization"] = record
     item = L2EligibilityClassifier().classify(finding, 0)
     assert item["eligibilityStatus"] == "inconclusive"
-    assert item["reasonCodes"] == ["L2_MEMORY_PROOF_FACTS_INCOMPLETE"]
+    assert item["reasonCodes"] == ["l2.memory-authority.decision-missing"]
 
 
 def test_memory_requirement_rejects_stale_materialization_record():
@@ -202,5 +202,5 @@ def test_memory_requirement_rejects_stale_materialization_record():
     item = L2EligibilityClassifier().classify(finding, 0)
     assert item["eligibilityStatus"] == "inconclusive"
     assert item["reasonCodes"] == [
-        "l2.memory-authority.materialization-record-invalid",
+        "l2.memory-authority.decision-missing",
     ]

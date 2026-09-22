@@ -7,7 +7,8 @@ from riscv2x86_py.effect_relation import ApprovedEffectRelation
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
 from riscv2x86_py.l2_authority import L2OperandAuthority, l2_authority_sidecar_from_dict
 from riscv2x86_py.l2_memory_object import (
-    L2MemoryObservation, L2MemoryProofFacts, bind_memory_object_authority,
+    L2MemoryObservation, L2MemoryProofFacts, MemoryAccessAuthority,
+    assess_memory_authority_materializability, bind_memory_object_authority,
     exact_memory_observations_match, memory_proof_facts_from_dict,
     memory_proof_facts_from_source_model,
 )
@@ -84,9 +85,13 @@ def test_source_model_requires_one_proven_object_and_natural_alignment():
 
 
 def test_authority_binds_object_relative_bounds_without_raw_address():
+    authority = MemoryAccessAuthority(
+        "fragment:any", "load", "parameter-object:decl:1", "decl:1", "decl:1",
+        8, 8, 8, 8, 32, "0<=8 && 16<=32", "alias:decl:1", "c.default",
+        "decl:0", False, True)
     obj, object_id = bind_memory_object_authority(
-        _facts(), (_operand(0), _operand(1, pointer=True, parameter=0)))
-    assert object_id == "operand:1:object"
+        _facts(), (_operand(0), _operand(1, pointer=True, parameter=0)), authority)
+    assert object_id == "parameter-object:decl:1"
     assert obj.readable_ranges == ((8, 16),)
     assert obj.writable_ranges == ()
 
@@ -122,7 +127,12 @@ def test_authority_materialization_is_not_round2_name_based(tmp_path, directory,
       "asmOperandDeclarationIds":["result", "base"], "returnDeclarationId":"result",
       "declarationReferenceCounts":{"result":2, "base":1},
       "declarations":{"result":{"name":"result", "type":"uint64_t"},
-                      "base":{"name":"base", "type":"const uint64_t *"}}}
+                      "base":{"name":"base", "type":"const uint64_t *"}},
+      "memoryObjectBindings":{"base":{
+          "objectIdentity":"parameter-object:base", "objectSizeBytes":32,
+          "provenAlignmentBytes":8, "aliasDomainIdentity":"alias:base",
+          "addressSpaceIdentity":"c.default", "volatile":False,
+          "bindingOrigin":"automatic-aligned-memory-object-harness-v1"}}}
     function = {"name":function_name, "arity":1, "returnType":"uint64_t",
                 "parameterTypes":["const uint64_t *"], "pointerParameters":[0],
                 "l2OperandBoundary":boundary}
@@ -132,7 +142,7 @@ def test_authority_materialization_is_not_round2_name_based(tmp_path, directory,
         {"findings":[finding]}, [function], frontend) == 1
     sidecar = l2_authority_sidecar_from_dict(
         finding["approvalArtifact"]["l2AuthoritySidecar"])
-    assert sidecar.memory_objects[0].object_id == "operand:1:object"
+    assert sidecar.memory_objects[0].object_id == "parameter-object:base"
     assert sidecar.memory_objects[0].readable_ranges == ((8, 16),)
     assert len(sidecar.approved_effect_relations) == 1
 
@@ -162,3 +172,62 @@ def test_raw_address_and_unproved_alignment_are_rejected():
                             "operand:1:object", payload, 0, ())
     with pytest.raises(ValueError, match="completeness"):
         _facts(alignment_proven=False)
+
+
+def _materialization_boundary():
+    return {"complete": True, "asmOperandDeclarationIds": ["value", "base"],
+            "declarations": {"value": {"type": "uint64_t"},
+                             "base": {"type": "uint64_t *"}},
+            "memoryObjectBindings": {"base": {
+                "objectIdentity": "parameter-object:base", "objectSizeBytes": 32,
+                "provenAlignmentBytes": 8, "aliasDomainIdentity": "alias:base",
+                "addressSpaceIdentity": "c.default", "volatile": False,
+                "bindingOrigin": "parameter-object-contract-v1"}}}
+
+
+@pytest.mark.parametrize(("mutation", "reason"), [
+    (lambda value: value.update(complete=False),
+     "L2_MEMORY_ADDRESS_BINDING_MISSING"),
+    (lambda value: value["memoryObjectBindings"]["base"].pop("objectIdentity"),
+     "L2_MEMORY_OBJECT_IDENTITY_MISSING"),
+    (lambda value: value["memoryObjectBindings"]["base"].pop("objectSizeBytes"),
+     "L2_MEMORY_BOUNDS_UNPROVED"),
+    (lambda value: value["memoryObjectBindings"]["base"].pop("provenAlignmentBytes"),
+     "L2_MEMORY_ALIGNMENT_UNPROVED"),
+    (lambda value: value["declarations"].pop("value"),
+     "L2_MEMORY_VALUE_FLOW_UNPROVED"),
+])
+def test_materializability_requires_each_independent_authority(mutation, reason):
+    boundary = _materialization_boundary()
+    mutation(boundary)
+    decision = assess_memory_authority_materializability(
+        {"proofStatus": "approved", "architectureSemanticsPreserved": True,
+         "shellSemanticsPreserved": True}, _facts(), boundary,
+        {"id": "fragment:any"})
+    assert not decision.materializable
+    assert reason in decision.reason_codes
+
+
+def test_materializability_decision_is_content_bound_and_reusable():
+    decision = assess_memory_authority_materializability(
+        {"proofStatus": "approved", "architectureSemanticsPreserved": True,
+         "shellSemanticsPreserved": True}, _facts(), _materialization_boundary(),
+        {"id": "fragment:any"})
+    assert decision.materializable
+    assert decision.authority.object_identity == "parameter-object:base"
+    parsed = assess_memory_authority_materializability(
+        {}, decision.to_dict(), None, {"id": "fragment:any"})
+    assert parsed == decision
+    stale = decision.to_dict(); stale["fragmentId"] = "fragment:other"
+    rejected = assess_memory_authority_materializability(
+        {}, stale, None, {"id": "fragment:any"})
+    assert rejected.reason_codes == ("L2_MEMORY_AUTHORITY_DECISION_INVALID",)
+
+
+def test_materializability_rejects_cross_fragment_memory_facts():
+    decision = assess_memory_authority_materializability(
+        {"proofStatus": "approved", "architectureSemanticsPreserved": True,
+         "shellSemanticsPreserved": True}, _facts(fragment_id="fragment:other"),
+        _materialization_boundary(), {"id": "fragment:any"})
+    assert not decision.materializable
+    assert "L2_FRAGMENT_IDENTITY_MISMATCH" in decision.reason_codes

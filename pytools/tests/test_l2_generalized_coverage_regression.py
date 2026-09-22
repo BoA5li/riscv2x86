@@ -11,6 +11,9 @@ from riscv2x86_py.l2_validator_resolution import (
     L2BindingKind, L2BindingStatus, L2FragmentRequirement,
     L2RuntimeCapabilities, L2ValidatorProvider, L2ValidatorResolver,
 )
+from riscv2x86_py.l2_memory_object import (
+    AuthorityMaterializationDecision, MemoryAccessAuthority,
+)
 from tests.l2_profile_fixtures import profile_dict
 
 
@@ -42,11 +45,22 @@ def _profile(fragment_id: str, kind: L2PatternKind):
 
 
 def _requirement(profile):
+    decision = None
+    if profile.pattern_kind in {L2PatternKind.MEMORY_LOAD,
+                                L2PatternKind.MEMORY_STORE}:
+        access = ("load" if profile.pattern_kind is L2PatternKind.MEMORY_LOAD
+                  else "store")
+        authority = MemoryAccessAuthority(
+            profile.fragment_id, access, "parameter-object:base", "base", "base",
+            0, 8, 8, 8, 32, "0<=0 && 8<=32", "alias:base", "c.default",
+            "value", False, True)
+        decision = AuthorityMaterializationDecision(
+            profile.fragment_id, True, (), authority).to_dict()
     return L2FragmentRequirement(
         profile.fragment_id, _id("requirement:" + profile.fragment_id),
         tuple(sorted(_DIMENSIONS[profile.pattern_kind], key=lambda item: item.value)),
         L2EligibilityStatus.ELIGIBLE, profile.profile_identity,
-        profile.pattern_kind.value, profile.required_capabilities,
+        profile.pattern_kind.value, profile.required_capabilities, decision,
     )
 
 

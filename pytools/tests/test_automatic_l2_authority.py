@@ -153,6 +153,13 @@ def _memory_function():
                 "address": {"name": "address", "type": "uint64_t *"},
                 "value": {"name": "value", "type": "uint64_t"},
             },
+            "memoryObjectBindings": {"address": {
+                "objectIdentity": "parameter-object:address",
+                "objectSizeBytes": 32, "provenAlignmentBytes": 8,
+                "aliasDomainIdentity": "parameter-alias-domain:address",
+                "addressSpaceIdentity": "c.default", "volatile": False,
+                "bindingOrigin": "automatic-aligned-memory-object-harness-v1",
+            }},
         },
     }
 
@@ -197,5 +204,5 @@ def test_memory_materializer_records_precise_fail_closed_reason(tmp_path: Path):
         {"findings": [finding]}, [_memory_function()], frontend) == 0
     record = finding["approvalArtifact"]["l2AuthorityMaterialization"]
     assert record["status"] == "rejected"
-    assert record["reasonCode"] == "L2_MEMORY_PROOF_FACTS_INCOMPLETE"
+    assert record["reasonCode"] == "L2_MEMORY_ALIGNMENT_UNPROVED"
     assert "l2AuthoritySidecar" not in finding["approvalArtifact"]
