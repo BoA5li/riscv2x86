@@ -164,6 +164,26 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
             }
     asm_ids: list[str] = []
     asm_statement_end = -1
+    fragment_candidates: list[dict[str, object]] = []
+    for asm_index, asm_node in enumerate(asm_nodes):
+        candidate_ids = [_decl_identity(item) for item in asm_node.get("inner", [])
+                         if isinstance(item, Mapping)]
+        source_range = asm_node.get("range")
+        begin = source_range.get("begin") if isinstance(source_range, Mapping) else None
+        end = source_range.get("end") if isinstance(source_range, Mapping) else None
+        begin_offset = begin.get("offset") if isinstance(begin, Mapping) else None
+        end_offset = end.get("offset") if isinstance(end, Mapping) else None
+        token_length = end.get("tokLen") if isinstance(end, Mapping) else None
+        range_complete = all(isinstance(item, int) and not isinstance(item, bool)
+                             for item in (begin_offset, end_offset, token_length))
+        fragment_candidates.append({
+            "schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v1",
+            "asmIndex": asm_index,
+            "beginOffset": begin_offset if range_complete else -1,
+            "endOffset": end_offset + token_length if range_complete else -1,
+            "asmOperandDeclarationIds": candidate_ids,
+            "complete": bool(range_complete and candidate_ids and all(candidate_ids)),
+        })
     if len(asm_nodes) == 1:
         asm_ids = [_decl_identity(item) for item in asm_nodes[0].get("inner", [])
                    if isinstance(item, Mapping)]
@@ -199,6 +219,7 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
         "declarationReferenceCounts": reference_counts,
         "asmStatementEndOffset": asm_statement_end,
         "memoryObjectBindings": memory_bindings,
+        "fragmentCandidates": fragment_candidates,
     }
 
 
@@ -255,9 +276,11 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
         )
         safe_void_call = return_type == "void" and not params
         if safe_scalar or safe_memory_object or safe_void_call:
-            function = {"name": name, "arity": len(params),
-                              "returnType": return_type, "parameterTypes": param_types,
-                              "pointerParameters": pointer_parameters}
+            function = {"name": name,
+                        "functionId": str(node.get("id") or name),
+                        "arity": len(params),
+                        "returnType": return_type, "parameterTypes": param_types,
+                        "pointerParameters": pointer_parameters}
             function.update(_counter_return_semantics(node))
             function["l2OperandBoundary"] = _l2_operand_boundary_facts(node)
             functions.append(function)
@@ -545,6 +568,13 @@ def prepare_automatic_inventory(
                 l3_binding = raw_binding
         try:
             has_main, functions = inspect_entry_points(source)
+            program_id = _identity({
+                "schemaVersion": "riscv2x86.source-program.v1",
+                "sourceRelativePath": relative,
+                "sourceDigest": _digest(source),
+            })
+            for function in functions:
+                function["programId"] = program_id
             inspection_error = ""
         except ValueError as exc:
             has_main, functions, inspection_error = False, (), str(exc)

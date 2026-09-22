@@ -105,6 +105,18 @@ def _provider_observation_identities(result: ValidationLayerResult) -> tuple[str
     )
 
 
+def _provider_execution_identity(result: ValidationLayerResult) -> str:
+    """Accept a proof-bound program execution identity emitted by a provider."""
+    try:
+        detail = json.loads(result.detail)
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(detail, Mapping):
+        return ""
+    value = detail.get("executionIdentity")
+    return value if isinstance(value, str) and _SHA256.fullmatch(value) else ""
+
+
 def _provider_claim_properties(
     result: ValidationLayerResult,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -420,7 +432,8 @@ def _requirement_driven_l2_validator(
                 source_identity = provider_source
             if not target_identity:
                 target_identity = provider_target
-            execution_identity = (
+            provider_execution = _provider_execution_identity(result)
+            execution_identity = provider_execution or (
                 canonical_identity({
                     "schemaVersion": "riscv2x86.l2-program-execution.v1",
                     "sourceObservationIdentity": source_identity,

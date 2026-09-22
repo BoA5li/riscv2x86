@@ -14,6 +14,10 @@ from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
 from .l2_authority import l2_authority_sidecar_from_dict
 from .l2_internal_value import instrumentation_plan_from_dict
+from .l2_fragment_execution import (
+    boundary_as_legacy, fragment_boundary_from_dict,
+    program_execution_authority_from_dict,
+)
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -80,7 +84,24 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     if len(matches) != 1:
         return None, "L2_OPERAND_FUNCTION_BINDING_AMBIGUOUS"
     function = matches[0]
-    boundary = function.get("l2OperandBoundary")
+    function_boundary = function.get("l2OperandBoundary")
+    approval = finding.get("approvalArtifact")
+    raw_fragment_boundary = (approval.get("l2FragmentOperandBoundary")
+                             if isinstance(approval, Mapping) else None)
+    per_fragment = isinstance(raw_fragment_boundary, Mapping)
+    if per_fragment:
+        try:
+            parsed_boundary = fragment_boundary_from_dict(
+                raw_fragment_boundary,
+                expected_fragment_id=str(fragment.get("id") or fragment.get("fragmentId") or ""),
+            )
+        except ValueError:
+            return None, "L2_FRAGMENT_BOUNDARY_AUTHORITY_INVALID"
+        if not parsed_boundary.complete:
+            return None, "L2_FRAGMENT_BOUNDARY_VALUE_FLOW_UNPROVED"
+    boundary = (boundary_as_legacy(raw_fragment_boundary, function_boundary)
+                if per_fragment and isinstance(function_boundary, Mapping)
+                else function_boundary)
     if not isinstance(boundary, Mapping) or boundary.get("complete") is not True:
         return None, "L2_OPERAND_BOUNDARY_VALUE_FLOW_UNPROVED"
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
@@ -101,7 +122,6 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     # fragments instead require a proof-owned instrumentation plan below.
     read_write_ids = [output_ids[index] for index, item in enumerate(outputs)
                       if isinstance(item, Mapping) and str(item.get("constraint") or "").startswith("+")]
-    approval = finding.get("approvalArtifact")
     raw_instrumentation = approval.get("l2InstrumentationPlan") \
         if isinstance(approval, Mapping) else None
     instrumentation = None
@@ -116,15 +136,16 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
                 or not instrumentation.complete
                 or not instrumentation.non_interference.complete):
             return None, "L2_OPERAND_NON_INTERFERENCE_PROOF_MISSING"
-    if ((len(outputs) != 1 or output_ids[0] != returned) and instrumentation is None):
-        return None, "L2_OPERAND_INTERNAL_VALUE_REQUIRES_INSTRUMENTATION"
-    if (returned not in output_ids
-            or sorted(input_ids + read_write_ids) != sorted(params)):
-        return None, "L2_OPERAND_INTERNAL_VALUE_REQUIRES_INSTRUMENTATION"
-    for declaration_id in set(asm_ids):
-        expected_references = asm_ids.count(declaration_id) + int(returned == declaration_id)
-        if reference_counts.get(declaration_id) != expected_references:
-            return None, "L2_OPERAND_VALUE_ESCAPES_FUNCTION_BOUNDARY_MODEL"
+    if not per_fragment:
+        if ((len(outputs) != 1 or output_ids[0] != returned) and instrumentation is None):
+            return None, "L2_OPERAND_INTERNAL_VALUE_REQUIRES_INSTRUMENTATION"
+        if (returned not in output_ids
+                or sorted(input_ids + read_write_ids) != sorted(params)):
+            return None, "L2_OPERAND_INTERNAL_VALUE_REQUIRES_INSTRUMENTATION"
+        for declaration_id in set(asm_ids):
+            expected_references = asm_ids.count(declaration_id) + int(returned == declaration_id)
+            if reference_counts.get(declaration_id) != expected_references:
+                return None, "L2_OPERAND_VALUE_ESCAPES_FUNCTION_BOUNDARY_MODEL"
     if not isinstance(approval, Mapping) or approval.get("proofStatus") != "approved":
         return None, "L2_OPERAND_ARCHITECTURAL_PROOF_NOT_APPROVED"
     shell_identity = getattr(artifact, "shell_facts_identity", "")
@@ -192,6 +213,31 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         "instrumentationPlan": (None if instrumentation is None
                                 else instrumentation.to_dict()),
     }
+    if per_fragment:
+        raw_execution = approval.get("l2ProgramExecutionAuthority")
+        if not isinstance(raw_execution, Mapping):
+            return None, "L2_PROGRAM_EXECUTION_AUTHORITY_MISSING"
+        try:
+            execution = program_execution_authority_from_dict(
+                raw_execution, expected_fragment_id=str(getattr(artifact, "fragment_id", "")))
+        except ValueError:
+            return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INVALID"
+        if not execution.complete:
+            return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INCOMPLETE"
+        payload.update({
+            "fragmentBoundaryIdentity": parsed_boundary.boundary_identity,
+            "programExecutionAuthorityIdentity": execution.authority_identity,
+            "programExecutionIdentity": execution.execution_identity,
+            "executionMode": execution.execution_mode,
+            "sourceFragmentObservationIdentity": execution.observation_identity(
+                parsed_boundary.fragment_id, "logical_operands", "source"),
+            "targetFragmentObservationIdentity": execution.observation_identity(
+                parsed_boundary.fragment_id, "logical_operands", "target"),
+            "sourceShellObservationIdentity": execution.observation_identity(
+                parsed_boundary.fragment_id, "shell_semantics", "source"),
+            "targetShellObservationIdentity": execution.observation_identity(
+                parsed_boundary.fragment_id, "shell_semantics", "target"),
+        })
     payload["authorityIdentity"] = sidecar.authority_identity
     return payload, ""
 
@@ -442,7 +488,32 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 status=ValidationStatus.VERIFIED; observation["reasonCode"]=""
             evidence=_identity(observation)
             (replay / "operand-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v1","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"authorityIdentity":authority["authorityIdentity"],"sourceObservationIdentity":observation["sourceTraceDigest"],"targetObservationIdentity":observation["targetTraceDigest"],"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
+            authorized_execution = str(authority.get("programExecutionIdentity", ""))
+            execution_identity = (_identity({
+                "schemaVersion": "riscv2x86.l2-program-execution-evidence.v1",
+                "authorizedExecutionIdentity": authorized_execution,
+                "sourceTraceDigest": observation["sourceTraceDigest"],
+                "targetTraceDigest": observation["targetTraceDigest"],
+                "harnessDigest": observation["harnessDigest"],
+                "seed": seed,
+                "inputDomain": observation["inputDomain"],
+            }) if authorized_execution else "")
+            fragment_id = str(observation["fragmentId"])
+            def observation_identity(dimension: str, side: str, fallback: object) -> str:
+                if not execution_identity:
+                    return str(fallback)
+                return _identity({
+                    "schemaVersion": "riscv2x86.l2-fragment-observation-evidence.v1",
+                    "executionIdentity": execution_identity,
+                    "fragmentId": fragment_id,
+                    "dimension": dimension,
+                    "side": side,
+                })
+            source_observation_identity = observation_identity(
+                "logical_operands", "source", observation["sourceTraceDigest"])
+            target_observation_identity = observation_identity(
+                "logical_operands", "target", observation["targetTraceDigest"])
+            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v1","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"authorityIdentity":authority["authorityIdentity"],"sourceObservationIdentity":source_observation_identity,"targetObservationIdentity":target_observation_identity,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionIdentity":execution_identity,"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))

@@ -39,6 +39,9 @@ from .l2_internal_value import (
     bind_instrumentation_plan,
     internal_value_proof_facts_from_dict,
 )
+from .l2_fragment_execution import (
+    boundary_as_legacy, materialize_fragment_execution_authority,
+)
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 
 
@@ -102,7 +105,12 @@ def _scalar_authority(
     if not fragment_id or len(matches) != 1:
         return None
     function = matches[0]
-    boundary = function.get("l2OperandBoundary")
+    function_boundary = function.get("l2OperandBoundary")
+    raw_fragment_boundary = approval.get("l2FragmentOperandBoundary")
+    per_fragment = isinstance(raw_fragment_boundary, Mapping)
+    boundary = (boundary_as_legacy(raw_fragment_boundary, function_boundary)
+                if per_fragment and isinstance(function_boundary, Mapping)
+                else function_boundary)
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     if (not isinstance(boundary, Mapping) or boundary.get("complete") is not True
             or not isinstance(outputs, list) or not outputs
@@ -121,11 +129,12 @@ def _scalar_authority(
     read_write_ids = [output_ids[index] for index, item in enumerate(outputs)
                       if isinstance(item, Mapping)
                       and str(item.get("constraint", "")).startswith("+")]
-    if returned not in output_ids or sorted(input_ids + read_write_ids) != sorted(params):
-        return None
-    expected = {item: asm_ids.count(item) + int(item == returned) for item in set(asm_ids)}
-    if any(counts.get(item) != count for item, count in expected.items()):
-        return None
+    if not per_fragment:
+        if returned not in output_ids or sorted(input_ids + read_write_ids) != sorted(params):
+            return None
+        expected = {item: asm_ids.count(item) + int(item == returned) for item in set(asm_ids)}
+        if any(counts.get(item) != count for item, count in expected.items()):
+            return None
     operands = []
     for index, (raw, declaration_id, access) in enumerate(
             [(item, output_ids[pos],
@@ -640,6 +649,32 @@ def materialize_automatic_l2_authority(
     if not isinstance(findings, list):
         raise ValueError("translated report findings are unavailable")
     producer_digest = "sha256:" + sha256(Path(frontend).read_bytes()).hexdigest()
+    # Build one compiler-range-bound authority per fragment before any scalar
+    # sidecar is considered.  Legacy single-fragment functions remain on their
+    # existing closed path when no fragment candidates were exported.
+    for function in functions:
+        raw_boundary = function.get("l2OperandBoundary") if isinstance(function, Mapping) else None
+        candidates = raw_boundary.get("fragmentCandidates") if isinstance(raw_boundary, Mapping) else None
+        if not isinstance(function, Mapping) or not isinstance(candidates, list) or not candidates:
+            continue
+        scoped = [item for item in findings if isinstance(item, Mapping)]
+        program_id = str(function.get("programId") or _identity({
+            "schemaVersion": "riscv2x86.automatic-program.v1",
+            "producerDigest": producer_digest,
+        }))
+        boundaries, graph, execution = materialize_fragment_execution_authority(
+            scoped, function, program_id)
+        for finding in scoped:
+            fragment = finding.get("fragment")
+            approval = finding.get("approvalArtifact")
+            fragment_id = (str(fragment.get("id") or fragment.get("fragmentId") or "")
+                           if isinstance(fragment, Mapping) else "")
+            boundary = boundaries.get(fragment_id)
+            if boundary is None or not isinstance(approval, dict):
+                continue
+            approval["l2FragmentOperandBoundary"] = boundary.to_dict()
+            approval["l2FragmentDependencyGraph"] = graph.to_dict()
+            approval["l2ProgramExecutionAuthority"] = execution.to_dict()
     count = 0
     for finding in findings:
         if not isinstance(finding, dict):
