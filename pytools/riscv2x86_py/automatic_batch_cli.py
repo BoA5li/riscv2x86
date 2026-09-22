@@ -139,6 +139,29 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
         if identity:
             reference_counts[identity] = reference_counts.get(identity, 0) + 1
     parameter_ids = [str(item.get("id") or item.get("name") or "") for item in params]
+    memory_bindings: dict[str, object] = {}
+    for parameter, declaration_id in zip(params, parameter_ids):
+        raw_type = parameter.get("type")
+        type_name = (str(raw_type.get("qualType", ""))
+                     if isinstance(raw_type, Mapping) else "")
+        match = _INTEGER_POINTER_TYPE.fullmatch(type_name)
+        if match and declaration_id:
+            # This is the automatic harness's declared object, not an address
+            # reconstructed from a runtime sample.  The L1/L2 memory runner
+            # allocates this exact bounded object for every invocation.
+            pointee = type_name.replace("const", "").replace("volatile", "")
+            pointee = pointee.replace("*", "").strip()
+            fixed = re.fullmatch(r"u?int(8|16|32|64)_t", pointee)
+            alignment = int(fixed.group(1)) // 8 if fixed else 8
+            memory_bindings[declaration_id] = {
+                "objectIdentity": "parameter-object:" + declaration_id,
+                "objectSizeBytes": 32,
+                "provenAlignmentBytes": alignment,
+                "aliasDomainIdentity": "parameter-alias-domain:" + declaration_id,
+                "addressSpaceIdentity": "c.default",
+                "volatile": "volatile" in type_name.split(),
+                "bindingOrigin": "automatic-aligned-memory-object-harness-v1",
+            }
     asm_ids: list[str] = []
     asm_statement_end = -1
     if len(asm_nodes) == 1:
@@ -175,6 +198,7 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
         "declarations": declarations,
         "declarationReferenceCounts": reference_counts,
         "asmStatementEndOffset": asm_statement_end,
+        "memoryObjectBindings": memory_bindings,
     }
 
 

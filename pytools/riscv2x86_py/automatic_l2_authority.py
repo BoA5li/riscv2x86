@@ -27,6 +27,7 @@ from .l2_control_flow import (
     control_flow_proof_facts_from_dict,
 )
 from .l2_memory_object import (
+    assess_memory_authority_materializability,
     bind_memory_object_authority,
     memory_proof_facts_from_dict,
 )
@@ -281,9 +282,12 @@ def _memory_authority(
         facts = memory_proof_facts_from_dict(raw_facts)
     except ValueError:
         return None
-    if (profile.pattern_kind not in {L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE}
-            or facts.fragment_id != fragment_id or not facts.complete
-            or not isinstance(boundary, Mapping) or boundary.get("complete") is not True):
+    if profile.pattern_kind not in {L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE}:
+        return None
+    decision = assess_memory_authority_materializability(
+        approval, facts, boundary if isinstance(boundary, Mapping) else None,
+        fragment)
+    if not decision.materializable or decision.authority is None:
         return None
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     declarations, asm_ids = boundary.get("declarations"), boundary.get("asmOperandDeclarationIds")
@@ -329,7 +333,8 @@ def _memory_authority(
             or value_operand.width_bits != facts.width_bytes * 8):
         return None
     try:
-        memory_object, object_id = bind_memory_object_authority(facts, operands)
+        memory_object, object_id = bind_memory_object_authority(
+            facts, operands, decision.authority)
     except ValueError:
         return None
     sample_count = 8 if any(item.parameter_index is not None and
@@ -528,12 +533,14 @@ def _memory_authority_failure_reason(
         facts = memory_proof_facts_from_dict(raw_facts)
     except ValueError:
         return "L2_MEMORY_PROOF_FACTS_INVALID"
-    if (facts.fragment_id != fragment_id or not facts.complete
-            or facts.access_kind != expected_access):
-        return "L2_MEMORY_PROOF_FACTS_INCOMPLETE"
     boundary = matches[0].get("l2OperandBoundary")
-    if not isinstance(boundary, Mapping) or boundary.get("complete") is not True:
-        return "L2_MEMORY_OPERAND_BOUNDARY_INCOMPLETE"
+    decision = assess_memory_authority_materializability(
+        approval, facts, boundary if isinstance(boundary, Mapping) else None,
+        fragment)
+    if not decision.materializable:
+        return decision.reason_codes[0]
+    if facts.access_kind != expected_access:
+        return "L2_MEMORY_PROOF_FACTS_INCOMPLETE"
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     declarations = boundary.get("declarations")
     asm_ids = boundary.get("asmOperandDeclarationIds")
@@ -666,6 +673,15 @@ def materialize_automatic_l2_authority(
                         record_fragment_id, "object_relative_memory",
                         "rejected", reason,
                     )
+                matches = [item for item in functions
+                           if isinstance(raw_fragment, Mapping)
+                           and item.get("name") == raw_fragment.get("enclosingFunction")]
+                raw_facts = approval.get("l2MemoryProofFacts")
+                decision = assess_memory_authority_materializability(
+                    approval, raw_facts if isinstance(raw_facts, Mapping) else None,
+                    matches[0].get("l2OperandBoundary") if len(matches) == 1 else None,
+                    raw_fragment if isinstance(raw_fragment, Mapping) else {})
+                approval["l2MemoryAuthorityDecision"] = decision.to_dict()
             continue
         approval = finding.get("approvalArtifact")
         assert isinstance(approval, dict)
@@ -684,6 +700,16 @@ def materialize_automatic_l2_authority(
         approval["shellFactsIdentity"] = sidecar.shell_fact_identity
         approval["l2AuthoritySidecar"] = sidecar.to_dict()
         if is_memory:
+            raw_fragment = finding.get("fragment")
+            matches = [item for item in functions
+                       if isinstance(raw_fragment, Mapping)
+                       and item.get("name") == raw_fragment.get("enclosingFunction")]
+            decision = assess_memory_authority_materializability(
+                approval, approval.get("l2MemoryProofFacts")
+                if isinstance(approval.get("l2MemoryProofFacts"), Mapping) else None,
+                matches[0].get("l2OperandBoundary") if len(matches) == 1 else None,
+                raw_fragment if isinstance(raw_fragment, Mapping) else {})
+            approval["l2MemoryAuthorityDecision"] = decision.to_dict()
             approval["l2AuthorityMaterializationReasonCode"] = \
                 "L2_MEMORY_AUTHORITY_MATERIALIZED"
             approval["l2AuthorityMaterialization"] = \

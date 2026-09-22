@@ -15,6 +15,252 @@ L2_MEMORY_PROOF_FACTS_SCHEMA = "riscv2x86.l2-memory-proof-facts.v1"
 L2_MEMORY_OBSERVATION_SCHEMA = "riscv2x86.l2-memory-observation.v1"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+L2_MEMORY_MATERIALIZATION_DECISION_SCHEMA = \
+    "riscv2x86.l2-memory-authority-decision.v1"
+
+
+def _c_scalar_width_bytes(type_name: object) -> int:
+    name = " ".join(str(type_name).replace("const", "")
+                    .replace("volatile", "").split())
+    fixed = re.fullmatch(r"u?int(8|16|32|64)_t", name)
+    if fixed:
+        return int(fixed.group(1)) // 8
+    return {"char": 1, "signed char": 1, "unsigned char": 1,
+            "short": 2, "signed short": 2, "unsigned short": 2,
+            "int": 4, "signed int": 4, "unsigned int": 4,
+            "long": 8, "signed long": 8, "unsigned long": 8,
+            "long long": 8, "signed long long": 8,
+            "unsigned long long": 8}.get(name, 0)
+
+
+@dataclass(frozen=True)
+class MemoryAccessAuthority:
+    """Compiler/harness-owned coordinates for one logical memory access.
+
+    Object identity is deliberately a declaration/contract identity.  This
+    type has no field capable of carrying a sampled runtime address.
+    """
+    fragment_id: str
+    access_kind: str
+    object_identity: str
+    address_value_node: str
+    base_operand_identity: str
+    offset_bytes: int
+    access_width_bytes: int
+    required_alignment_bytes: int
+    proven_alignment_bytes: int
+    object_size_bytes: int | None
+    bounds_relation: str
+    alias_domain_identity: str
+    address_space_identity: str
+    value_operand_identity: str
+    volatile: bool
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if self.access_kind not in {"load", "store", "rmw"}:
+            raise ValueError("memory access authority kind is unsupported")
+        numeric = (self.offset_bytes, self.access_width_bytes,
+                   self.required_alignment_bytes, self.proven_alignment_bytes)
+        if (any(isinstance(item, bool) or not isinstance(item, int) for item in numeric)
+                or self.offset_bytes < 0 or min(numeric[1:]) <= 0
+                or (self.object_size_bytes is not None and
+                    (isinstance(self.object_size_bytes, bool)
+                     or not isinstance(self.object_size_bytes, int)
+                     or self.object_size_bytes <= 0))):
+            raise ValueError("memory access authority numeric facts are invalid")
+        identities = (self.fragment_id, self.object_identity,
+                      self.address_value_node, self.base_operand_identity,
+                      self.bounds_relation, self.alias_domain_identity,
+                      self.address_space_identity, self.value_operand_identity)
+        if any(not isinstance(item, str) or not item for item in identities):
+            raise ValueError("memory access authority identity is incomplete")
+        if not isinstance(self.volatile, bool) or self.complete is not True:
+            raise ValueError("memory access authority flags are invalid")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "fragmentId": self.fragment_id, "accessKind": self.access_kind,
+            "objectIdentity": self.object_identity,
+            "addressValueNode": self.address_value_node,
+            "baseOperandIdentity": self.base_operand_identity,
+            "offsetBytes": self.offset_bytes,
+            "accessWidthBytes": self.access_width_bytes,
+            "requiredAlignmentBytes": self.required_alignment_bytes,
+            "provenAlignmentBytes": self.proven_alignment_bytes,
+            "objectSizeBytes": self.object_size_bytes,
+            "boundsRelation": self.bounds_relation,
+            "aliasDomainIdentity": self.alias_domain_identity,
+            "addressSpaceIdentity": self.address_space_identity,
+            "valueOperandIdentity": self.value_operand_identity,
+            "volatile": self.volatile, "complete": self.complete,
+        }
+
+
+@dataclass(frozen=True)
+class AuthorityMaterializationDecision:
+    fragment_id: str
+    materializable: bool
+    reason_codes: tuple[str, ...]
+    authority: MemoryAccessAuthority | None = None
+    schema_version: str = L2_MEMORY_MATERIALIZATION_DECISION_SCHEMA
+
+    def __post_init__(self) -> None:
+        if (self.schema_version != L2_MEMORY_MATERIALIZATION_DECISION_SCHEMA
+                or not self.fragment_id
+                or self.reason_codes != tuple(sorted(set(self.reason_codes)))
+                or self.materializable != (self.authority is not None)
+                or (self.materializable and self.reason_codes)):
+            raise ValueError("memory authority decision is inconsistent")
+
+    @property
+    def decision_identity(self) -> str:
+        return _identity(self.to_dict(include_identity=False))
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, object]:
+        value = {"schemaVersion": self.schema_version,
+                 "fragmentId": self.fragment_id,
+                 "materializable": self.materializable,
+                 "reasonCodes": list(self.reason_codes),
+                 "authority": None if self.authority is None else self.authority.to_dict()}
+        if include_identity:
+            value["decisionIdentity"] = self.decision_identity
+        return value
+
+
+def assess_memory_authority_materializability(
+    translation_proof: Mapping[str, object],
+    memory_facts: L2MemoryProofFacts | Mapping[str, object] | None,
+    operand_boundary: Mapping[str, object] | None,
+    fragment: Mapping[str, object],
+) -> AuthorityMaterializationDecision:
+    """Make the single fail-closed decision used by planning and execution."""
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    if (isinstance(memory_facts, Mapping)
+            and memory_facts.get("schemaVersion")
+            == L2_MEMORY_MATERIALIZATION_DECISION_SCHEMA):
+        payload = dict(memory_facts)
+        claimed = payload.pop("decisionIdentity", None)
+        raw_authority = payload.get("authority")
+        try:
+            if claimed != _identity(payload) or payload.get("fragmentId") != fragment_id:
+                raise ValueError
+            reasons = payload.get("reasonCodes")
+            if (not isinstance(reasons, list)
+                    or not all(isinstance(item, str) and item for item in reasons)):
+                raise ValueError
+            authority = None
+            if isinstance(raw_authority, Mapping):
+                authority = MemoryAccessAuthority(
+                    str(raw_authority.get("fragmentId") or ""),
+                    str(raw_authority.get("accessKind") or ""),
+                    str(raw_authority.get("objectIdentity") or ""),
+                    str(raw_authority.get("addressValueNode") or ""),
+                    str(raw_authority.get("baseOperandIdentity") or ""),
+                    raw_authority.get("offsetBytes"), raw_authority.get("accessWidthBytes"),
+                    raw_authority.get("requiredAlignmentBytes"),
+                    raw_authority.get("provenAlignmentBytes"),
+                    raw_authority.get("objectSizeBytes"),
+                    str(raw_authority.get("boundsRelation") or ""),
+                    str(raw_authority.get("aliasDomainIdentity") or ""),
+                    str(raw_authority.get("addressSpaceIdentity") or ""),
+                    str(raw_authority.get("valueOperandIdentity") or ""),
+                    raw_authority.get("volatile"), raw_authority.get("complete"))
+            return AuthorityMaterializationDecision(
+                fragment_id, payload.get("materializable") is True,
+                tuple(reasons), authority)
+        except (TypeError, ValueError):
+            return AuthorityMaterializationDecision(
+                fragment_id or "missing-fragment", False,
+                ("L2_MEMORY_AUTHORITY_DECISION_INVALID",))
+    reasons: set[str] = set()
+    if not fragment_id:
+        fragment_id = "missing-fragment"
+        reasons.add("L2_FRAGMENT_IDENTITY_MISMATCH")
+    if (translation_proof.get("proofStatus") != "approved"
+            or translation_proof.get("architectureSemanticsPreserved") is False
+            or translation_proof.get("shellSemanticsPreserved") is not True):
+        reasons.add("L2_MEMORY_TRANSLATION_PROOF_UNAPPROVED")
+    try:
+        facts = (memory_facts if isinstance(memory_facts, L2MemoryProofFacts)
+                 else memory_proof_facts_from_dict(memory_facts)
+                 if isinstance(memory_facts, Mapping) else None)
+    except ValueError:
+        facts = None
+    if facts is None:
+        reasons.add("L2_MEMORY_ADDRESS_BINDING_MISSING")
+        return AuthorityMaterializationDecision(fragment_id, False,
+                                                tuple(sorted(reasons)))
+    if facts.fragment_id != fragment_id:
+        reasons.add("L2_FRAGMENT_IDENTITY_MISMATCH")
+    boundary = operand_boundary if isinstance(operand_boundary, Mapping) else {}
+    asm_ids = boundary.get("asmOperandDeclarationIds")
+    declarations = boundary.get("declarations")
+    bindings = boundary.get("memoryObjectBindings")
+    if (boundary.get("complete") is not True or not isinstance(asm_ids, list)
+            or not isinstance(declarations, Mapping)
+            or max(facts.address_operand_index,
+                   facts.value_operand_index) >= len(asm_ids)):
+        reasons.add("L2_MEMORY_ADDRESS_BINDING_MISSING")
+        return AuthorityMaterializationDecision(fragment_id, False,
+                                                tuple(sorted(reasons)))
+    address_id = str(asm_ids[facts.address_operand_index])
+    value_id = str(asm_ids[facts.value_operand_index])
+    address_declaration = declarations.get(address_id)
+    if (not isinstance(address_declaration, Mapping)
+            or "*" not in str(address_declaration.get("type", ""))):
+        reasons.add("L2_MEMORY_ADDRESS_BINDING_MISSING")
+    object_binding = bindings.get(address_id) if isinstance(bindings, Mapping) else None
+    if not isinstance(object_binding, Mapping):
+        reasons.add("L2_MEMORY_OBJECT_IDENTITY_MISSING")
+        object_binding = {}
+    object_identity = object_binding.get("objectIdentity")
+    binding_origin = object_binding.get("bindingOrigin")
+    if (not isinstance(object_identity, str) or not object_identity
+            or binding_origin not in {
+                "compiler-object-v1", "parameter-object-contract-v1",
+                "automatic-aligned-memory-object-harness-v1",
+                "explicit-harness-object-contract-v1"}):
+        reasons.add("L2_MEMORY_OBJECT_IDENTITY_MISSING")
+    size = object_binding.get("objectSizeBytes")
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+        reasons.add("L2_MEMORY_BOUNDS_UNPROVED")
+        size = None
+    end = facts.byte_offset + facts.width_bytes
+    if not facts.bounds_proven or size is None or end > size:
+        reasons.add("L2_MEMORY_BOUNDS_UNPROVED")
+    proven_alignment = object_binding.get("provenAlignmentBytes")
+    if (isinstance(proven_alignment, bool) or not isinstance(proven_alignment, int)
+            or proven_alignment < facts.required_alignment
+            or facts.byte_offset % facts.required_alignment
+            or not facts.alignment_proven):
+        reasons.add("L2_MEMORY_ALIGNMENT_UNPROVED")
+        proven_alignment = 0
+    value_declaration = declarations.get(value_id)
+    if (not value_id or not isinstance(value_declaration, Mapping)
+            or _c_scalar_width_bytes(value_declaration.get("type")) != facts.width_bytes
+            or facts.value_operand_index == facts.address_operand_index):
+        reasons.add("L2_MEMORY_VALUE_FLOW_UNPROVED")
+    alias_domain = object_binding.get("aliasDomainIdentity")
+    address_space = object_binding.get("addressSpaceIdentity")
+    if (not isinstance(alias_domain, str) or not alias_domain
+            or not isinstance(address_space, str) or not address_space):
+        reasons.add("L2_MEMORY_ADDRESS_BINDING_MISSING")
+    if not facts.complete or not facts.alias_complete or not facts.unique_object:
+        reasons.add("L2_MEMORY_OBJECT_IDENTITY_MISSING")
+    if reasons:
+        return AuthorityMaterializationDecision(fragment_id, False,
+                                                tuple(sorted(reasons)))
+    authority = MemoryAccessAuthority(
+        fragment_id, facts.access_kind, str(object_identity), address_id,
+        address_id, facts.byte_offset, facts.width_bytes,
+        facts.required_alignment, int(proven_alignment), size,
+        f"0<={facts.byte_offset} && {end}<={size}",
+        str(alias_domain), str(address_space),
+        value_id, bool(object_binding.get("volatile", False)), True,
+    )
+    return AuthorityMaterializationDecision(fragment_id, True, (), authority)
+
 
 def _identity(value: object) -> str:
     data = json.dumps(value, sort_keys=True, separators=(",", ":"),
@@ -170,6 +416,7 @@ def memory_proof_facts_from_dict(value: Mapping[str, object]) -> L2MemoryProofFa
 
 def bind_memory_object_authority(
     facts: L2MemoryProofFacts, operands: Sequence[L2OperandAuthority],
+    access_authority: MemoryAccessAuthority | None = None,
 ) -> tuple[L2MemoryObjectAuthority, str]:
     by_index = {item.operand_index: item for item in operands}
     address = by_index.get(facts.address_operand_index)
@@ -178,15 +425,25 @@ def bind_memory_object_authority(
         raise ValueError("memory proof operands/safety facts are incomplete")
     if address.parameter_index is None or address.escape_kind != "function_argument":
         raise ValueError("memory address is not bound to one function argument")
+    if access_authority is None:
+        raise ValueError("memory object requires compiler/harness object authority")
+    if (not access_authority.complete
+            or access_authority.fragment_id != facts.fragment_id
+            or access_authority.base_operand_identity != address.declaration_id
+            or access_authority.value_operand_identity != value.declaration_id):
+        raise ValueError("memory access authority does not bind selected operands")
     end = facts.byte_offset + facts.width_bytes
-    size = max(32, ((end + facts.required_alignment - 1) // facts.required_alignment)
-               * facts.required_alignment)
-    object_id = f"operand:{address.operand_index}:object"
+    size = access_authority.object_size_bytes
+    if size is None or end > size:
+        raise ValueError("memory object bounds are not authoritative")
+    object_id = access_authority.object_identity
     readable = ((facts.byte_offset, end),) if facts.access_kind == "load" else ()
     writable = ((facts.byte_offset, end),) if facts.access_kind == "store" else ()
     return L2MemoryObjectAuthority(
-        object_id, facts.object_origin_kind, size, facts.required_alignment,
-        facts.object_lifetime_scope, facts.alias_class, readable, writable, True,
+        object_id, facts.object_origin_kind, size,
+        access_authority.proven_alignment_bytes,
+        facts.object_lifetime_scope, access_authority.alias_domain_identity,
+        readable, writable, True,
     ), object_id
 
 

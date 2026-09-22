@@ -18,6 +18,7 @@ from .l2_dimensions import (
     parse_l2_dimensions,
 )
 from .l2_semantic_profile import L2PatternKind, profile_from_finding
+from .l2_memory_object import assess_memory_authority_materializability
 
 LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v1"
 LEGACY_L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v1"
@@ -139,6 +140,15 @@ def _memory_authority_eligibility_reason(
     approval = finding.get("approvalArtifact")
     if not isinstance(approval, Mapping):
         return "l2.memory-authority.approval-missing"
+    fragment = finding.get("fragment")
+    raw_decision = approval.get("l2MemoryAuthorityDecision")
+    if not isinstance(fragment, Mapping) or not isinstance(raw_decision, Mapping):
+        return "l2.memory-authority.decision-missing"
+    decision = assess_memory_authority_materializability(
+        approval, raw_decision, None, fragment)
+    if not decision.materializable:
+        return (decision.reason_codes[0] if decision.reason_codes else
+                "l2.memory-authority.decision-invalid")
     record = approval.get("l2AuthorityMaterialization")
     fields = {
         "schemaVersion", "fragmentId", "authorityKind", "status",
@@ -273,6 +283,13 @@ class L2EligibilityClassifier:
             "reasonCodes": list(reason_codes),
             "validatorPlan": plan,
         }
+        if (semantic_profile is not None
+                and semantic_profile.pattern_kind in {
+                    L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE}):
+            approval = finding.get("approvalArtifact")
+            payload["memoryAuthorityDecision"] = (
+                approval.get("l2MemoryAuthorityDecision")
+                if isinstance(approval, Mapping) else None)
         payload["requirementIdentity"] = _identity(payload)
         return payload
 
@@ -334,7 +351,10 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
     disposition_counts: dict[str, int] = {}
     dimension_counts: dict[str, int] = {}
     for item in requirements:
-        if not isinstance(item, Mapping) or set(item) != requirement_fields:
+        if (not isinstance(item, Mapping)
+                or set(item) not in {frozenset(requirement_fields),
+                                     frozenset(requirement_fields |
+                                               {"memoryAuthorityDecision"})}):
             raise ValueError("L2 fragment requirement fields are invalid")
         item_identity = item.get("requirementIdentity")
         item_payload = dict(item); item_payload.pop("requirementIdentity")
