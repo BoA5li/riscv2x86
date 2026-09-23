@@ -69,6 +69,24 @@ def test_inventory_main_uses_executable_process_contract(tmp_path, monkeypatch):
     assert request["runtimeRegistryTemplate"]["validators"]["L1"]["config"]["mode"] == "main"
 
 
+def test_inventory_forwards_explicit_instruction_stream_registry(tmp_path, monkeypatch):
+    source = tmp_path / "case.c"
+    source.write_text("void f(void) { __asm__ volatile(\"fence.i\" ::: \"memory\"); }\n")
+    frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)
+    authority = tmp_path / "authority"; authority.mkdir()
+    registry = authority / "case.c.instruction-stream-sync.json"
+    registry.write_text("{}\n")
+    monkeypatch.setattr(auto, "inspect_entry_points", lambda source: (False, ()))
+    auto.prepare_automatic_inventory(
+        source, tmp_path / "inventory", frontend=frontend,
+        instruction_stream_sync_directory=authority,
+    )
+    descriptor = next((tmp_path / "inventory/cases").rglob("riscv2x86-evaluation.json"))
+    command = json.loads(descriptor.read_text())["request"]["translationCommand"]
+    index = command.index("--instruction-stream-sync-registry")
+    assert command[index + 1] == str(registry)
+
+
 def test_inventory_enables_architectural_l2_for_proved_scalar_boundary(tmp_path, monkeypatch):
     source = tmp_path / "add.c"; source.write_text("unsigned long add(unsigned long a){return a;}\n")
     frontend = tmp_path / "riscv2x86"; frontend.write_text("x"); frontend.chmod(0o755)

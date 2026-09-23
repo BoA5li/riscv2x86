@@ -44,6 +44,7 @@ from .privileged_execution_sidecar import (
     default_user_process_execution_facts,
 )
 from .privileged_pipeline_inputs import PrivilegedPipelineInputs
+from .instruction_stream_sync_contracts import InstructionStreamSyncRegistry
 from .csr_metadata_ingress import profile_from_execution_facts
 from .csr_value_flow import authority_from_phase4_facts, join_csr_operand_bindings
 from .csr_authority import csr_operand_authority_from_bundle
@@ -448,6 +449,7 @@ _PURE_C_KINDS = {
     "lower_to_c",
     "functional_c",
     "instruction_stream_elision",
+    "runtime_c",
     "privileged_runtime",
 }
 
@@ -897,17 +899,24 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
     # A strict no-op elision is not generic pure C.  It is permitted only
     # when Phase 6 carried the externally supplied instruction-stream proof
     # certificate into an approved artifact.
-    if kind == "instruction_stream_elision":
+    if kind in {"instruction_stream_elision", "runtime_c"}:
         artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
         if not (
-            artifact.get("artifactVersion") == "phase6-approval-v1"
+            artifact.get("artifactVersion") == "phase6-instruction-stream-sync-v2"
             and artifact.get("proofStatus") == "approved"
-            and artifact.get("replacementKind") == "instruction_stream_elision"
-            and isinstance(artifact.get("instructionStreamSyncProofId"), str)
-            and artifact["instructionStreamSyncProofId"]
+            and artifact.get("preservationMode") == "architecture_equivalent"
+            and artifact.get("replacementKind") in {
+                "instruction_stream_elision", "helper_call"
+            }
+            and isinstance(artifact.get("proofId"), str)
+            and artifact["proofId"].startswith("phase6d:")
+            and isinstance(artifact.get("proofObligations"), list)
+            and artifact.get("preservesCompilerMemoryOrdering") is True
+            and artifact.get("preservesVolatileExecution") is True
+            and artifact.get("preservesCcClobber") is True
         ):
             reasons.append(
-                "instruction-stream no-op elision lacks its required proof artifact"
+                "instruction-stream route lacks its required independent proof artifact"
             )
         return reasons
 
@@ -1178,6 +1187,7 @@ def run(
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     privileged_pipeline_inputs: PrivilegedPipelineInputs | None = None,
+    instruction_stream_sync_registry: InstructionStreamSyncRegistry | None = None,
     allow_functional_fallbacks: bool = False,
     validation_runner: PipelineValidationRunner | None = None,
 ) -> dict:
@@ -1214,7 +1224,6 @@ def run(
     default_features = {"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id}
     default_builtins = {"c_builtin:atomic", "c_builtin:compiler_barrier"}
     if allow_functional_fallbacks:
-        default_features.add("runtime:" + INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id)
         default_features.add("runtime:" + MONOTONIC_TIME_NS_V1.runtime_contract_id)
         default_features.add("runtime:" + TSC_TICKS_V1.runtime_contract_id)
     if privileged_runtime_registry is not None:
@@ -1233,8 +1242,6 @@ def run(
             RV64_MULHU_U64.runtime_contract_id,
             RV64_MULHU_U64.required_environment_capability,
             *({
-                INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id,
-                INSTRUCTION_STREAM_SYNC_LOCAL.required_environment_capability,
                 MONOTONIC_TIME_NS_V1.runtime_contract_id,
                 MONOTONIC_TIME_NS_V1.required_environment_capability,
                 TSC_TICKS_V1.runtime_contract_id,
@@ -1775,6 +1782,7 @@ def run(
             functional_observability=functional_observability,
             privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
+            instruction_stream_sync_registry=instruction_stream_sync_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,
         )
 

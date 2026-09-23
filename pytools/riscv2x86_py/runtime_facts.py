@@ -76,11 +76,9 @@ class TranslationRuntimeFacts:
     # semantics with runtime operand bindings and frontend continuation facts.
     asm_goto_condition_operand_index: int | None = None
 
-    # A source/frontend supplied proof certificate for the very narrow case
-    # where an instruction-stream synchronization operation has no observable
-    # effect.  It is intentionally *not* synthesized by assemble.py, p-code,
-    # mnemonic matching, or a target renderer.  Without this certificate a
-    # fence.i-class operation must retain its dedicated synchronization route.
+    # Deprecated archive compatibility only. Phase 6A no longer consumes
+    # these fields as authority. Even a no-op requires the independent v2
+    # instruction-stream runtime-contract registry.
     instruction_stream_sync_noop_proven: bool = False
     instruction_stream_sync_proof_id: str | None = None
     asm_goto_condition_kind: str | None = None

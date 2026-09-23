@@ -49,7 +49,11 @@ from riscv2x86_py.privileged_execution_sidecar import (
     UnknownCsrAccessDisposition, VirtualMemoryModelFacts,
 )
 from riscv2x86_py.privileged_state_analysis import analyze_privileged_state
-from riscv2x86_py.helper_runtime_manifest import INSTRUCTION_STREAM_SYNC_LOCAL
+from riscv2x86_py.instruction_stream_sync_contracts import (
+    InstructionStreamSyncContract, InstructionStreamSyncLoweringKind,
+    InstructionStreamSyncRegistry, InstructionStreamSyncScope, ModifiedCodeRange,
+    instruction_stream_environment_id,
+)
 from riscv2x86_py.schema import AsmFragment, AsmOperand
 from riscv2x86_py.shell_model import SourceShellModel
 from riscv2x86_py.source_model import build_source_semantic_model
@@ -670,7 +674,7 @@ def test_counter_functional_adapters_are_domain_and_width_specific() -> None:
 
 def test_instruction_stream_barrier_requires_explicit_route() -> None:
     """Instruction-stream barriers must never be guessed as x86 fences."""
-    fragment = AsmFragment(clobbers=["memory"], isVolatile=True)
+    fragment = AsmFragment(id="fence-i-fragment", clobbers=["memory"], isVolatile=True)
     summary = IRSummary(
         is_single_block=True, has_branch=False, has_call_or_return=False,
         has_memory_barrier=False, has_instruction_barrier=True,
@@ -698,30 +702,46 @@ def test_instruction_stream_barrier_requires_explicit_route() -> None:
     )
     assert routed.kind == "needs_route"
     assert "TR_INSTRUCTION_STREAM_SYNC_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
-    assert routed.metadata["functionalFallbackPermitted"] is True
+    assert routed.metadata["ordinaryFenceRouteForbidden"] is True
+    assert routed.metadata["phase6dReasonCode"] == "ISS_RUNTIME_CONTRACT_MISSING"
 
-    functional_environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
-        helper_contract_capabilities={
-            INSTRUCTION_STREAM_SYNC_LOCAL.required_environment_capability,
-        },
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    contract = InstructionStreamSyncContract(
+        contract_id="test.local-runtime", semantic_version="1",
+        source_fragment_id=fragment.id,
+        target_environment_id=instruction_stream_environment_id(environment),
+        lowering_kind=InstructionStreamSyncLoweringKind.RUNTIME_HELPER,
+        modified_code_range=ModifiedCodeRange("jit-code", 0, 64, "process-as"),
+        data_write_publication_relation_id="publish.release.v1",
+        instruction_fetch_visibility_relation_id="ifetch.visible.v1",
+        required_scope=InstructionStreamSyncScope.LOCAL_HART,
+        cache_coherence_model_id="x86-coherent.v1",
+        cross_core_invalidation_relation_id=None,
+        target_cpu_profile_id=environment.target_cpu_profile_id,
+        runtime_adapter_identity="riscv2x86_rt_instruction_stream_sync_local@v1",
+        completion_acknowledgement_relation_id="sync-return.v1",
+        helper_symbol="riscv2x86_rt_instruction_stream_sync_local",
+        required_header="riscv2x86_runtime_helpers.h",
+        runtime_library="libriscv2x86_runtime",
     )
-    functional = translate(
+    registry = InstructionStreamSyncRegistry(version="test.v2", contracts=(contract,))
+    translated = translate(
         frag=fragment, lift=_IngressLift(), summary=summary,
         machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
         cfg=CFGResult(ok=True),
         runtime_facts=TranslationRuntimeFacts(
             rv_to_operand_index={}, operand_width_bits={}, provenance="phase4-test",
         ),
-        target_environment=functional_environment,
-        allow_functional_fallbacks=True,
+        target_environment=environment,
+        instruction_stream_sync_registry=registry,
     )
-    assert functional.kind == "functional_c"
-    assert functional.replacement == "riscv2x86_rt_instruction_stream_sync_local();"
-    assert functional.metadata["approvalArtifact"]["replacementKind"] == "helper_call"
+    assert translated.kind == "runtime_c"
+    assert translated.replacement == "riscv2x86_rt_instruction_stream_sync_local();"
+    assert translated.metadata["approvalArtifact"]["proofId"].startswith("phase6d:")
 
 
 def test_instruction_stream_noop_elision_requires_explicit_certificate() -> None:
-    fragment = AsmFragment(clobbers=["memory"], isVolatile=True)
+    fragment = AsmFragment(id="fence-i-noop-fragment", clobbers=["memory"], isVolatile=True)
     summary = IRSummary(
         is_single_block=True, has_branch=False, has_call_or_return=False,
         has_memory_barrier=False, has_instruction_barrier=True,
@@ -735,20 +755,40 @@ def test_instruction_stream_noop_elision_requires_explicit_certificate() -> None
         0x1000, [], summary=summary,
         instructions=[CanonicalInsn(addr=0x1000, size=4)],
     ),)
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att()
+    contract = InstructionStreamSyncContract(
+        contract_id="test.noop", semantic_version="1",
+        source_fragment_id=fragment.id,
+        target_environment_id=instruction_stream_environment_id(environment),
+        lowering_kind=InstructionStreamSyncLoweringKind.PROVEN_NOOP,
+        modified_code_range=ModifiedCodeRange("jit-code", 0, 64, "process-as"),
+        data_write_publication_relation_id="environment-publication.v1",
+        instruction_fetch_visibility_relation_id="environment-ifetch-visible.v1",
+        required_scope=InstructionStreamSyncScope.LOCAL_HART,
+        cache_coherence_model_id="x86-specified-coherence.v1",
+        cross_core_invalidation_relation_id=None,
+        target_cpu_profile_id=environment.target_cpu_profile_id,
+        runtime_adapter_identity="environment",
+        completion_acknowledgement_relation_id="environment-complete.v1",
+        environment_noop_guarantee_id="host-guarantees-required-visibility.v1",
+    )
     elided = translate(
         frag=fragment, lift=_IngressLift(), summary=summary,
         machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
         cfg=CFGResult(ok=True),
         runtime_facts=TranslationRuntimeFacts(
             rv_to_operand_index={}, operand_width_bits={}, provenance="frontend-proof",
-            instruction_stream_sync_noop_proven=True,
-            instruction_stream_sync_proof_id="host-cfg:no-code-write-or-execution:v1",
+        ),
+        target_environment=environment,
+        instruction_stream_sync_registry=InstructionStreamSyncRegistry(
+            version="test.v2", contracts=(contract,)
         ),
     )
     assert elided.kind == "instruction_stream_elision"
     artifact = elided.metadata["approvalArtifact"]
     assert artifact["proofStatus"] == "approved"
     assert artifact["replacementKind"] == "instruction_stream_elision"
+    assert artifact["environmentNoopGuaranteeId"] == "host-guarantees-required-visibility.v1"
 
 
 def test_rv64_add_has_proven_att_renderer_contract() -> None:

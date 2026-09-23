@@ -20,6 +20,7 @@ from .privileged_environment import (
     load_privileged_environment_manifest,
     validate_privileged_environment_pipeline_authority,
 )
+from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
 
 
 def _identity(value: object) -> str:
@@ -113,6 +114,7 @@ def main() -> int:
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
     parser.add_argument("--privileged-environment-sidecar")
+    parser.add_argument("--instruction-stream-sync-registry")
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
     raw = report.with_name("raw_report.json")
@@ -189,6 +191,17 @@ def main() -> int:
             return 2
     if args.allow_functional_fallbacks:
         backend.append("--allow-functional-fallbacks")
+    if args.instruction_stream_sync_registry:
+        try:
+            load_instruction_stream_sync_registry(
+                args.instruction_stream_sync_registry, source_path=args.source,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print("Instruction-stream synchronization binding failed: " + str(exc),
+                  file=sys.stderr)
+            return 2
+        backend.extend(("--instruction-stream-sync-registry",
+                        str(Path(args.instruction_stream_sync_registry).resolve())))
     back = subprocess.run(backend, text=True, capture_output=True, check=False)
     (report.parent / "backend.stdout").write_text(back.stdout, encoding="utf-8")
     (report.parent / "backend.stderr").write_text(back.stderr, encoding="utf-8")

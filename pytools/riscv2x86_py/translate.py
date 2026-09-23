@@ -90,9 +90,10 @@ from .helper_runtime_manifest import (
     RUNTIME_HELPER_MANIFEST_VERSION,
 )
 from .instruction_stream_sync_contracts import (
-    INSTRUCTION_STREAM_SYNC_REGISTRY_VERSION,
-    NOOP_ELISION_CONTRACT_ID,
-    RUNTIME_LOCAL_SYNC,
+    InstructionStreamSyncLoweringKind,
+    InstructionStreamSyncRegistry,
+    instruction_stream_environment_id,
+    prove_instruction_stream_sync,
 )
 from .plan_types import TargetLoweringKind, TargetLoweringPlan
 from .stack_rebinding import StackAddressRebindingFacts
@@ -3063,142 +3064,83 @@ def _render_counter_csr_functional_fallback(
     )
 
 
-def _instruction_stream_environment_id(environment: TargetEnvironment) -> str:
-    return "phase6:" + ":".join((
-        environment.architecture.value,
-        environment.abi.value,
-        environment.asm_dialect.value,
-        environment.compiler_family,
-        environment.compiler_version,
-    ))
-
-
-def _render_instruction_stream_noop_elision(
-    *, context: TranslationContext, source_model: SourceSemanticModel,
-    target_environment: TargetEnvironment,
-) -> TranslationOutput | None:
-    """Render only an externally certified, semantically unobservable fence.
-
-    The certificate comes through Phase-4 runtime facts and is recorded in the
-    Phase-6A source model.  This function does not establish absence of code
-    writes or execution itself, and therefore cannot turn an ordinary
-    ``fence.i`` into a no-op.
-    """
-    memory = source_model.memory
-    if (not memory.instruction_stream_sync_noop_proven or
-            not memory.instruction_stream_sync_proof_id):
-        return None
+def _render_instruction_stream_sync(
+    *, context: TranslationContext, target_environment: TargetEnvironment,
+    registry: InstructionStreamSyncRegistry | None,
+) -> tuple[TranslationOutput | None, str]:
+    """Resolve, prove (6D), then render an independent sync contract."""
+    environment_id = instruction_stream_environment_id(target_environment)
+    contract = None if registry is None else registry.resolve(context.fragment.id, environment_id)
+    proof = prove_instruction_stream_sync(
+        contract, target_cpu_profile_id=target_environment.target_cpu_profile_id,
+    )
+    if not proof.approved or contract is None:
+        return None, proof.reason_code
+    noop = contract.lowering_kind is InstructionStreamSyncLoweringKind.PROVEN_NOOP
     replacement = (
         "/* translator: instruction-stream synchronization elided; "
-        f"proof={memory.instruction_stream_sync_proof_id} */"
+        f"guarantee={contract.environment_noop_guarantee_id} */ "
+        '__asm__ __volatile__("" ::: "memory");'
+        if noop else contract.helper_symbol + "();"
     )
     artifact = {
-        "artifactVersion": "phase6-approval-v1",
+        "artifactVersion": "phase6-instruction-stream-sync-v2",
         "proofStatus": "approved",
         "preservationMode": "architecture_equivalent",
         "sourceSemanticContractId": "riscv.instruction-stream-sync.v1",
-        "targetSemanticContractId": NOOP_ELISION_CONTRACT_ID,
+        "targetSemanticContractId": contract.semantic_contract_id,
         "sourceFragmentId": context.fragment.id,
         "sourceModelId": "phase6a:" + context.fragment.id,
-        "preservationDecisionId": "phase6a:" + memory.instruction_stream_sync_proof_id,
-        "planId": "phase6f:" + NOOP_ELISION_CONTRACT_ID,
-        "constraintsId": "phase6c:" + NOOP_ELISION_CONTRACT_ID,
-        "targetEnvironmentId": _instruction_stream_environment_id(target_environment),
-        "targetCatalogVersion": INSTRUCTION_STREAM_SYNC_REGISTRY_VERSION,
-        "selectionPolicyId": "proof-gated-instruction-stream-sync",
-        "selectionPolicyVersion": "v1",
-        "selectionTier": "strict_noop_elision",
-        "rendererId": "instruction-stream-sync-elision-renderer",
-        "rendererVersion": "v1",
-        "replacementKind": "instruction_stream_elision",
+        "preservationDecisionId": "phase6a:instruction-stream-sync",
+        "planId": "phase6b:" + contract.lowering_kind.value,
+        "constraintsId": "phase6c:" + contract.semantic_contract_id,
+        "proofId": "phase6d:" + contract.semantic_contract_id,
+        "proofObligations": list(proof.obligations),
+        "targetEnvironmentId": environment_id,
+        "targetCatalogVersion": registry.version,
+        "selectionPolicyId": "exact-instruction-stream-contract",
+        "selectionPolicyVersion": "v2",
+        "selectionTier": "strict_instruction_stream_sync",
+        "rendererId": "instruction-stream-sync-registered-renderer",
+        "rendererVersion": "v2",
+        "replacementKind": "instruction_stream_elision" if noop else "helper_call",
         "replacementDigest": _approval_digest(replacement),
         "sourceSliceDigest": "",
-        "instructionStreamSyncProofId": memory.instruction_stream_sync_proof_id,
+        "runtimeContractId": (
+            "riscv2x86.runtime.none" if noop else contract.runtime_adapter_identity
+        ),
+        "runtimeContractVersion": contract.semantic_version,
+        "requiredHeaders": [] if noop else [contract.required_header],
+        "requiredLibraries": [] if noop else [contract.runtime_library],
+        "modifiedCodeRange": {
+            "objectIdentity": contract.modified_code_range.object_identity,
+            "offsetBytes": contract.modified_code_range.offset_bytes,
+            "lengthBytes": contract.modified_code_range.length_bytes,
+            "addressSpaceIdentity": contract.modified_code_range.address_space_identity,
+        },
+        "requiredScope": contract.required_scope.value,
+        "cacheCoherenceModelId": contract.cache_coherence_model_id,
+        "crossCoreInvalidationRelationId": contract.cross_core_invalidation_relation_id,
+        "dataWritePublicationRelationId": contract.data_write_publication_relation_id,
+        "instructionFetchVisibilityRelationId": contract.instruction_fetch_visibility_relation_id,
+        "completionAcknowledgementRelationId": contract.completion_acknowledgement_relation_id,
+        "targetCpuProfileId": contract.target_cpu_profile_id,
+        "runtimeAdapterIdentity": contract.runtime_adapter_identity,
+        "environmentNoopGuaranteeId": contract.environment_noop_guarantee_id,
+        "preservesCompilerMemoryOrdering": contract.preserves_compiler_memory_ordering,
+        "preservesVolatileExecution": contract.preserves_volatile_execution,
+        "preservesCcClobber": contract.preserves_cc_clobber,
     }
     return _output(
-        kind="instruction_stream_elision", replacement=replacement,
-        context=context, route="approved_instruction_stream_noop_elision",
-        notes=[
-            "instruction-stream synchronization was elided only because an "
-            "authoritative no-observable-effect proof certificate was supplied"
-        ],
-        reason_codes=["TR_INSTRUCTION_STREAM_SYNC_NOOP_ELIDED"],
-        build_family="x86_gnu_c", requires_build_check=True,
+        kind="instruction_stream_elision" if noop else "runtime_c",
+        replacement=replacement, context=context,
+        route="approved_instruction_stream_sync_contract",
+        notes=["independent instruction-stream synchronization contract passed Phase 6D"],
+        reason_codes=["TR_INSTRUCTION_STREAM_SYNC_APPROVED"],
+        build_family="x86_gnu_c" if noop else "x86_runtime_helper",
+        requires_build_check=True,
         metadata={"approvalArtifact": artifact},
-    )
-
-
-def _render_instruction_stream_functional_helper(
-    *, context: TranslationContext, target_environment: TargetEnvironment,
-) -> TranslationOutput | None:
-    """Render the registered local-thread synchronization helper on opt-in.
-
-    This is a functional fallback, never an architecture-equivalence claim.
-    The helper contains the x86 serializing operation behind a versioned ABI;
-    the renderer itself does not manufacture CPUID/LFENCE/MFENCE asm.
-    """
-    contract = RUNTIME_LOCAL_SYNC
-    if (target_environment.architecture.value != "x86_64" or
-            contract.required_environment_capability not in
-            target_environment.helper_contract_capabilities):
-        return None
-    replacement = contract.helper_symbol + "();"
-    artifact = {
-        "artifactVersion": "phase6-functional-fallback-v1",
-        "proofStatus": "functional_approved",
-        "functionalFallbackEnabled": True,
-        "preservationMode": contract.preservation_mode,
-        "sourceSemanticContractId": contract.source_semantic_contract_id,
-        "targetSemanticContractId": contract.target_semantic_contract_id,
-        "sourceFragmentId": context.fragment.id,
-        "sourceModelId": "phase6a:" + context.fragment.id,
-        "preservationDecisionId": "phase6a-functional-instruction-stream:" + context.fragment.id,
-        "planId": "functional-fallback:" + contract.semantic_contract_id,
-        "constraintsId": "functional-helper:" + contract.semantic_contract_id,
-        "targetEnvironmentId": _instruction_stream_environment_id(target_environment),
-        "targetCatalogVersion": INSTRUCTION_STREAM_SYNC_REGISTRY_VERSION,
-        "selectionPolicyId": "explicit-functional-fallback",
-        "selectionPolicyVersion": "v1",
-        "selectionTier": "functional_runtime_helper",
-        "rendererId": "instruction-stream-sync-helper-renderer",
-        "rendererVersion": "v1",
-        "replacementKind": "helper_call",
-        "replacementDigest": _approval_digest(replacement),
-        "sourceSliceDigest": "",
-        "runtimeContractId": contract.semantic_contract_id,
-        "runtimeContractVersion": "v1",
-        "requiredHeaders": [contract.required_header],
-        "requiredLibraries": [contract.runtime_library],
-        # Retained for backward-compatible reading of archived Phase-6 artifacts.
-        "helperRuntimeContractId": contract.semantic_contract_id,
-        "helperSemanticVersion": "v1",
-        "helperRequiredHeader": contract.required_header,
-        "helperRuntimeLibrary": contract.runtime_library,
-        "helperRuntimeManifestVersion": RUNTIME_HELPER_MANIFEST_VERSION,
-        "architectureSemanticsPreserved": False,
-        "shellSemanticsPreserved": False,
-        "microarchitectureSemanticsPreserved": False,
-        "ignoredSourceState": [
-            "instruction-stream-sync:cross-thread-publication",
-            "instruction-stream-sync:global-visibility",
-        ],
-        "knownNonEquivalences": [
-            "cross-thread code publication is not preserved by the local-thread helper",
-            "architectural instruction-visibility equivalence is not claimed",
-        ],
-    }
-    return _output(
-        kind="functional_c", replacement=replacement, context=context,
-        route="explicit_functional_instruction_stream_sync_helper",
-        notes=[
-            "functional fallback enabled: instruction-stream synchronization "
-            "uses the registered local-thread x86 runtime helper; cross-thread "
-            "code publication is not claimed"
-        ],
-        reason_codes=["TR_FUNCTIONAL_INSTRUCTION_STREAM_SYNC_HELPER"],
-        build_family="x86_runtime_helper", requires_build_check=True,
-        metadata={"approvalArtifact": artifact},
-    )
+    ), proof.reason_code
 
 
 def translate(
@@ -3226,6 +3168,7 @@ def translate(
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     csr_runtime_registry: CsrRuntimeRegistry | None = None,
     csr_renderer_registry: CsrRendererRegistry | None = None,
+    instruction_stream_sync_registry: InstructionStreamSyncRegistry | None = None,
     allow_functional_fallbacks: bool = False,
 ) -> TranslationOutput:
     """
@@ -3394,6 +3337,14 @@ def translate(
             reason_code="TR_PRIVILEGED_FUNCTIONAL_REGISTRY_INVALID",
         )
     context.privilegedFunctionalRegistry = privileged_functional_registry
+    if instruction_stream_sync_registry is not None and not isinstance(
+        instruction_stream_sync_registry, InstructionStreamSyncRegistry
+    ):
+        return _unsupported(
+            context,
+            reason="instruction-stream synchronization registry is not typed/versioned",
+            reason_code="TR_INSTRUCTION_STREAM_SYNC_REGISTRY_INVALID",
+        )
     context.privilegedFunctionalPolicy = PrivilegedFunctionalFallbackPolicy(
         enabled=allow_functional_fallbacks
     )
@@ -3642,18 +3593,13 @@ def translate(
     # family which the lifter classifies as an instruction barrier takes the
     # same fail-closed path without looking at source asm text or mnemonics.
     if source_model.memory.has_instruction_barrier:
-        elided = _render_instruction_stream_noop_elision(
-            context=context, source_model=source_model,
+        rendered, proof_reason = _render_instruction_stream_sync(
+            context=context,
             target_environment=target_environment,
+            registry=instruction_stream_sync_registry,
         )
-        if elided is not None:
-            return elided
-        if allow_functional_fallbacks:
-            helper = _render_instruction_stream_functional_helper(
-                context=context, target_environment=target_environment,
-            )
-            if helper is not None:
-                return helper
+        if rendered is not None:
+            return rendered
         return _needs_route(
             context,
             route="instruction_stream_synchronization_adapter",
@@ -3668,9 +3614,8 @@ def translate(
                     "instruction-stream-synchronization"
                 ),
                 "sourceBarrierKind": "instruction_stream",
-                "functionalFallbackPermitted": True,
-                "functionalFallbackContract": RUNTIME_LOCAL_SYNC.semantic_contract_id,
-                "noopElisionContract": NOOP_ELISION_CONTRACT_ID,
+                "phase6dReasonCode": proof_reason,
+                "ordinaryFenceRouteForbidden": True,
             },
         )
 

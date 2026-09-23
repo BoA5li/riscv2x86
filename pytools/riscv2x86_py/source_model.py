@@ -311,8 +311,6 @@ class SourceMemoryModel:
 
     has_memory_barrier: bool
     has_instruction_barrier: bool
-    instruction_stream_sync_noop_proven: bool
-    instruction_stream_sync_proof_id: str | None
     has_unknown_barrier: bool
 
     has_atomic: bool
@@ -1463,17 +1461,6 @@ def _build_memory_model(
         )
     )
 
-    noop_proven = getattr(runtime_facts, "instruction_stream_sync_noop_proven", False)
-    proof_id = getattr(runtime_facts, "instruction_stream_sync_proof_id", None)
-    if not isinstance(noop_proven, bool):
-        noop_proven = False
-    if not isinstance(proof_id, str) or not proof_id.strip():
-        proof_id = None
-    # A certificate without both fields is not evidence.  Do not use a
-    # missing identifier as an optimistic no-op proof.
-    if noop_proven != (proof_id is not None):
-        noop_proven, proof_id = False, None
-
     return SourceMemoryModel(
         reads_memory=_summary_bool(summary, "reads_mem"),
         writes_memory=_summary_bool(summary, "writes_mem"),
@@ -1486,8 +1473,6 @@ def _build_memory_model(
             summary,
             "has_instruction_barrier",
         ),
-        instruction_stream_sync_noop_proven=noop_proven,
-        instruction_stream_sync_proof_id=proof_id,
         has_unknown_barrier=_summary_bool(
             summary,
             "has_unknown_barrier",

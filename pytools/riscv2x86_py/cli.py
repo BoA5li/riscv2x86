@@ -14,6 +14,7 @@ from .abi_sidecar import load_abi_call_sidecar, load_target_abi_wrapper_registry
 from .whole_function_sidecar import load_whole_function_sidecar
 from .privileged_pipeline_inputs import load_privileged_pipeline_inputs
 from .pipeline_validation_context import load_pipeline_validation_context
+from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
 
 
 def main() -> int:
@@ -123,6 +124,11 @@ def main() -> int:
         default=None,
         help="Versioned explicit ignored privileged-state declarations.",
     )
+    ap.add_argument(
+        "--instruction-stream-sync-registry",
+        default=None,
+        help="Versioned independent instruction-stream synchronization registry.",
+    )
 
     args = ap.parse_args()
 
@@ -180,6 +186,12 @@ def main() -> int:
             ),
             allow_functional_fallbacks=args.allow_functional_fallbacks,
         )
+        instruction_stream_sync_registry = (
+            None if args.instruction_stream_sync_registry is None
+            else load_instruction_stream_sync_registry(
+                args.instruction_stream_sync_registry
+            )
+        )
         validation_runner = (
             None if args.validation_context is None
             else load_pipeline_validation_context(args.validation_context)
@@ -195,6 +207,7 @@ def main() -> int:
             abi_wrapper_registry=abi_wrapper_registry,
             whole_function_sidecar=whole_function_sidecar,
             privileged_pipeline_inputs=privileged_pipeline_inputs,
+            instruction_stream_sync_registry=instruction_stream_sync_registry,
             allow_functional_fallbacks=args.allow_functional_fallbacks,
             validation_runner=validation_runner,
         )

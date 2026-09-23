@@ -471,6 +471,7 @@ def prepare_automatic_inventory(
     l3_provider_directory: str | Path | None = None,
     atomic_authority_directory: str | Path | None = None,
     csr_authority_directory: str | Path | None = None,
+    instruction_stream_sync_directory: str | Path | None = None,
     l3_diagnostic: bool = False,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
@@ -500,6 +501,12 @@ def prepare_automatic_inventory(
                 else Path(csr_authority_directory).resolve())
     if csr_root is not None and not csr_root.is_dir():
         raise ValueError("CSR authority directory is unavailable")
+    instruction_stream_root = (
+        None if instruction_stream_sync_directory is None
+        else Path(instruction_stream_sync_directory).resolve()
+    )
+    if instruction_stream_root is not None and not instruction_stream_root.is_dir():
+        raise ValueError("instruction-stream synchronization directory is unavailable")
     if l3_diagnostic and l3_root is None:
         raise ValueError("L3 diagnostic profile requires a provider directory")
     if not sources:
@@ -622,6 +629,10 @@ def prepare_automatic_inventory(
             if environment_sidecar.is_file():
                 translation.extend(("--privileged-environment-sidecar",
                                     str(environment_sidecar)))
+        if instruction_stream_root is not None:
+            sync_registry = instruction_stream_root / (relative + ".instruction-stream-sync.json")
+            if sync_registry.is_file():
+                translation.extend(("--instruction-stream-sync-registry", str(sync_registry)))
         validators: dict[str, object] = {
             "L0": {"type": "automatic-l0-build-matrix", "config": {
                 "schemaVersion": "riscv2x86.auto-l0-runner.v1",
@@ -975,6 +986,9 @@ def main() -> int:
                         help="directory containing <source>.c.atomic-authority.json bindings")
     parser.add_argument("--csr-authority-directory",
                         help="directory containing <source>.c.csr-authority.json bindings")
+    parser.add_argument("--instruction-stream-sync-directory",
+                        help=("directory containing <source>.c.instruction-stream-sync.json "
+                              "runtime contract registries"))
     parser.add_argument("--l3-diagnostic", action="store_true",
                         help="run explicitly bound target-only experiment diagnostics")
     args = parser.parse_args()
@@ -990,6 +1004,7 @@ def main() -> int:
                                     l3_provider_directory=args.l3_provider_directory,
                                     atomic_authority_directory=args.atomic_authority_directory,
                                     csr_authority_directory=args.csr_authority_directory,
+                                    instruction_stream_sync_directory=args.instruction_stream_sync_directory,
                                     l3_diagnostic=args.l3_diagnostic)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
