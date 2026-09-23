@@ -617,6 +617,11 @@ def prepare_automatic_inventory(
             csr_sidecar = csr_root / (relative + ".csr-authority.json")
             if csr_sidecar.is_file():
                 translation.extend(("--csr-authority-sidecar", str(csr_sidecar)))
+        if privileged_root is not None:
+            environment_sidecar = privileged_root / (relative + ".privileged-environment.json")
+            if environment_sidecar.is_file():
+                translation.extend(("--privileged-environment-sidecar",
+                                    str(environment_sidecar)))
         validators: dict[str, object] = {
             "L0": {"type": "automatic-l0-build-matrix", "config": {
                 "schemaVersion": "riscv2x86.auto-l0-runner.v1",
@@ -959,7 +964,9 @@ def main() -> int:
     parser.add_argument("--harness-directory",
                         help="directory containing <source>.harness.json sidecars")
     parser.add_argument("--privileged-config-directory",
-                        help="directory containing <source>.c.privileged.json bindings")
+                        help=("directory containing <source>.c.privileged.json evaluation "
+                              "bindings and/or <source>.c.privileged-environment.json "
+                              "translation environment manifests"))
     parser.add_argument("--l2-provider-directory",
                         help="directory containing <source>.c.l2-providers.json bindings")
     parser.add_argument("--l3-provider-directory",

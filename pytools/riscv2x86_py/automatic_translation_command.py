@@ -14,6 +14,12 @@ from .automatic_batch_cli import inspect_entry_points
 from .automatic_l2_authority import materialize_automatic_l2_authority
 from .schema import load_report
 from .translation_attempt import terminal_attempt_from_finding, save_translation_attempt_archive
+from .privileged_environment import (
+    EnvironmentRelationKind,
+    PrivilegedEnvironmentError,
+    load_privileged_environment_manifest,
+    validate_privileged_environment_pipeline_authority,
+)
 
 
 def _identity(value: object) -> str:
@@ -106,6 +112,7 @@ def main() -> int:
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
+    parser.add_argument("--privileged-environment-sidecar")
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
     raw = report.with_name("raw_report.json")
@@ -142,6 +149,44 @@ def main() -> int:
             return 2
     backend = [sys.executable, "-m", "riscv2x86_py.cli", "--in", str(raw),
                "--out", str(report), "--xlen", "64", "--skip-verify"]
+    if args.privileged_environment_sidecar:
+        try:
+            environment = load_privileged_environment_manifest(
+                args.privileged_environment_sidecar, source=args.source,
+            )
+            validate_privileged_environment_pipeline_authority(environment)
+            raw_value = json.loads(raw.read_text(encoding="utf-8"))
+            raw_findings = (raw_value if isinstance(raw_value, list)
+                            else raw_value.get("findings", []))
+            fragment_ids = {
+                str(item.get("fragment", {}).get("fragmentId") or
+                    item.get("fragment", {}).get("id"))
+                for item in raw_findings if isinstance(item, dict)
+            }
+            if environment.fragment_id not in fragment_ids:
+                raise PrivilegedEnvironmentError(
+                    "PRIV_ENV_FRAGMENT_ID_MISMATCH",
+                    "configured fragment is absent from the frontend report",
+                )
+            if (environment.relation is EnvironmentRelationKind.FUNCTIONAL
+                    and not args.allow_functional_fallbacks):
+                raise PrivilegedEnvironmentError(
+                    "PRIV_ENV_FUNCTIONAL_POLICY_DISABLED",
+                    "functional route requires --allow-functional-fallbacks",
+                )
+            backend.extend(("--privileged-execution-sidecar", str(environment.execution_sidecar)))
+            if environment.runtime_registry is not None:
+                backend.extend(("--privileged-runtime-registry",
+                                str(environment.runtime_registry)))
+            if environment.functional_registry is not None:
+                backend.extend(("--privileged-functional-registry", str(environment.functional_registry)))
+            if environment.observability_sidecar is not None:
+                backend.extend(("--privileged-observability-sidecar", str(environment.observability_sidecar)))
+            if environment.ignored_state_sidecar is not None:
+                backend.extend(("--privileged-ignored-state-declarations", str(environment.ignored_state_sidecar)))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print("Privileged environment binding failed: " + str(exc), file=sys.stderr)
+            return 2
     if args.allow_functional_fallbacks:
         backend.append("--allow-functional-fallbacks")
     back = subprocess.run(backend, text=True, capture_output=True, check=False)

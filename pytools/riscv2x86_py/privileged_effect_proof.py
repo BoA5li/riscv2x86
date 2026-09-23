@@ -13,6 +13,7 @@ from .phase6d_common import (
 )
 from .privileged_runtime_contracts import (
     PrivilegedEnvironmentRouteKind,
+    PrivilegedEnvironmentRelationKind,
     privileged_environment_route_kind,
     source_effect_id,
 )
@@ -42,6 +43,16 @@ def prove_strict_effects(source, constraint):
             None,
             SemanticProofReasonCode.PRIVILEGED_TARGET_SIDE_EFFECT_UNPROVEN,
             "environment-route-kind",
+        )
+    if (
+        contract.environment_relation_kind
+        is not PrivilegedEnvironmentRelationKind.ARCHITECTURAL_EQUIVALENCE
+        or contract.not_preserved_environment_semantics
+    ):
+        return (
+            None,
+            SemanticProofReasonCode.PRIVILEGED_TARGET_SIDE_EFFECT_UNPROVEN,
+            "environment-relation-not-architectural",
         )
     if route_kind is PrivilegedEnvironmentRouteKind.ECALL:
         effect = state.trap_effects[0]

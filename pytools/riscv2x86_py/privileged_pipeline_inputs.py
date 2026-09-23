@@ -34,7 +34,7 @@ from .privileged_runtime_contracts import (
     PrivilegedRuntimeContract,
     PrivilegedRuntimeRegistry,
     TargetCsrStateMapping, TargetTrapMapping, TargetInterruptMapping,
-    PrivilegedEnvironmentRouteKind,
+    PrivilegedEnvironmentRouteKind, PrivilegedEnvironmentRelationKind,
     TargetAddressTranslationMapping, TargetVirtualizationMapping,
     TargetDebugMapping, TargetObservableEffectMapping,
     PrivilegedMappingRegistryKind, PrivilegedMappingRegistrySet,
@@ -362,6 +362,18 @@ def _runtime_contract(value: object) -> PrivilegedRuntimeContract:
                      "generic-privileged-environment.v1"),
             "environmentContractId",
         ),
+        environment_relation_kind=PrivilegedEnvironmentRelationKind(
+            _text(item.get("environmentRelationKind", "architectural_equivalence"),
+                  "environmentRelationKind")
+        ),
+        preserved_environment_semantics=_strings(
+            item.get("preservedEnvironmentSemantics", []),
+            "preservedEnvironmentSemantics",
+        ),
+        not_preserved_environment_semantics=_strings(
+            item.get("notPreservedEnvironmentSemantics", []),
+            "notPreservedEnvironmentSemantics",
+        ),
         source_execution_profile=_text(item.get("sourceExecutionProfile", "riscv_user_process"), "sourceExecutionProfile"),
         target_execution_mode=_text(item.get("targetExecutionMode", "x86_user_process"), "targetExecutionMode"),
         renderer_contract_id=_text(item.get("rendererContractId", "privileged-runtime-call.v1"), "rendererContractId"),
@@ -531,6 +543,14 @@ def _functional_contract(value: object) -> PrivilegedFunctionalFallbackContract:
         ),
         required_value_source_ids=_strings(
             item.get("requiredValueSourceIds", []), "requiredValueSourceIds"
+        ),
+        preserved_environment_semantics=_strings(
+            item.get("preservedEnvironmentSemantics", []),
+            "preservedEnvironmentSemantics",
+        ),
+        not_preserved_environment_semantics=_strings(
+            item.get("notPreservedEnvironmentSemantics", []),
+            "notPreservedEnvironmentSemantics",
         ),
         **{
             name: _boolean(item.get(json_name), json_name, default)

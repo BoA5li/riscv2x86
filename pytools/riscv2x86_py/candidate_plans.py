@@ -1480,17 +1480,26 @@ def generate_candidate_plans(
         # requires an exact source/observability/target registry match and
         # Phase 6D proves every functional observable.  Incomplete/unknown
         # privileged state returned above and can never reach this branch.
+        functional_counter = semantic_classes == frozenset({
+            PrivilegedSemanticClass.COUNTER_OBSERVATION
+        })
+        functional_wfi = (
+            semantic_classes == frozenset({PrivilegedSemanticClass.INTERRUPT_EVENT})
+            and privileged_environment_route_kind(privileged)
+            is PrivilegedEnvironmentRouteKind.WFI
+        )
         if (
-            semantic_classes == frozenset({
-                PrivilegedSemanticClass.COUNTER_OBSERVATION
-            })
+            (functional_counter or functional_wfi)
             and bool(getattr(
                 privileged_functional_policy, "enabled", False
             ))
             and privileged.functional_fallback_eligible
         ):
             candidates.append(_plan(
-                plan_id="counter-observation.functional-contract.v1",
+                plan_id=(
+                    "counter-observation.functional-contract.v1"
+                    if functional_counter else "wfi-wait-intent.functional-contract.v1"
+                ),
                 kind=TargetLoweringKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
                 family=TargetLoweringFamily.PRIVILEGED_FUNCTIONAL,
                 priority_tier=PlanPriorityTier.PRIVILEGED_FUNCTIONAL,
@@ -1516,9 +1525,21 @@ def generate_candidate_plans(
                     PlanRequirement.PRESERVE_CC_CLOBBER,
                 }),
                 metadata={
-                    "strategy": "counter_observation_functional_fallback",
-                    "privileged_semantic_classes": (
-                        PrivilegedSemanticClass.COUNTER_OBSERVATION.value,
+                    "strategy": (
+                        "counter_observation_functional_fallback"
+                        if functional_counter else "wfi_wait_intent_functional_fallback"
+                    ),
+                    "privileged_semantic_classes": tuple(sorted(
+                        item.value for item in semantic_classes
+                    )),
+                    "preserved_environment_semantics": (
+                        () if functional_counter else ("waiting_intent",)
+                    ),
+                    "not_preserved_environment_semantics": (
+                        () if functional_counter else (
+                            "architectural_interrupt_wakeup",
+                            "architectural_state_transition",
+                        )
                     ),
                 },
                 rationale=("Explicit policy permits a registered functional-only "

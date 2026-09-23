@@ -4,6 +4,7 @@ import pytest
 
 from riscv2x86_py.privileged_runtime_contracts import (
     PrivilegedEnvironmentRouteKind,
+    PrivilegedEnvironmentRelationKind,
     PrivilegedRuntimeContract,
 )
 
@@ -59,3 +60,15 @@ def test_wfi_contract_must_preserve_wait_intent() -> None:
         preserves_microarchitecture_intent=True,
     )
     assert contract.environment_route_kind is PrivilegedEnvironmentRouteKind.WFI
+
+
+def test_strict_registry_contract_cannot_encode_a_functional_environment_relation() -> None:
+    with pytest.raises(ValueError, match="functional relations belong"):
+        _contract(
+            environment_relation_kind=PrivilegedEnvironmentRelationKind.FUNCTIONAL_FALLBACK,
+        )
+
+
+def test_architectural_contract_cannot_list_unpreserved_semantics() -> None:
+    with pytest.raises(ValueError, match="cannot omit semantics"):
+        _contract(not_preserved_environment_semantics=("interrupt-wakeup",))

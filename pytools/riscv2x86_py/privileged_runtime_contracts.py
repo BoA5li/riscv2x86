@@ -28,6 +28,11 @@ class PrivilegedEnvironmentRouteKind(str, Enum):
     WFI = "wfi"
 
 
+class PrivilegedEnvironmentRelationKind(str, Enum):
+    ARCHITECTURAL_EQUIVALENCE = "architectural_equivalence"
+    FUNCTIONAL_FALLBACK = "functional_fallback"
+
+
 class PrivilegedMappingRegistryKind(str, Enum):
     STATE = "state"
     TRAP = "trap"
@@ -279,6 +284,11 @@ class PrivilegedRuntimeContract:
         PrivilegedEnvironmentRouteKind.GENERIC
     )
     environment_contract_id: str = "generic-privileged-environment.v1"
+    environment_relation_kind: PrivilegedEnvironmentRelationKind = (
+        PrivilegedEnvironmentRelationKind.ARCHITECTURAL_EQUIVALENCE
+    )
+    preserved_environment_semantics: tuple[str, ...] = ()
+    not_preserved_environment_semantics: tuple[str, ...] = ()
     supported_source_profiles: tuple[str, ...] = ("riscv_user_process",)
     supported_target_modes: tuple[str, ...] = ("x86_user_process",)
     supported_semantic_classes: tuple[str, ...] = ("counter_observation",)
@@ -352,6 +362,24 @@ class PrivilegedRuntimeContract:
             self.environment_route_kind, PrivilegedEnvironmentRouteKind
         ):
             raise TypeError("environment route kind must be typed")
+        if not isinstance(
+            self.environment_relation_kind, PrivilegedEnvironmentRelationKind
+        ):
+            raise TypeError("environment relation kind must be typed")
+        for name in ("preserved_environment_semantics",
+                     "not_preserved_environment_semantics"):
+            values = getattr(self, name)
+            if tuple(sorted(set(values))) != values or any(
+                not isinstance(item, str) or not item for item in values
+            ):
+                raise ValueError(f"{name} must be non-empty strings, unique and sorted")
+        if self.environment_relation_kind is not PrivilegedEnvironmentRelationKind.ARCHITECTURAL_EQUIVALENCE:
+            raise ValueError(
+                "strict privileged runtime contracts require architectural equivalence; "
+                "functional relations belong in the functional registry"
+            )
+        if self.not_preserved_environment_semantics:
+            raise ValueError("architectural environment contracts cannot omit semantics")
         if (
             self.environment_route_kind is PrivilegedEnvironmentRouteKind.ECALL
             and self.abi_contract_id == "c-abi.v1"

@@ -87,6 +87,8 @@ class PrivilegedFunctionalFallbackContract:
     preserves_cc_clobber: bool = True
     ignored_state_ids: tuple[str, ...] = ()
     required_value_source_ids: tuple[str, ...] = ()
+    preserved_environment_semantics: tuple[str, ...] = ()
+    not_preserved_environment_semantics: tuple[str, ...] = ()
     functional_equivalence_only: bool = True
     may_return: bool = True
     may_unwind: bool = False
@@ -103,9 +105,12 @@ class PrivilegedFunctionalFallbackContract:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or value != value.strip():
                 raise TypeError(f"{name} must be a non-empty stripped string")
-        for name in ("required_headers", "ignored_state_ids", "required_value_source_ids"):
+        for name in ("required_headers", "ignored_state_ids", "required_value_source_ids",
+                     "preserved_environment_semantics",
+                     "not_preserved_environment_semantics"):
             value = getattr(self, name)
-            if tuple(sorted(set(value))) != value:
+            if (tuple(sorted(set(value))) != value
+                    or any(not isinstance(item, str) or not item for item in value)):
                 raise ValueError(f"{name} must be unique and sorted")
         for name in ("argument_operand_indexes", "result_operand_indexes"):
             values = getattr(self, name)
