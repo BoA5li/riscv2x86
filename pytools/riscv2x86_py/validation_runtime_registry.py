@@ -14,7 +14,7 @@ from .l2_dimensions import (
     L2ClaimScope, L2DimensionStatus, parse_l2_dimension,
 )
 from .l2_results import L2DimensionResult, L2FragmentResult
-from .l2_program_results import canonical_identity, sample_set_identity
+from .l2_evidence_closure import validated_provider_evidence
 from .l2_validator_resolution import (
     ExplicitL2Bindings, L2BindingKind, L2BindingStatus, L2RuntimeCapabilities,
     L2ValidatorResolver, fragment_requirement_from_dict, provider_from_dict,
@@ -87,34 +87,6 @@ def _result_reason_codes(result: ValidationLayerResult) -> tuple[str, ...]:
     if isinstance(detail, list) and all(isinstance(item, str) and item for item in detail):
         return tuple(sorted(set(detail)))
     return ("l2.validator-result:" + result.status.value,)
-
-
-def _provider_observation_identities(result: ValidationLayerResult) -> tuple[str, str]:
-    """Read identities explicitly emitted by an automatic observation producer."""
-    try:
-        detail = json.loads(result.detail)
-    except (TypeError, json.JSONDecodeError):
-        return "", ""
-    if not isinstance(detail, Mapping):
-        return "", ""
-    source = detail.get("sourceObservationIdentity")
-    target = detail.get("targetObservationIdentity")
-    return (
-        source if isinstance(source, str) and _SHA256.fullmatch(source) else "",
-        target if isinstance(target, str) and _SHA256.fullmatch(target) else "",
-    )
-
-
-def _provider_execution_identity(result: ValidationLayerResult) -> str:
-    """Accept a proof-bound program execution identity emitted by a provider."""
-    try:
-        detail = json.loads(result.detail)
-    except (TypeError, json.JSONDecodeError):
-        return ""
-    if not isinstance(detail, Mapping):
-        return ""
-    value = detail.get("executionIdentity")
-    return value if isinstance(value, str) and _SHA256.fullmatch(value) else ""
 
 
 def _provider_claim_properties(
@@ -404,7 +376,9 @@ def _requirement_driven_l2_validator(
                 ))
                 continue
             if binding.provider_id not in provider_results:
-                result = validators[binding.provider_id](**kwargs)
+                provider_kwargs = dict(kwargs)
+                provider_kwargs["l2_provider_id"] = binding.provider_id
+                result = validators[binding.provider_id](**provider_kwargs)
                 if not isinstance(result, ValidationLayerResult) or result.level is not kwargs.get("level"):
                     result = ValidationLayerResult(kwargs["level"], ValidationStatus.FAILED,
                                                    detail="invalid requirement-driven child result")
@@ -420,31 +394,22 @@ def _requirement_driven_l2_validator(
             claim_scope = (_result_claim_scope(result, artifact)
                            if dimension_status is L2DimensionStatus.VERIFIED
                            else L2ClaimScope.NONE)
-            authority_identity = str(getattr(artifact, "l2_authority_identity", ""))
-            effect_relation_identity = str(
-                getattr(artifact, "effect_relation_set_identity", "")
-            )
-            source_identity = str(getattr(kwargs.get("source_observation"), "identity", ""))
-            target_identity = str(getattr(kwargs.get("target_observation"), "identity", ""))
-            provider_source, provider_target = _provider_observation_identities(result)
+            try:
+                provider_detail = json.loads(result.detail)
+            except (TypeError, json.JSONDecodeError):
+                provider_detail = {}
+            evidence, closure_reasons = validated_provider_evidence(
+                provider_detail if isinstance(provider_detail, Mapping) else {}, artifact)
+            authority_identity = "" if evidence is None else evidence["authorityIdentity"]
+            effect_relation_identity = ("" if evidence is None else
+                                        evidence["effectRelationIdentity"])
+            source_identity = ("" if evidence is None else
+                               evidence["sourceObservationIdentity"])
+            target_identity = ("" if evidence is None else
+                               evidence["targetObservationIdentity"])
             provider_verified, provider_not_claimed = _provider_claim_properties(result)
-            if not source_identity:
-                source_identity = provider_source
-            if not target_identity:
-                target_identity = provider_target
-            provider_execution = _provider_execution_identity(result)
-            execution_identity = provider_execution or (
-                canonical_identity({
-                    "schemaVersion": "riscv2x86.l2-program-execution.v1",
-                    "sourceObservationIdentity": source_identity,
-                    "targetObservationIdentity": target_identity,
-                    "sampleSetIdentity": sample_set_identity(
-                        source_identity, target_identity,
-                    ),
-                })
-                if (_SHA256.fullmatch(source_identity)
-                    and _SHA256.fullmatch(target_identity)) else ""
-            )
+            execution_identity = ("" if evidence is None else
+                                  evidence["executionIdentity"])
             identities = {
                 "authority": authority_identity, "source-observation": source_identity,
                 "target-observation": target_identity,
@@ -455,7 +420,7 @@ def _requirement_driven_l2_validator(
                 "l2.dimension-identity-missing:" + name
                 for name, value in identities.items() if _SHA256.fullmatch(value) is None
             )
-            reasons = _result_reason_codes(result)
+            reasons = tuple(sorted(set(_result_reason_codes(result) + closure_reasons)))
             scope_missing = claim_scope is L2ClaimScope.NONE
             authority_incomplete = not bool(
                 getattr(artifact, "l2_authority_complete", False)
@@ -470,7 +435,7 @@ def _requirement_driven_l2_validator(
                 claim_scope = L2ClaimScope.NONE
                 reasons = tuple(sorted(set(reasons + missing)))
             elif dimension_status is L2DimensionStatus.VERIFIED and (
-                    scope_missing or missing):
+                    scope_missing or missing or closure_reasons):
                 dimension_status = L2DimensionStatus.INCONCLUSIVE
                 claim_scope = L2ClaimScope.NONE
                 reasons = tuple(sorted(set(reasons + missing + (

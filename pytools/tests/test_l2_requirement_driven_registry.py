@@ -15,6 +15,7 @@ from riscv2x86_py.l2_semantic_profile import (
 from riscv2x86_py.l2_memory_object import (
     AuthorityMaterializationDecision, MemoryAccessAuthority,
 )
+from riscv2x86_py.l2_evidence_closure import provider_evidence_fields
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
@@ -162,12 +163,23 @@ def _manifest(path):
 
 
 def _factory(_config):
-    return lambda **kwargs: ValidationLayerResult(
-        kwargs["level"], ValidationStatus.VERIFIED, "sha256:" + "a" * 64, "ok"
-    )
+    def validate(**kwargs):
+        identity = "sha256:" + "c" * 64
+        detail = provider_evidence_fields(
+            kwargs["translation_artifact"],
+            provider_id=kwargs["l2_provider_id"],
+            harness_identity="sha256:" + "d" * 64,
+            source_observation_identity=identity,
+            target_observation_identity=identity,
+            execution_nonce={"test": "registered-provider"},
+        )
+        return ValidationLayerResult(
+            kwargs["level"], ValidationStatus.VERIFIED,
+            "sha256:" + "a" * 64, json.dumps(detail, sort_keys=True))
+    return validate
 
 
-def _registry(tmp_path, providers):
+def _registry(tmp_path, providers, factory=_factory):
     manifest = tmp_path / "requirements.json"
     _value, report_path = _manifest(manifest)
     plan = tmp_path / "resolved-plan.json"
@@ -187,9 +199,15 @@ def _registry(tmp_path, providers):
         }}},
     }
     registry = validation_runtime_registry_from_dict(
-        payload, validator_factories={"test-provider": _factory},
+        payload, validator_factories={"test-provider": factory},
     )
     return registry, plan
+
+
+def _legacy_verified_factory(_config):
+    return lambda **kwargs: ValidationLayerResult(
+        kwargs["level"], ValidationStatus.VERIFIED,
+        "sha256:" + "a" * 64, '{"claimScope":"architectural"}')
 
 
 def _artifact():
@@ -236,6 +254,25 @@ def test_registry_consumes_manifest_and_persists_plan(tmp_path):
                for item in detail["dimensionResults"].values())
     assert len({item["executionIdentity"]
                 for item in detail["dimensionResults"].values()}) == 1
+
+
+def test_provider_verified_without_total_evidence_chain_is_inconclusive(tmp_path):
+    providers = [{
+        "providerId": "both", "supportedDimensions": ["logical_operands", "shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation", "shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "automatic", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }]
+    registry, _ = _registry(tmp_path, providers, _legacy_verified_factory)
+    result = registry.validator_for(ValidationLevel.L2)(
+        level=ValidationLevel.L2, translation_artifact=_artifact())
+    assert result.status is ValidationStatus.INCONCLUSIVE
+    dimensions = json.loads(result.detail)["dimensionResults"]
+    assert all("l2.provider-evidence.schema-missing-or-unsupported"
+               in item["reasonCodes"] for item in dimensions.values())
 
 
 def test_registry_missing_required_provider_cannot_verify(tmp_path):

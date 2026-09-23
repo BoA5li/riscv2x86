@@ -18,6 +18,7 @@ from .l2_fragment_execution import (
     boundary_as_legacy, fragment_boundary_from_dict,
     program_execution_authority_from_dict,
 )
+from .l2_evidence_closure import provider_evidence_fields
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -489,22 +490,13 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             evidence=_identity(observation)
             (replay / "operand-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
             authorized_execution = str(authority.get("programExecutionIdentity", ""))
-            execution_identity = (_identity({
-                "schemaVersion": "riscv2x86.l2-program-execution-evidence.v1",
-                "authorizedExecutionIdentity": authorized_execution,
-                "sourceTraceDigest": observation["sourceTraceDigest"],
-                "targetTraceDigest": observation["targetTraceDigest"],
-                "harnessDigest": observation["harnessDigest"],
-                "seed": seed,
-                "inputDomain": observation["inputDomain"],
-            }) if authorized_execution else "")
             fragment_id = str(observation["fragmentId"])
             def observation_identity(dimension: str, side: str, fallback: object) -> str:
-                if not execution_identity:
+                if not authorized_execution:
                     return str(fallback)
                 return _identity({
                     "schemaVersion": "riscv2x86.l2-fragment-observation-evidence.v1",
-                    "executionIdentity": execution_identity,
+                    "authorizedExecutionIdentity": authorized_execution,
                     "fragmentId": fragment_id,
                     "dimension": dimension,
                     "side": side,
@@ -513,7 +505,14 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 "logical_operands", "source", observation["sourceTraceDigest"])
             target_observation_identity = observation_identity(
                 "logical_operands", "target", observation["targetTraceDigest"])
-            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v1","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"authorityIdentity":authority["authorityIdentity"],"sourceObservationIdentity":source_observation_identity,"targetObservationIdentity":target_observation_identity,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionIdentity":execution_identity,"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
+            closure = provider_evidence_fields(
+                artifact, provider_id=str(kwargs.get("l2_provider_id", "")),
+                harness_identity=str(observation["harnessDigest"]),
+                source_observation_identity=source_observation_identity,
+                target_observation_identity=target_observation_identity,
+                execution_nonce={"authorizedExecutionIdentity": authorized_execution,
+                                 "seed": seed, "inputDomain": observation["inputDomain"]})
+            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],**closure,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))

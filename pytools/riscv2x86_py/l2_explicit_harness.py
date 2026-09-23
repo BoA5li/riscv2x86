@@ -12,6 +12,7 @@ from typing import Mapping, Sequence
 
 from .l2_dimensions import L2Dimension, parse_l2_dimensions
 from .translation_validation import ValidationLayerResult, ValidationLevel
+from .l2_evidence_closure import provider_evidence_fields
 from .validation_status import ValidationStatus
 
 
@@ -250,6 +251,19 @@ def run_explicit_l2_harness(config: ExplicitL2HarnessRunnerConfig, **kwargs: obj
               "targetObservationIdentity": target_identity,
               "relationSetIdentity": manifest.relation_set_identity,
               "nonInterferenceProofIdentity": manifest.non_interference_proof_identity}
+    provider_id = str(kwargs.get("l2_provider_id", ""))
+    if provider_id:
+        detail.update(provider_evidence_fields(
+            artifact, provider_id=provider_id,
+            harness_identity=_identity({
+                "manifestIdentity": manifest.manifest_identity,
+                "sourceHarnessDigest": manifest.source_harness_digest,
+                "targetHarnessDigest": manifest.target_harness_digest,
+            }),
+            source_observation_identity=source_identity,
+            target_observation_identity=target_identity,
+            execution_nonce={"request": request,
+                             "executionProfile": manifest.execution_profile}))
     evidence = _identity({**detail, "source": source, "target": target})
     detail["evidenceIdentity"] = evidence
     return ValidationLayerResult(ValidationLevel.L2,

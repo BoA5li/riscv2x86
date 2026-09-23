@@ -22,6 +22,7 @@ from .l2_memory_object import (
     L2MemoryObservation, exact_memory_observations_match,
     memory_proof_facts_from_dict,
 )
+from .l2_evidence_closure import provider_evidence_fields
 from .l2_fence_ordering import (
     fence_ordering_events,
     fence_ordering_observations_match,
@@ -732,13 +733,17 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             replay.mkdir(parents=True,exist_ok=True)
             (replay/"effect-harness.c").write_text(wrapper,encoding="utf-8")
             (replay/"effect-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-            summary={"schemaVersion":"riscv2x86.auto-l2-effect-result.v1","status":status.value,
+            closure = provider_evidence_fields(
+                artifact, provider_id=str(kwargs.get("l2_provider_id", "")),
+                harness_identity=str(observation["harnessDigest"]),
+                source_observation_identity=source_observation_identity,
+                target_observation_identity=target_observation_identity,
+                execution_nonce={"attemptId": observation["attemptId"], "mode": mode})
+            summary={"schemaVersion":"riscv2x86.auto-l2-effect-result.v2","status":status.value,
                      "reasonCode":reason,"fragmentId":observation["fragmentId"],
                      "attemptId":observation["attemptId"],"mode":mode,
                      "eventCount":len(source_events or []),
-                     "effectRelationSetIdentity":relation_authority["effectRelationSetIdentity"],
-                     "sourceObservationIdentity":source_observation_identity,
-                     "targetObservationIdentity":target_observation_identity,
+                     **closure,
                      "observationEvidenceIdentity":evidence,"replayArtifact":"effect-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
