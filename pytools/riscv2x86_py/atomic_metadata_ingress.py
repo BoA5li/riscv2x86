@@ -9,6 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+ATOMIC_COMPARE_EXCHANGE_CAPABILITY_REASON = (
+    "atomic.compare-exchange-requires-lrsc-sequence-authority"
+)
+
+
 @dataclass(frozen=True)
 class DecodedAtomicOperation:
     operation_kind: str

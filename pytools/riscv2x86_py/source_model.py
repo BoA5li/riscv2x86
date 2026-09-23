@@ -3083,6 +3083,13 @@ class SourceAddressBinding:
     byte_offset: int = 0
     memory_object_identity: Optional[str] = None
     address_space_identity: Optional[str] = None
+    atomic_authority_identity: Optional[str] = None
+    atomic_operation_kind: Optional[str] = None
+    arithmetic_relation: Optional[str] = None
+    wraparound_width_bits: Optional[int] = None
+    atomic_ordering: Tuple[str, ...] = ()
+    atomic_read_effect_identity: Optional[str] = None
+    atomic_write_effect_identity: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -3408,6 +3415,10 @@ class SourceAtomicOperationModel:
     memory_object_identity: Optional[str] = None
     read_effect_identity: Optional[str] = None
     write_effect_identity: Optional[str] = None
+    arithmetic_relation: Optional[str] = None
+    wraparound_width_bits: Optional[int] = None
+    authority_identity: Optional[str] = None
+    capability_reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.present, bool):
@@ -3494,6 +3505,14 @@ class SourceAtomicOperationModel:
             "old_value", "new_value", "success_flag", "none",
         }:
             raise ValueError("invalid atomic result_semantics")
+        if self.arithmetic_relation is not None and self.arithmetic_relation not in {
+            "exchange", "add_mod_2n", "and_bits", "or_bits", "xor_bits",
+            "compare_exchange",
+        }:
+            raise ValueError("invalid atomic arithmetic relation")
+        if (self.wraparound_width_bits is not None and
+                self.wraparound_width_bits not in {32, 64}):
+            raise ValueError("invalid atomic wraparound width")
         for field_name in ("ordering_before", "ordering_after"):
             value = getattr(self, field_name)
             if value is not None and not isinstance(value, SourceMemoryOrdering):
@@ -3503,7 +3522,8 @@ class SourceAtomicOperationModel:
                 self.result_semantics, self.ordering_before, self.ordering_after,
                 self.atomicity_scope, self.address_space_identity,
                 self.memory_object_identity, self.read_effect_identity,
-                self.write_effect_identity,
+                self.write_effect_identity, self.arithmetic_relation,
+                self.wraparound_width_bits, self.authority_identity,
             )
             if any(value is None or value == "" for value in typed_required):
                 raise ValueError("complete atomic operation lacks typed authority")
@@ -3533,6 +3553,9 @@ class SourceAtomicOperationModel:
                 self.memory_object_identity,
                 self.read_effect_identity,
                 self.write_effect_identity,
+                self.arithmetic_relation,
+                self.wraparound_width_bits,
+                self.authority_identity,
             )
             if any(value is not None for value in unexpected):
                 raise ValueError(
@@ -4252,6 +4275,20 @@ def _runtime_operand_semantics(
                                         if index in atomic_objects else None),
                 address_space_identity=(atomic_objects[index].address_space_identity
                                         if index in atomic_objects else None),
+                atomic_authority_identity=(atomic_objects[index].authority_identity
+                                           if index in atomic_objects else None),
+                atomic_operation_kind=(atomic_objects[index].operation_kind
+                                       if index in atomic_objects else None),
+                arithmetic_relation=(atomic_objects[index].arithmetic_relation
+                                     if index in atomic_objects else None),
+                wraparound_width_bits=(atomic_objects[index].wraparound_width_bits
+                                       if index in atomic_objects else None),
+                atomic_ordering=(atomic_objects[index].ordering
+                                 if index in atomic_objects else ()),
+                atomic_read_effect_identity=(atomic_objects[index].read_effect_identity
+                                             if index in atomic_objects else None),
+                atomic_write_effect_identity=(atomic_objects[index].write_effect_identity
+                                              if index in atomic_objects else None),
             ) if index in memory_address_operand_offsets else None),
         )
     return result
@@ -5700,6 +5737,20 @@ def _build_atomic_operation_model(
     }.get((before, after))
     result_semantics = getattr(structured_atomic, "result_semantics", None)
     object_identity = None if address is None else address.memory_object_identity
+    operation_name = getattr(structured_atomic, "operation_kind", None)
+    capability_reason_codes = (
+        ("atomic.compare-exchange-requires-lrsc-sequence-authority",)
+        if operation_name == "compare_exchange" else ()
+    )
+    expected_relation = {
+        "exchange": "exchange", "fetch_add": "add_mod_2n",
+        "fetch_and": "and_bits", "fetch_or": "or_bits",
+        "fetch_xor": "xor_bits",
+    }.get(operation_name)
+    expected_ordering = (
+        f"before:{getattr(structured_atomic, 'ordering_before', '')}",
+        f"after:{getattr(structured_atomic, 'ordering_after', '')}",
+    )
     bindings_complete = bool(
         rmw_operation is not None and address_index is not None
         and value_index is not None
@@ -5711,10 +5762,13 @@ def _build_atomic_operation_model(
         and address.address_space_identity == getattr(
             structured_atomic, "address_space_identity", None)
         and object_identity and getattr(structured_atomic, "complete", False)
-    )
-    effect_base = (
-        f"atomic:{object_identity}:{getattr(structured_atomic, 'operation_kind', '')}:{width_bits}"
-        if object_identity else None
+        and address.atomic_authority_identity
+        and address.atomic_operation_kind == operation_name
+        and address.arithmetic_relation == expected_relation
+        and address.wraparound_width_bits == width_bits
+        and address.atomic_ordering == expected_ordering
+        and address.atomic_read_effect_identity
+        and address.atomic_write_effect_identity
     )
     return SourceAtomicOperationModel(
         present=True,
@@ -5737,8 +5791,16 @@ def _build_atomic_operation_model(
         atomicity_scope=getattr(structured_atomic, "atomicity_scope", None),
         address_space_identity=getattr(structured_atomic, "address_space_identity", None),
         memory_object_identity=object_identity,
-        read_effect_identity=None if effect_base is None else effect_base + ":read",
-        write_effect_identity=None if effect_base is None else effect_base + ":write",
+        read_effect_identity=(None if address is None else
+                              address.atomic_read_effect_identity),
+        write_effect_identity=(None if address is None else
+                               address.atomic_write_effect_identity),
+        arithmetic_relation=(None if address is None else address.arithmetic_relation),
+        wraparound_width_bits=(None if address is None else
+                               address.wraparound_width_bits),
+        authority_identity=(None if address is None else
+                            address.atomic_authority_identity),
+        capability_reason_codes=capability_reason_codes,
     )
 
 def _build_barrier_model(

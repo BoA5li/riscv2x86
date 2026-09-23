@@ -99,7 +99,9 @@ def _atomic_model(*, alignment=8, target_feature=True):
         operand_width_bits={0: 64, 1: 64},
         atomic_memory_objects={1: AtomicMemoryObjectRuntimeFact(
             "parameter-object:ptr", "riscv.default-data-address-space", alignment,
-            "uint64_t",
+            "uint64_t", "authority:test-atomic", "fetch_add", "add_mod_2n", 64,
+            ("before:release", "after:acquire"),
+            "effect:atomic-read", "effect:atomic-write",
         )},
     )
     return build_source_semantic_model(
@@ -115,6 +117,8 @@ def test_phase6a_closes_opaque_only_with_complete_atomic_authority():
     assert model.atomic.success_ordering is SourceMemoryOrdering.ACQ_REL
     assert model.atomic.result_semantics == "old_value"
     assert model.atomic.memory_object_identity == "parameter-object:ptr"
+    assert model.atomic.arithmetic_relation == "add_mod_2n"
+    assert model.atomic.wraparound_width_bits == 64
     assert model.operation.complete
 
 
@@ -150,6 +154,8 @@ def test_matching_rmw_builtin_preserves_acq_rel_contract():
     assert contract.builtin_identifier == "__atomic_fetch_add"
     assert contract.success_ordering == "acq_rel"
     assert contract.memory_object_identity == "parameter-object:ptr"
+    assert contract.arithmetic_relation == "add_mod_2n"
+    assert contract.wraparound_width_bits == 64
     semantic_id = plan.metadata["renderer_semantic_contract_id"]
     proof = run_semantic_proof_gate(
         source_model=model, preservation_decision=model.preservation,
@@ -163,6 +169,21 @@ def test_matching_rmw_builtin_preserves_acq_rel_contract():
         ),
     )
     assert proof.approved
+
+
+def test_x86_stronger_ordering_refinement_is_explicitly_not_approved():
+    model = _atomic_model()
+    plan = next(item for item in generate_candidate_plans(model)
+                if item.kind.value == "x86_atomic")
+    derived = derive_target_constraints(
+        source_model=model, candidate_plan=plan,
+        target_environment=TargetEnvironment.fixed_sysv_amd64_gnu_att(
+            available_features={"x86:atomic"},
+        ),
+    )
+    assert not derived.success
+    assert derived.details["ordering_policy"] == "exact-only"
+    assert derived.details["stronger_ordering_refinement"] == "not-approved"
 
 
 def test_missing_atomic_builtin_capability_is_rejected():

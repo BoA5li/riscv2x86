@@ -17,6 +17,8 @@ from .lift import lift, GhidraLanguageRegisterResolver
 from .pcode_ir import from_lifted
 from .translate import translate, _replacement_has_early_clobber_output_constraint
 from .runtime_facts import build_translation_runtime_facts
+from .atomic_authority import atomic_runtime_objects_from_bundle
+from .semantic_authority import SemanticAuthorityError
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
 from .helper_runtime_manifest import (
@@ -1433,6 +1435,36 @@ def run(
 
             stats["unsupported"] += 1
             continue
+
+        raw_atomic_authority = getattr(
+            f.fragment, "atomicAuthorityBundle", {},
+        )
+        if raw_atomic_authority:
+            try:
+                fragment_id = str(f.fragment.fragmentId or f.fragment.id)
+                source_digest = str(getattr(f, "sourceDigest", ""))
+                operand_indexes = frozenset(
+                    int(item) for item in runtime_facts.operand_width_bits
+                )
+                atomic_objects = atomic_runtime_objects_from_bundle(
+                    raw_atomic_authority, fragment_id=fragment_id,
+                    source_digest=source_digest,
+                    operand_indexes=operand_indexes,
+                )
+                runtime_facts = replace(
+                    runtime_facts, atomic_memory_objects=atomic_objects,
+                    provenance="semantic-authority-bundle",
+                )
+            except (SemanticAuthorityError, TypeError, ValueError) as exc:
+                detail = "atomic semantic authority rejected: " + str(exc)
+                f.notes.append("translation-facts: " + detail)
+                f.category = "Unsupported"
+                f.ruleName = "phase4.atomic_semantic_authority_unsupported"
+                f.suggestedReplacement = ""
+                f.verificationStatus = "unsupported"
+                f.verificationDetail = detail
+                stats["unsupported"] += 1
+                continue
 
         f.translationRuntimeFacts = runtime_facts
 

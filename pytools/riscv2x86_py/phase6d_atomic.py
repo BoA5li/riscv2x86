@@ -24,7 +24,10 @@ def prove_atomic(r):
             contract.address_space_identity != s.atomic.address_space_identity or
             contract.memory_object_identity != s.atomic.memory_object_identity or
             contract.read_effect_identity != s.atomic.read_effect_identity or
-            contract.write_effect_identity != s.atomic.write_effect_identity):
+            contract.write_effect_identity != s.atomic.write_effect_identity or
+            contract.authority_identity != s.atomic.authority_identity or
+            contract.arithmetic_relation != s.atomic.arithmetic_relation or
+            contract.wraparound_width_bits != s.atomic.wraparound_width_bits):
         return reject(r, SemanticProofReasonCode.BINDING_UNSAFE)
     memory = c.memory_constraint
     if (not contract.requires_lock_semantics or

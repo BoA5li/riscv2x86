@@ -34,7 +34,10 @@ def prove(r):
                 contract.address_space_identity != atom.address_space_identity or
                 contract.atomicity_scope != atom.atomicity_scope or
                 contract.read_effect_identity != atom.read_effect_identity or
-                contract.write_effect_identity != atom.write_effect_identity):
+                contract.write_effect_identity != atom.write_effect_identity or
+                contract.authority_identity != atom.authority_identity or
+                contract.arithmetic_relation != atom.arithmetic_relation or
+                contract.wraparound_width_bits != atom.wraparound_width_bits):
             return reject(r, SemanticProofReasonCode.BINDING_UNSAFE)
     elif s.barrier.present:
         if (not c.memory_constraint.requires_compiler_barrier or

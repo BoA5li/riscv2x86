@@ -54,6 +54,9 @@ class CBuiltinContract:
     atomicity_scope: str | None = None
     read_effect_identity: str | None = None
     write_effect_identity: str | None = None
+    authority_identity: str | None = None
+    arithmetic_relation: str | None = None
+    wraparound_width_bits: int | None = None
 
 
 _ORDER_CONSTANTS = {
@@ -135,6 +138,9 @@ def _derive_atomic_contract(source_model, candidate_plan):
         "atomicity_scope": atom.atomicity_scope,
         "read_effect_identity": atom.read_effect_identity,
         "write_effect_identity": atom.write_effect_identity,
+        "authority_identity": atom.authority_identity,
+        "arithmetic_relation": atom.arithmetic_relation,
+        "wraparound_width_bits": atom.wraparound_width_bits,
     }
     if atom.kind is SourceAtomicKind.LOAD:
         if atom.result_operand_index is None or atom.value_operand_index is not None:

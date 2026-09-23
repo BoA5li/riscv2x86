@@ -13,12 +13,29 @@ class AtomicMemoryObjectRuntimeFact:
     address_space_identity: str
     alignment_bytes: int
     pointee_type_id: str | None = None
+    authority_identity: str | None = None
+    operation_kind: str | None = None
+    arithmetic_relation: str | None = None
+    wraparound_width_bits: int | None = None
+    ordering: tuple[str, ...] = ()
+    read_effect_identity: str | None = None
+    write_effect_identity: str | None = None
 
     def __post_init__(self) -> None:
         if (not self.object_identity or not self.address_space_identity or
                 isinstance(self.alignment_bytes, bool) or self.alignment_bytes <= 0 or
-                (self.pointee_type_id is not None and not self.pointee_type_id)):
+                (self.pointee_type_id is not None and not self.pointee_type_id) or
+                (self.wraparound_width_bits is not None and
+                 self.wraparound_width_bits not in {32, 64}) or
+                any(not isinstance(item, str) or not item for item in self.ordering)):
             raise ValueError("invalid atomic memory object runtime fact")
+
+    @property
+    def authority_complete(self) -> bool:
+        return all((self.pointee_type_id, self.authority_identity,
+                    self.operation_kind, self.arithmetic_relation,
+                    self.wraparound_width_bits, self.ordering,
+                    self.read_effect_identity, self.write_effect_identity))
 
 
 @dataclass(frozen=True)
@@ -522,6 +539,22 @@ def translation_runtime_facts_to_dict(
         "asmGotoConditionOperandIndex": facts.asm_goto_condition_operand_index,
         "instructionStreamSyncNoopProven": facts.instruction_stream_sync_noop_proven,
         "instructionStreamSyncProofId": facts.instruction_stream_sync_proof_id,
+        "atomicMemoryObjects": {
+            str(index): {
+                "objectIdentity": item.object_identity,
+                "addressSpaceIdentity": item.address_space_identity,
+                "alignmentBytes": item.alignment_bytes,
+                "pointeeTypeId": item.pointee_type_id,
+                "authorityIdentity": item.authority_identity,
+                "operationKind": item.operation_kind,
+                "arithmeticRelation": item.arithmetic_relation,
+                "wraparoundWidthBits": item.wraparound_width_bits,
+                "ordering": list(item.ordering),
+                "readEffectIdentity": item.read_effect_identity,
+                "writeEffectIdentity": item.write_effect_identity,
+            }
+            for index, item in facts.atomic_memory_objects.items()
+        },
     }
     
 def translation_runtime_facts_from_dict(
@@ -570,12 +603,47 @@ def translation_runtime_facts_from_dict(
         "instructionStreamSyncProofId",
         value.get("instruction_stream_sync_proof_id"),
     )
+    raw_atomic_objects = value.get(
+        "atomicMemoryObjects", value.get("atomic_memory_objects", {}),
+    )
 
     if raw_rv_to_operand is None:
         raw_rv_to_operand = {}
 
     if raw_operand_widths is None:
         raw_operand_widths = {}
+    if raw_atomic_objects is None:
+        raw_atomic_objects = {}
+    if not isinstance(raw_atomic_objects, Mapping):
+        raise ValueError("translationRuntimeFacts atomicMemoryObjects must be an object")
+    atomic_objects: dict[int, AtomicMemoryObjectRuntimeFact] = {}
+    for raw_index, raw_item in raw_atomic_objects.items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("atomic memory object operand index is invalid") from exc
+        if (isinstance(raw_index, bool) or index < 0 or
+                not isinstance(raw_item, Mapping)):
+            raise ValueError("atomic memory object entry is invalid")
+        required = {"objectIdentity", "addressSpaceIdentity", "alignmentBytes",
+                    "pointeeTypeId", "authorityIdentity", "operationKind",
+                    "arithmeticRelation", "wraparoundWidthBits", "ordering"}
+        required.update({"readEffectIdentity", "writeEffectIdentity"})
+        if set(raw_item) != required or not isinstance(raw_item.get("ordering"), list):
+            raise ValueError("atomic memory object authority fields are invalid")
+        atomic_objects[index] = AtomicMemoryObjectRuntimeFact(
+            object_identity=raw_item["objectIdentity"],
+            address_space_identity=raw_item["addressSpaceIdentity"],
+            alignment_bytes=raw_item["alignmentBytes"],
+            pointee_type_id=raw_item["pointeeTypeId"],
+            authority_identity=raw_item["authorityIdentity"],
+            operation_kind=raw_item["operationKind"],
+            arithmetic_relation=raw_item["arithmeticRelation"],
+            wraparound_width_bits=raw_item["wraparoundWidthBits"],
+            ordering=tuple(raw_item["ordering"]),
+            read_effect_identity=raw_item["readEffectIdentity"],
+            write_effect_identity=raw_item["writeEffectIdentity"],
+        )
 
     rv_to_operand_index, register_errors = _normalize_register_map(
         raw_rv_to_operand
@@ -626,6 +694,7 @@ def translation_runtime_facts_from_dict(
         asm_goto_condition_operand_index=asm_goto_condition_operand_index,
         instruction_stream_sync_noop_proven=instruction_stream_sync_noop_proven,
         instruction_stream_sync_proof_id=instruction_stream_sync_proof_id,
+        atomic_memory_objects=atomic_objects,
     )
 
 # ---------------------------------------------------------------------------

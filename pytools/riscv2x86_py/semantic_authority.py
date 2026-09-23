@@ -72,10 +72,11 @@ class _AuthorityPayload:
             value = getattr(self, item.name)
             if value is None:
                 continue
-            if item.name in {"width_bytes", "alignment_bytes", "width_bits"}:
+            if item.name in {"width_bytes", "alignment_bytes", "width_bits",
+                             "wraparound_width_bits"}:
                 if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                     invalid.append(item.name)
-            elif item.name == "operand_index":
+            elif item.name in {"operand_index", "address_operand_index"}:
                 if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                     invalid.append(item.name)
             elif item.name == "offset_bytes":
@@ -93,7 +94,11 @@ class _AuthorityPayload:
         return tuple(sorted(set(invalid)))
 
     def to_dict(self) -> dict[str, object]:
-        return {item.name: getattr(self, item.name) for item in fields(self)}
+        return {
+            item.name: (list(value) if isinstance(value, tuple) else value)
+            for item in fields(self)
+            for value in (getattr(self, item.name),)
+        }
 
 
 @dataclass(frozen=True)
@@ -163,11 +168,23 @@ class AtomicOperationFacts(_AuthorityPayload):
     ordering: tuple[str, ...] = ()
     atomicity_scope: str | None = None
     alignment_bytes: int | None = None
+    memory_object_identity: str | None = None
+    address_space_identity: str | None = None
+    pointee_type_id: str | None = None
+    arithmetic_relation: str | None = None
+    wraparound_width_bits: int | None = None
+    address_operand_index: int | None = None
+    read_effect_identity: str | None = None
+    write_effect_identity: str | None = None
 
     FACT_KIND = "atomic_operation"
     REQUIRED_FIELDS = ("effect_identity", "operation_kind", "width_bits",
                        "address_node_id", "input_value_node_id", "result_semantics",
-                       "ordering", "atomicity_scope", "alignment_bytes")
+                       "ordering", "atomicity_scope", "alignment_bytes",
+                       "memory_object_identity", "address_space_identity",
+                       "pointee_type_id", "arithmetic_relation",
+                       "wraparound_width_bits", "address_operand_index",
+                       "read_effect_identity", "write_effect_identity")
     NODE_FIELDS = ("address_node_id", "input_value_node_id", "result_value_node_id")
     KEY_FIELDS = ("effect_identity",)
 
@@ -176,6 +193,27 @@ class AtomicOperationFacts(_AuthorityPayload):
         if self.result_semantics != "none" and not self.result_value_node_id:
             missing.append("result_value_node_id")
         return tuple(sorted(set(missing)))
+
+    def invalid_fields(self) -> tuple[str, ...]:
+        invalid = list(super().invalid_fields())
+        if (self.wraparound_width_bits is not None and
+                (isinstance(self.wraparound_width_bits, bool) or
+                 self.wraparound_width_bits not in {32, 64})):
+            invalid.append("wraparound_width_bits")
+        if (self.address_operand_index is not None and
+                (isinstance(self.address_operand_index, bool) or
+                 not isinstance(self.address_operand_index, int) or
+                 self.address_operand_index < 0)):
+            invalid.append("address_operand_index")
+        if (self.width_bits is not None and self.wraparound_width_bits is not None
+                and self.width_bits != self.wraparound_width_bits):
+            invalid.append("wraparound_width_bits")
+        if self.arithmetic_relation is not None and self.arithmetic_relation not in {
+            "exchange", "add_mod_2n", "and_bits", "or_bits", "xor_bits",
+            "compare_exchange",
+        }:
+            invalid.append("arithmetic_relation")
+        return tuple(sorted(set(invalid)))
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,9 @@ class X86AtomicContract:
     memory_object_identity: str
     read_effect_identity: str
     write_effect_identity: str
+    authority_identity: str
+    arithmetic_relation: str
+    wraparound_width_bits: int
 
 
 @dataclass(frozen=True)
@@ -130,14 +133,20 @@ def _derive_lock_rmw_contract(source_model, candidate_plan, atom):
     if atom.width_bits not in {32, 64} or atom.alignment_bytes < atom.width_bits // 8:
         return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE", {"expected": "naturally_aligned_u32_or_u64"})
     if atom.success_ordering is not SourceMemoryOrdering.SEQ_CST or atom.failure_ordering is not None:
-        return _failure(candidate_plan, "X86_ATOMIC_ORDERING_UNSUPPORTED", {"expected": "seq_cst_rmw_without_failure_order"})
+        return _failure(candidate_plan, "X86_ATOMIC_ORDERING_UNSUPPORTED", {
+            "expected": "seq_cst_rmw_without_failure_order",
+            "ordering_policy": "exact-only",
+            "stronger_ordering_refinement": "not-approved",
+        })
     if (atom.result_semantics != "old_value" or
             atom.ordering_before is not SourceMemoryOrdering.SEQ_CST or
             atom.ordering_after is not SourceMemoryOrdering.SEQ_CST or
             atom.atomicity_scope != "system" or
             atom.address_space_identity != "riscv.default-data-address-space" or
             not atom.memory_object_identity or not atom.read_effect_identity or
-            not atom.write_effect_identity):
+            not atom.write_effect_identity or not atom.authority_identity or
+            atom.wraparound_width_bits != atom.width_bits or
+            atom.arithmetic_relation not in {"add_mod_2n", "exchange"}):
         return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE", {
             "expected": "typed_object_scope_ordering_and_old_value_relation",
         })
@@ -201,7 +210,9 @@ def derive_x86_atomic_constraints(source_model: SourceSemanticModel, candidate_p
         semantic_id, atom.rmw_operation, mechanism, atom.result_semantics,
         atom.ordering_before, atom.ordering_after, atom.atomicity_scope,
         atom.address_space_identity, atom.memory_object_identity,
-        atom.read_effect_identity, atom.write_effect_identity)
+        atom.read_effect_identity, atom.write_effect_identity,
+        atom.authority_identity, atom.arithmetic_relation,
+        atom.wraparound_width_bits)
     memory = TargetMemoryConstraint(requires_memory_clobber=True, requires_atomic_ordering=True,
         requires_compiler_barrier=True, requires_hardware_barrier=True,
         atomic_success_ordering=atom.success_ordering, atomic_failure_ordering=atom.failure_ordering,

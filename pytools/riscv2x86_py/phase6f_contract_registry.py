@@ -934,6 +934,11 @@ def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
             contract.success_ordering not in _ORDER_CONSTANTS or
             contract.object_operand_index is None or
             not contract.object_pointee_type_id or
+            not contract.authority_identity or
+            contract.wraparound_width_bits != contract.width_bits or
+            contract.arithmetic_relation not in {
+                "exchange", "add_mod_2n", "and_bits", "or_bits", "xor_bits"
+            } or
             not memory.requires_atomic_ordering or
             not memory.requires_compiler_barrier or
             memory.atomic_success_ordering is None or
@@ -1044,6 +1049,9 @@ def _x86_lock_atomic_recipe(approved: ApprovedTargetLoweringPlan):
             contract.width_bits not in {32, 64} or
             contract.alignment_bytes < contract.width_bits // 8 or
             contract.value_operand_index != contract.result_operand_index or
+            not contract.authority_identity or
+            contract.wraparound_width_bits != contract.width_bits or
+            contract.arithmetic_relation not in {"exchange", "add_mod_2n"} or
             not memory.requires_memory_clobber or
             not memory.requires_compiler_barrier or
             not memory.requires_hardware_barrier or

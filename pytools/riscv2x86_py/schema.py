@@ -345,6 +345,10 @@ class AsmFragment:
     # 或 p-code 中寄存器出现顺序猜测该映射。
     operandBindings: Dict[str, Any] = field(default_factory=dict)
     operand_width_bits: Dict[int, int] = field(default_factory=dict)
+    # Content-bound semantic authority injected by the automatic frontend
+    # wrapper. It remains raw until Phase 4 can validate assembler operand
+    # identities against the sidecar's referenced nodes.
+    atomicAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.fragmentId and not self.id:
@@ -369,6 +373,7 @@ class Finding:
     rewriteBeginOffset: int = 0
     rewriteEndOffset: int = 0
     rawSourceText: str = ""
+    sourceDigest: str = ""
 
     # finding 的基础 source location。
     fileName: str = ""
