@@ -1058,6 +1058,27 @@ def build_source_semantic_model(
                                     local_unconditional_jump is not None),
     )
 
+    atomic = _build_atomic_operation_model(
+        summary=analysis_summary,
+        memory=memory,
+        operands=operands,
+        runtime_status=runtime_status,
+    )
+    if atomic.present and atomic.complete:
+        # A complete typed atomic authority owns a stronger operation identity
+        # than the generic p-code carrier.  This is the only path that may
+        # close an otherwise opaque LOAD/ALU/STORE-shaped operation.
+        operation = replace(
+            operation,
+            kind=SourceOperationKind.ATOMIC_READ_MODIFY_WRITE,
+            may_trap=False,
+            complete=(
+                operation.has_return is False
+                and not operation.has_call
+                and not operation.has_control_flow
+            ),
+        )
+
     if privileged_state is not None and privileged_state.present:
         privileged_may_trap = bool(
             privileged_state.trap_effects
@@ -1117,12 +1138,6 @@ def build_source_semantic_model(
                 for block in blocks
             ),
         })
-
-    atomic = _build_atomic_operation_model(
-        summary=analysis_summary,
-        memory=memory,
-        operands=operands,
-    )
 
     barrier = _build_barrier_model(
         shell=shell,
@@ -2988,6 +3003,7 @@ class SourceAtomicRmwOperation(str, Enum):
     FETCH_ADD = "fetch_add"
     FETCH_OR = "fetch_or"
     FETCH_AND = "fetch_and"
+    FETCH_XOR = "fetch_xor"
     EXCHANGE = "exchange"
 
 
@@ -3065,6 +3081,8 @@ class SourceAddressBinding:
     # Canonical byte displacement from the bound address operand.  It is
     # derived from typed p-code address arithmetic, never from asm text.
     byte_offset: int = 0
+    memory_object_identity: Optional[str] = None
+    address_space_identity: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -3382,6 +3400,14 @@ class SourceAtomicOperationModel:
 
     lock_free_required: Optional[bool]
     complete: bool
+    result_semantics: Optional[str] = None
+    ordering_before: Optional[SourceMemoryOrdering] = None
+    ordering_after: Optional[SourceMemoryOrdering] = None
+    atomicity_scope: Optional[str] = None
+    address_space_identity: Optional[str] = None
+    memory_object_identity: Optional[str] = None
+    read_effect_identity: Optional[str] = None
+    write_effect_identity: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.present, bool):
@@ -3464,6 +3490,27 @@ class SourceAtomicOperationModel:
         if not isinstance(self.complete, bool):
             raise TypeError("complete must be bool")
 
+        if self.result_semantics is not None and self.result_semantics not in {
+            "old_value", "new_value", "success_flag", "none",
+        }:
+            raise ValueError("invalid atomic result_semantics")
+        for field_name in ("ordering_before", "ordering_after"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, SourceMemoryOrdering):
+                raise TypeError(f"{field_name} must be SourceMemoryOrdering or None")
+        if self.complete and self.present:
+            typed_required = (
+                self.result_semantics, self.ordering_before, self.ordering_after,
+                self.atomicity_scope, self.address_space_identity,
+                self.memory_object_identity, self.read_effect_identity,
+                self.write_effect_identity,
+            )
+            if any(value is None or value == "" for value in typed_required):
+                raise ValueError("complete atomic operation lacks typed authority")
+            if ((self.result_semantics == "none") !=
+                    (self.result_operand_index is None)):
+                raise ValueError("atomic result binding/semantics mismatch")
+
         if not self.present:
             unexpected = (
                 self.kind,
@@ -3478,6 +3525,14 @@ class SourceAtomicOperationModel:
                 self.success_ordering,
                 self.failure_ordering,
                 self.lock_free_required,
+                self.result_semantics,
+                self.ordering_before,
+                self.ordering_after,
+                self.atomicity_scope,
+                self.address_space_identity,
+                self.memory_object_identity,
+                self.read_effect_identity,
+                self.write_effect_identity,
             )
             if any(value is not None for value in unexpected):
                 raise ValueError(
@@ -4129,6 +4184,7 @@ def _runtime_operand_semantics(
         return {}
     all_operands = shell.all_operands
     result: dict[int, RuntimeOperandSemanticFact] = {}
+    atomic_objects = getattr(runtime_facts, "atomic_memory_objects", {})
     for index in authoritative_bindings:
         if index < 0 or index >= len(all_operands):
             continue
@@ -4186,10 +4242,16 @@ def _runtime_operand_semantics(
             lvalue=lvalue,
             address=(SourceAddressBinding(
                 address_id=f"canonical-memory-address:{index}",
-                pointee_type_id=None,
-                alignment_bytes=None,
+                pointee_type_id=(atomic_objects[index].pointee_type_id
+                                 if index in atomic_objects else None),
+                alignment_bytes=(atomic_objects[index].alignment_bytes
+                                 if index in atomic_objects else None),
                 provenance_known=True,
                 byte_offset=memory_address_operand_offsets[index],
+                memory_object_identity=(atomic_objects[index].object_identity
+                                        if index in atomic_objects else None),
+                address_space_identity=(atomic_objects[index].address_space_identity
+                                        if index in atomic_objects else None),
             ) if index in memory_address_operand_offsets else None),
         )
     return result
@@ -4216,9 +4278,19 @@ def _memory_address_operand_offsets(*, blocks: Sequence[Block], runtime_facts: T
     }
     memory_ops = [op for block in blocks for instruction in block.instructions
                   for op in instruction.ops if op.opcode in {"LOAD", "STORE"}]
-    if len(memory_ops) != 1:
+    if not memory_ops:
         return {}
-
+    # An indivisible RMW may be represented by one LOAD and one STORE around
+    # a decoder-owned atomic carrier.  Address recovery may join those only
+    # when every memory effect names the exact same canonical address varnode;
+    # this does not infer atomicity from their shape.
+    raw_addresses = [
+        op.inputs[1] for op in memory_ops
+        if len(op.inputs) == (2 if op.opcode == "LOAD" else 3)
+    ]
+    if len(raw_addresses) != len(memory_ops) or any(
+            item != raw_addresses[0] for item in raw_addresses[1:]):
+        return {}
     memory_op = memory_ops[0]
     if memory_op.opcode == "LOAD":
         # SLEIGH LOAD has (space, address) inputs.
@@ -5530,6 +5602,7 @@ def _build_atomic_operation_model(
     summary: IRSummary,
     memory: SourceMemoryModel,
     operands: SourceOperandModel,
+    runtime_status: RuntimeFactStatus,
 ) -> SourceAtomicOperationModel:
     """
     Build structured atomic facts.
@@ -5584,65 +5657,88 @@ def _build_atomic_operation_model(
             complete=False,
         )
 
-    # The following field names are an explicit required IRSummary contract.
-    # Adjust only this adapter if your actual normalized summary names differ.
+    operation_map = {
+        "exchange": SourceAtomicRmwOperation.EXCHANGE,
+        "fetch_add": SourceAtomicRmwOperation.FETCH_ADD,
+        "fetch_and": SourceAtomicRmwOperation.FETCH_AND,
+        "fetch_or": SourceAtomicRmwOperation.FETCH_OR,
+        "fetch_xor": SourceAtomicRmwOperation.FETCH_XOR,
+    }
+    rmw_operation = operation_map.get(
+        getattr(structured_atomic, "operation_kind", None)
+    )
+    register_map = runtime_status.rv_to_operand_index
+    address_index = register_map.get(
+        getattr(structured_atomic, "address_binding", "")
+    )
+    value_index = register_map.get(
+        getattr(structured_atomic, "input_value_binding", "")
+    )
+    result_name = getattr(structured_atomic, "result_binding", None)
+    result_index = None if result_name is None else register_map.get(result_name)
+    by_index = {item.source_operand_index: item for item in operands.operands}
+    address_operand = by_index.get(address_index)
+    address = None if address_operand is None else address_operand.address
+    width_bits = getattr(structured_atomic, "width_bits", None)
+    alignment = None if address is None else address.alignment_bytes
+    before = {
+        "relaxed": SourceMemoryOrdering.RELAXED,
+        "release": SourceMemoryOrdering.RELEASE,
+        "seq_cst": SourceMemoryOrdering.SEQ_CST,
+    }.get(getattr(structured_atomic, "ordering_before", None))
+    after = {
+        "relaxed": SourceMemoryOrdering.RELAXED,
+        "acquire": SourceMemoryOrdering.ACQUIRE,
+        "seq_cst": SourceMemoryOrdering.SEQ_CST,
+    }.get(getattr(structured_atomic, "ordering_after", None))
+    combined = {
+        (SourceMemoryOrdering.RELAXED, SourceMemoryOrdering.RELAXED): SourceMemoryOrdering.RELAXED,
+        (SourceMemoryOrdering.RELEASE, SourceMemoryOrdering.RELAXED): SourceMemoryOrdering.RELEASE,
+        (SourceMemoryOrdering.RELAXED, SourceMemoryOrdering.ACQUIRE): SourceMemoryOrdering.ACQUIRE,
+        (SourceMemoryOrdering.RELEASE, SourceMemoryOrdering.ACQUIRE): SourceMemoryOrdering.ACQ_REL,
+        (SourceMemoryOrdering.SEQ_CST, SourceMemoryOrdering.SEQ_CST): SourceMemoryOrdering.SEQ_CST,
+    }.get((before, after))
+    result_semantics = getattr(structured_atomic, "result_semantics", None)
+    object_identity = None if address is None else address.memory_object_identity
+    bindings_complete = bool(
+        rmw_operation is not None and address_index is not None
+        and value_index is not None
+        and (result_semantics == "none" or result_index is not None)
+        and address is not None and address.provenance_known
+        and alignment is not None and isinstance(width_bits, int)
+        and alignment >= width_bits // 8 and combined is not None
+        and getattr(structured_atomic, "atomicity_scope", None)
+        and address.address_space_identity == getattr(
+            structured_atomic, "address_space_identity", None)
+        and object_identity and getattr(structured_atomic, "complete", False)
+    )
+    effect_base = (
+        f"atomic:{object_identity}:{getattr(structured_atomic, 'operation_kind', '')}:{width_bits}"
+        if object_identity else None
+    )
     return SourceAtomicOperationModel(
         present=True,
-        kind=getattr(structured_atomic, "kind", None),
-        rmw_operation=getattr(structured_atomic, "rmw_operation", None),
-        width_bits=getattr(structured_atomic, "width_bits", None),
-        alignment_bytes=getattr(
-            structured_atomic,
-            "alignment_bytes",
-            None,
-        ),
-        address_operand_index=getattr(
-            structured_atomic,
-            "address_operand_index",
-            None,
-        ),
-        value_operand_index=getattr(
-            structured_atomic,
-            "value_operand_index",
-            None,
-        ),
-        expected_operand_index=getattr(
-            structured_atomic,
-            "expected_operand_index",
-            None,
-        ),
-        desired_operand_index=getattr(
-            structured_atomic,
-            "desired_operand_index",
-            None,
-        ),
-        result_operand_index=getattr(
-            structured_atomic,
-            "result_operand_index",
-            None,
-        ),
-        success_ordering=getattr(
-            structured_atomic,
-            "success_ordering",
-            None,
-        ),
-        failure_ordering=getattr(
-            structured_atomic,
-            "failure_ordering",
-            None,
-        ),
-        lock_free_required=getattr(
-            structured_atomic,
-            "lock_free_required",
-            None,
-        ),
-        complete=bool(
-            getattr(
-                structured_atomic,
-                "complete",
-                False,
-            )
-        ),
+        kind=SourceAtomicKind.READ_MODIFY_WRITE if rmw_operation else None,
+        rmw_operation=rmw_operation,
+        width_bits=width_bits,
+        alignment_bytes=alignment,
+        address_operand_index=address_index,
+        value_operand_index=value_index,
+        expected_operand_index=None,
+        desired_operand_index=None,
+        result_operand_index=result_index,
+        success_ordering=combined,
+        failure_ordering=None,
+        lock_free_required=True,
+        complete=bindings_complete,
+        result_semantics=result_semantics,
+        ordering_before=before,
+        ordering_after=after,
+        atomicity_scope=getattr(structured_atomic, "atomicity_scope", None),
+        address_space_identity=getattr(structured_atomic, "address_space_identity", None),
+        memory_object_identity=object_identity,
+        read_effect_identity=None if effect_base is None else effect_base + ":read",
+        write_effect_identity=None if effect_base is None else effect_base + ":write",
     )
 
 def _build_barrier_model(

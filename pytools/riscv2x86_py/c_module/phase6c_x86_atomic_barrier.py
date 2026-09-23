@@ -43,6 +43,14 @@ class X86AtomicContract:
     semantic_contract_id: str
     rmw_operation: SourceAtomicRmwOperation | None
     lock_mechanism: X86AtomicLockMechanism | None
+    result_semantics: str
+    ordering_before: SourceMemoryOrdering
+    ordering_after: SourceMemoryOrdering
+    atomicity_scope: str
+    address_space_identity: str
+    memory_object_identity: str
+    read_effect_identity: str
+    write_effect_identity: str
 
 
 @dataclass(frozen=True)
@@ -123,6 +131,16 @@ def _derive_lock_rmw_contract(source_model, candidate_plan, atom):
         return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE", {"expected": "naturally_aligned_u32_or_u64"})
     if atom.success_ordering is not SourceMemoryOrdering.SEQ_CST or atom.failure_ordering is not None:
         return _failure(candidate_plan, "X86_ATOMIC_ORDERING_UNSUPPORTED", {"expected": "seq_cst_rmw_without_failure_order"})
+    if (atom.result_semantics != "old_value" or
+            atom.ordering_before is not SourceMemoryOrdering.SEQ_CST or
+            atom.ordering_after is not SourceMemoryOrdering.SEQ_CST or
+            atom.atomicity_scope != "system" or
+            atom.address_space_identity != "riscv.default-data-address-space" or
+            not atom.memory_object_identity or not atom.read_effect_identity or
+            not atom.write_effect_identity):
+        return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE", {
+            "expected": "typed_object_scope_ordering_and_old_value_relation",
+        })
     if atom.value_operand_index != atom.result_operand_index:
         return _failure(candidate_plan, "X86_ATOMIC_FACTS_INCOMPLETE", {"expected": "read_write_value_result_binding"})
     by_index = {op.source_operand_index: op for op in source_model.operands.operands}
@@ -180,7 +198,10 @@ def derive_x86_atomic_constraints(source_model: SourceSemanticModel, candidate_p
     contract = X86AtomicContract(atom.kind, atom.address_operand_index, atom.width_bits, atom.alignment_bytes,
         atom.success_ordering, atom.failure_ordering, atom.value_operand_index, atom.expected_operand_index,
         atom.desired_operand_index, atom.result_operand_index, True, True, True, "x86:atomic",
-        semantic_id, atom.rmw_operation, mechanism)
+        semantic_id, atom.rmw_operation, mechanism, atom.result_semantics,
+        atom.ordering_before, atom.ordering_after, atom.atomicity_scope,
+        atom.address_space_identity, atom.memory_object_identity,
+        atom.read_effect_identity, atom.write_effect_identity)
     memory = TargetMemoryConstraint(requires_memory_clobber=True, requires_atomic_ordering=True,
         requires_compiler_barrier=True, requires_hardware_barrier=True,
         atomic_success_ordering=atom.success_ordering, atomic_failure_ordering=atom.failure_ordering,

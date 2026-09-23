@@ -28,6 +28,66 @@ _ATOMIC_MNEMONIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+@dataclass(frozen=True)
+class CanonicalAtomicOperation:
+    """Typed atomic operation emitted by the decoder/canonical boundary."""
+    operation_kind: str
+    width_bits: int
+    address_binding: str
+    input_value_binding: str
+    result_binding: str | None
+    result_semantics: str
+    ordering_before: str
+    ordering_after: str
+    atomicity_scope: str
+    address_space_identity: str
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if self.operation_kind not in {
+            "exchange", "fetch_add", "fetch_and", "fetch_or", "fetch_xor",
+            "compare_exchange",
+        }:
+            raise ValueError("unsupported canonical atomic operation")
+        if self.width_bits not in {32, 64}:
+            raise ValueError("canonical atomic width must be 32 or 64")
+        if self.result_semantics not in {"old_value", "new_value", "success_flag", "none"}:
+            raise ValueError("invalid canonical atomic result semantics")
+        if self.ordering_before not in {"relaxed", "release", "seq_cst"}:
+            raise ValueError("invalid canonical atomic predecessor ordering")
+        if self.ordering_after not in {"relaxed", "acquire", "seq_cst"}:
+            raise ValueError("invalid canonical atomic successor ordering")
+        required = (self.address_binding, self.input_value_binding,
+                    self.atomicity_scope, self.address_space_identity)
+        structurally_complete = all(isinstance(item, str) and item for item in required)
+        structurally_complete &= ((self.result_semantics == "none") ==
+                                  (self.result_binding is None))
+        if self.complete and not structurally_complete:
+            raise ValueError("complete canonical atomic operation lacks bindings")
+
+
+def _canonical_atomic_operation(ins: Any) -> CanonicalAtomicOperation | None:
+    raw = getattr(ins, "atomic_operation", None)
+    if raw is None:
+        return None
+    try:
+        return CanonicalAtomicOperation(
+            operation_kind=raw.operation_kind,
+            width_bits=raw.width_bits,
+            address_binding=raw.address_register,
+            input_value_binding=raw.input_value_register,
+            result_binding=raw.result_register,
+            result_semantics=raw.result_semantics,
+            ordering_before=raw.ordering_before,
+            ordering_after=raw.ordering_after,
+            atomicity_scope=raw.atomicity_scope,
+            address_space_identity=raw.address_space_identity,
+            complete=bool(raw.complete),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
 def canonicalize_lifted_instruction(
     ins: Any,
     *,
@@ -66,6 +126,7 @@ def canonicalize_lifted_instruction(
 
     barrier_info = _barrier_info_from_instruction(ins)
 
+    atomic_operation = _canonical_atomic_operation(ins)
     atomic_mnemonic, atomic_orderings = _atomic_info_from_asm(ins)
 
     # 保留旧 decoder 兼容路径。
@@ -118,7 +179,7 @@ def canonicalize_lifted_instruction(
     # barrier 类型时，必须保守地保留 unknown barrier。
     has_unknown_barrier = raw_has_barrier and barrier_info is None
 
-    has_atomic = raw_has_atomic or atomic_mnemonic is not None
+    has_atomic = raw_has_atomic or atomic_mnemonic is not None or atomic_operation is not None
 
     atomic_reads_mem = False
     atomic_writes_mem = False
@@ -127,6 +188,10 @@ def canonicalize_lifted_instruction(
         atomic_reads_mem, atomic_writes_mem = _atomic_memory_effects(
             atomic_mnemonic
         )
+    if atomic_operation is not None:
+        # Every currently admitted typed operation is an indivisible RMW.
+        atomic_reads_mem = True
+        atomic_writes_mem = True
 
     return CanonicalInsn(
         addr=addr,
@@ -143,6 +208,7 @@ def canonicalize_lifted_instruction(
         atomic_orderings=set(atomic_orderings),
         atomic_reads_mem=atomic_reads_mem,
         atomic_writes_mem=atomic_writes_mem,
+        atomic_operation=atomic_operation,
         semantic_tags=semantic_tags,
         privileged_operations=privileged_operations,
         privileged_metadata_invalid=privileged_metadata_invalid,
@@ -742,6 +808,7 @@ class CanonicalInsn:
     # not silently change meaning.
     privileged_operations: tuple[CanonicalPrivilegedOperation, ...] = ()
     privileged_metadata_invalid: bool = False
+    atomic_operation: CanonicalAtomicOperation | None = None
 
 @dataclass
 class IRSummary:
@@ -776,6 +843,8 @@ class IRSummary:
     # Phase 6 consumes this only through SourceStackFrameModel and must never
     # reconstruct it from assembly spelling.
     stack_frame_semantics: StackFrameSemantics | None = None
+    # Appended for positional compatibility with pre-Phase-22 fixtures.
+    atomic_semantics: CanonicalAtomicOperation | None = None
 
     @property
     def barrier_info(self) -> Optional[BarrierInfo]:
@@ -1971,10 +2040,10 @@ def _is_proven_standalone_atomic_fragment(
         return False
 
     ins = insns[0]
-    mnemonic = (ins.atomic_mnemonic or "").strip().lower()
     if (
         not ins.has_atomic
-        or _ATOMIC_MNEMONIC_RE.fullmatch(mnemonic) is None
+        or ins.atomic_operation is None
+        or not ins.atomic_operation.complete
         or not (ins.atomic_reads_mem or ins.atomic_writes_mem)
         or ins.terminator_kind
         or ins.has_branch_op
@@ -2068,6 +2137,8 @@ def _summarize_instructions(
 
     atomic_orderings: Set[str] = set()
     atomic_mnemonics: Set[str] = set()
+    atomic_operations = [ins.atomic_operation for ins in insns
+                         if ins.atomic_operation is not None]
 
     barrier_infos: List[BarrierInfo] = []
 
@@ -2161,6 +2232,8 @@ def _summarize_instructions(
         writes_mem=writes_mem,
         atomic_orderings=atomic_orderings,
         atomic_mnemonics=atomic_mnemonics,
+        atomic_semantics=(atomic_operations[0]
+                          if len(atomic_operations) == 1 else None),
         barrier_infos=barrier_infos,
         has_instruction_barrier=has_instruction_barrier,
         has_unknown_barrier=has_unknown_barrier,

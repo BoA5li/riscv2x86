@@ -732,6 +732,44 @@ def _generate_atomic_candidates(
         ),
     ]
 
+    for rank, operation in enumerate(
+        ("fetch_add", "fetch_and", "fetch_or", "fetch_xor", "exchange"),
+        start=12,
+    ):
+        candidates.append(_plan(
+            plan_id=f"c-builtin.atomic-{operation.replace('_', '-')}",
+            kind=TargetLoweringKind.C_BUILTIN,
+            family=TargetLoweringFamily.C_BUILTIN,
+            priority_tier=PlanPriorityTier.C_BUILTIN,
+            deterministic_rank=rank,
+            required_features=frozenset({"compiler:atomic-builtin"}),
+            requirements=frozenset({
+                PlanRequirement.AUTHORITATIVE_OPERAND_BINDINGS,
+                PlanRequirement.AUTHORITATIVE_OPERAND_WIDTHS,
+                PlanRequirement.PRESERVE_ATOMIC_ORDERING,
+                PlanRequirement.PRESERVE_MEMORY_ORDERING,
+                PlanRequirement.PROVE_SOURCE_TARGET_WIDTH_COMPATIBILITY,
+                PlanRequirement.PROVE_DEFINED_C_SEMANTICS,
+            }),
+            metadata={
+                "strategy": "compiler_atomic_rmw_builtin",
+                "atomic_operation_kind": operation,
+                "supported_width_bits": (32, 64),
+                "supported_orderings": (
+                    "relaxed", "acquire", "release", "acq_rel", "seq_cst",
+                ),
+                "result_semantics": ("old_value", "none"),
+                "required_target_feature": "compiler:atomic-builtin",
+                "renderer_semantic_contract_id":
+                    f"c.builtin.atomic-{operation.replace('_', '-')}.u32-u64.v1",
+            },
+            rationale=(
+                "A typed atomic RMW may use only the public __atomic builtin "
+                "whose operator, width, object, result and ordering contract match.",
+            ),
+            reason_codes=("atomic-rmw-builtin-candidate",),
+        ))
+
     if facts.target_is_x86:
         # Every lock-based form has an independent semantic contract.  Phase
         # 6C rejects all except the one matching the authoritative RMW fact.
@@ -761,6 +799,13 @@ def _generate_atomic_candidates(
                     metadata={
                         "strategy": "x86_lock_atomic",
                         "renderer_semantic_contract_id": semantic_contract_id,
+                        "supported_width_bits": (32, 64),
+                        "supported_orderings": ("seq_cst",),
+                        "supported_address_spaces": ("riscv.default-data-address-space",),
+                        "minimum_alignment_is_natural": True,
+                        "result_semantics": "old_value",
+                        "required_clobbers": ("memory", "cc"),
+                        "required_target_feature": "x86:atomic",
                     },
                     rationale=(
                         "Lock-based x86 atomic candidate with a specific "

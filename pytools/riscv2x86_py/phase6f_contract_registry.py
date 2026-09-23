@@ -908,15 +908,26 @@ _ORDER_CONSTANTS = {
 
 
 def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
-    """Render only a fully derived __atomic_load_n/store_n contract."""
+    """Render only a fully derived public __atomic contract."""
+    rmw_ids = {
+        "c.builtin.atomic-fetch-add.u32-u64.v1",
+        "c.builtin.atomic-fetch-and.u32-u64.v1",
+        "c.builtin.atomic-fetch-or.u32-u64.v1",
+        "c.builtin.atomic-fetch-xor.u32-u64.v1",
+        "c.builtin.atomic-exchange.u32-u64.v1",
+    }
     contract = approved.constraints.c_builtin_constraint
     if contract is None or contract.semantic_contract_id not in {
         "c.builtin.atomic-load-n.u32-u64.v1",
         "c.builtin.atomic-store-n.u32-u64.v1",
+        *rmw_ids,
     }:
         return None
     memory = approved.constraints.memory_constraint
-    if (contract.builtin_identifier not in {"__atomic_load_n", "__atomic_store_n"} or
+    if (contract.builtin_identifier not in {
+            "__atomic_load_n", "__atomic_store_n", "__atomic_fetch_add",
+            "__atomic_fetch_and", "__atomic_fetch_or", "__atomic_fetch_xor",
+            "__atomic_exchange_n"} or
             contract.width_bits not in {32, 64} or
             contract.alignment_bytes is None or
             contract.alignment_bytes < contract.width_bits // 8 or
@@ -938,7 +949,7 @@ def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
             return None
         arguments = (CBuiltinArgument(contract.object_operand_index), order)
         result = contract.result_operand_index
-    else:
+    elif contract.semantic_contract_id == "c.builtin.atomic-store-n.u32-u64.v1":
         if (contract.value_operand_index is None or
                 contract.result_operand_index is not None or
                 not contract.value_c_type_id):
@@ -949,6 +960,18 @@ def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
             order,
         )
         result = None
+    else:
+        if (contract.value_operand_index is None or
+                not contract.value_c_type_id or
+                (contract.result_operand_index is not None and
+                 not contract.result_c_type_id)):
+            return None
+        arguments = (
+            CBuiltinArgument(contract.object_operand_index),
+            CBuiltinArgument(contract.value_operand_index),
+            order,
+        )
+        result = contract.result_operand_index
     return (
         RendererContractKind.C_BUILTIN,
         CBuiltinRecipe(
@@ -1324,6 +1347,20 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             "c_builtin_constraint",
             frozenset({"compiler:atomic-builtin"}),
         ),
+        *(RegisteredRendererContract(
+            semantic_id,
+            TargetLoweringKind.C_BUILTIN,
+            semantic_id.removesuffix(".v1"),
+            _atomic_public_builtin_recipe,
+            "c_builtin_constraint",
+            frozenset({"compiler:atomic-builtin"}),
+        ) for semantic_id in (
+            "c.builtin.atomic-fetch-add.u32-u64.v1",
+            "c.builtin.atomic-fetch-and.u32-u64.v1",
+            "c.builtin.atomic-fetch-or.u32-u64.v1",
+            "c.builtin.atomic-fetch-xor.u32-u64.v1",
+            "c.builtin.atomic-exchange.u32-u64.v1",
+        )),
         RegisteredRendererContract(
             "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
             TargetLoweringKind.C_BUILTIN,

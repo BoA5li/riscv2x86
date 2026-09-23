@@ -24,7 +24,7 @@ def _assert_special_semantics_proven_absent(summary) -> None:
     assert summary.has_speculation_control is False
 
 
-def test_complete_atomic_shape_produces_authoritative_negative_facts() -> None:
+def test_atomic_pcode_shape_without_typed_authority_stays_unknown() -> None:
     ins = CanonicalInsn(
         addr=0x1000,
         size=4,
@@ -40,7 +40,10 @@ def test_complete_atomic_shape_produces_authoritative_negative_facts() -> None:
     assert summary.has_atomic is True
     assert summary.reads_mem is True
     assert summary.writes_mem is True
-    _assert_special_semantics_proven_absent(summary)
+    assert summary.atomic_semantics is None
+    assert summary.has_return is None
+    assert summary.has_tail_call is None
+    assert summary.has_indirect_control_flow is None
 
 
 def test_complete_direct_conditional_shape_produces_negative_facts() -> None:

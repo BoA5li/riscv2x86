@@ -7,6 +7,21 @@ from collections.abc import Mapping
 
 
 @dataclass(frozen=True)
+class AtomicMemoryObjectRuntimeFact:
+    """Frontend/harness-owned object proof for one atomic address operand."""
+    object_identity: str
+    address_space_identity: str
+    alignment_bytes: int
+    pointee_type_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (not self.object_identity or not self.address_space_identity or
+                isinstance(self.alignment_bytes, bool) or self.alignment_bytes <= 0 or
+                (self.pointee_type_id is not None and not self.pointee_type_id)):
+            raise ValueError("invalid atomic memory object runtime fact")
+
+
+@dataclass(frozen=True)
 class TranslationRuntimeFacts:
     """
     Runtime-only facts consumed by translation.
@@ -52,6 +67,9 @@ class TranslationRuntimeFacts:
     instruction_stream_sync_noop_proven: bool = False
     instruction_stream_sync_proof_id: str | None = None
     asm_goto_condition_kind: str | None = None
+    atomic_memory_objects: Mapping[int, AtomicMemoryObjectRuntimeFact] = field(
+        default_factory=dict
+    )
 
 
 class TranslationFactsError(ValueError):

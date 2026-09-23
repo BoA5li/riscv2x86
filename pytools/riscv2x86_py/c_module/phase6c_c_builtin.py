@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ..plan_types import TargetLoweringKind, TargetLoweringPlan
 from ..source_model import (
     SourceAtomicKind,
+    SourceAtomicRmwOperation,
     SourceMemoryOrdering,
     SourceOperandAccess,
     SourceSemanticModel,
@@ -47,6 +48,12 @@ class CBuiltinContract:
     object_pointee_type_id: str | None = None
     value_c_type_id: str | None = None
     result_c_type_id: str | None = None
+    result_semantics: str | None = None
+    memory_object_identity: str | None = None
+    address_space_identity: str | None = None
+    atomicity_scope: str | None = None
+    read_effect_identity: str | None = None
+    write_effect_identity: str | None = None
 
 
 _ORDER_CONSTANTS = {
@@ -60,6 +67,13 @@ _ORDER_CONSTANTS = {
 
 _LOAD_CONTRACT_ID = "c.builtin.atomic-load-n.u32-u64.v1"
 _STORE_CONTRACT_ID = "c.builtin.atomic-store-n.u32-u64.v1"
+_RMW_CONTRACTS = {
+    SourceAtomicRmwOperation.FETCH_ADD: ("__atomic_fetch_add", "fetch-add"),
+    SourceAtomicRmwOperation.FETCH_AND: ("__atomic_fetch_and", "fetch-and"),
+    SourceAtomicRmwOperation.FETCH_OR: ("__atomic_fetch_or", "fetch-or"),
+    SourceAtomicRmwOperation.FETCH_XOR: ("__atomic_fetch_xor", "fetch-xor"),
+    SourceAtomicRmwOperation.EXCHANGE: ("__atomic_exchange_n", "exchange"),
+}
 _COMPILER_BARRIER_CONTRACT_ID = (
     "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1"
 )
@@ -85,13 +99,7 @@ def _atomic_binding_failure(plan, *, expected: str):
 
 
 def _derive_atomic_contract(source_model, candidate_plan):
-    """Derive only registered load/store public-builtin contracts.
-
-    RMW and CAS remain deliberately unsupported here: the current source
-    atomic model does not carry an RMW operator contract or a complete CAS
-    result/expected-value update contract, so rendering either would require
-    guessing semantics.
-    """
+    """Derive only registered, typed public-builtin atomic contracts."""
     atom = source_model.atomic
     if (not atom.complete or atom.kind is None or atom.width_bits is None or
             atom.alignment_bytes is None or atom.address_operand_index is None or
@@ -108,7 +116,9 @@ def _derive_atomic_contract(source_model, candidate_plan):
             address.address.alignment_bytes is None or
             address.address.alignment_bytes < atom.width_bits // 8 or
             not address.address.pointee_type_id or address.expression is None or
-            not address.expression.c_type_id):
+            not address.address.memory_object_identity or
+            address.address.memory_object_identity != atom.memory_object_identity or
+            address.address.address_space_identity != atom.address_space_identity):
         return _atomic_binding_failure(candidate_plan, expected="proven_address_binding")
 
     common = {
@@ -119,6 +129,12 @@ def _derive_atomic_contract(source_model, candidate_plan):
         "compiler_barrier": True,
         "hardware_barrier": True,
         "object_pointee_type_id": address.address.pointee_type_id,
+        "result_semantics": atom.result_semantics,
+        "memory_object_identity": atom.memory_object_identity,
+        "address_space_identity": atom.address_space_identity,
+        "atomicity_scope": atom.atomicity_scope,
+        "read_effect_identity": atom.read_effect_identity,
+        "write_effect_identity": atom.write_effect_identity,
     }
     if atom.kind is SourceAtomicKind.LOAD:
         if atom.result_operand_index is None or atom.value_operand_index is not None:
@@ -146,6 +162,38 @@ def _derive_atomic_contract(source_model, candidate_plan):
             CBuiltinKind.ATOMIC_STORE, "c_builtin:atomic", value_operand_index=atom.value_operand_index,
             value_c_type_id=value.expression.c_type_id, semantic_contract_id=_STORE_CONTRACT_ID,
             builtin_identifier="__atomic_store_n", **common,
+        )
+    if atom.kind is SourceAtomicKind.READ_MODIFY_WRITE:
+        recipe = _RMW_CONTRACTS.get(atom.rmw_operation)
+        if recipe is None or atom.value_operand_index is None:
+            return _atomic_binding_failure(candidate_plan, expected="registered_rmw_operator_and_value")
+        value = _operand_by_index(source_model, atom.value_operand_index)
+        result = (_operand_by_index(source_model, atom.result_operand_index)
+                  if atom.result_operand_index is not None else None)
+        if (value is None or value.expression is None or
+                value.width_bits != atom.width_bits or
+                atom.result_semantics not in {"old_value", "none"} or
+                (atom.result_semantics == "old_value" and (
+                    result is None or result.lvalue is None or
+                    not result.lvalue.is_modifiable or
+                    result.width_bits != atom.width_bits))):
+            return _atomic_binding_failure(candidate_plan, expected="typed_rmw_value_and_result_relation")
+        builtin, suffix = recipe
+        semantic_id = f"c.builtin.atomic-{suffix}.u32-u64.v1"
+        if candidate_plan.metadata.get("atomic_operation_kind") != atom.rmw_operation.value:
+            return _failure(candidate_plan, "C_BUILTIN_OPERATION_UNSUPPORTED", {
+                "expected_atomic_operation_kind": atom.rmw_operation.value,
+            })
+        return CBuiltinContract(
+            CBuiltinKind.ATOMIC_RMW, "c_builtin:atomic",
+            value_operand_index=atom.value_operand_index,
+            result_operand_index=atom.result_operand_index,
+            value_c_type_id=address.address.pointee_type_id,
+            result_c_type_id=(address.address.pointee_type_id
+                              if atom.result_operand_index is not None else None),
+            semantic_contract_id=semantic_id,
+            builtin_identifier=builtin,
+            **common,
         )
     return _failure(candidate_plan, "C_BUILTIN_OPERATION_UNSUPPORTED", {
         "atomic_kind": atom.kind.value,

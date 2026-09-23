@@ -16,7 +16,15 @@ def prove_atomic(r):
             contract.value_operand_index != s.atomic.value_operand_index or
             contract.result_operand_index != s.atomic.result_operand_index or
             contract.width_bits != s.atomic.width_bits or
-            contract.alignment_bytes != s.atomic.alignment_bytes):
+            contract.alignment_bytes != s.atomic.alignment_bytes or
+            contract.result_semantics != s.atomic.result_semantics or
+            contract.ordering_before != s.atomic.ordering_before or
+            contract.ordering_after != s.atomic.ordering_after or
+            contract.atomicity_scope != s.atomic.atomicity_scope or
+            contract.address_space_identity != s.atomic.address_space_identity or
+            contract.memory_object_identity != s.atomic.memory_object_identity or
+            contract.read_effect_identity != s.atomic.read_effect_identity or
+            contract.write_effect_identity != s.atomic.write_effect_identity):
         return reject(r, SemanticProofReasonCode.BINDING_UNSAFE)
     memory = c.memory_constraint
     if (not contract.requires_lock_semantics or

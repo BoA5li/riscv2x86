@@ -11,6 +11,7 @@ from .csr_metadata_ingress import (
     decode_csr_instruction,
     decode_csr_privileged_operations,
 )
+from .atomic_metadata_ingress import decode_atomic_operation
 
 
 if TYPE_CHECKING:
@@ -143,6 +144,10 @@ class LiftedInsn:
 
     sym_ref: Optional[Tuple[int, str]] = None
     summary: Optional["IRSummary"] = None
+
+    # Decoder-owned atomic identity. Appended for positional compatibility.
+    # Canonical IR must not reconstruct it from LOAD/ALU/STORE p-code shape.
+    atomic_operation: Any | None = None
 
     @property
     def address(self) -> int:
@@ -1127,6 +1132,9 @@ def lift(
 
         instruction_bytes = machine_code[offset:offset + length]
         decoded_csr_instruction = decode_csr_instruction(instruction_bytes)
+        atomic_operation = decode_atomic_operation(
+            instruction_bytes, xlen_bits=xlen,
+        )
         privileged_operations = decode_csr_privileged_operations(
             addr=cur_addr,
             machine_bytes=instruction_bytes,
@@ -1144,6 +1152,7 @@ def lift(
                 raw_ops=adapted_ops,
                 privileged_operations=privileged_operations,
                 decoded_csr_instruction=decoded_csr_instruction,
+                atomic_operation=atomic_operation,
                 sym_ref=None,
                 summary=None,
             )

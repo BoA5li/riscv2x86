@@ -28,7 +28,13 @@ def prove(r):
                 contract.value_operand_index != atom.value_operand_index or
                 contract.width_bits != atom.width_bits or
                 contract.alignment_bytes != atom.alignment_bytes or
-                contract.success_ordering != atom.success_ordering.value):
+                contract.success_ordering != atom.success_ordering.value or
+                contract.result_semantics != atom.result_semantics or
+                contract.memory_object_identity != atom.memory_object_identity or
+                contract.address_space_identity != atom.address_space_identity or
+                contract.atomicity_scope != atom.atomicity_scope or
+                contract.read_effect_identity != atom.read_effect_identity or
+                contract.write_effect_identity != atom.write_effect_identity):
             return reject(r, SemanticProofReasonCode.BINDING_UNSAFE)
     elif s.barrier.present:
         if (not c.memory_constraint.requires_compiler_barrier or
