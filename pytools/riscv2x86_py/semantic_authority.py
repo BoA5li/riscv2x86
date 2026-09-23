@@ -39,7 +39,7 @@ def _non_empty(value: object) -> bool:
     if isinstance(value, tuple):
         return bool(value) and all(_non_empty(item) for item in value)
     if isinstance(value, bool):
-        return value
+        return True
     return True
 
 
@@ -82,7 +82,9 @@ class _AuthorityPayload:
             elif item.name == "offset_bytes":
                 if isinstance(value, bool) or not isinstance(value, int):
                     invalid.append(item.name)
-            elif item.name in {"bounds_proven", "escape_proven"}:
+            elif item.name in {"bounds_proven", "escape_proven", "may_trap",
+                               "early_clobber", "volatile", "memory_clobber",
+                               "cc_clobber"}:
                 if not isinstance(value, bool):
                     invalid.append(item.name)
             elif isinstance(value, tuple):
@@ -130,10 +132,15 @@ class OperandValueFlowFacts(_AuthorityPayload):
     signedness: str | None = None
     declaration_identity: str | None = None
     escape_proven: bool | None = None
+    source_effect_identity: str | None = None
+    fixed_register_constraint_identity: str | None = None
+    early_clobber: bool | None = None
 
     FACT_KIND = "operand_value_flow"
     REQUIRED_FIELDS = ("value_node_id", "operand_index", "access", "width_bits",
-                       "signedness", "declaration_identity", "escape_proven")
+                       "signedness", "declaration_identity", "escape_proven",
+                       "source_effect_identity", "fixed_register_constraint_identity",
+                       "early_clobber")
     NODE_FIELDS = ("value_node_id",)
     KEY_FIELDS = ("value_node_id",)
 
@@ -259,10 +266,21 @@ class CsrOperationFacts(_AuthorityPayload):
     privilege_mode: str | None = None
     required_extension: str | None = None
     trap_policy_identity: str | None = None
+    semantic_class: str | None = None
+    width_bits: int | None = None
+    required_extensions: tuple[str, ...] = ()
+    may_trap: bool | None = None
+    access_policy_identity: str | None = None
+    volatile: bool | None = None
+    memory_clobber: bool | None = None
+    cc_clobber: bool | None = None
 
     FACT_KIND = "csr_operation"
     REQUIRED_FIELDS = ("effect_identity", "csr_identity", "access_kind",
-                       "privilege_mode", "required_extension", "trap_policy_identity")
+                       "privilege_mode", "required_extension", "trap_policy_identity",
+                       "semantic_class", "width_bits", "required_extensions",
+                       "may_trap", "access_policy_identity", "volatile",
+                       "memory_clobber", "cc_clobber")
     NODE_FIELDS = ("read_value_node_id", "write_value_node_id")
     KEY_FIELDS = ("effect_identity",)
 
@@ -412,7 +430,7 @@ def _payload_from_dict(fact_kind: str, value: object) -> AuthorityPayload:
             continue
         if item.type == tuple[str, ...] or item.name in {
             "successor_node_ids", "condition_node_ids", "ordering", "state_effect_ids",
-            "value_node_ids",
+            "value_node_ids", "required_extensions",
         }:
             raw = normalized[item.name]
             if not isinstance(raw, list) or not all(isinstance(entry, str) and entry for entry in raw):

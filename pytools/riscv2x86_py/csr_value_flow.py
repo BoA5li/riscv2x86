@@ -22,6 +22,8 @@ class CsrOperandAuthorityFacts:
     output_escape_facts:Mapping[int,bool]
     shell_facts:Mapping[str,bool]
     complete:bool
+    effect_authority_identities:Mapping[str,str]|None=None
+    effect_csr_identities:Mapping[str,str]|None=None
 
 # Compatibility alias for callers migrated incrementally.  The compatibility
 # adapter below intentionally produces incomplete authority because deriving
@@ -76,6 +78,10 @@ def join_csr_operand_bindings(*, lifted_insns:tuple[Any,...]|list[Any], authorit
         write_required=write_node is not None and immediate is None and not _suppressed(op,"write_value_suppressed")
         read=_index(authority.value_node_to_operand_index,read_node); write=_index(authority.value_node_to_operand_index,write_node)
         if not authority.complete: reasons.append("csr-join.frontend-authority-incomplete")
+        effect_authorities = authority.effect_authority_identities or {}
+        effect_csrs = authority.effect_csr_identities or {}
+        if eid not in effect_authorities: reasons.append("csr-join.source-effect-authority-missing")
+        if effect_csrs.get(eid) != getattr(op,"csr_id",None): reasons.append("csr-join.csr-identity-mismatch")
         if read_required and read is None: reasons.append("csr-join.read-result-binding-missing")
         if write_required and write is None: reasons.append("csr-join.write-value-binding-missing")
         if immediate is not None and (not isinstance(immediate,int) or isinstance(immediate,bool) or not 0<=immediate<=31): reasons.append("csr-join.zimm-invalid")

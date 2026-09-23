@@ -46,6 +46,7 @@ from .privileged_execution_sidecar import (
 from .privileged_pipeline_inputs import PrivilegedPipelineInputs
 from .csr_metadata_ingress import profile_from_execution_facts
 from .csr_value_flow import authority_from_phase4_facts, join_csr_operand_bindings
+from .csr_authority import csr_operand_authority_from_bundle
 from .csr_state_dataflow import analyze_csr_state_dataflow
 from .source_csr_semantic_model import adapt_source_csr_semantic_model
 from .shell_model import SourceShellModel
@@ -1651,9 +1652,34 @@ def run(
                 cfg=cfg,
                 execution_facts=execution_facts,
             )
-            csr_authority = authority_from_phase4_facts(
-                lifted_insns=lr.insns, runtime_facts=f.translationRuntimeFacts,
-            )
+            raw_csr_authority = getattr(f.fragment, "csrAuthorityBundle", {})
+            if raw_csr_authority:
+                try:
+                    csr_authority = csr_operand_authority_from_bundle(
+                        raw_csr_authority,
+                        fragment_id=str(f.fragment.fragmentId or f.fragment.id),
+                        source_digest=str(getattr(f, "sourceDigest", "")),
+                        lifted_insns=lr.insns,
+                        operand_indexes=frozenset(
+                            int(item) for item in
+                            f.translationRuntimeFacts.operand_width_bits
+                        ),
+                        fragment_shell=f.fragment,
+                    )
+                except (SemanticAuthorityError, TypeError, ValueError) as exc:
+                    detail = "CSR semantic authority rejected: " + str(exc)
+                    f.category = "Unsupported"
+                    f.ruleName = "phase4.csr_semantic_authority_unsupported"
+                    f.suggestedReplacement = ""
+                    f.verificationStatus = "unsupported"
+                    f.verificationDetail = detail
+                    f.notes.append("phase4-csr-ingress: " + detail)
+                    stats["unsupported"] += 1
+                    continue
+            else:
+                csr_authority = authority_from_phase4_facts(
+                    lifted_insns=lr.insns, runtime_facts=f.translationRuntimeFacts,
+                )
             privileged_state = replace(
                 privileged_state,
                 csr_operand_bindings=join_csr_operand_bindings(

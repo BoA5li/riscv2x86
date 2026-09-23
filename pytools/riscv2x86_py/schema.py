@@ -349,6 +349,7 @@ class AsmFragment:
     # wrapper. It remains raw until Phase 4 can validate assembler operand
     # identities against the sidecar's referenced nodes.
     atomicAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
+    csrAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.fragmentId and not self.id:

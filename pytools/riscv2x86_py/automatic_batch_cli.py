@@ -470,6 +470,7 @@ def prepare_automatic_inventory(
     l2_provider_directory: str | Path | None = None,
     l3_provider_directory: str | Path | None = None,
     atomic_authority_directory: str | Path | None = None,
+    csr_authority_directory: str | Path | None = None,
     l3_diagnostic: bool = False,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
@@ -495,6 +496,10 @@ def prepare_automatic_inventory(
                    else Path(atomic_authority_directory).resolve())
     if atomic_root is not None and not atomic_root.is_dir():
         raise ValueError("atomic authority directory is unavailable")
+    csr_root = (None if csr_authority_directory is None
+                else Path(csr_authority_directory).resolve())
+    if csr_root is not None and not csr_root.is_dir():
+        raise ValueError("CSR authority directory is unavailable")
     if l3_diagnostic and l3_root is None:
         raise ValueError("L3 diagnostic profile requires a provider directory")
     if not sources:
@@ -608,6 +613,10 @@ def prepare_automatic_inventory(
             atomic_sidecar = atomic_root / (relative + ".atomic-authority.json")
             if atomic_sidecar.is_file():
                 translation.extend(("--atomic-authority-sidecar", str(atomic_sidecar)))
+        if csr_root is not None:
+            csr_sidecar = csr_root / (relative + ".csr-authority.json")
+            if csr_sidecar.is_file():
+                translation.extend(("--csr-authority-sidecar", str(csr_sidecar)))
         validators: dict[str, object] = {
             "L0": {"type": "automatic-l0-build-matrix", "config": {
                 "schemaVersion": "riscv2x86.auto-l0-runner.v1",
@@ -957,6 +966,8 @@ def main() -> int:
                         help="directory containing <source>.c.l3-providers.json bindings")
     parser.add_argument("--atomic-authority-directory",
                         help="directory containing <source>.c.atomic-authority.json bindings")
+    parser.add_argument("--csr-authority-directory",
+                        help="directory containing <source>.c.csr-authority.json bindings")
     parser.add_argument("--l3-diagnostic", action="store_true",
                         help="run explicitly bound target-only experiment diagnostics")
     args = parser.parse_args()
@@ -971,6 +982,7 @@ def main() -> int:
                                     l2_provider_directory=args.l2_provider_directory,
                                     l3_provider_directory=args.l3_provider_directory,
                                     atomic_authority_directory=args.atomic_authority_directory,
+                                    csr_authority_directory=args.csr_authority_directory,
                                     l3_diagnostic=args.l3_diagnostic)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:

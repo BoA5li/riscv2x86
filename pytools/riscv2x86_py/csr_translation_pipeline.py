@@ -19,7 +19,7 @@ from .csr_plan_families import CsrPlanCandidate, derive_csr_plan_candidates
 from .csr_structured_renderer import (
     CsrRenderResult,
     CsrRuntimeRecipe,
-    render_csr_recipe,
+    render_approved_csr_recipe,
 )
 
 
@@ -132,6 +132,7 @@ def run_csr_translation_pipeline(
         runtime_version=runtime_registry.runtime_version,
         execution_profile=profile,
         shell_transportable=runtime_registry.shell_transportable,
+        allow_functional_relations=fallback_policy.allow_functional_fallbacks,
     )
 
     # 6D is deliberately unconditional once 6C has been built.  It must run
@@ -143,6 +144,7 @@ def run_csr_translation_pipeline(
         execution_profile=profile,
         shell_preserved=fallback_policy.shell_preserved,
         external_state_complete=runtime_registry.external_state_complete,
+        allow_functional_relations=fallback_policy.allow_functional_fallbacks,
     )
     if not proof.approved:
         return CsrTranslationPipelineResult(
@@ -153,15 +155,19 @@ def run_csr_translation_pipeline(
 
     # 6E: deterministic selection.  Exact plans win; a fallback plan is never
     # selected merely because it happens to be present.
-    selected = next(
-        (candidate for candidate in candidates
-         if candidate.strict and candidate.complete),
-        None,
+    functional_relation = any(
+        item.counter_relation_kind == "functional-monotonic-observation"
+        for item in constraints
     )
+    selected = next((candidate for candidate in candidates
+                     if candidate.complete and (
+                         (not candidate.strict) if functional_relation
+                         else candidate.strict)), None)
     if selected is None:
         return CsrTranslationPipelineResult(
             "needs_route", "csr_plan_selection", None,
-            ("csr-pipeline.no-approved-strict-plan",),
+            (("csr-pipeline.no-approved-functional-plan",)
+             if functional_relation else ("csr-pipeline.no-approved-strict-plan",)),
             candidates, constraints, proof, None, True,
         )
 
@@ -186,10 +192,12 @@ def run_csr_translation_pipeline(
             ("csr-pipeline.recipe-missing",),
             candidates, constraints, proof, None, True,
         )
-    rendered = render_csr_recipe(
+    rendered = render_approved_csr_recipe(
         recipe,
         approved_recipe_ids=renderer_registry.approved_recipe_ids,
         expected_runtime_version=runtime_registry.runtime_version,
+        proof_approved=proof.approved,
+        proof_identity=proof.proof_identity,
     )
     if rendered.emitted_text is None:
         return CsrTranslationPipelineResult(

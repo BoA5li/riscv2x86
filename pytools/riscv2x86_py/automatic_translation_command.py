@@ -60,6 +60,43 @@ def _inject_atomic_authority(raw_report: Path, source: Path, sidecar: Path) -> N
                           encoding="utf-8")
 
 
+def _inject_csr_authority(raw_report: Path, source: Path, sidecar: Path) -> None:
+    """Bind frontend CSR/operand facts to the exact source and fragments."""
+    report = json.loads(raw_report.read_text(encoding="utf-8"))
+    binding = json.loads(sidecar.read_text(encoding="utf-8"))
+    digest = "sha256:" + sha256(source.read_bytes()).hexdigest()
+    required = {"schemaVersion", "sourceDigest", "bundles", "manifestIdentity"}
+    if (not isinstance(binding, dict) or set(binding) != required or
+            binding["schemaVersion"] != "riscv2x86.csr-authority-binding.v1" or
+            binding["sourceDigest"] != digest or
+            binding["manifestIdentity"] != _identity({
+                key: value for key, value in binding.items() if key != "manifestIdentity"
+            }) or not isinstance(binding["bundles"], list)):
+        raise ValueError("CSR authority binding is stale or malformed")
+    bundles = {}
+    for bundle in binding["bundles"]:
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("fragmentId"), str):
+            raise ValueError("CSR authority bundle is malformed")
+        if bundle["fragmentId"] in bundles:
+            raise ValueError("duplicate CSR authority fragment binding")
+        bundles[bundle["fragmentId"]] = bundle
+    findings = report if isinstance(report, list) else report.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError("frontend report has no findings")
+    seen = set()
+    for finding in findings:
+        fragment = finding.get("fragment") if isinstance(finding, dict) else None
+        fragment_id = fragment.get("fragmentId") if isinstance(fragment, dict) else None
+        if fragment_id in bundles:
+            fragment["csrAuthorityBundle"] = bundles[fragment_id]
+            finding["sourceDigest"] = digest
+            seen.add(fragment_id)
+    if seen != set(bundles):
+        raise ValueError("CSR authority references a nonexistent frontend fragment")
+    raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser("riscv2x86-automatic-translation")
     parser.add_argument("--frontend", required=True)
@@ -68,6 +105,7 @@ def main() -> int:
     parser.add_argument("--report", required=True)
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
+    parser.add_argument("--csr-authority-sidecar")
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
     raw = report.with_name("raw_report.json")
@@ -94,6 +132,13 @@ def main() -> int:
                                      Path(args.atomic_authority_sidecar).resolve())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print("Atomic authority binding failed: " + str(exc), file=sys.stderr)
+            return 2
+    if args.csr_authority_sidecar:
+        try:
+            _inject_csr_authority(raw, Path(args.source).resolve(),
+                                  Path(args.csr_authority_sidecar).resolve())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print("CSR authority binding failed: " + str(exc), file=sys.stderr)
             return 2
     backend = [sys.executable, "-m", "riscv2x86_py.cli", "--in", str(raw),
                "--out", str(report), "--xlen", "64", "--skip-verify"]

@@ -15,21 +15,26 @@ class CsrFieldProofResult:
 
 def _id(*parts:str)->str: return "csr-field-proof:"+sha256("|".join(parts).encode()).hexdigest()
 
-def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_profile:str,shell_preserved:bool,external_state_complete:bool,registry_identity:str="",target_environment_id:str="",shell_facts:tuple[str,...]=())->CsrFieldProofResult:
+def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_profile:str,shell_preserved:bool,external_state_complete:bool,registry_identity:str="",target_environment_id:str="",shell_facts:tuple[str,...]=(),allow_functional_relations:bool=False)->CsrFieldProofResult:
     """Prove every declared source field; no raw asm, IR, or renderer input."""
     reasons=set(); evidence=[]; by_effect={getattr(x,"source_effect_id",""):x for x in constraints}
-    bindings={getattr(x,"source_effect_id",""):x for x in getattr(source_model,"operand_bindings",())}
+    ordered_bindings=tuple(getattr(source_model,"operand_bindings",()) or ())
+    bindings={getattr(x,"source_effect_id",""):x for x in ordered_bindings}
     if not shell_preserved: reasons.add("csr-6d.shell-unpreserved")
     if not external_state_complete: reasons.add("csr-6d.external-state-incomplete")
     if getattr(source_model,"requires_whole_function",False): reasons.add("csr-6d.whole-function-proof-required")
-    for effect in tuple(getattr(source_model,"effects",()) or ()):
-        eid=next((x for x in by_effect if x.endswith(getattr(effect,"csr_id","") or "")),"")
+    for effect_index,effect in enumerate(tuple(getattr(source_model,"effects",()) or ())):
+        eid=(getattr(ordered_bindings[effect_index],"source_effect_id","")
+             if effect_index < len(ordered_bindings) else "")
         c=by_effect.get(eid); b=bindings.get(eid)
         if c is None or not getattr(c,"complete",False): reasons.add("csr-6d.constraint-incomplete"); continue
         if b is None or not getattr(b,"complete",False): reasons.add("csr-6d.operand-proof-incomplete"); continue
         if getattr(effect,"may_trap",None) is not False and not getattr(c,"denied_access_trap_mapping_id",None): reasons.add("csr-6d.trap-proof-missing")
         if not getattr(c,"access_policy_mapping_id",None): reasons.add("csr-6d.access-proof-missing")
         if not getattr(c,"ordering_relation_id",None): reasons.add("csr-6d.ordering-proof-missing")
+        relation_kind=getattr(c,"counter_relation_kind",None)
+        if (relation_kind=="functional-monotonic-observation" and
+                not allow_functional_relations): reasons.add("csr-6d.functional-counter-relation-not-approved")
         fields=tuple(getattr(effect,"affected_fields",()) or ())
         if not fields: reasons.add("csr-6d.field-proof-missing")
         for field in fields:
@@ -41,7 +46,8 @@ def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_pro
             relation=getattr(c,"old_new_state_relation_id",None)
             if not relation: reasons.add("csr-6d.state-relation-missing"); continue
             target=getattr(c,"target_operation_id",None) or ""
-            evidence.append(CsrFieldProofEvidence(eid,getattr(effect,"csr_id","") or "",fid,target,relation,"field_equivalent",_id(eid,fid,target,relation,execution_profile)))
+            conclusion=("functional_relation" if relation_kind=="functional-monotonic-observation" else "field_equivalent")
+            evidence.append(CsrFieldProofEvidence(eid,getattr(effect,"csr_id","") or "",fid,target,relation,conclusion,_id(eid,fid,target,relation,execution_profile)))
     approved=bool(evidence) and not reasons
     identity=_id(getattr(source_model,"model_identity",repr(source_model)),repr(constraints),registry_identity,target_environment_id,repr(tuple(sorted(shell_facts))),repr(getattr(source_model,"exit_state_relation",())),execution_profile)
     return CsrFieldProofResult(approved,tuple(evidence),tuple(sorted(reasons)),identity)

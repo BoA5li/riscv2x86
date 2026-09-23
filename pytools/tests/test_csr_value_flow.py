@@ -2,7 +2,8 @@ from types import SimpleNamespace
 from riscv2x86_py.csr_value_flow import CsrOperandAuthorityFacts,authority_from_phase4_facts,join_csr_operand_bindings
 from riscv2x86_py.pcode_ir import CanonicalPrivilegedOperation,CanonicalPrivilegedOperationKind,CanonicalCsrOperationKind
 def _auth(**kw):
- d=dict(fragment_id="f",value_node_to_operand_index={"old":0,"new":1},operand_width_bits={0:64,1:64},operand_signedness={0:"unsigned",1:"unsigned"},operand_access={0:"output",1:"input"},tied_operand_pairs=(),early_clobber_outputs=(),fixed_register_constraints={0:"",1:""},output_escape_facts={0:False},shell_facts={"volatile":True,"memory":False,"cc":False},complete=True);d.update(kw);return CsrOperandAuthorityFacts(**d)
+ eid="csr-effect:0x1:1:riscv.csr.mstatus"
+ d=dict(fragment_id="f",value_node_to_operand_index={"old":0,"new":1},operand_width_bits={0:64,1:64},operand_signedness={0:"unsigned",1:"unsigned"},operand_access={0:"output",1:"input"},tied_operand_pairs=(),early_clobber_outputs=(),fixed_register_constraints={0:"",1:""},output_escape_facts={0:False},shell_facts={"volatile":True,"memory":False,"cc":False},complete=True,effect_authority_identities={eid:"authority:test"},effect_csr_identities={eid:"riscv.csr.mstatus"});d.update(kw);return CsrOperandAuthorityFacts(**d)
 def _join(op,a):return join_csr_operand_bindings(lifted_insns=(SimpleNamespace(addr=1,privileged_operations=(op,)),),authority=a)[0]
 def test_csrrw_uses_only_explicit_frontend_authority():
  op=CanonicalPrivilegedOperation(CanonicalPrivilegedOperationKind.CSR_ACCESS,csr_id="riscv.csr.mstatus",csr_operation=CanonicalCsrOperationKind.READ_WRITE,read_value_node_id="old",write_value_node_id="new")

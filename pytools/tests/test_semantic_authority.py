@@ -98,9 +98,11 @@ def test_conflicting_authorities_are_rejected_without_selecting_a_winner():
 
 def test_conflict_key_does_not_hide_disagreement_in_operand_mapping():
     first = _envelope(OperandValueFlowFacts(
-        "node:value", 0, "output", 64, "unsigned", "decl:x", True))
+        "node:value", 0, "output", 64, "unsigned", "decl:x", True,
+        "effect:value", "unconstrained", False))
     second = _envelope(OperandValueFlowFacts(
-        "node:value", 1, "output", 64, "unsigned", "decl:x", True))
+        "node:value", 1, "output", 64, "unsigned", "decl:x", True,
+        "effect:value", "unconstrained", False))
     with pytest.raises(SemanticAuthorityError, match="conflicting authorities"):
         merge_semantic_authorities((first, second))
 
@@ -147,7 +149,8 @@ def test_legacy_adapter_is_explicitly_incomplete_and_invents_no_nodes():
 
 
 @pytest.mark.parametrize("payload", [
-    OperandValueFlowFacts("node:value", 0, "output", 64, "unsigned", "decl:x", True),
+    OperandValueFlowFacts("node:value", 0, "output", 64, "unsigned", "decl:x", True,
+                          "effect:value", "unconstrained", False),
     StructuredControlFlowFacts("node:entry", ("node:taken", "node:fallthrough"),
                                "cont:taken", "cont:fallthrough", "zero",
                                ("node:condition",), "label:taken"),
@@ -160,7 +163,9 @@ def test_legacy_adapter_is_explicitly_incomplete_and_invents_no_nodes():
     InstructionStreamSyncFacts("effect:fence-i", "hart", "range:written-code",
                                "effect:publish", "effect:fetch", "riscv-unified"),
     CsrOperationFacts("effect:time", "riscv.csr.time", "read", "node:result", None,
-                      "U", "zicsr", "trap-policy:user-counter"),
+                      "U", "zicsr", "trap-policy:user-counter",
+                      "user_counter_observation", 64, ("zicsr",), False,
+                      "policy:user-counter", True, False, False),
 ])
 def test_all_payload_families_have_closed_complete_construction(payload):
     envelope = _envelope(payload)

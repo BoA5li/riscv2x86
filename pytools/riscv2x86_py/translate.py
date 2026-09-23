@@ -3495,13 +3495,15 @@ def translate(
                     reason="CSR replacement bypassed required 6D/6F approval",
                     reason_code="TR_CSR_PIPELINE_APPROVAL_BYPASS",
                 )
+            functional_csr = csr_result.route == "csr_functional_fallback"
             return _output(
-                kind="privileged_runtime",
+                kind="functional_c" if functional_csr else "privileged_runtime",
                 replacement=csr_result.suggested_replacement,
                 context=context,
                 route="csr_production_pipeline",
                 notes=["CSR replacement emitted by approved Phase-6F recipe"],
-                reason_codes=["TR_CSR_PIPELINE_APPROVED"],
+                reason_codes=[("TR_CSR_FUNCTIONAL_RELATION_APPROVED"
+                               if functional_csr else "TR_CSR_PIPELINE_APPROVED")],
                 build_family="csr_runtime",
                 requires_build_check=True,
                 metadata={
@@ -3511,31 +3513,12 @@ def translate(
                         "proofEvidenceCount": len(csr_result.proof.evidence),
                         "rendererHeaders": csr_result.render.required_headers,
                         "rendererLibraries": csr_result.render.required_libraries,
+                        "architectureSemanticsPreserved": not functional_csr,
+                        "relationKind": ("functional_monotonic_observation"
+                                         if functional_csr else "architectural_equivalence"),
                     },
                 },
             )
-        # The strict CSR production chain remains authoritative.  Only after
-        # it has declined to claim architectural equivalence may an explicit
-        # functional policy select the registered time observation adapter.
-        # The adapter consumes the structured Phase-6A read-only CSR model;
-        # it never recognizes a mnemonic or rescans the asm template.
-        if allow_functional_fallbacks and source_model.read_only_csr is not None:
-            counter = source_model.read_only_csr
-            fallback = _render_counter_csr_functional_fallback(
-                context=context,
-                csr_name=counter.csr_name,
-                result_operand_index=counter.result_operand_index,
-                width_bits=counter.width_bits,
-                target_environment=target_environment,
-            )
-            if fallback is not None:
-                fallback.metadata["csrPipeline"] = {
-                    "strictRoute": csr_result.route,
-                    "strictReasonCodes": csr_result.reason_codes,
-                    "strictProofInvoked": csr_result.proof_invoked,
-                    "fallbackPolicy": "explicit-functional-only-v1",
-                }
-                return fallback
         return _needs_route(
             context,
             route=csr_result.route,
