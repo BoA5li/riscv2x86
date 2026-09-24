@@ -197,6 +197,7 @@ def build_auto_l2_functional_relation_validator(config: Mapping[str, object]):
                 target_observation_identity=target_identity,
                 execution_nonce={"underlyingL1EvidenceIdentity": l1_result.evidence_identity,
                                  "observationContract": observation_contract},
+                dimensions=("privileged_state", "shell_semantics"),
                 execution_disposition=
                     L2ProviderExecutionDisposition.EXECUTED_VERIFIED))
         evidence = _identity(payload)

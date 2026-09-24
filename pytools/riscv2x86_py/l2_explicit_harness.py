@@ -266,6 +266,7 @@ def run_explicit_l2_harness(config: ExplicitL2HarnessRunnerConfig, **kwargs: obj
             target_observation_identity=target_identity,
             execution_nonce={"request": request,
                              "executionProfile": manifest.execution_profile},
+            dimensions=tuple(item.value for item in manifest.provided_dimensions),
             execution_disposition=(
                 L2ProviderExecutionDisposition.EXECUTED_VERIFIED if matched else
                 L2ProviderExecutionDisposition.EXECUTED_FAILED)))

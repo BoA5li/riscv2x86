@@ -173,6 +173,24 @@ def _factory(_config):
             source_observation_identity=identity,
             target_observation_identity=identity,
             execution_nonce={"test": "registered-provider"},
+            dimensions=("logical_operands", "shell_semantics"),
+        )
+        return ValidationLayerResult(
+            kwargs["level"], ValidationStatus.VERIFIED,
+            "sha256:" + "a" * 64, json.dumps(detail, sort_keys=True))
+    return validate
+
+
+def _logical_only_factory(_config):
+    def validate(**kwargs):
+        identity = "sha256:" + "c" * 64
+        detail = provider_evidence_fields(
+            kwargs["translation_artifact"], provider_id=kwargs["l2_provider_id"],
+            harness_identity="sha256:" + "d" * 64,
+            source_observation_identity=identity,
+            target_observation_identity=identity,
+            execution_nonce={"test": "logical-only"},
+            dimensions=("logical_operands",),
         )
         return ValidationLayerResult(
             kwargs["level"], ValidationStatus.VERIFIED,
@@ -231,6 +249,7 @@ def _failed_factory(*, complete):
                     source_observation_identity="sha256:" + "c" * 64,
                     target_observation_identity="sha256:" + "e" * 64,
                     execution_nonce={"test": "mismatch"},
+                    dimensions=("logical_operands", "shell_semantics"),
                     execution_disposition=
                         L2ProviderExecutionDisposition.EXECUTED_FAILED))
             return ValidationLayerResult(
@@ -284,6 +303,10 @@ def test_registry_consumes_manifest_and_persists_plan(tmp_path):
                for item in detail["dimensionResults"].values())
     assert len({item["executionIdentity"]
                 for item in detail["dimensionResults"].values()}) == 1
+    assert len({item["sourceObservationIdentity"]
+                for item in detail["dimensionResults"].values()}) == 2
+    assert len({item["targetObservationIdentity"]
+                for item in detail["dimensionResults"].values()}) == 2
 
 
 def test_provider_verified_without_total_evidence_chain_is_inconclusive(tmp_path):
@@ -301,8 +324,28 @@ def test_provider_verified_without_total_evidence_chain_is_inconclusive(tmp_path
         level=ValidationLevel.L2, translation_artifact=_artifact())
     assert result.status is ValidationStatus.INCONCLUSIVE
     dimensions = json.loads(result.detail)["dimensionResults"]
-    assert all("l2.provider-evidence.schema-missing-or-unsupported"
+    assert all("l2.provider-execution-disposition.missing"
                in item["reasonCodes"] for item in dimensions.values())
+
+
+def test_provider_cannot_reuse_logical_observation_for_shell_dimension(tmp_path):
+    providers = [{
+        "providerId": "both", "supportedDimensions": ["logical_operands", "shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation", "shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "automatic", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }]
+    registry, _ = _registry(tmp_path, providers, _logical_only_factory)
+    result = registry.validator_for(ValidationLevel.L2)(
+        level=ValidationLevel.L2, translation_artifact=_artifact())
+    dimensions = json.loads(result.detail)["dimensionResults"]
+    assert dimensions["logical_operands"]["status"] == "verified"
+    assert dimensions["shell_semantics"]["status"] == "inconclusive"
+    assert "l2.provider-evidence.dimension-observation-missing:shell_semantics" \
+        in dimensions["shell_semantics"]["reasonCodes"]
 
 
 def test_precondition_rejection_preserves_only_primary_reason(tmp_path):

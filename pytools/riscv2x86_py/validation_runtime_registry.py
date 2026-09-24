@@ -411,11 +411,13 @@ def _requirement_driven_l2_validator(
             }
             if total_evidence_required:
                 total_evidence, closure_reasons = validated_provider_evidence(
-                    detail_mapping, artifact)
+                    detail_mapping, artifact, dimension=binding.dimension.value,
+                    provider_id=binding.provider_id)
                 evidence = {} if total_evidence is None else total_evidence
             elif disposition is L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE:
                 evidence, closure_reasons = partial_provider_evidence(
-                    detail_mapping, artifact)
+                    detail_mapping, artifact, dimension=binding.dimension.value,
+                    provider_id=binding.provider_id)
             else:
                 # Pre-execution rejection has no observations by construction.
                 # Its provider reason is the authoritative diagnostic; running

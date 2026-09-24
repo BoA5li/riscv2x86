@@ -619,7 +619,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
         artifact = kwargs.get("translation_artifact")
         if getattr(artifact, "preservation_mode", None) is not PreservationMode.ARCHITECTURE_EQUIVALENT:
             return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"reasonCode":"L2_EFFECT_FUNCTIONAL_FALLBACK_NOT_ARCHITECTURAL"}))
+                                         detail=json.dumps(provider_precondition_detail("L2_EFFECT_FUNCTIONAL_FALLBACK_NOT_ARCHITECTURAL")))
         try:
             source, target = Path(str(config["sourcePath"])), Path(str(config["targetPath"]))
             if _digest(source) != config["sourceDigest"] or _digest(target) != config["targetDigest"]:
@@ -647,9 +647,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                     and any(item.relation_kind != "exact" for item in approved)):
                 return ValidationLayerResult(
                     ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                    detail=json.dumps({
-                        "reasonCode": "L2_EFFECT_EXPLICIT_NORMALIZED_TRACE_REQUIRED",
-                    }),
+                    detail=json.dumps(provider_precondition_detail(
+                        "L2_EFFECT_EXPLICIT_NORMALIZED_TRACE_REQUIRED")),
                 )
             control_kind = ""
             memory_facts = None
@@ -659,7 +658,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 if not isinstance(controls, list) or len(controls) != 1:
                     return ValidationLayerResult(
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                        detail=json.dumps({"reasonCode":"L2_CONTROL_FLOW_AUTHORITY_MISSING"}))
+                        detail=json.dumps(provider_precondition_detail("L2_CONTROL_FLOW_AUTHORITY_MISSING")))
                 control_kind = str(controls[0].get("transferKind", ""))
             if mode == "memory-object-functions":
                 approval = finding.get("approvalArtifact")
@@ -667,7 +666,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 if not isinstance(raw_memory, Mapping):
                     return ValidationLayerResult(
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                        detail=json.dumps({"reasonCode":"L2_MEMORY_PROOF_FACTS_MISSING"}))
+                        detail=json.dumps(provider_precondition_detail("L2_MEMORY_PROOF_FACTS_MISSING")))
                 memory_facts = memory_proof_facts_from_dict(raw_memory)
             if mode == "fence-functions":
                 approval = finding.get("approvalArtifact")
@@ -675,7 +674,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 if not isinstance(raw_fence, Mapping):
                     return ValidationLayerResult(
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                        detail=json.dumps({"reasonCode":"L2_FENCE_PROOF_FACTS_MISSING"}))
+                        detail=json.dumps(provider_precondition_detail("L2_FENCE_PROOF_FACTS_MISSING")))
                 fence_facts = fence_proof_facts_from_dict(raw_fence)
                 if (approval.get("rendererSemanticContractId")
                         != fence_facts.target_semantic_contract_id
@@ -689,12 +688,12 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                         != fence_facts.target_renderer_contract_id):
                     return ValidationLayerResult(
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                        detail=json.dumps({"reasonCode":"L2_FENCE_TARGET_CONTRACT_MISMATCH"}))
+                        detail=json.dumps(provider_precondition_detail("L2_FENCE_TARGET_CONTRACT_MISMATCH")))
                 raw_ordering = relation_authority.get("ordering")
                 if not isinstance(raw_ordering, list) or len(raw_ordering) != 1:
                     return ValidationLayerResult(
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                        detail=json.dumps({"reasonCode":"L2_FENCE_ORDERING_AUTHORITY_MISSING"}))
+                        detail=json.dumps(provider_precondition_detail("L2_FENCE_ORDERING_AUTHORITY_MISSING")))
             wrapper = (_object_relative_memory_wrapper(
                            function, relation_authority, memory_facts)
                        if mode == "memory-object-functions" else
@@ -712,6 +711,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
             if left_build.returncode or right_build.returncode:
                 detail = _build_failure_detail(left_build, right_build)
+                detail["executionDisposition"] = \
+                    L2ProviderExecutionDisposition.NOT_EXECUTED.value
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
             right=_run((str(target_exe),),work,timeout)
@@ -795,6 +796,11 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 source_observation_identity=source_observation_identity,
                 target_observation_identity=target_observation_identity,
                 execution_nonce={"attemptId": observation["attemptId"], "mode": mode},
+                dimensions={
+                    "control-flow-functions": ("control_flow", "shell_semantics"),
+                    "memory-object-functions": ("memory_effects", "shell_semantics"),
+                    "fence-functions": ("memory_effects", "shell_semantics"),
+                }.get(mode, ("shell_semantics",)),
                 execution_disposition={
                     ValidationStatus.VERIFIED:
                         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -812,8 +818,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"reasonCode":"L2_EFFECT_RUNNER_TIMEOUT","detail":str(exc)}))
+                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"reasonCode":"L2_EFFECT_RUNNER_TIMEOUT","detail":str(exc)}))
         except (OSError,ValueError,KeyError,json.JSONDecodeError) as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"reasonCode":"L2_EFFECT_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
+                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_EFFECT_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
     return validate

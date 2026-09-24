@@ -27,9 +27,10 @@ def test_complete_provider_evidence_closes_all_required_identities():
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
         source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1})
+        execution_nonce={"attempt": 1}, dimensions=("logical_operands", "shell_semantics"))
     assert value["evidenceSchemaVersion"] == L2_PROVIDER_EVIDENCE_SCHEMA
-    closed, reasons = validated_provider_evidence(value, artifact())
+    closed, reasons = validated_provider_evidence(
+        value, artifact(), dimension="logical_operands", provider_id="provider")
     assert reasons == ()
     assert closed is not None
     assert all(closed[name] for name in (
@@ -40,15 +41,16 @@ def test_complete_provider_evidence_closes_all_required_identities():
 @pytest.mark.parametrize("name", [
     "authorityIdentity", "effectRelationIdentity", "executionPlanIdentity",
     "environmentAuthorityIdentity", "runtimeAdapterIdentity", "harnessIdentity",
-    "sourceObservationIdentity", "targetObservationIdentity", "executionIdentity",
+    "executionIdentity",
 ])
 def test_each_missing_identity_fails_closed(name):
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
         source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1})
+        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
     value[name] = ""
-    closed, reasons = validated_provider_evidence(value, artifact())
+    closed, reasons = validated_provider_evidence(
+        value, artifact(), dimension="logical_operands", provider_id="provider")
     assert closed is None
     assert "l2.provider-evidence.identity-missing:" + name in reasons
 
@@ -57,11 +59,12 @@ def test_cross_fragment_authority_and_relation_are_rejected():
     value = provider_evidence_fields(
         artifact("fragment:a"), provider_id="provider", harness_identity=H,
         source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1})
+        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
     other = artifact("fragment:b")
     other.l2_authority_identity = "sha256:" + "3" * 64
     other.effect_relation_set_identity = "sha256:" + "4" * 64
-    closed, reasons = validated_provider_evidence(value, other)
+    closed, reasons = validated_provider_evidence(
+        value, other, dimension="logical_operands", provider_id="provider")
     assert closed is None
     assert "l2.provider-evidence.authority-mismatch" in reasons
     assert "l2.provider-evidence.effect-relation-mismatch" in reasons
@@ -100,12 +103,42 @@ def test_executed_inconclusive_retains_partial_evidence_only():
         "executionDisposition": "executed_inconclusive",
         "authorityIdentity": H,
     }
-    evidence, reasons = partial_provider_evidence(detail, artifact())
+    evidence, reasons = partial_provider_evidence(
+        detail, artifact(), dimension="logical_operands", provider_id="provider")
     assert evidence == {"authorityIdentity": H}
     assert reasons == (
-        "l2.provider-evidence.identity-missing:sourceObservationIdentity",
-        "l2.provider-evidence.identity-missing:targetObservationIdentity",
+        "l2.provider-evidence.dimension-observation-missing:logical_operands",
+        "l2.provider-evidence.execution-plan-invalid",
     )
+
+
+def test_dimensions_share_execution_but_not_observation_identity():
+    value = provider_evidence_fields(
+        artifact(), provider_id="provider", harness_identity=H,
+        source_observation_identity=O, target_observation_identity=O,
+        execution_nonce={"attempt": 1},
+        dimensions=("logical_operands", "shell_semantics"))
+    observations = value["dimensionObservations"]
+    assert observations["logical_operands"] != observations["shell_semantics"]
+    logical, reasons = validated_provider_evidence(
+        value, artifact(), dimension="logical_operands", provider_id="provider")
+    shell, shell_reasons = validated_provider_evidence(
+        value, artifact(), dimension="shell_semantics", provider_id="provider")
+    assert reasons == shell_reasons == ()
+    assert logical["executionIdentity"] == shell["executionIdentity"]
+    assert logical["sourceObservationIdentity"] != shell["sourceObservationIdentity"]
+
+
+def test_execution_plan_payload_tampering_fails_closed():
+    value = provider_evidence_fields(
+        artifact(), provider_id="provider", harness_identity=H,
+        source_observation_identity=O, target_observation_identity=O,
+        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
+    value["executionPlan"]["providerId"] = "other-provider"
+    closed, reasons = validated_provider_evidence(
+        value, artifact(), dimension="logical_operands", provider_id="provider")
+    assert closed is None
+    assert "l2.provider-evidence.execution-plan-invalid" in reasons
 
 
 def test_disposition_cannot_claim_verified_for_failed_result():

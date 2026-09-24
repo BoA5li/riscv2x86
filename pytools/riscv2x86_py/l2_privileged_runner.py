@@ -669,6 +669,7 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
             target_observation_identity=str(detail["targetObservationIdentity"]),
             execution_nonce={"initialStateIdentity": initial_identity,
                              "routeContractIdentity": routes.identity},
+            dimensions=("privileged_state", "shell_semantics", "trap_semantics"),
             execution_disposition=(
                 L2ProviderExecutionDisposition.EXECUTED_VERIFIED
                 if result.approved else

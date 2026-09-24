@@ -459,7 +459,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
         artifact = kwargs.get("translation_artifact")
         if getattr(artifact, "preservation_mode", None) is not PreservationMode.ARCHITECTURE_EQUIVALENT:
             return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"reasonCode":"L2_OPERAND_FUNCTIONAL_FALLBACK_NOT_ARCHITECTURAL"}))
+                                         detail=json.dumps(provider_precondition_detail("L2_OPERAND_FUNCTIONAL_FALLBACK_NOT_ARCHITECTURAL")))
         try:
             source, target = Path(str(config["sourcePath"])), Path(str(config["targetPath"]))
             if _digest_bytes(source.read_bytes()) != config["sourceDigest"] or _digest_bytes(target.read_bytes()) != config["targetDigest"]:
@@ -494,7 +494,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
             right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
             if left_build.returncode or right_build.returncode:
-                detail={"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
+                detail={"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout); right=_run((str(target_exe),),work,timeout)
             arity=int(function["arity"]); source_rows=_traces(left.stdout,str(function_name),arity); target_rows=_traces(right.stdout,str(function_name),arity)
@@ -538,6 +538,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 target_observation_identity=target_observation_identity,
                 execution_nonce={"authorizedExecutionIdentity": authorized_execution,
                                  "seed": seed, "inputDomain": observation["inputDomain"]},
+                dimensions=("logical_operands", "shell_semantics"),
                 execution_disposition={
                     ValidationStatus.VERIFIED:
                         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -549,7 +550,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],**closure,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
-            return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))
+            return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))
         except (OSError,ValueError,KeyError,json.JSONDecodeError) as exc:
-            return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"reasonCode":"L2_OPERAND_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
+            return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
     return validate

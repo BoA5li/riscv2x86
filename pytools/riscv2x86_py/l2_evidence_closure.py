@@ -6,11 +6,11 @@ from enum import Enum
 from hashlib import sha256
 import json
 import re
-from typing import Mapping
+from typing import Mapping, Sequence
 
 
 L2_EXECUTION_PLAN_SCHEMA = "riscv2x86.l2-execution-plan.v1"
-L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v1"
+L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v2"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -101,6 +101,29 @@ class L2ExecutionPlan:
         return result
 
 
+def execution_plan_from_dict(value: Mapping[str, object]) -> L2ExecutionPlan:
+    fields = {
+        "schemaVersion", "fragmentId", "providerId",
+        "translationApprovalIdentity", "environmentAuthorityIdentity",
+        "semanticAuthorityIdentity", "effectRelationIdentity",
+        "runtimeAdapterIdentity", "harnessIdentity", "executionPlanIdentity",
+    }
+    if set(value) != fields or value.get("schemaVersion") != L2_EXECUTION_PLAN_SCHEMA:
+        raise ValueError("L2 execution plan schema or fields are invalid")
+    plan = L2ExecutionPlan(
+        str(value.get("fragmentId") or ""), str(value.get("providerId") or ""),
+        str(value.get("translationApprovalIdentity") or ""),
+        str(value.get("environmentAuthorityIdentity") or ""),
+        str(value.get("semanticAuthorityIdentity") or ""),
+        str(value.get("effectRelationIdentity") or ""),
+        str(value.get("runtimeAdapterIdentity") or ""),
+        str(value.get("harnessIdentity") or ""),
+    )
+    if value.get("executionPlanIdentity") != plan.plan_identity:
+        raise ValueError("L2 execution plan identity does not match content")
+    return plan
+
+
 def execution_plan_for_provider(
     artifact: object, *, provider_id: str, harness_identity: str,
 ) -> L2ExecutionPlan:
@@ -136,9 +159,10 @@ def provider_evidence_fields(
     artifact: object, *, provider_id: str, harness_identity: str,
     source_observation_identity: str, target_observation_identity: str,
     execution_nonce: object,
+    dimensions: Sequence[str],
     execution_disposition: L2ProviderExecutionDisposition =
         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
-) -> dict[str, str]:
+) -> dict[str, object]:
     if execution_disposition not in {
             L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
             *_TOTAL_EVIDENCE_DISPOSITIONS}:
@@ -151,21 +175,40 @@ def provider_evidence_fields(
     execution_identity = identity({
         "schemaVersion": "riscv2x86.l2-authorized-execution.v1",
         "executionPlanIdentity": plan.plan_identity,
-        "sourceObservationIdentity": source_observation_identity,
-        "targetObservationIdentity": target_observation_identity,
         "executionNonce": execution_nonce,
     })
+    canonical_dimensions = tuple(sorted(set(dimensions)))
+    if not canonical_dimensions or any(not item for item in canonical_dimensions):
+        raise ValueError("provider evidence dimensions are incomplete")
+    observations = {}
+    for dimension in canonical_dimensions:
+        observations[dimension] = {
+            "sourceEvidenceIdentity": source_observation_identity,
+            "targetEvidenceIdentity": target_observation_identity,
+            "sourceObservationIdentity": identity({
+                "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
+                "executionIdentity": execution_identity,
+                "fragmentId": plan.fragment_id, "dimension": dimension,
+                "side": "source", "evidenceIdentity": source_observation_identity,
+            }),
+            "targetObservationIdentity": identity({
+                "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
+                "executionIdentity": execution_identity,
+                "fragmentId": plan.fragment_id, "dimension": dimension,
+                "side": "target", "evidenceIdentity": target_observation_identity,
+            }),
+        }
     return {
         "executionDisposition": execution_disposition.value,
         "evidenceSchemaVersion": L2_PROVIDER_EVIDENCE_SCHEMA,
         "authorityIdentity": plan.semantic_authority_identity,
         "effectRelationIdentity": plan.effect_relation_identity,
         "executionPlanIdentity": plan.plan_identity,
+        "executionPlan": plan.to_dict(),
         "environmentAuthorityIdentity": plan.environment_authority_identity,
         "runtimeAdapterIdentity": plan.runtime_adapter_identity,
         "harnessIdentity": plan.harness_identity,
-        "sourceObservationIdentity": source_observation_identity,
-        "targetObservationIdentity": target_observation_identity,
+        "dimensionObservations": observations,
         "executionIdentity": execution_identity,
     }
 
@@ -173,16 +216,7 @@ def provider_evidence_fields(
 def provider_execution_disposition(
     detail: Mapping[str, object], status: str,
 ) -> tuple[L2ProviderExecutionDisposition, tuple[str, ...]]:
-    """Parse an explicit disposition with a fail-closed legacy classification.
-
-    Legacy inconclusive results without any execution evidence are classified
-    as precondition rejections.  This preserves their primary reason without
-    pretending that observations should already exist.
-    """
-    expected = {
-        "verified": L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
-        "failed": L2ProviderExecutionDisposition.EXECUTED_FAILED,
-    }
+    """Parse the mandatory execution disposition without inferring execution."""
     raw = detail.get("executionDisposition")
     if isinstance(raw, str):
         try:
@@ -202,30 +236,19 @@ def provider_execution_disposition(
         if disposition not in allowed:
             return disposition, ("l2.provider-execution-disposition.status-mismatch",)
         return disposition, ()
-    if status in expected:
-        return expected[status], ("l2.provider-execution-disposition.missing",)
-    evidence_names = (
-        "executionIdentity", "sourceObservationIdentity",
-        "targetObservationIdentity", "executionPlanIdentity",
-    )
-    if status == "inconclusive" and any(detail.get(name) for name in evidence_names):
-        return (L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
-                ("l2.provider-execution-disposition.missing",))
-    if status == "inconclusive" and (
-            isinstance(detail.get("reasonCode"), str)
-            or isinstance(detail.get("reasonCodes"), list)):
-        return L2ProviderExecutionDisposition.PRECONDITION_REJECTED, ()
-    return L2ProviderExecutionDisposition.NOT_EXECUTED, ()
+    return (L2ProviderExecutionDisposition.NOT_EXECUTED,
+            ("l2.provider-execution-disposition.missing",))
 
 
 def partial_provider_evidence(
-    detail: Mapping[str, object], artifact: object,
+    detail: Mapping[str, object], artifact: object, *, dimension: str,
+    provider_id: str,
 ) -> tuple[dict[str, str], tuple[str, ...]]:
     """Retain formed identities after an inconclusive executed comparison."""
     names = (
         "authorityIdentity", "effectRelationIdentity", "executionPlanIdentity",
         "environmentAuthorityIdentity", "runtimeAdapterIdentity", "harnessIdentity",
-        "sourceObservationIdentity", "targetObservationIdentity", "executionIdentity",
+        "executionIdentity",
     )
     values = {name: str(detail.get(name)) for name in names
               if isinstance(detail.get(name), str)
@@ -233,26 +256,30 @@ def partial_provider_evidence(
     reasons: set[str] = set()
     if detail.get("evidenceSchemaVersion") != L2_PROVIDER_EVIDENCE_SCHEMA:
         reasons.add("l2.provider-evidence.schema-missing-or-unsupported")
-    for name in ("sourceObservationIdentity", "targetObservationIdentity"):
-        if name not in values:
-            reasons.add("l2.provider-evidence.identity-missing:" + name)
+    observations = detail.get("dimensionObservations")
+    selected = observations.get(dimension) if isinstance(observations, Mapping) else None
+    _validate_dimension_observation(selected, values, dimension, str(
+        getattr(artifact, "fragment_id", "")), reasons)
     authority = values.get("authorityIdentity")
     if authority and authority != str(getattr(artifact, "l2_authority_identity", "")):
         reasons.add("l2.provider-evidence.authority-mismatch")
     relation = values.get("effectRelationIdentity")
     if relation and relation != str(getattr(artifact, "effect_relation_set_identity", "")):
         reasons.add("l2.provider-evidence.effect-relation-mismatch")
+    if not _execution_plan_is_valid(detail, artifact, provider_id, values):
+        reasons.add("l2.provider-evidence.execution-plan-invalid")
     return values, tuple(sorted(reasons))
 
 
 def validated_provider_evidence(
-    detail: Mapping[str, object], artifact: object,
+    detail: Mapping[str, object], artifact: object, *, dimension: str,
+    provider_id: str,
 ) -> tuple[dict[str, str] | None, tuple[str, ...]]:
     """Validate the total evidence chain; never synthesize a missing link."""
     names = (
         "authorityIdentity", "effectRelationIdentity", "executionPlanIdentity",
         "environmentAuthorityIdentity", "runtimeAdapterIdentity", "harnessIdentity",
-        "sourceObservationIdentity", "targetObservationIdentity", "executionIdentity",
+        "executionIdentity",
     )
     reasons: set[str] = set()
     if detail.get("evidenceSchemaVersion") != L2_PROVIDER_EVIDENCE_SCHEMA:
@@ -267,6 +294,68 @@ def validated_provider_evidence(
     if values["effectRelationIdentity"] != str(
             getattr(artifact, "effect_relation_set_identity", "")):
         reasons.add("l2.provider-evidence.effect-relation-mismatch")
+    if not _execution_plan_is_valid(detail, artifact, provider_id, values):
+        reasons.add("l2.provider-evidence.execution-plan-invalid")
+    observations = detail.get("dimensionObservations")
+    selected = observations.get(dimension) if isinstance(observations, Mapping) else None
+    _validate_dimension_observation(selected, values, dimension, str(
+        getattr(artifact, "fragment_id", "")), reasons)
     if reasons:
         return None, tuple(sorted(reasons))
     return values, ()
+
+
+def _execution_plan_is_valid(
+    detail: Mapping[str, object], artifact: object, provider_id: str,
+    values: Mapping[str, str],
+) -> bool:
+    raw_plan = detail.get("executionPlan")
+    try:
+        if not isinstance(raw_plan, Mapping):
+            return False
+        plan = execution_plan_from_dict(raw_plan)
+        expected = execution_plan_for_provider(
+            artifact, provider_id=provider_id,
+            harness_identity=values.get("harnessIdentity", ""))
+        return (plan.plan_identity == values.get("executionPlanIdentity")
+                and plan.plan_identity == expected.plan_identity
+                and plan.fragment_id == str(getattr(artifact, "fragment_id", ""))
+                and plan.provider_id == provider_id
+                and plan.translation_approval_identity == str(
+                    getattr(artifact, "proof_identity", ""))
+                and plan.semantic_authority_identity == values.get("authorityIdentity")
+                and plan.effect_relation_identity == values.get("effectRelationIdentity")
+                and plan.environment_authority_identity
+                    == values.get("environmentAuthorityIdentity")
+                and plan.runtime_adapter_identity == values.get("runtimeAdapterIdentity")
+                and plan.harness_identity == values.get("harnessIdentity"))
+    except (TypeError, ValueError):
+        return False
+
+
+def _validate_dimension_observation(
+    selected: object, values: dict[str, str], dimension: str,
+    fragment_id: str, reasons: set[str],
+) -> None:
+    fields = {"sourceEvidenceIdentity", "targetEvidenceIdentity",
+              "sourceObservationIdentity", "targetObservationIdentity"}
+    if not isinstance(selected, Mapping) or set(selected) != fields:
+        reasons.add("l2.provider-evidence.dimension-observation-missing:" + dimension)
+        return
+    execution = values.get("executionIdentity", "")
+    for side in ("source", "target"):
+        evidence_name = side + "EvidenceIdentity"
+        observation_name = side + "ObservationIdentity"
+        evidence = str(selected.get(evidence_name) or "")
+        observation = str(selected.get(observation_name) or "")
+        expected = identity({
+            "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
+            "executionIdentity": execution, "fragmentId": fragment_id,
+            "dimension": dimension, "side": side,
+            "evidenceIdentity": evidence,
+        }) if _SHA.fullmatch(execution) and _SHA.fullmatch(evidence) else ""
+        if _SHA.fullmatch(observation) is None or observation != expected:
+            reasons.add("l2.provider-evidence.dimension-observation-invalid:"
+                        + dimension + ":" + observation_name)
+        else:
+            values[observation_name] = observation
