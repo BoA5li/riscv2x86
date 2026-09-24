@@ -1,6 +1,7 @@
 """Contract tests for zero-configuration corpus evaluation."""
 from __future__ import annotations
 
+from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -24,6 +25,110 @@ from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 from riscv2x86_py.translation_artifact_binding import translation_artifact_from_approval
 from riscv2x86_py.translation_attempt import TranslationAttempt
 from riscv2x86_py.schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
+
+
+def _ast_range(begin, end):
+    return {"begin": {"offset": begin}, "end": {"offset": end - 1, "tokLen": 1}}
+
+
+def _ast_ref(identity, offset):
+    return {"id": f"ref:{identity}:{offset}", "kind": "DeclRefExpr",
+            "range": _ast_range(offset, offset + 1),
+            "referencedDecl": {"id": identity}}
+
+
+def test_frontend_exports_content_bound_fragment_value_flow_v2():
+    function = {
+        "id": "ast:function", "kind": "FunctionDecl", "name": "f",
+        "range": _ast_range(0, 100), "type": {"qualType": "uint64_t (uint64_t)"},
+        "inner": [
+            {"id": "x", "kind": "ParmVarDecl", "name": "x",
+             "range": _ast_range(2, 4),
+             "type": {"qualType": "uint64_t"}},
+            {"id": "out", "kind": "VarDecl", "name": "out",
+             "range": _ast_range(8, 12),
+             "type": {"qualType": "uint64_t"}},
+            {"id": "asm:0", "kind": "GCCAsmStmt", "range": _ast_range(20, 40),
+             "outputConstraints": ["=r"], "inputConstraints": ["r"],
+             "inner": [_ast_ref("out", 30), _ast_ref("x", 32)]},
+            {"id": "return:0", "kind": "ReturnStmt", "range": _ast_range(60, 70),
+             "inner": [_ast_ref("out", 65)]},
+        ],
+    }
+    facts = auto._l2_operand_boundary_facts(
+        function, source_digest="sha256:" + "1" * 64,
+        function_identity="sha256:" + "2" * 64)
+    candidate = facts["fragmentCandidates"][0]
+    assert candidate["schemaVersion"] == \
+        "riscv2x86.compiler-fragment-boundary-candidate.v2"
+    assert candidate["complete"] is True
+    assert all(item["valueNodeIdentity"].startswith("sha256:")
+               for item in candidate["operandBindings"])
+    assert candidate["downstreamUses"][0]["useKind"] == "function_return"
+    assert candidate["downstreamUses"][0]["relationKind"] == "function_return"
+
+
+def test_frontend_marks_uncontracted_call_escape_incomplete():
+    function = {
+        "id": "ast:function", "kind": "FunctionDecl", "name": "f",
+        "range": _ast_range(0, 100), "type": {"qualType": "void (void)"},
+        "inner": [
+            {"id": "out", "kind": "VarDecl", "name": "out",
+             "range": _ast_range(8, 12),
+             "type": {"qualType": "uint64_t"}},
+            {"id": "asm:0", "kind": "GCCAsmStmt", "range": _ast_range(20, 40),
+             "outputConstraints": ["=r"], "inputConstraints": [],
+             "inner": [_ast_ref("out", 30)]},
+            {"id": "call:0", "kind": "CallExpr", "range": _ast_range(60, 75),
+             "inner": [_ast_ref("out", 70)]},
+        ],
+    }
+    candidate = auto._l2_operand_boundary_facts(
+        function, source_digest="sha256:" + "1" * 64,
+        function_identity="sha256:" + "2" * 64)["fragmentCandidates"][0]
+    use = candidate["downstreamUses"][0]
+    assert use["useKind"] == "call_argument"
+    assert use["complete"] is False
+    assert use["observationSinkIdentity"] == ""
+
+
+def test_frontend_value_nodes_ignore_process_local_clang_ids_but_bind_source_digest():
+    function = {
+        "id": "process:1", "kind": "FunctionDecl", "name": "f",
+        "range": _ast_range(0, 80), "type": {"qualType": "uint64_t (void)"},
+        "inner": [
+            {"id": "decl:1", "kind": "VarDecl", "name": "out",
+             "range": _ast_range(5, 8), "type": {"qualType": "uint64_t"}},
+            {"id": "asm:1", "kind": "GCCAsmStmt", "range": _ast_range(20, 40),
+             "outputConstraints": ["=r"], "inputConstraints": [],
+             "inner": [{"id": "ref:1", "kind": "DeclRefExpr",
+                        "range": _ast_range(30, 31),
+                        "referencedDecl": {"id": "decl:1"}}]},
+            {"id": "return:1", "kind": "ReturnStmt", "range": _ast_range(60, 70),
+             "inner": [{"id": "ref:2", "kind": "DeclRefExpr",
+                        "range": _ast_range(65, 66),
+                        "referencedDecl": {"id": "decl:1"}}]},
+        ],
+    }
+    changed = deepcopy(function)
+    changed["id"] = "process:99"
+    changed["inner"][0]["id"] = "decl:99"
+    changed["inner"][1]["id"] = "asm:99"
+    changed["inner"][1]["inner"][0]["id"] = "ref:99"
+    changed["inner"][1]["inner"][0]["referencedDecl"]["id"] = "decl:99"
+    changed["inner"][2]["id"] = "return:99"
+    changed["inner"][2]["inner"][0]["id"] = "ref:100"
+    changed["inner"][2]["inner"][0]["referencedDecl"]["id"] = "decl:99"
+    kwargs = {"source_digest": "sha256:" + "1" * 64,
+              "function_identity": "sha256:" + "2" * 64}
+    left = auto._l2_operand_boundary_facts(function, **kwargs)
+    right = auto._l2_operand_boundary_facts(changed, **kwargs)
+    assert left["fragmentCandidates"] == right["fragmentCandidates"]
+    other = auto._l2_operand_boundary_facts(
+        function, source_digest="sha256:" + "3" * 64,
+        function_identity="sha256:" + "4" * 64)
+    assert (left["fragmentCandidates"][0]["operandBindings"][0]["valueNodeIdentity"]
+            != other["fragmentCandidates"][0]["operandBindings"][0]["valueNodeIdentity"])
 
 
 def test_inventory_generates_translation_and_registered_l0_l1(tmp_path, monkeypatch):

@@ -196,9 +196,9 @@ def assess_scalar_authority_materializability(
                         "L2_SCALAR_OPERAND_ARITY_MISMATCH")
         if any(not item.value_node_identity for item in outputs + inputs):
             reasons.add("L2_SCALAR_VALUE_NODE_MISSING")
-        if outputs and not parsed_boundary.live_out_nodes:
-            reasons.add("L2_SCALAR_LIVE_OUT_UNPROVED")
-            reasons.add("L2_SCALAR_OBSERVATION_SINK_MISSING")
+        # Boundary v2 closes each output through a sink, a downstream fragment,
+        # an authoritative discard, or approved instrumentation.  A genuinely
+        # dead output therefore need not be fabricated as a function live-out.
 
     if function is not None:
         arity = function.get("arity")

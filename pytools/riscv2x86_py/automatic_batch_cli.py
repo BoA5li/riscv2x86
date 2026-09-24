@@ -17,6 +17,11 @@ from .l2_validator_resolution import (
     L2BindingKind, L2_EXPLICIT_PROVIDER_MANIFEST_SCHEMA, provider_from_dict,
 )
 from .l3_provider_resolution import provider_from_dict as l3_provider_from_dict
+from .compiler_value_flow import (
+    COMPILER_FRAGMENT_CANDIDATE_SCHEMA, COMPILER_VALUE_NODE_SCHEMA,
+    CompilerDownstreamUse,
+    CompilerOperandBinding, CompilerValueNode, identity as value_flow_identity,
+)
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
 EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
@@ -77,6 +82,80 @@ def _decl_identity(node: object) -> str:
     return str(referenced.get("id") or referenced.get("name") or "")
 
 
+def _source_range(node: Mapping[str, object]) -> tuple[int, int] | None:
+    raw = node.get("range")
+    begin = raw.get("begin") if isinstance(raw, Mapping) else None
+    end = raw.get("end") if isinstance(raw, Mapping) else None
+    left = begin.get("offset") if isinstance(begin, Mapping) else None
+    right = end.get("offset") if isinstance(end, Mapping) else None
+    token = end.get("tokLen") if isinstance(end, Mapping) else None
+    if all(isinstance(item, int) and not isinstance(item, bool)
+           for item in (left, right, token)) and token > 0:
+        return int(left), int(right) + int(token)
+    return None
+
+
+def _integer_type(type_name: str) -> tuple[int, str]:
+    value = " ".join(type_name.replace("const", "").replace("volatile", "").split())
+    fixed = re.fullmatch(r"u?int(8|16|32|64)_t", value)
+    width = int(fixed.group(1)) if fixed else (
+        8 if "char" in value else 16 if "short" in value else
+        64 if "long" in value else 32 if value in {
+            "int", "signed", "signed int", "unsigned", "unsigned int"} else 0)
+    signedness = "unsigned" if value.startswith(("u", "unsigned")) else "signed"
+    return width, signedness
+
+
+def _ast_identity(source_digest: str, function_identity: str,
+                  node: Mapping[str, object], declaration_identity: str = "") -> str:
+    return value_flow_identity({
+        "schemaVersion": "riscv2x86.compiler-ast-node-identity.v1",
+        "sourceDigest": source_digest, "functionIdentity": function_identity,
+        "declarationIdentity": declaration_identity,
+        "sourceRange": list(_source_range(node) or (-1, -1)),
+        "kind": str(node.get("kind") or ""),
+        "type": (str(node.get("type", {}).get("qualType", ""))
+                 if isinstance(node.get("type"), Mapping) else ""),
+    })
+
+
+def _walk_ast_with_ancestors(node: object, ancestors=()):
+    if not isinstance(node, Mapping):
+        return
+    yield node, ancestors
+    for child in node.get("inner", []):
+        yield from _walk_ast_with_ancestors(child, ancestors + (node,))
+
+
+def _downstream_kind(ancestors: tuple[Mapping[str, object], ...]) -> tuple[str, str]:
+    kinds = [str(item.get("kind") or "") for item in ancestors]
+    if "ReturnStmt" in kinds:
+        expression_kinds = {"BinaryOperator", "UnaryOperator", "ConditionalOperator"}
+        return (("c_expression", "pure_integer_expression")
+                if expression_kinds.intersection(kinds)
+                else ("function_return", "function_return"))
+    if any(kind in {"IfStmt", "WhileStmt", "DoStmt", "ForStmt", "SwitchStmt"}
+           for kind in kinds):
+        return "branch_condition", "control_predicate"
+    if "CallExpr" in kinds:
+        return "call_argument", "identity"
+    assignment = next((item for item in reversed(ancestors)
+                       if item.get("kind") in {"BinaryOperator", "CompoundAssignOperator"}
+                       and item.get("opcode") == "="), None)
+    if assignment is not None:
+        children = [item for item in assignment.get("inner", [])
+                    if isinstance(item, Mapping)]
+        lhs = _unwrap_expression(children[0]) if children else None
+        if (isinstance(lhs, Mapping)
+                and (lhs.get("kind") == "ArraySubscriptExpr"
+                     or (lhs.get("kind") == "UnaryOperator"
+                         and lhs.get("opcode") == "*"))):
+            return "memory_store", "memory_store"
+    if any(kind in {"BinaryOperator", "CompoundAssignOperator"} for kind in kinds):
+        return "c_expression", "pure_integer_expression"
+    return "escape_unknown", "identity"
+
+
 def _asm_output_identity(node: Mapping[str, object]) -> str:
     """Return Clang's first authoritative GNU asm output expression identity.
 
@@ -111,7 +190,10 @@ def _counter_return_semantics(function: Mapping[str, object]) -> dict[str, str]:
     return {"counterReturnSemantics": "unproved", "counterRelationOperator": ""}
 
 
-def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, object]:
+def _l2_operand_boundary_facts(
+    function: Mapping[str, object], *, source_digest: str = "",
+    function_identity: str = "",
+) -> dict[str, object]:
     """Export compiler-AST identities needed for bounded automatic L2-A.
 
     The report-side GNU constraints are joined later.  Here we only establish
@@ -121,24 +203,51 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
               if isinstance(item, Mapping) and item.get("kind") == "ParmVarDecl"]
     asm_nodes = [item for item in _walk_ast(function) if item.get("kind") == "GCCAsmStmt"]
     returns = [item for item in _walk_ast(function) if item.get("kind") == "ReturnStmt"]
+    function_identity = function_identity or value_flow_identity({
+        "schemaVersion": "riscv2x86.compiler-function-identity.v1",
+        "sourceDigest": source_digest, "name": str(function.get("name") or ""),
+        "sourceRange": list(_source_range(function) or (-1, -1)),
+        "type": (str(function.get("type", {}).get("qualType", ""))
+                 if isinstance(function.get("type"), Mapping) else ""),
+    })
+    declaration_nodes = [item for item in _walk_ast(function)
+                         if item.get("kind") in {"ParmVarDecl", "VarDecl"}]
+    raw_to_stable: dict[str, str] = {}
+    for item in declaration_nodes:
+        raw_id = str(item.get("id") or item.get("name") or "")
+        item_range = _source_range(item)
+        raw_to_stable[raw_id] = (value_flow_identity({
+            "schemaVersion": "riscv2x86.compiler-declaration-identity.v1",
+            "sourceDigest": source_digest, "functionIdentity": function_identity,
+            "kind": str(item.get("kind") or ""),
+            "name": str(item.get("name") or ""),
+            "type": (str(item.get("type", {}).get("qualType", ""))
+                     if isinstance(item.get("type"), Mapping) else ""),
+            "sourceRange": list(item_range),
+        }) if source_digest and item_range is not None else
+            raw_id if not source_digest else "")
+    def stable_declaration(raw_id: str) -> str:
+        return raw_to_stable.get(raw_id, "")
     declarations = {
-        str(item.get("id") or item.get("name") or ""): {
+        stable_declaration(str(item.get("id") or item.get("name") or "")): {
             "name": str(item.get("name") or ""),
             "type": str(item.get("type", {}).get("qualType", ""))
             if isinstance(item.get("type"), Mapping) else "",
         }
-        for item in _walk_ast(function)
-        if item.get("kind") in {"ParmVarDecl", "VarDecl"}
+        for item in declaration_nodes
+        if stable_declaration(str(item.get("id") or item.get("name") or ""))
     }
     reference_counts: dict[str, int] = {}
     for item in _walk_ast(function):
         # Count each compiler DeclRefExpr exactly once.  Calling _decl_identity
         # on its wrapping casts/parentheses counted one source reference more
         # than once and made every direct-return scalar authority inconclusive.
-        identity = _decl_identity(item) if item.get("kind") == "DeclRefExpr" else ""
-        if identity:
-            reference_counts[identity] = reference_counts.get(identity, 0) + 1
-    parameter_ids = [str(item.get("id") or item.get("name") or "") for item in params]
+        raw_identity = _decl_identity(item) if item.get("kind") == "DeclRefExpr" else ""
+        declaration_identity = stable_declaration(raw_identity)
+        if declaration_identity:
+            reference_counts[declaration_identity] = reference_counts.get(declaration_identity, 0) + 1
+    parameter_ids = [stable_declaration(str(item.get("id") or item.get("name") or ""))
+                     for item in params]
     memory_bindings: dict[str, object] = {}
     for parameter, declaration_id in zip(params, parameter_ids):
         raw_type = parameter.get("type")
@@ -165,8 +274,17 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
     asm_ids: list[str] = []
     asm_statement_end = -1
     fragment_candidates: list[dict[str, object]] = []
+    candidate_by_asm_id: dict[int, str] = {}
+    for asm_node in asm_nodes:
+        asm_range = _source_range(asm_node) or (-1, -1)
+        candidate_by_asm_id[id(asm_node)] = value_flow_identity({
+            "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1",
+            "functionIdentity": function_identity,
+            "beginOffset": asm_range[0], "endOffset": asm_range[1],
+        })
     for asm_index, asm_node in enumerate(asm_nodes):
-        candidate_ids = [_decl_identity(item) for item in asm_node.get("inner", [])
+        candidate_ids = [stable_declaration(_decl_identity(item))
+                         for item in asm_node.get("inner", [])
                          if isinstance(item, Mapping)]
         source_range = asm_node.get("range")
         begin = source_range.get("begin") if isinstance(source_range, Mapping) else None
@@ -176,16 +294,122 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
         token_length = end.get("tokLen") if isinstance(end, Mapping) else None
         range_complete = all(isinstance(item, int) and not isinstance(item, bool)
                              for item in (begin_offset, end_offset, token_length))
+        binding_key = {"functionIdentity": function_identity,
+                       "beginOffset": begin_offset if range_complete else -1,
+                       "endOffset": end_offset + token_length if range_complete else -1}
+        candidate_identity = candidate_by_asm_id[id(asm_node)]
+        output_constraints = asm_node.get("outputConstraints")
+        input_constraints = asm_node.get("inputConstraints")
+        output_count = (len(output_constraints) if isinstance(output_constraints, list)
+                        else asm_node.get("numOutputs"))
+        if isinstance(output_count, bool) or not isinstance(output_count, int):
+            output_count = -1
+        operand_bindings = []
+        value_nodes = []
+        for operand_index, (child, declaration_id) in enumerate(zip(
+                [item for item in asm_node.get("inner", []) if isinstance(item, Mapping)],
+                candidate_ids)):
+            declaration = declarations.get(declaration_id)
+            type_name = str(declaration.get("type") or "") \
+                if isinstance(declaration, Mapping) else ""
+            width, signedness = _integer_type(type_name)
+            constraint = (str(output_constraints[operand_index])
+                          if isinstance(output_constraints, list)
+                          and operand_index < len(output_constraints) else "")
+            access = ("read_write" if 0 <= operand_index < output_count
+                      and constraint.startswith("+") else
+                      "output" if 0 <= operand_index < output_count else "input")
+            ast_id = _ast_identity(source_digest, function_identity, child,
+                                   declaration_id)
+            type_id = value_flow_identity({"type": type_name, "widthBits": width,
+                                           "signedness": signedness})
+            node_id = value_flow_identity({
+                "schemaVersion": COMPILER_VALUE_NODE_SCHEMA,
+                "declarationIdentity": declaration_id,
+                "definingAstNodeIdentity": ast_id,
+                "definingFragmentId": candidate_identity,
+                "typeIdentity": type_id, "widthBits": width,
+                "signedness": signedness,
+            })
+            try:
+                value_node = CompilerValueNode(
+                    node_id, declaration_id, ast_id, candidate_identity,
+                    type_id, width, signedness, True)
+                binding = CompilerOperandBinding(
+                    operand_index, declaration_id, node_id, access,
+                    width, signedness, True)
+            except ValueError:
+                continue
+            value_nodes.append(value_node.to_dict())
+            operand_bindings.append(binding.to_dict())
+        downstream_uses = []
+        output_nodes = {item["declarationIdentity"]: item["nodeIdentity"]
+                        for item in value_nodes
+                        if operand_bindings[value_nodes.index(item)]["access"] == "output"}
+        for ref, ancestors in _walk_ast_with_ancestors(function):
+            declaration_id = (stable_declaration(_decl_identity(ref))
+                              if ref.get("kind") == "DeclRefExpr" else "")
+            if declaration_id not in output_nodes or asm_node in ancestors:
+                continue
+            ref_range = _source_range(ref)
+            if ref_range is None:
+                kind, relation, consumer = "escape_unknown", "identity", ""
+            elif (range_complete
+                  and ref_range[0] <= int(end_offset) + int(token_length)):
+                continue
+            else:
+                containing_asm = next((item for item in reversed(ancestors)
+                                       if item.get("kind") == "GCCAsmStmt"), None)
+                if containing_asm is not None:
+                    kind, relation = "subsequent_asm_input", "fragment_operand"
+                    consumer = candidate_by_asm_id.get(id(containing_asm), "")
+                else:
+                    kind, relation = _downstream_kind(ancestors)
+                    consumer = ""
+            use_id = _ast_identity(source_digest, function_identity, ref,
+                                   declaration_id)
+            sink = value_flow_identity({"schemaVersion": "riscv2x86.observation-sink.v1",
+                                        "useNodeIdentity": use_id,
+                                        "useKind": kind,
+                                        "consumerFragmentIdentity": consumer})
+            complete_use = kind not in {"call_argument", "escape_unknown", "memory_store"}
+            try:
+                downstream_uses.append(CompilerDownstreamUse(
+                    output_nodes[declaration_id], use_id, kind, consumer,
+                    sink if complete_use else "", relation, complete_use).to_dict())
+            except ValueError:
+                pass
+        used_outputs = {item["valueNodeIdentity"] for item in downstream_uses}
+        for declaration_id, node_id in output_nodes.items():
+            if node_id in used_outputs:
+                continue
+            use_id = value_flow_identity({
+                "schemaVersion": "riscv2x86.compiler-dead-output.v1",
+                "candidateIdentity": candidate_identity,
+                "declarationIdentity": declaration_id,
+                "valueNodeIdentity": node_id,
+            })
+            downstream_uses.append(CompilerDownstreamUse(
+                node_id, use_id, "discarded", "", "", "discarded", True,
+            ).to_dict())
+        candidate_complete = bool(
+            source_digest and range_complete and candidate_ids
+            and len(operand_bindings) == len(candidate_ids)
+            and output_count >= 0)
         fragment_candidates.append({
-            "schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v1",
+            "schemaVersion": COMPILER_FRAGMENT_CANDIDATE_SCHEMA,
             "asmIndex": asm_index,
-            "beginOffset": begin_offset if range_complete else -1,
-            "endOffset": end_offset + token_length if range_complete else -1,
+            "fragmentBindingKey": binding_key,
+            "candidateIdentity": candidate_identity,
             "asmOperandDeclarationIds": candidate_ids,
-            "complete": bool(range_complete and candidate_ids and all(candidate_ids)),
+            "valueNodes": value_nodes,
+            "operandBindings": operand_bindings,
+            "downstreamUses": downstream_uses,
+            "complete": candidate_complete,
         })
     if len(asm_nodes) == 1:
-        asm_ids = [_decl_identity(item) for item in asm_nodes[0].get("inner", [])
+        asm_ids = [stable_declaration(_decl_identity(item))
+                   for item in asm_nodes[0].get("inner", [])
                    if isinstance(item, Mapping)]
         source_range = asm_nodes[0].get("range")
         end = source_range.get("end") if isinstance(source_range, Mapping) else None
@@ -199,7 +423,7 @@ def _l2_operand_boundary_facts(function: Mapping[str, object]) -> dict[str, obje
     if len(returns) == 1:
         children = [item for item in returns[0].get("inner", []) if isinstance(item, Mapping)]
         if len(children) == 1:
-            return_id = _decl_identity(children[0])
+            return_id = stable_declaration(_decl_identity(children[0]))
     function_type = (function.get("type", {}).get("qualType", "")
                      if isinstance(function.get("type"), Mapping) else "")
     returns_void = str(function_type).split(" (", 1)[0].strip() == "void"
@@ -276,13 +500,23 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
         )
         safe_void_call = return_type == "void" and not params
         if safe_scalar or safe_memory_object or safe_void_call:
+            source_digest = _digest(source)
+            function_identity = value_flow_identity({
+                "schemaVersion": "riscv2x86.compiler-function-identity.v1",
+                "sourceDigest": source_digest, "name": name,
+                "sourceRange": list(_source_range(node) or (-1, -1)),
+                "type": qualified,
+            })
             function = {"name": name,
-                        "functionId": str(node.get("id") or name),
+                        "functionId": function_identity,
+                        "sourceDigest": source_digest,
                         "arity": len(params),
                         "returnType": return_type, "parameterTypes": param_types,
                         "pointerParameters": pointer_parameters}
             function.update(_counter_return_semantics(node))
-            function["l2OperandBoundary"] = _l2_operand_boundary_facts(node)
+            function["l2OperandBoundary"] = _l2_operand_boundary_facts(
+                node, source_digest=source_digest,
+                function_identity=function_identity)
             functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")

@@ -28,7 +28,9 @@ def _proof(**overrides: bool) -> L2NonInterferenceProof:
     values = dict(operand_allocation_preserved=True, memory_clobber_preserved=True,
                   control_flow_preserved=True, volatile_behavior_preserved=True,
                   internal_state_non_escaping=True,
-                  equivalent_observation_boundary=True)
+                  equivalent_observation_boundary=True,
+                  flags_preserved=True, memory_ordering_preserved=True,
+                  alias_preserved=True, source_target_correspondence=True)
     values.update(overrides)
     return L2NonInterferenceProof(**values)
 
@@ -65,6 +67,10 @@ def test_frontend_value_program_produces_stable_points() -> None:
         operation=SimpleNamespace(may_trap=False),
         control_flow=SimpleNamespace(has_nonlocal_control_flow=False),
         completeness=SimpleNamespace(cfg_ok=True),
+        instrumentation_flags_preserved=True,
+        instrumentation_memory_ordering_preserved=True,
+        instrumentation_alias_preserved=True,
+        instrumentation_source_target_correspondence=True,
     )
     facts = internal_value_proof_facts_from_source_model("fragment:0", model)
     assert facts is not None and facts.complete
@@ -89,6 +95,15 @@ def test_missing_non_interference_proof_cannot_form_complete_plan() -> None:
     assert not facts.complete
     with pytest.raises(ValueError, match="incomplete"):
         bind_instrumentation_plan(facts, _boundary())
+
+
+def test_flags_and_alias_are_independent_non_interference_obligations() -> None:
+    for field in ("flags_preserved", "memory_ordering_preserved",
+                  "alias_preserved", "source_target_correspondence"):
+        facts = _facts(_proof(**{field: False}))
+        assert not facts.complete
+        with pytest.raises(ValueError, match="incomplete"):
+            bind_instrumentation_plan(facts, _boundary())
 
 
 def test_instrumentation_uses_authoritative_offsets_not_text_search(tmp_path: Path) -> None:

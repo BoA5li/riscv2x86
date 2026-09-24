@@ -14,8 +14,8 @@ import re
 from typing import Mapping, Sequence
 
 
-INTERNAL_VALUE_PROOF_SCHEMA = "riscv2x86.l2-internal-value-proof-facts.v1"
-INSTRUMENTATION_PLAN_SCHEMA = "riscv2x86.l2-instrumentation-plan.v1"
+INTERNAL_VALUE_PROOF_SCHEMA = "riscv2x86.l2-internal-value-proof-facts.v2"
+INSTRUMENTATION_PLAN_SCHEMA = "riscv2x86.l2-instrumentation-plan.v2"
 COMPOSITE_SLICE_SCHEMA = "riscv2x86.l2-composite-slices.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PHASE = re.compile(r"^(?:after_fragment|after_operation:[0-9]+)$")
@@ -61,6 +61,10 @@ class L2NonInterferenceProof:
     volatile_behavior_preserved: bool
     internal_state_non_escaping: bool
     equivalent_observation_boundary: bool
+    flags_preserved: bool
+    memory_ordering_preserved: bool
+    alias_preserved: bool
+    source_target_correspondence: bool
     proof_identity: str = ""
 
     def __post_init__(self) -> None:
@@ -75,7 +79,9 @@ class L2NonInterferenceProof:
         return (self.operand_allocation_preserved, self.memory_clobber_preserved,
                 self.control_flow_preserved, self.volatile_behavior_preserved,
                 self.internal_state_non_escaping,
-                self.equivalent_observation_boundary)
+                self.equivalent_observation_boundary, self.flags_preserved,
+                self.memory_ordering_preserved, self.alias_preserved,
+                self.source_target_correspondence)
 
     @property
     def complete(self) -> bool:
@@ -89,6 +95,10 @@ class L2NonInterferenceProof:
             "volatileBehaviorPreserved": self.volatile_behavior_preserved,
             "internalStateNonEscaping": self.internal_state_non_escaping,
             "equivalentObservationBoundary": self.equivalent_observation_boundary,
+            "flagsPreserved": self.flags_preserved,
+            "memoryOrderingPreserved": self.memory_ordering_preserved,
+            "aliasPreserved": self.alias_preserved,
+            "sourceTargetCorrespondence": self.source_target_correspondence,
         }
         if include_identity:
             result["proofIdentity"] = self.proof_identity
@@ -102,6 +112,8 @@ class L2NonInterferenceProof:
         fields = {"operandAllocationPreserved", "memoryClobberPreserved",
                   "controlFlowPreserved", "volatileBehaviorPreserved",
                   "internalStateNonEscaping", "equivalentObservationBoundary",
+                  "flagsPreserved", "memoryOrderingPreserved", "aliasPreserved",
+                  "sourceTargetCorrespondence",
                   "proofIdentity"}
         if set(value) != fields or any(not isinstance(value[name], bool)
                                        for name in fields - {"proofIdentity"}):
@@ -112,7 +124,9 @@ class L2NonInterferenceProof:
         return cls(*(bool(value[name]) for name in (
             "operandAllocationPreserved", "memoryClobberPreserved",
             "controlFlowPreserved", "volatileBehaviorPreserved",
-            "internalStateNonEscaping", "equivalentObservationBoundary")), proof)
+            "internalStateNonEscaping", "equivalentObservationBoundary",
+            "flagsPreserved", "memoryOrderingPreserved", "aliasPreserved",
+            "sourceTargetCorrespondence")), proof)
 
 
 @dataclass(frozen=True)
@@ -353,6 +367,14 @@ def internal_value_proof_facts_from_source_model(
         volatile_behavior_preserved=shell is not None,
         internal_state_non_escaping=bool(getattr(operation, "may_trap", None) is False),
         equivalent_observation_boundary=True,
+        flags_preserved=bool(getattr(source_model,
+                                     "instrumentation_flags_preserved", False)),
+        memory_ordering_preserved=bool(getattr(
+            source_model, "instrumentation_memory_ordering_preserved", False)),
+        alias_preserved=bool(getattr(source_model,
+                                     "instrumentation_alias_preserved", False)),
+        source_target_correspondence=bool(getattr(
+            source_model, "instrumentation_source_target_correspondence", False)),
     )
     return L2InternalValueProofFacts(fragment_id, points, proof,
                                      proof.complete)

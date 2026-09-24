@@ -6,10 +6,16 @@ from hashlib import sha256
 import json
 import re
 from typing import Mapping, Sequence
+from .compiler_value_flow import (
+    COMPILER_FRAGMENT_CANDIDATE_SCHEMA,
+    compiler_downstream_use_from_dict, compiler_operand_binding_from_dict,
+    compiler_value_node_from_dict,
+)
+from .l2_internal_value import internal_value_proof_facts_from_dict
 
 
-FRAGMENT_OPERAND_BOUNDARY_SCHEMA = "riscv2x86.fragment-operand-boundary.v1"
-FRAGMENT_DEPENDENCY_GRAPH_SCHEMA = "riscv2x86.fragment-dependency-graph.v1"
+FRAGMENT_OPERAND_BOUNDARY_SCHEMA = "riscv2x86.fragment-operand-boundary.v2"
+FRAGMENT_DEPENDENCY_GRAPH_SCHEMA = "riscv2x86.fragment-dependency-graph.v2"
 PROGRAM_EXECUTION_AUTHORITY_SCHEMA = "riscv2x86.fragment-program-execution-authority.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -28,12 +34,15 @@ class OperandBinding:
     access: str
     width_bits: int
     complete: bool
+    signedness: str = "unsigned"
 
     def __post_init__(self) -> None:
         if (isinstance(self.operand_index, bool) or self.operand_index < 0
                 or not self.declaration_identity or not self.value_node_identity
                 or self.access not in {"input", "output", "read_write"}
-                or self.width_bits <= 0 or self.complete is not True):
+                or self.width_bits <= 0 or self.complete is not True
+                or self.signedness not in {"signed", "unsigned"}
+                or _SHA.fullmatch(self.value_node_identity) is None):
             raise ValueError("fragment operand binding is incomplete")
 
     def to_dict(self) -> dict[str, object]:
@@ -41,7 +50,64 @@ class OperandBinding:
                 "declarationIdentity": self.declaration_identity,
                 "valueNodeIdentity": self.value_node_identity,
                 "access": self.access, "widthBits": self.width_bits,
+                "signedness": self.signedness, "complete": self.complete}
+
+
+@dataclass(frozen=True)
+class FragmentValueFlowEdge:
+    producer_value_node: str
+    consumer_value_node: str
+    producer_fragment_id: str
+    consumer_fragment_id: str
+    relation_kind: str
+    observation_sink_identity: str
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if (_SHA.fullmatch(self.producer_value_node) is None
+                or (self.consumer_value_node
+                    and _SHA.fullmatch(self.consumer_value_node) is None)
+                or not self.producer_fragment_id
+                or self.relation_kind not in {
+                    "identity", "integer_cast", "bit_preserving_cast",
+                    "pure_integer_expression", "memory_store", "function_return",
+                    "control_predicate", "fragment_operand", "discarded"}
+                or (self.observation_sink_identity
+                    and _SHA.fullmatch(self.observation_sink_identity) is None)
+                or self.complete is not True):
+            raise ValueError("fragment value-flow edge is incomplete")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"producerValueNode": self.producer_value_node,
+                "consumerValueNode": self.consumer_value_node,
+                "producerFragmentId": self.producer_fragment_id,
+                "consumerFragmentId": self.consumer_fragment_id,
+                "relationKind": self.relation_kind,
+                "observationSinkIdentity": self.observation_sink_identity,
                 "complete": self.complete}
+
+
+@dataclass(frozen=True)
+class ObservationSinkBinding:
+    sink_identity: str
+    value_node_identity: str
+    sink_kind: str
+    complete: bool
+
+    def __post_init__(self) -> None:
+        if (_SHA.fullmatch(self.sink_identity) is None
+                or _SHA.fullmatch(self.value_node_identity) is None
+                or self.sink_kind not in {
+                    "function_return", "c_expression", "memory_store",
+                    "subsequent_asm_input", "branch_condition",
+                    "instrumentation"}
+                or self.complete is not True):
+            raise ValueError("observation sink binding is incomplete")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"sinkIdentity": self.sink_identity,
+                "valueNodeIdentity": self.value_node_identity,
+                "sinkKind": self.sink_kind, "complete": self.complete}
 
 
 @dataclass(frozen=True)
@@ -55,6 +121,10 @@ class FragmentOperandBoundary:
     live_out_nodes: tuple[str, ...]
     complete: bool
     reason_codes: tuple[str, ...] = ()
+    value_flow_edges: tuple[FragmentValueFlowEdge, ...] = ()
+    observation_sinks: tuple[ObservationSinkBinding, ...] = ()
+    discarded_output_nodes: tuple[str, ...] = ()
+    instrumentation_observed_nodes: tuple[str, ...] = ()
     schema_version: str = FRAGMENT_OPERAND_BOUNDARY_SCHEMA
 
     def __post_init__(self) -> None:
@@ -62,14 +132,23 @@ class FragmentOperandBoundary:
                 or not self.program_id or not self.function_id or not self.fragment_id
                 or self.live_in_nodes != tuple(sorted(set(self.live_in_nodes)))
                 or self.live_out_nodes != tuple(sorted(set(self.live_out_nodes)))
-                or self.reason_codes != tuple(sorted(set(self.reason_codes)))):
+                or self.reason_codes != tuple(sorted(set(self.reason_codes)))
+                or self.discarded_output_nodes != tuple(sorted(set(self.discarded_output_nodes)))
+                or self.instrumentation_observed_nodes != tuple(sorted(set(self.instrumentation_observed_nodes)))):
             raise ValueError("fragment operand boundary identity is invalid")
         bindings = self.output_bindings + self.input_bindings
         indices = tuple(item.operand_index for item in bindings)
         if len(indices) != len(set(indices)):
             raise ValueError("fragment operand boundary indices are duplicated")
+        observed = {item.value_node_identity for item in self.observation_sinks}
+        consumed = {item.producer_value_node for item in self.value_flow_edges
+                    if item.consumer_fragment_id}
+        accounted = observed | consumed | set(self.discarded_output_nodes) \
+            | set(self.instrumentation_observed_nodes)
         closed = bool(bindings and self.output_bindings and not self.reason_codes
-                      and all(item.complete for item in bindings))
+                      and all(item.complete for item in bindings)
+                      and all(item.value_node_identity in accounted
+                              for item in self.output_bindings))
         if self.complete != closed:
             raise ValueError("fragment operand boundary completeness is inconsistent")
 
@@ -84,7 +163,11 @@ class FragmentOperandBoundary:
                  "outputBindings": [item.to_dict() for item in self.output_bindings],
                  "liveInNodes": list(self.live_in_nodes),
                  "liveOutNodes": list(self.live_out_nodes), "complete": self.complete,
-                 "reasonCodes": list(self.reason_codes)}
+                 "reasonCodes": list(self.reason_codes),
+                 "valueFlowEdges": [item.to_dict() for item in self.value_flow_edges],
+                 "observationSinks": [item.to_dict() for item in self.observation_sinks],
+                 "discardedOutputNodes": list(self.discarded_output_nodes),
+                 "instrumentationObservedNodes": list(self.instrumentation_observed_nodes)}
         if include_identity:
             value["boundaryIdentity"] = self.boundary_identity
         return value
@@ -95,11 +178,20 @@ class FragmentDependencyEdge:
     producer_fragment_id: str
     consumer_fragment_id: str
     value_node_identity: str
+    consumer_value_node_identity: str = ""
+
+    def __post_init__(self) -> None:
+        if (not self.producer_fragment_id or not self.consumer_fragment_id
+                or self.producer_fragment_id == self.consumer_fragment_id
+                or _SHA.fullmatch(self.value_node_identity) is None
+                or _SHA.fullmatch(self.consumer_value_node_identity) is None):
+            raise ValueError("fragment dependency edge is incomplete")
 
     def to_dict(self) -> dict[str, str]:
         return {"producerFragmentId": self.producer_fragment_id,
                 "consumerFragmentId": self.consumer_fragment_id,
-                "valueNodeIdentity": self.value_node_identity}
+                "valueNodeIdentity": self.value_node_identity,
+                "consumerValueNodeIdentity": self.consumer_value_node_identity}
 
 
 @dataclass(frozen=True)
@@ -120,7 +212,8 @@ class FragmentDependencyGraph:
                 or self.reason_codes != tuple(sorted(set(self.reason_codes)))):
             raise ValueError("fragment dependency graph is invalid")
         edge_keys = tuple((item.producer_fragment_id, item.consumer_fragment_id,
-                           item.value_node_identity) for item in self.edges)
+                           item.value_node_identity,
+                           item.consumer_value_node_identity) for item in self.edges)
         if edge_keys != tuple(sorted(set(edge_keys))):
             raise ValueError("fragment dependency edges are not canonical")
         if self.complete != (self.execution_mode != "inconclusive" and not self.reason_codes):
@@ -219,11 +312,17 @@ def _candidate_for(fragment: Mapping[str, object], candidates: Sequence[Mapping[
     begin, end = fragment.get("beginOffset"), fragment.get("endOffset")
     if (isinstance(begin, int) and not isinstance(begin, bool)
             and isinstance(end, int) and not isinstance(end, bool)):
-        overlaps = [item for item in candidates
-                    if isinstance(item.get("beginOffset"), int)
-                    and isinstance(item.get("endOffset"), int)
-                    and int(item["beginOffset"]) <= begin
-                    and end <= int(item["endOffset"])]
+        overlaps = []
+        for item in candidates:
+            key = item.get("fragmentBindingKey")
+            candidate_begin = (key.get("beginOffset") if isinstance(key, Mapping)
+                               else item.get("beginOffset"))
+            candidate_end = (key.get("endOffset") if isinstance(key, Mapping)
+                             else item.get("endOffset"))
+            if (isinstance(candidate_begin, int) and not isinstance(candidate_begin, bool)
+                    and isinstance(candidate_end, int) and not isinstance(candidate_end, bool)
+                    and candidate_begin <= begin and end <= candidate_end):
+                overlaps.append(item)
         if len(overlaps) == 1:
             return overlaps[0], False
         if len(overlaps) > 1:
@@ -253,75 +352,172 @@ def materialize_fragment_execution_authority(
                 and fragment.get("enclosingFunction") == function.get("name")):
             scoped.append((finding, fragment))
     scoped.sort(key=lambda pair: str(pair[1].get("id") or pair[1].get("fragmentId") or ""))
-    boundaries: dict[str, FragmentOperandBoundary] = {}
+    resolved: dict[str, tuple[Mapping[str, object] | None, bool, Mapping[str, object]]] = {}
+    candidate_to_fragment: dict[str, str] = {}
     for _finding, fragment in scoped:
         fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
-        outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
         candidate, ambiguous = _candidate_for(
             fragment, [item for item in candidates if isinstance(item, Mapping)])
+        resolved[fragment_id] = candidate, ambiguous, fragment
+        if isinstance(candidate, Mapping) and isinstance(candidate.get("candidateIdentity"), str):
+            candidate_to_fragment[str(candidate["candidateIdentity"])] = fragment_id
+
+    boundaries: dict[str, FragmentOperandBoundary] = {}
+    graph_edges: list[FragmentDependencyEdge] = []
+    finding_by_fragment = {
+        str(fragment.get("id") or fragment.get("fragmentId") or ""): finding
+        for finding, fragment in scoped
+    }
+    for fragment_id, (candidate, ambiguous, fragment) in resolved.items():
+        outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
         reasons: set[str] = set()
-        asm_ids = candidate.get("asmOperandDeclarationIds") if candidate else None
         if candidate is None:
             reasons.add("L2_FRAGMENT_BOUNDARY_RANGE_AMBIGUOUS" if ambiguous
                         else "L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
-            asm_ids = []
+        elif candidate.get("schemaVersion") != COMPILER_FRAGMENT_CANDIDATE_SCHEMA:
+            reasons.add("L2_FRAGMENT_CANDIDATE_SCHEMA_UNSUPPORTED")
+        elif candidate.get("complete") is not True:
+            reasons.add("L2_FRAGMENT_CANDIDATE_INCOMPLETE")
+        if isinstance(candidate, Mapping):
+            binding_key = candidate.get("fragmentBindingKey")
+            expected_candidate = (identity({
+                "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1",
+                **dict(binding_key),
+            }) if isinstance(binding_key, Mapping) else "")
+            if (not isinstance(binding_key, Mapping)
+                    or binding_key.get("functionIdentity") != function_id
+                    or candidate.get("candidateIdentity") != expected_candidate):
+                reasons.add("L2_FRAGMENT_BINDING_KEY_MISMATCH")
+        raw_bindings = candidate.get("operandBindings") if candidate else None
+        raw_nodes = candidate.get("valueNodes") if candidate else None
+        raw_uses = candidate.get("downstreamUses") if candidate else None
         if (not isinstance(outputs, list) or not isinstance(inputs, list)
-                or not isinstance(asm_ids, list)
-                or len(asm_ids) != len(outputs or ()) + len(inputs or ())):
+                or not isinstance(raw_bindings, list)
+                or len(raw_bindings) != len(outputs or ()) + len(inputs or ())):
             reasons.add("L2_FRAGMENT_OPERAND_ARITY_MISMATCH")
         if not isinstance(outputs, list) or not outputs:
             reasons.add("L2_FRAGMENT_OUTPUT_BINDING_MISSING")
         output_bindings: list[OperandBinding] = []
         input_bindings: list[OperandBinding] = []
-        if not reasons:
-            for index, (operand, declaration_id) in enumerate(zip(
-                    list(outputs or ()) + list(inputs or ()), asm_ids)):
-                declaration = declarations.get(declaration_id)
-                width = _width(declaration.get("type")) if isinstance(declaration, Mapping) else 0
-                if not isinstance(operand, Mapping) or not declaration_id or not width:
-                    reasons.add("L2_FRAGMENT_VALUE_NODE_MISSING"); continue
+        node_ids: set[str] = set()
+        if isinstance(raw_nodes, list):
+            try:
+                node_ids = {compiler_value_node_from_dict(item).node_identity
+                            for item in raw_nodes if isinstance(item, Mapping)}
+            except ValueError:
+                reasons.add("L2_FRAGMENT_VALUE_NODE_INVALID")
+        else:
+            reasons.add("L2_FRAGMENT_VALUE_NODE_MISSING")
+        if isinstance(raw_bindings, list):
+            for index, (operand, raw_binding) in enumerate(zip(
+                    list(outputs or ()) + list(inputs or ()), raw_bindings)):
+                try:
+                    parsed = compiler_operand_binding_from_dict(raw_binding)
+                except (TypeError, ValueError):
+                    reasons.add("L2_FRAGMENT_VALUE_NODE_INVALID"); continue
                 is_output = index < len(outputs or ())
-                constraint = str(operand.get("constraint") or "")
-                access = ("read_write" if is_output and constraint.startswith("+")
-                          else "output" if is_output else "input")
-                binding = OperandBinding(index, str(declaration_id),
-                    "decl-value:" + str(declaration_id), access, width, True)
+                constraint = str(operand.get("constraint") or "") \
+                    if isinstance(operand, Mapping) else ""
+                expected_access = ("read_write" if is_output and constraint.startswith("+")
+                                   else "output" if is_output else "input")
+                if (parsed.operand_index != index or parsed.access != expected_access
+                        or parsed.value_node_identity not in node_ids):
+                    reasons.add("L2_FRAGMENT_OPERAND_BINDING_MISMATCH"); continue
+                binding = OperandBinding(
+                    parsed.operand_index, parsed.declaration_identity,
+                    parsed.value_node_identity, parsed.access, parsed.width_bits,
+                    parsed.complete, parsed.signedness)
                 (output_bindings if is_output else input_bindings).append(binding)
+        value_flow_edges: list[FragmentValueFlowEdge] = []
+        sinks: list[ObservationSinkBinding] = []
+        discarded: set[str] = set()
+        instrumented: set[str] = set()
+        if isinstance(raw_uses, list):
+            for raw_use in raw_uses:
+                try:
+                    use = compiler_downstream_use_from_dict(raw_use)
+                except (TypeError, ValueError):
+                    reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
+                if not use.complete:
+                    reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
+                consumer_fragment = ""
+                consumer_node = use.use_node_identity
+                if use.use_kind == "subsequent_asm_input":
+                    consumer_fragment = candidate_to_fragment.get(
+                        use.consumer_fragment_identity, "")
+                    consumer_candidate = resolved.get(consumer_fragment, (None, False, {}))[0]
+                    consumer_bindings = (consumer_candidate.get("operandBindings")
+                                         if isinstance(consumer_candidate, Mapping) else None)
+                    producer_decl = next((item.declaration_identity
+                                          for item in output_bindings
+                                          if item.value_node_identity == use.value_node_identity), "")
+                    matches = []
+                    if isinstance(consumer_bindings, list):
+                        for item in consumer_bindings:
+                            try:
+                                parsed_consumer = compiler_operand_binding_from_dict(item)
+                            except (TypeError, ValueError):
+                                continue
+                            if (parsed_consumer.access == "input"
+                                    and parsed_consumer.declaration_identity == producer_decl):
+                                matches.append(parsed_consumer.value_node_identity)
+                    if len(matches) != 1 or not consumer_fragment:
+                        reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
+                    consumer_node = matches[0]
+                    graph_edges.append(FragmentDependencyEdge(
+                        fragment_id, consumer_fragment, use.value_node_identity,
+                        consumer_node))
+                if use.use_kind in {"discarded", "dead"}:
+                    discarded.add(use.value_node_identity)
+                    continue
+                edge = FragmentValueFlowEdge(
+                    use.value_node_identity, consumer_node, fragment_id,
+                    consumer_fragment, use.relation_kind,
+                    use.observation_sink_identity, True)
+                value_flow_edges.append(edge)
+                sinks.append(ObservationSinkBinding(
+                    use.observation_sink_identity, use.value_node_identity,
+                    use.use_kind, True))
+        else:
+            reasons.add("L2_FRAGMENT_OBSERVATION_SINK_MISSING")
+        approval = finding_by_fragment[fragment_id].get("approvalArtifact")
+        raw_internal = (approval.get("l2InternalValueProofFacts")
+                        if isinstance(approval, Mapping) else None)
+        if isinstance(raw_internal, Mapping):
+            try:
+                internal = internal_value_proof_facts_from_dict(raw_internal)
+                if internal.fragment_id != fragment_id or not internal.complete:
+                    raise ValueError("incomplete internal value proof")
+                for point in internal.points:
+                    matches = [item.value_node_identity for item in output_bindings
+                               if item.operand_index == point.operand_index]
+                    if len(matches) != 1:
+                        raise ValueError("instrumentation operand mismatch")
+                    instrumented.add(matches[0])
+            except ValueError:
+                reasons.add("L2_FRAGMENT_INSTRUMENTATION_PROOF_INVALID")
+        accounted = ({item.value_node_identity for item in sinks}
+                     | {item.producer_value_node for item in value_flow_edges
+                        if item.consumer_fragment_id} | discarded | instrumented)
+        if any(item.value_node_identity not in accounted for item in output_bindings):
+            reasons.add("L2_FRAGMENT_LIVE_OUT_UNPROVED")
+        live_out = tuple(sorted(({item.value_node_identity for item in sinks}
+                                 | {item.producer_value_node for item in value_flow_edges
+                                    if item.consumer_fragment_id})))
         boundaries[fragment_id] = FragmentOperandBoundary(
             program_id, function_id, fragment_id, tuple(input_bindings),
             tuple(output_bindings),
-            tuple(sorted(item.value_node_identity for item in input_bindings)), (),
-            False, tuple(sorted(reasons or {"L2_FRAGMENT_LIVE_OUT_UNPROVED"})))
+            tuple(sorted(item.value_node_identity for item in input_bindings)),
+            live_out, not reasons, tuple(sorted(reasons)),
+            tuple(sorted(value_flow_edges,
+                         key=lambda item: (item.producer_value_node,
+                                           item.consumer_value_node))),
+            tuple(sorted(sinks, key=lambda item: item.sink_identity)),
+            tuple(sorted(discarded)), tuple(sorted(instrumented)))
 
-    # A produced value is live-out only when returned or consumed by another
-    # fragment. Declaration identity, never spelling, establishes the edge.
-    consumers: dict[str, list[str]] = {}
-    for fragment_id, boundary in boundaries.items():
-        for item in boundary.input_bindings:
-            consumers.setdefault(item.declaration_identity, []).append(fragment_id)
-    rebuilt: dict[str, FragmentOperandBoundary] = {}
-    for fragment_id, boundary in boundaries.items():
-        live_out = tuple(sorted(item.value_node_identity for item in boundary.output_bindings
-                                if item.declaration_identity == returned
-                                or consumers.get(item.declaration_identity)))
-        reasons = set(boundary.reason_codes) - {"L2_FRAGMENT_LIVE_OUT_UNPROVED"}
-        if any(item.value_node_identity not in live_out for item in boundary.output_bindings):
-            reasons.add("L2_FRAGMENT_LIVE_OUT_UNPROVED")
-        rebuilt[fragment_id] = FragmentOperandBoundary(
-            boundary.program_id, boundary.function_id, boundary.fragment_id,
-            boundary.input_bindings, boundary.output_bindings, boundary.live_in_nodes,
-            live_out, not reasons, tuple(sorted(reasons)))
-    boundaries = rebuilt
-    edges = []
-    for producer_id, boundary in boundaries.items():
-        for output in boundary.output_bindings:
-            for consumer_id in consumers.get(output.declaration_identity, ()):
-                if consumer_id != producer_id:
-                    edges.append(FragmentDependencyEdge(
-                        producer_id, consumer_id, output.value_node_identity))
-    edges = sorted(edges, key=lambda item: (item.producer_fragment_id,
-                                            item.consumer_fragment_id,
-                                            item.value_node_identity))
+    edges = sorted(set(graph_edges), key=lambda item: (
+        item.producer_fragment_id, item.consumer_fragment_id,
+        item.value_node_identity, item.consumer_value_node_identity))
     graph_reasons = set()
     if not boundaries or any(not item.complete for item in boundaries.values()):
         graph_reasons.add("L2_FRAGMENT_BOUNDARY_INCOMPLETE")
@@ -379,18 +575,45 @@ def fragment_boundary_from_dict(
             result.append(OperandBinding(
                 int(item.get("operandIndex", -1)), str(item.get("declarationIdentity") or ""),
                 str(item.get("valueNodeIdentity") or ""), str(item.get("access") or ""),
-                int(item.get("widthBits", 0)), item.get("complete") is True))
+                int(item.get("widthBits", 0)), item.get("complete") is True,
+                str(item.get("signedness") or "")))
         return tuple(result)
     reasons, live_in, live_out = (value.get("reasonCodes"), value.get("liveInNodes"),
                                   value.get("liveOutNodes"))
+    discarded = value.get("discardedOutputNodes")
+    instrumented = value.get("instrumentationObservedNodes")
+    raw_edges, raw_sinks = value.get("valueFlowEdges"), value.get("observationSinks")
     if not all(isinstance(item, list) and all(isinstance(x, str) for x in item)
-               for item in (reasons, live_in, live_out)):
+               for item in (reasons, live_in, live_out, discarded, instrumented)):
         raise ValueError("fragment boundary arrays are invalid")
+    if not isinstance(raw_edges, list) or not isinstance(raw_sinks, list):
+        raise ValueError("fragment boundary value-flow authority is missing")
+    edges = []
+    for item in raw_edges:
+        if not isinstance(item, Mapping):
+            raise ValueError("fragment value-flow edge is invalid")
+        edges.append(FragmentValueFlowEdge(
+            str(item.get("producerValueNode") or ""),
+            str(item.get("consumerValueNode") or ""),
+            str(item.get("producerFragmentId") or ""),
+            str(item.get("consumerFragmentId") or ""),
+            str(item.get("relationKind") or ""),
+            str(item.get("observationSinkIdentity") or ""),
+            item.get("complete") is True))
+    sinks = []
+    for item in raw_sinks:
+        if not isinstance(item, Mapping):
+            raise ValueError("fragment observation sink is invalid")
+        sinks.append(ObservationSinkBinding(
+            str(item.get("sinkIdentity") or ""),
+            str(item.get("valueNodeIdentity") or ""),
+            str(item.get("sinkKind") or ""), item.get("complete") is True))
     result = FragmentOperandBoundary(
         str(value.get("programId") or ""), str(value.get("functionId") or ""),
         str(value.get("fragmentId") or ""), bindings("inputBindings"),
         bindings("outputBindings"), tuple(live_in), tuple(live_out),
-        value.get("complete") is True, tuple(reasons),
+        value.get("complete") is True, tuple(reasons), tuple(edges), tuple(sinks),
+        tuple(discarded), tuple(instrumented),
         str(value.get("schemaVersion") or ""))
     if expected_fragment_id and result.fragment_id != expected_fragment_id:
         raise ValueError("fragment boundary identity/binding mismatch")

@@ -28,12 +28,16 @@ def _function():
 
 
 def _boundary():
-    from riscv2x86_py.l2_fragment_execution import FragmentOperandBoundary, OperandBinding
+    from riscv2x86_py.l2_fragment_execution import (
+        FragmentOperandBoundary, ObservationSinkBinding, OperandBinding)
+    out_node, in_node = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    sink = "sha256:" + "3" * 64
     result = FragmentOperandBoundary(
         "program", "function", "fragment",
-        (OperandBinding(1, "lhs", "node:lhs", "input", 64, True),),
-        (OperandBinding(0, "out", "node:out", "output", 64, True),),
-        ("node:lhs",), ("node:out",), True)
+        (OperandBinding(1, "lhs", in_node, "input", 64, True),),
+        (OperandBinding(0, "out", out_node, "output", 64, True),),
+        (in_node,), (out_node,), True, (), (),
+        (ObservationSinkBinding(sink, out_node, "function_return", True),))
     return result.to_dict()
 
 
@@ -59,6 +63,9 @@ def test_decision_cannot_be_reused_for_another_fragment_or_modified():
 def test_missing_live_out_and_stale_proof_fail_closed_precisely():
     boundary = _boundary()
     boundary["liveOutNodes"] = []
+    boundary["observationSinks"] = []
+    boundary["complete"] = False
+    boundary["reasonCodes"] = ["L2_FRAGMENT_LIVE_OUT_UNPROVED"]
     # Rebind content identity so this tests semantic completeness, not tampering.
     from riscv2x86_py.l2_fragment_execution import identity
     payload = dict(boundary); payload.pop("boundaryIdentity")
@@ -66,7 +73,6 @@ def test_missing_live_out_and_stale_proof_fail_closed_precisely():
     decision = assess_scalar_authority_materializability(
         _finding(), _function(), boundary)
     assert not decision.materializable
-    assert "L2_SCALAR_OBSERVATION_SINK_MISSING" in decision.reason_codes
     assert "L2_SCALAR_LIVE_OUT_UNPROVED" in decision.reason_codes
 
 
