@@ -23,6 +23,9 @@ from riscv2x86_py.translation_validation import ValidationLayerResult, Validatio
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_materialization_fixtures import (
+    attach_complete_scalar_authority, complete_materialization_decision,
+)
 
 
 def _requirement(kind=L2PatternKind.SCALAR, dimensions=None):
@@ -36,12 +39,14 @@ def _requirement(kind=L2PatternKind.SCALAR, dimensions=None):
             "value", False, True)
         decision = AuthorityMaterializationDecision(
             "fragment:1", True, (), authority).to_dict()
+    required = dimensions or (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS)
     return L2FragmentRequirement(
         "fragment:1", "sha256:" + "1" * 64,
-        dimensions or (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+        required,
         L2EligibilityStatus.ELIGIBLE,
         profile["profileIdentity"], profile["patternKind"],
         tuple(profile["requiredCapabilities"]), decision,
+        complete_materialization_decision("fragment:1", required),
     )
 
 
@@ -134,20 +139,12 @@ def test_missing_environment_capability_is_reported_on_binding():
 def test_memory_provider_refuses_requirement_without_materialization_decision():
     profile = l2_fragment_semantic_profile_from_dict(
         profile_dict(kind=L2PatternKind.MEMORY_STORE))
-    requirement = L2FragmentRequirement(
-        "fragment:1", "sha256:" + "1" * 64,
-        (L2Dimension.MEMORY_EFFECTS,), L2EligibilityStatus.ELIGIBLE,
-        profile.profile_identity, profile.pattern_kind.value,
-        profile.required_capabilities, None)
-    provider = _provider(
-        "memory", "automatic", (L2Dimension.MEMORY_EFFECTS,),
-        patterns=(L2PatternKind.MEMORY_STORE,),
-        capabilities=("object_relative_memory_observation",))
-    plan = L2ValidatorResolver().resolve(
-        requirement, _runtime((provider,), ("object_relative_memory_observation",)),
-        execution_profile="rv64gc-user-to-x86_64-user", profile=profile)
-    assert not plan.complete
-    assert "L2_MEMORY_ADDRESS_BINDING_MISSING" in plan.bindings[0].reason_codes
+    with pytest.raises(ValueError, match="finding facts"):
+        L2FragmentRequirement(
+            "fragment:1", "sha256:" + "1" * 64,
+            (L2Dimension.MEMORY_EFFECTS,), L2EligibilityStatus.ELIGIBLE,
+            profile.profile_identity, profile.pattern_kind.value,
+            profile.required_capabilities, None)
 
 
 def _manifest(path):
@@ -158,6 +155,7 @@ def _manifest(path):
         "translationReasonCodes": [],
         "l2SemanticProfile": profile_dict(),
     }]}
+    attach_complete_scalar_authority(report["findings"][0])
     value = classify_l2_requirements(report)
     path.write_text(json.dumps(value), encoding="utf-8")
     report_path = path.with_name("translated-report.json")

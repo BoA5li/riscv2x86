@@ -12,6 +12,7 @@ from riscv2x86_py.l2_eligibility import (
 from riscv2x86_py.l2_dimensions import L2Dimension, parse_l2_dimension
 from riscv2x86_py.l2_semantic_profile import L2PatternKind
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_materialization_fixtures import attach_complete_scalar_authority
 
 
 def _identity(value):
@@ -39,6 +40,8 @@ def _finding(*, outcome="emitted", reasons=(), fragment=None, privileged=None):
         result["l2SemanticProfile"] = profile_dict(
             candidate_fragment.get("id", "fragment:1"), kind,
         )
+        if kind is L2PatternKind.SCALAR:
+            attach_complete_scalar_authority(result)
     return result
 
 
@@ -165,9 +168,8 @@ def test_memory_requirement_is_not_eligible_without_materialized_authority():
     item = L2EligibilityClassifier().classify(_memory_requirement_finding(), 0)
     assert item["eligibilityStatus"] == "inconclusive"
     assert item["disposition"] == "inconclusive"
-    assert item["reasonCodes"] == [
-        "l2.memory-authority.decision-missing",
-    ]
+    assert "L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING" in item["reasonCodes"]
+    assert "L2_FRAGMENT_SHELL_PROOF_MISSING" in item["reasonCodes"]
 
 
 def test_memory_requirement_preserves_materializer_rejection_reason():
@@ -184,7 +186,7 @@ def test_memory_requirement_preserves_materializer_rejection_reason():
     finding["approvalArtifact"]["l2AuthorityMaterialization"] = record
     item = L2EligibilityClassifier().classify(finding, 0)
     assert item["eligibilityStatus"] == "inconclusive"
-    assert item["reasonCodes"] == ["l2.memory-authority.decision-missing"]
+    assert "L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING" in item["reasonCodes"]
 
 
 def test_memory_requirement_rejects_stale_materialization_record():
@@ -201,6 +203,4 @@ def test_memory_requirement_rejects_stale_materialization_record():
     finding["approvalArtifact"]["l2AuthorityMaterialization"] = record
     item = L2EligibilityClassifier().classify(finding, 0)
     assert item["eligibilityStatus"] == "inconclusive"
-    assert item["reasonCodes"] == [
-        "l2.memory-authority.decision-missing",
-    ]
+    assert "L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING" in item["reasonCodes"]

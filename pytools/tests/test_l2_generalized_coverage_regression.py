@@ -15,6 +15,7 @@ from riscv2x86_py.l2_memory_object import (
     AuthorityMaterializationDecision, MemoryAccessAuthority,
 )
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_materialization_fixtures import complete_materialization_decision
 
 
 def _id(text: str) -> str:
@@ -56,11 +57,13 @@ def _requirement(profile):
             "value", False, True)
         decision = AuthorityMaterializationDecision(
             profile.fragment_id, True, (), authority).to_dict()
+    dimensions = tuple(sorted(_DIMENSIONS[profile.pattern_kind], key=lambda item: item.value))
     return L2FragmentRequirement(
         profile.fragment_id, _id("requirement:" + profile.fragment_id),
-        tuple(sorted(_DIMENSIONS[profile.pattern_kind], key=lambda item: item.value)),
+        dimensions,
         L2EligibilityStatus.ELIGIBLE, profile.profile_identity,
         profile.pattern_kind.value, profile.required_capabilities, decision,
+        complete_materialization_decision(profile.fragment_id, dimensions),
     )
 
 

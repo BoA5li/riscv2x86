@@ -23,6 +23,7 @@ from riscv2x86_py.l2_validator_resolution import (
 from riscv2x86_py.translation_validation import ValidationLevel
 from riscv2x86_py.validation_status import ValidationStatus
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_materialization_fixtures import complete_materialization_decision
 
 
 def _identity(value):
@@ -54,7 +55,8 @@ def test_explicit_provider_wins_but_stale_profile_falls_back_to_automatic():
     requirement = L2FragmentRequirement(
         "fragment:0", "sha256:" + "2" * 64, (L2Dimension.CONTROL_FLOW,),
         L2EligibilityStatus.ELIGIBLE, profile.profile_identity, "branch",
-        profile.required_capabilities,
+        profile.required_capabilities, None,
+        complete_materialization_decision("fragment:0", (L2Dimension.CONTROL_FLOW,)),
     )
     explicit = _provider("explicit", L2BindingKind.EXPLICIT,
                          (profile.profile_identity,))
@@ -81,7 +83,9 @@ def test_insufficient_provided_dimensions_do_not_close_fragment():
         "fragment:0", "sha256:" + "2" * 64,
         (L2Dimension.CONTROL_FLOW, L2Dimension.MEMORY_EFFECTS),
         L2EligibilityStatus.ELIGIBLE, profile.profile_identity, "branch",
-        profile.required_capabilities,
+        profile.required_capabilities, None,
+        complete_materialization_decision("fragment:0", (
+            L2Dimension.CONTROL_FLOW, L2Dimension.MEMORY_EFFECTS)),
     )
     explicit = _provider("explicit", L2BindingKind.EXPLICIT,
                          (profile.profile_identity,))

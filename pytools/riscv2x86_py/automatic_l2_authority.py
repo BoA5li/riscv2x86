@@ -43,6 +43,9 @@ from .l2_fragment_execution import (
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 from .l2_scalar_authority import assess_scalar_authority_materializability
 from .l2_effect_proof import effect_proof_facts_from_dict
+from .l2_materialization import (
+    assess_fragment_l2_materializability, required_dimensions_for_finding,
+)
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
@@ -696,6 +699,17 @@ def materialize_automatic_l2_authority(
                    or _fence_authority(finding, functions, producer_digest)
                    or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))
+        try:
+            dimensions = required_dimensions_for_finding(finding)
+            unified_decision = assess_fragment_l2_materializability(
+                finding, dimensions, sidecar=sidecar)
+        except ValueError:
+            unified_decision = None
+        if isinstance(approval, dict) and unified_decision is not None:
+            approval["l2MaterializationDecision"] = unified_decision.to_dict()
+        if (sidecar is not None
+                and (unified_decision is None or not unified_decision.executable)):
+            sidecar = None
         is_memory = pattern_kind in {
             L2PatternKind.MEMORY_LOAD.value, L2PatternKind.MEMORY_STORE.value,
         }

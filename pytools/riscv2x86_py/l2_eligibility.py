@@ -18,11 +18,8 @@ from .l2_dimensions import (
     parse_l2_dimensions,
 )
 from .l2_semantic_profile import L2PatternKind, profile_from_finding
-from .l2_memory_object import assess_memory_authority_materializability
-from .l2_scalar_authority import (
-    assess_scalar_authority_materializability,
-    scalar_authority_decision_matches_assessment,
-    scalar_authority_decision_from_dict,
+from .l2_materialization import (
+    assess_fragment_l2_materializability, required_dimensions_for_finding,
 )
 
 LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v1"
@@ -54,30 +51,6 @@ _LEGACY_DIMENSION_MAP = {
     "shell": L2Dimension.SHELL_SEMANTICS,
     "trap": L2Dimension.TRAP_SEMANTICS,
 }
-_PROFILE_DIMENSIONS = {
-    L2PatternKind.SCALAR: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.BRANCH: (L2Dimension.CONTROL_FLOW, L2Dimension.LOGICAL_OPERANDS,
-                           L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.JUMP: (L2Dimension.CONTROL_FLOW, L2Dimension.LOGICAL_OPERANDS,
-                         L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.MEMORY_LOAD: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.MEMORY_EFFECTS,
-                                L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.MEMORY_STORE: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.MEMORY_EFFECTS,
-                                 L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.FENCE: (L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.INSTRUCTION_VISIBILITY_FENCE: (
-        L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.PRIVILEGED_READ: (L2Dimension.PRIVILEGED_STATE,
-                                    L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.PRIVILEGED_WRITE: (L2Dimension.PRIVILEGED_STATE,
-                                     L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.ATOMIC: (L2Dimension.ATOMIC_MEMORY_ORDER, L2Dimension.LOGICAL_OPERANDS,
-                           L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
-    L2PatternKind.COMPOSITE: (L2Dimension.LOGICAL_OPERANDS,
-                              L2Dimension.SHELL_SEMANTICS),
-}
-
-
 def _identity(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False).encode("utf-8")
@@ -138,58 +111,6 @@ def _structured_dimensions(finding: Mapping[str, object]) -> tuple[tuple[L2Dimen
     return tuple(sorted(dimensions, key=lambda item: item.value)), ()
 
 
-def _memory_authority_eligibility_reason(
-    finding: Mapping[str, object], fragment_id: str,
-) -> str:
-    """Require the exact authority result produced by the materializer."""
-    approval = finding.get("approvalArtifact")
-    if not isinstance(approval, Mapping):
-        return "l2.memory-authority.approval-missing"
-    fragment = finding.get("fragment")
-    raw_decision = approval.get("l2MemoryAuthorityDecision")
-    if not isinstance(fragment, Mapping) or not isinstance(raw_decision, Mapping):
-        return "l2.memory-authority.decision-missing"
-    decision = assess_memory_authority_materializability(
-        approval, raw_decision, None, fragment)
-    if not decision.materializable:
-        return (decision.reason_codes[0] if decision.reason_codes else
-                "l2.memory-authority.decision-invalid")
-    record = approval.get("l2AuthorityMaterialization")
-    fields = {
-        "schemaVersion", "fragmentId", "authorityKind", "status",
-        "reasonCode", "authorityIdentity", "materializationIdentity",
-    }
-    if not isinstance(record, Mapping) or set(record) != fields:
-        return "l2.memory-authority.materialization-record-missing"
-    payload = dict(record)
-    identity = payload.pop("materializationIdentity", None)
-    if (record.get("schemaVersion") != "riscv2x86.l2-authority-materialization.v1"
-            or record.get("fragmentId") != fragment_id
-            or record.get("authorityKind") != "object_relative_memory"
-            or identity != _identity(payload)):
-        return "l2.memory-authority.materialization-record-invalid"
-    if record.get("status") != "materialized":
-        reason = record.get("reasonCode")
-        return (str(reason) if isinstance(reason, str) and reason
-                else "l2.memory-authority.materialization-rejected")
-    authority_identity = record.get("authorityIdentity")
-    sidecar = approval.get("l2AuthoritySidecar")
-    if (_SHA256.fullmatch(str(authority_identity)) is None
-            or not isinstance(sidecar, Mapping)):
-        return "l2.memory-authority.sidecar-missing"
-    try:
-        from .l2_authority import l2_authority_sidecar_from_dict
-        parsed = l2_authority_sidecar_from_dict(
-            sidecar, expected_fragment_id=fragment_id)
-    except ValueError:
-        return "l2.memory-authority.sidecar-invalid"
-    if (not parsed.complete or parsed.authority_identity != authority_identity
-            or not parsed.memory_objects or not parsed.source_effects
-            or not parsed.approved_effect_relations):
-        return "l2.memory-authority.sidecar-incomplete"
-    return ""
-
-
 class L2EligibilityClassifier:
     """Classify translated findings without claiming that L2 was executed."""
 
@@ -208,57 +129,14 @@ class L2EligibilityClassifier:
             # but may not silently enlarge the verification gate: those hints
             # conflate helper calls, CSR effects and instruction visibility
             # with ordinary memory/control-flow observations.
-            dimensions = tuple(sorted(
-                _PROFILE_DIMENSIONS.get(semantic_profile.pattern_kind, ()),
-                key=lambda item: item.value,
-            ))
-            if semantic_profile.pattern_kind is L2PatternKind.COMPOSITE:
-                expanded = set(dimensions)
-                if semantic_profile.memory_shape.reads or semantic_profile.memory_shape.writes:
-                    expanded.add(L2Dimension.MEMORY_EFFECTS)
-                if (semantic_profile.control_flow_shape.internal_branch
-                        or semantic_profile.control_flow_shape.direct_jump
-                        or semantic_profile.control_flow_shape.external):
-                    expanded.add(L2Dimension.CONTROL_FLOW)
-                if semantic_profile.privileged_shape.present:
-                    expanded.add(L2Dimension.PRIVILEGED_STATE)
-                dimensions = tuple(sorted(expanded, key=lambda item: item.value))
+            dimensions = required_dimensions_for_finding(finding)
         except ValueError:
             semantic_profile = None
             profile_diagnostics = ("l2.semantic-profile.missing-or-invalid",)
-        memory_authority_reason = ""
-        scalar_authority_reason = ""
-        scalar_authority_decision = None
-        if (semantic_profile is not None
-                and semantic_profile.pattern_kind in {
-                    L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE,
-                }):
-            memory_authority_reason = _memory_authority_eligibility_reason(
-                finding, fragment_id)
-        if (semantic_profile is not None
-                and semantic_profile.pattern_kind in {
-                    L2PatternKind.SCALAR, L2PatternKind.BRANCH,
-                    L2PatternKind.JUMP, L2PatternKind.COMPOSITE,
-                }):
-            approval = finding.get("approvalArtifact")
-            raw_decision = (approval.get("l2ScalarAuthorityDecision")
-                            if isinstance(approval, Mapping) else None)
-            if isinstance(raw_decision, Mapping):
-                try:
-                    parsed_decision = scalar_authority_decision_from_dict(
-                        raw_decision, expected_fragment_id=fragment_id)
-                    raw_boundary = approval.get("l2FragmentOperandBoundary")
-                    if isinstance(raw_boundary, Mapping):
-                        assessed = assess_scalar_authority_materializability(
-                            finding, None, raw_boundary)
-                        if not scalar_authority_decision_matches_assessment(
-                                parsed_decision, assessed):
-                            raise ValueError("stale scalar authority decision")
-                    scalar_authority_decision = parsed_decision.to_dict()
-                    if not parsed_decision.materializable:
-                        scalar_authority_reason = parsed_decision.reason_codes[0]
-                except ValueError:
-                    scalar_authority_reason = "L2_SCALAR_AUTHORITY_DECISION_INVALID"
+        materialization_decision = None
+        if semantic_profile is not None and fragment_id and dimensions:
+            materialization_decision = assess_fragment_l2_materializability(
+                finding, dimensions)
         if outcome in _NO_CANDIDATE:
             eligibility = L2EligibilityStatus.NOT_APPLICABLE
             disposition = L2DimensionStatus.NOT_APPLICABLE
@@ -268,14 +146,10 @@ class L2EligibilityClassifier:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = ("l2.translation-outcome-unknown",)
-        elif memory_authority_reason:
+        elif materialization_decision is not None and not materialization_decision.executable:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
-            reason_codes = (memory_authority_reason,)
-        elif scalar_authority_reason:
-            eligibility = L2EligibilityStatus.INCONCLUSIVE
-            disposition = L2DimensionStatus.INCONCLUSIVE
-            reason_codes = (scalar_authority_reason,)
+            reason_codes = materialization_decision.reason_codes
         elif diagnostics or profile_diagnostics or not fragment_id or not dimensions:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
@@ -318,6 +192,8 @@ class L2EligibilityClassifier:
             "reasonCodes": list(reason_codes),
             "validatorPlan": plan,
         }
+        if materialization_decision is not None:
+            payload["materializationDecision"] = materialization_decision.to_dict()
         if (semantic_profile is not None
                 and semantic_profile.pattern_kind in {
                     L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE}):
@@ -325,8 +201,10 @@ class L2EligibilityClassifier:
             payload["memoryAuthorityDecision"] = (
                 approval.get("l2MemoryAuthorityDecision")
                 if isinstance(approval, Mapping) else None)
-        if scalar_authority_decision is not None:
-            payload["scalarAuthorityDecision"] = scalar_authority_decision
+        approval = finding.get("approvalArtifact")
+        if isinstance(approval, Mapping) and isinstance(
+                approval.get("l2ScalarAuthorityDecision"), Mapping):
+            payload["scalarAuthorityDecision"] = approval["l2ScalarAuthorityDecision"]
         payload["requirementIdentity"] = _identity(payload)
         return payload
 
@@ -389,11 +267,10 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
     dimension_counts: dict[str, int] = {}
     for item in requirements:
         if (not isinstance(item, Mapping)
-                or set(item) not in {frozenset(requirement_fields),
-                                     frozenset(requirement_fields |
-                                               {"memoryAuthorityDecision"}),
-                                     frozenset(requirement_fields |
-                                               {"scalarAuthorityDecision"})}):
+                or not requirement_fields.issubset(item)
+                or not set(item).issubset(requirement_fields | {
+                    "memoryAuthorityDecision", "scalarAuthorityDecision",
+                    "materializationDecision"})):
             raise ValueError("L2 fragment requirement fields are invalid")
         item_identity = item.get("requirementIdentity")
         item_payload = dict(item); item_payload.pop("requirementIdentity")
@@ -430,6 +307,18 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
                 not profile_identity or parsed_kind is L2PatternKind.UNKNOWN
                 or not capabilities):
             raise ValueError("eligible L2 requirement lacks a complete semantic profile")
+        raw_materialization = item.get("materializationDecision")
+        if raw_materialization is not None:
+            from .l2_materialization import assess_fragment_l2_materializability
+            try:
+                decision = assess_fragment_l2_materializability(
+                    required_dimensions=parsed_dimensions,
+                    materialization_decision=raw_materialization,
+                    expected_fragment_id=str(item.get("fragmentId") or ""))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("L2 materialization decision is invalid") from exc
+            if eligibility is L2EligibilityStatus.ELIGIBLE and not decision.executable:
+                raise ValueError("eligible L2 requirement authority is incomplete")
         valid_pair = {
             L2EligibilityStatus.ELIGIBLE: L2DimensionStatus.NOT_RUN,
             L2EligibilityStatus.NOT_APPLICABLE: L2DimensionStatus.NOT_APPLICABLE,

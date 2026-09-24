@@ -19,7 +19,7 @@ from .l2_dimensions import (
     parse_l2_dimension, parse_l2_dimensions,
 )
 from .l2_semantic_profile import L2FragmentSemanticProfile, L2PatternKind
-from .l2_memory_object import assess_memory_authority_materializability
+from .l2_materialization import assess_fragment_l2_materializability
 
 
 L2_REQUIREMENT_DRIVEN_REGISTRY_SCHEMA = "riscv2x86.l2-requirement-driven-registry.v3"
@@ -151,14 +151,17 @@ class L2ValidatorProvider:
         environment: "L2RuntimeCapabilities", *, dimension: L2Dimension,
     ) -> L2ProviderMatch:
         reasons: set[str] = set()
-        if profile.pattern_kind in {L2PatternKind.MEMORY_LOAD,
-                                    L2PatternKind.MEMORY_STORE}:
-            decision = assess_memory_authority_materializability(
-                {}, requirement.memory_authority_decision, None,
-                {"id": requirement.fragment_id})
-            if not decision.materializable:
-                reasons.update(decision.reason_codes or
-                               ("L2_MEMORY_AUTHORITY_DECISION_MISSING",))
+        try:
+            decision = assess_fragment_l2_materializability(
+                required_dimensions=requirement.required_dimensions,
+                materialization_decision=requirement.materialization_decision,
+                expected_fragment_id=requirement.fragment_id)
+            if not decision.executable:
+                reasons.update(decision.reason_codes)
+            if dimension not in decision.required_dimensions:
+                reasons.add("L2_FRAGMENT_DIMENSION_AUTHORITY_MISSING")
+        except (TypeError, ValueError):
+            reasons.add("L2_FRAGMENT_MATERIALIZATION_DECISION_INVALID")
         if dimension not in self.supported_dimensions:
             reasons.add("l2.provider.dimension-unsupported")
         if profile.pattern_kind not in self.supported_patterns:
@@ -227,6 +230,7 @@ class L2FragmentRequirement:
     pattern_kind: str = "unknown"
     required_capabilities: tuple[str, ...] = ()
     memory_authority_decision: Mapping[str, object] | None = None
+    materialization_decision: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.required_capabilities != tuple(sorted(set(self.required_capabilities))):
@@ -239,6 +243,13 @@ class L2FragmentRequirement:
                 _SHA256.fullmatch(self.semantic_profile_identity) is None
                 or kind is L2PatternKind.UNKNOWN or not self.required_capabilities):
             raise ValueError("eligible L2 requirement has no complete semantic profile")
+        if self.eligibility_status is L2EligibilityStatus.ELIGIBLE:
+            decision = assess_fragment_l2_materializability(
+                required_dimensions=self.required_dimensions,
+                materialization_decision=self.materialization_decision,
+                expected_fragment_id=self.fragment_id)
+            if not decision.executable:
+                raise ValueError("eligible L2 requirement has incomplete authority")
 
 
 @dataclass(frozen=True)
@@ -389,13 +400,16 @@ def fragment_requirement_from_dict(value: Mapping[str, object]) -> L2FragmentReq
     pattern_kind = value.get("patternKind")
     capabilities = value.get("requiredCapabilities")
     memory_decision = value.get("memoryAuthorityDecision")
+    materialization_decision = value.get("materializationDecision")
     if (not isinstance(profile_identity, str)
             or (profile_identity and _SHA256.fullmatch(profile_identity) is None)
             or not isinstance(pattern_kind, str) or not pattern_kind
             or not isinstance(capabilities, list)
             or capabilities != sorted(set(capabilities))
             or not all(isinstance(item, str) and item for item in capabilities)
-            or (memory_decision is not None and not isinstance(memory_decision, Mapping))):
+            or (memory_decision is not None and not isinstance(memory_decision, Mapping))
+            or (materialization_decision is not None
+                and not isinstance(materialization_decision, Mapping))):
         raise ValueError("L2 fragment requirement semantic profile binding is invalid")
     try:
         L2PatternKind(pattern_kind)
@@ -404,6 +418,7 @@ def fragment_requirement_from_dict(value: Mapping[str, object]) -> L2FragmentReq
     return L2FragmentRequirement(
         fragment_id, requirement_identity, parsed_dimensions, eligibility,
         profile_identity, pattern_kind, tuple(capabilities), memory_decision,
+        materialization_decision,
     )
 
 
