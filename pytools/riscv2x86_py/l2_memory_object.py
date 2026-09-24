@@ -456,6 +456,8 @@ class L2MemoryObservation:
     payload: Mapping[str, object]
     execution_order: int
     ordering_predecessors: tuple[str, ...] = ()
+    sample_id: str = ""
+    effect_relation_identity: str = ""
     schema_version: str = L2_MEMORY_OBSERVATION_SCHEMA
 
     def __post_init__(self) -> None:
@@ -485,28 +487,38 @@ class L2MemoryObservation:
                 "fragmentId": self.fragment_id, "eventKind": self.event_kind,
                 "logicalSubject": self.logical_subject, "payload": dict(self.payload),
                 "executionOrder": self.execution_order,
-                "orderingPredecessors": list(self.ordering_predecessors)}
+                "orderingPredecessors": list(self.ordering_predecessors),
+                "sampleId": self.sample_id,
+                "effectRelationIdentity": self.effect_relation_identity}
 
 
 def exact_memory_observations_match(
     source: Sequence[L2MemoryObservation], target: Sequence[L2MemoryObservation],
     relations: Sequence[ApprovedEffectRelation],
 ) -> tuple[bool, str]:
-    source_by_id = {item.event_id: item for item in source}
-    target_by_id = {item.event_id: item for item in target}
+    source_by_id = {item.sample_id or f"sample:{index}": item
+                    for index, item in enumerate(source)}
+    target_by_id = {item.sample_id or f"sample:{index}": item
+                    for index, item in enumerate(target)}
     if len(source_by_id) != len(source) or len(target_by_id) != len(target):
         return False, "L2_MEMORY_EVENT_ID_DUPLICATE"
-    expected_source = {item.source_effect_id for item in relations}
-    expected_target = {target_id for item in relations for target_id in item.target_effect_ids}
-    if set(source_by_id) != expected_source or set(target_by_id) != expected_target:
+    if set(source_by_id) != set(target_by_id):
         return False, "L2_MEMORY_APPROVED_EFFECT_SET_MISMATCH"
     for relation in relations:
         if relation.relation_kind != "exact" or len(relation.target_effect_ids) != 1:
             return False, "L2_MEMORY_EXACT_RELATION_REQUIRED"
-        left, right = source_by_id[relation.source_effect_id], target_by_id[relation.target_effect_ids[0]]
-        if (left.event_kind != right.event_kind or left.logical_subject != right.logical_subject
-                or dict(left.payload) != dict(right.payload)
-                or left.execution_order != right.execution_order
-                or left.ordering_predecessors != right.ordering_predecessors):
-            return False, "L2_MEMORY_OBJECT_RELATIVE_TRACE_MISMATCH"
+        for sample_id in source_by_id:
+            left, right = source_by_id[sample_id], target_by_id[sample_id]
+            if ((left.effect_relation_identity and
+                 left.effect_relation_identity != relation.approval_identity)
+                    or (right.effect_relation_identity and
+                        right.effect_relation_identity != relation.approval_identity)
+                    or left.event_id != relation.source_effect_id
+                    or right.event_id not in relation.target_effect_ids
+                    or left.event_kind != right.event_kind
+                    or left.logical_subject != right.logical_subject
+                    or dict(left.payload) != dict(right.payload)
+                    or left.execution_order != right.execution_order
+                    or left.ordering_predecessors != right.ordering_predecessors):
+                return False, "L2_MEMORY_OBJECT_RELATIVE_TRACE_MISMATCH"
     return True, ""

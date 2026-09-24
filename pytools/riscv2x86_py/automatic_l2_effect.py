@@ -253,10 +253,11 @@ def _object_relative_memory_events(
     if not isinstance(obj, Mapping):
         return None
     pattern = re.compile(r"^l2mem;sample=([0-9]+);value=([0-9a-f]+);outside=([01])$")
-    relation_by_source = {
-        item.source_effect_id: item for item in
-        (approved_effect_relation_from_dict(raw) for raw in relations if isinstance(raw, Mapping))
-    }
+    approved = tuple(approved_effect_relation_from_dict(raw) for raw in relations
+                     if isinstance(raw, Mapping))
+    if len(approved) != 1:
+        return None
+    relation = approved[0]
     result = []
     for line in stdout.splitlines():
         match = pattern.fullmatch(line)
@@ -265,11 +266,10 @@ def _object_relative_memory_events(
         sample = int(match.group(1))
         if match.group(3) != "0":
             return None
-        source_id = f"sample:{sample}:memory"
-        relation = relation_by_source.get(source_id)
-        if relation is None or len(relation.target_effect_ids) != 1:
+        if len(relation.target_effect_ids) != 1:
             return None
-        event_id = source_id if side == "source" else relation.target_effect_ids[0]
+        event_id = (relation.source_effect_id if side == "source"
+                    else relation.target_effect_ids[0])
         width = int(getattr(facts, "width_bytes"))
         value = int(match.group(2), 16)
         result.append(L2MemoryObservation(
@@ -281,9 +281,9 @@ def _object_relative_memory_events(
              "value": _canonical(value, width * 8),
              "alignment": int(getattr(facts, "required_alignment")),
              "atomicity": "none", "memoryOrder": "relaxed"},
-            sample, (),
+            sample, (), f"sample:{sample}", relation.approval_identity,
         ))
-    return result if len(result) == len(relations) else None
+    return result if result else None
 
 
 def _object_relative_memory_wrapper(
@@ -430,8 +430,9 @@ def _control_flow_events(
     by_id = {item.operand_id: item for item in operands}
     relations = tuple(approved_effect_relation_from_dict(item) for item in raw_relations
                       if isinstance(item, Mapping))
-    event_ids = {item.source_effect_id if side == "source" else item.target_effect_ids[0]
-                 for item in relations}
+    if len(relations) != 1:
+        return None
+    relation = relations[0]
     name = str(function["name"])
     observations = []
     if control.transfer_kind == "conditional":
@@ -462,10 +463,8 @@ def _control_flow_events(
             selected = true_operand if taken else false_operand
             if selected.parameter_index is None or result != values[selected.parameter_index]:
                 return None
-            source_id = f"case:{case}:branch"
-            event_id = source_id if side == "source" else "target:" + source_id
-            if event_id not in event_ids:
-                return None
+            event_id = (relation.source_effect_id if side == "source"
+                        else relation.target_effect_ids[0])
             signed = control.condition_kind.startswith("signed_")
             observations.append(L2ControlFlowObservation(
                 event_id, str(authority.get("fragmentId", "")), "Branch", "condition:0",
@@ -476,6 +475,7 @@ def _control_flow_events(
                  "result": _canonical(result, result_operand.width_bits,
                                       result_operand.signedness == "signed"),
                  "termination": control.termination_kind},
+                f"case:{case}", relation.approval_identity,
             ))
         return observations if len(observations) == len(_BRANCH_CASES) else None
     if control.transfer_kind == "direct":
@@ -494,10 +494,8 @@ def _control_flow_events(
             sample = len(observations)
             if values[-1] != values[selected.parameter_index]:
                 return None
-            source_id = f"sample:{sample}:transfer"
-            event_id = source_id if side == "source" else "target:" + source_id
-            if event_id not in event_ids:
-                return None
+            event_id = (relation.source_effect_id if side == "source"
+                        else relation.target_effect_ids[0])
             observations.append(L2ControlFlowObservation(
                 event_id, str(authority.get("fragmentId", "")), "ControlTransfer", "transfer:0",
                 {"sourceContinuation": control.source_continuation,
@@ -505,6 +503,7 @@ def _control_flow_events(
                  "result": _canonical(values[-1], result_operand.width_bits,
                                       result_operand.signedness == "signed"),
                  "termination": control.termination_kind},
+                f"sample:{sample}", relation.approval_identity,
             ))
         return observations if len(observations) == 8 ** arity else None
     return None
@@ -560,10 +559,37 @@ def _approved_effect_ids_match(
     if not isinstance(relations, list):
         return False
     approved = tuple(approved_effect_relation_from_dict(item) for item in relations)
-    return ({str(item.get("eventId")) for item in source}
-            == {item.source_effect_id for item in approved}
-            and {str(item.get("eventId")) for item in target}
-            == {target_id for item in approved for target_id in item.target_effect_ids})
+    if len(approved) != 1 or len(source) != len(target):
+        return False
+    relation = approved[0]
+    for index, (left, right) in enumerate(zip(source, target)):
+        sample_left = str(left.get("sampleId", f"sample:{index}"))
+        sample_right = str(right.get("sampleId", f"sample:{index}"))
+        if (sample_left != sample_right
+                or str(left.get("eventId")) != relation.source_effect_id
+                or str(right.get("eventId")) not in relation.target_effect_ids
+                or left.get("effectRelationIdentity") != relation.approval_identity
+                or right.get("effectRelationIdentity") != relation.approval_identity):
+            return False
+    return True
+
+
+def _bind_sample_relations(source, target, approved):
+    if source is None or target is None or len(approved) != 1 or len(source) != len(target):
+        return
+    relation = approved[0]
+    for index, (left, right) in enumerate(zip(source, target)):
+        sample_id = f"sample:{index}"
+        left.update(eventId=relation.source_effect_id, sampleId=sample_id,
+                    effectRelationIdentity=relation.approval_identity)
+        right.update(eventId=relation.target_effect_ids[0], sampleId=sample_id,
+                     effectRelationIdentity=relation.approval_identity)
+
+
+def _sample_traces_match(source, target):
+    ignored = {"eventId", "effectRelationIdentity"}
+    return [dict((k, v) for k, v in item.items() if k not in ignored) for item in source] == \
+        [dict((k, v) for k, v in item.items() if k not in ignored) for item in target]
 
 
 def build_auto_l2_effect_validator(config: Mapping[str, object]):
@@ -719,6 +745,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 source_control = target_control = None
                 source_events = (_fence_events(left.stdout,function,relation_authority,side="source") if parser is None else parser(left.stdout,function))
                 target_events = (_fence_events(right.stdout,function,relation_authority,side="target") if parser is None else parser(right.stdout,function))
+            if mode in {"branch-domain-functions", "scalar-effect-functions"}:
+                _bind_sample_relations(source_events, target_events, approved)
             observation={"schemaVersion":AUTO_L2_EFFECT_OBSERVATION_SCHEMA,
                          "fragmentId":getattr(artifact,"fragment_id",""),
                          "attemptId":work.name,"mode":mode,"approvedRelationAuthority":relation_authority,
@@ -750,7 +778,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             elif parser is None and not _approved_fence_matches(
                     source_events, target_events, relation_authority):
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_APPROVED_RELATION_NOT_SATISFIED"
-            elif parser is not None and source_events != target_events:
+            elif parser is not None and not _sample_traces_match(source_events, target_events):
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_TRACE_MISMATCH"
             else:
                 status=ValidationStatus.VERIFIED; reason=""

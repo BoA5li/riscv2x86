@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 from typing import Mapping, Sequence
 
-from .effect_relation import ApprovedEffectRelation
 from .l2_authority import (
     L2AuthorityProducer,
     L2AuthoritySidecar,
@@ -32,7 +31,6 @@ from .l2_memory_object import (
     memory_proof_facts_from_dict,
 )
 from .l2_fence_ordering import (
-    approved_fence_relations,
     fence_proof_facts_from_dict,
 )
 from .l2_internal_value import (
@@ -44,6 +42,7 @@ from .l2_fragment_execution import (
 )
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 from .l2_scalar_authority import assess_scalar_authority_materializability
+from .l2_effect_proof import effect_proof_facts_from_dict
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
@@ -86,6 +85,43 @@ def _shell_identity(approval: Mapping[str, object], fragment_id: str) -> str:
         "sourceModelId": str(approval.get("sourceModelId", "")),
         "constraintsId": str(approval.get("constraintsId", "")),
     })
+
+
+def _proof_effect_authority(approval: Mapping[str, object], fragment_id: str):
+    """Validate and package Phase-6D facts; never manufacture a relation."""
+    raw = approval.get("l2EffectProofFacts")
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        facts = effect_proof_facts_from_dict(raw)
+    except (TypeError, ValueError):
+        return None
+    expected = {
+        "fragment_id": fragment_id,
+        "proof_identity": approval.get("proofIdentity"),
+        "plan_identity": approval.get("planId"),
+        "constraint_identity": approval.get("constraintsId"),
+        "renderer_contract_identity": approval.get("rendererContractIdentity"),
+    }
+    if (not facts.complete or any(getattr(facts, key) != value
+                                  for key, value in expected.items())):
+        return None
+    try:
+        relations = tuple(sorted(
+            (item.approved_relation() for item in facts.relations),
+            key=lambda item: item.relation_id))
+    except ValueError:
+        return None
+    effects = tuple(sorted((L2SourceEffectAuthority(
+        item.effect_id, item.effect_kind, item.logical_subject, item.complete)
+        for item in facts.source_effects), key=lambda item: item.effect_id))
+    shell_identity = _identity({
+        "schemaVersion": "riscv2x86.shell-relation-binding.v1",
+        "fragmentId": fragment_id,
+        "proofIdentity": facts.proof_identity,
+        "shellRelation": facts.shell_relation.to_dict(),
+    })
+    return effects, relations, shell_identity
 
 
 def _scalar_authority(
@@ -233,41 +269,15 @@ def _scalar_authority(
             control_flow = (bind_control_flow_authority(proof_facts, operands),)
         except (KeyError, ValueError):
             return None
-    relations = []
-    source_effects = []
-    sample_count = 11 if profile.pattern_kind is L2PatternKind.BRANCH else 8 ** arity
-    relation_prefix = ("branch" if profile.pattern_kind is L2PatternKind.BRANCH else
-                       "jump" if profile.pattern_kind is L2PatternKind.JUMP else "scalar")
-    event_kind = ("Branch" if profile.pattern_kind is L2PatternKind.BRANCH else
-                  "ControlTransfer" if profile.pattern_kind is L2PatternKind.JUMP
-                  else "continuation")
-    requirements = (("branch_condition", "branch_continuation", "branch_outcome", "kind", "value")
-                    if profile.pattern_kind is L2PatternKind.BRANCH else
-                    ("kind", "target", "value") if profile.pattern_kind is L2PatternKind.JUMP else
-                    ("branch_continuation", "kind", "value"))
-    for sample in sorted(range(sample_count), key=lambda item: f"relation:{relation_prefix}:{item}"):
-        event_id = (f"case:{sample}:branch" if profile.pattern_kind is L2PatternKind.BRANCH
-                    else f"sample:{sample}:transfer" if profile.pattern_kind is L2PatternKind.JUMP
-                    else f"sample:{sample}:continuation")
-        target_id = "target:" + event_id if proof_facts is not None else event_id
-        relation = ApprovedEffectRelation(
-            f"relation:{relation_prefix}:{sample}", event_id, (target_id,), "exact",
-            requirements, (), "", True,
-        )
-        relations.append(relation)
-        source_effects.append(L2SourceEffectAuthority(
-            event_id, event_kind,
-            "condition:0" if profile.pattern_kind is L2PatternKind.BRANCH else
-            "transfer:0" if profile.pattern_kind is L2PatternKind.JUMP else
-            (("continuation:return|instrumentation:" + instrumentation_plan_identity)
-             if instrumentation_plan_identity else "continuation:return"), True,
-        ))
-    shell_identity = _shell_identity(approval, fragment_id)
+    proof_authority = _proof_effect_authority(approval, fragment_id)
+    if proof_authority is None:
+        return None
+    source_effects, relations, shell_identity = proof_authority
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
                             "v4", producer_digest),
-        shell_identity, tuple(operands), (), tuple(source_effects), tuple(relations),
+        shell_identity, tuple(operands), (), source_effects, relations,
         (), (), True, control_flow=control_flow, internal_values=internal_values,
     )
 
@@ -353,23 +363,15 @@ def _memory_authority(
             facts, operands, decision.authority)
     except ValueError:
         return None
-    sample_count = 8 if any(item.parameter_index is not None and
-                            item.operand_index != facts.address_operand_index
-                            for item in operands) else 1
-    relations, effects = [], []
-    event_kind = "ReadMemory" if facts.access_kind == "load" else "WriteMemory"
-    requirements = ("kind", "memory_coordinates", "memory_order", "subject", "value")
-    for sample in range(sample_count):
-        source_id = f"sample:{sample}:memory"
-        relations.append(ApprovedEffectRelation(
-            f"relation:memory:{sample}", source_id, ("target:" + source_id,),
-            "exact", requirements, (), "", True))
-        effects.append(L2SourceEffectAuthority(source_id, event_kind, object_id, True))
+    proof_authority = _proof_effect_authority(approval, fragment_id)
+    if proof_authority is None:
+        return None
+    effects, relations, shell_identity = proof_authority
     return L2AuthoritySidecar(
         fragment_id, L2AuthorityProducer("frontend-compiler-sidecar",
           "automatic-memory-authority", "v1", producer_digest),
-        _shell_identity(approval, fragment_id), tuple(operands), (memory_object,),
-        tuple(effects), tuple(relations), (), (), True,
+        shell_identity, tuple(operands), (memory_object,),
+        effects, relations, (), (), True,
     )
 
 
@@ -403,18 +405,16 @@ def _fence_authority(
             or approval.get("rendererContractId") != facts.target_renderer_contract_id
             or approval.get("rendererVersion") != facts.target_renderer_version):
         return None
-    relations = approved_fence_relations(facts)
-    effects = tuple(sorted((
-        L2SourceEffectAuthority(facts.before_effect_id, "ReadMemory", "ordering:before", True),
-        L2SourceEffectAuthority(facts.fence_effect_id, "Fence", "ordering:fence", True),
-        L2SourceEffectAuthority(facts.after_effect_id, "WriteMemory", "ordering:after", True),
-    ), key=lambda item: item.effect_id))
+    proof_authority = _proof_effect_authority(approval, fragment_id)
+    if proof_authority is None:
+        return None
+    effects, relations, shell_identity = proof_authority
     ordering = (L2OrderingAuthority(
         "ordering:fence-domain", facts.before_effect_id, facts.after_effect_id, True),)
     return L2AuthoritySidecar(
         fragment_id, L2AuthorityProducer("translation-proof-sidecar",
           "automatic-fence-ordering-authority", "v1", producer_digest),
-        _shell_identity(approval, fragment_id), (), (), effects, relations, (), (), True,
+        shell_identity, (), (), effects, relations, (), (), True,
         ordering=ordering,
     )
 
@@ -474,26 +474,10 @@ def _functional_relation_authority(
     })
     runtime = L2RuntimeContractBinding(
         str(runtime_id), str(runtime_version), contract_identity, True)
-    if profile.pattern_kind is L2PatternKind.PRIVILEGED_READ:
-        dimensions = (
-            ("functional:privileged-state", "PrivilegedRead", "csr:declared",
-             ("csr_value",)),
-            ("functional:shell", "RuntimeInvocation", "shell:runtime-adapter",
-             ("kind",)),
-        )
-    else:
-        dimensions = (
-            ("functional:instruction-visibility", "InstructionVisibility",
-             "instruction-stream:local", ("kind",)),
-            ("functional:shell", "RuntimeInvocation", "shell:runtime-adapter",
-             ("kind",)),
-        )
-    effects = tuple(L2SourceEffectAuthority(effect_id, kind, subject, True)
-                    for effect_id, kind, subject, _requirements in dimensions)
-    relations = tuple(ApprovedEffectRelation(
-        "relation:" + effect_id, effect_id, ("target:" + effect_id,),
-        "runtime_mediated", requirements, (), str(runtime_id), True,
-    ) for effect_id, _kind, _subject, requirements in dimensions)
+    proof_authority = _proof_effect_authority(approval, fragment_id)
+    if proof_authority is None:
+        return None
+    effects, relations, shell_identity = proof_authority
     ignored_state = tuple(L2IgnoredStateAuthority(
         item, "declared-functional-non-equivalence", "non_escaping", True,
     ) for item in ignored)
@@ -501,7 +485,7 @@ def _functional_relation_authority(
         fragment_id, L2AuthorityProducer(
             "translation-proof-sidecar", "functional-relation-authority", "v1",
             producer_digest),
-        _shell_identity(approval, fragment_id), (), (), effects, relations,
+        shell_identity, (), (), effects, relations,
         (runtime,), ignored_state, True,
     )
 

@@ -23,6 +23,7 @@ from riscv2x86_py.l2_dimensions import L2Dimension, L2EligibilityStatus
 from riscv2x86_py.l2_validator_resolution import (
     L2BindingKind, L2FragmentRequirement, L2RuntimeCapabilities, L2ValidatorProvider,
 )
+from tests.l2_effect_proof_fixtures import attach_effect_proof
 
 
 def _profile(fragment_id: str, kind: L2PatternKind):
@@ -55,7 +56,7 @@ def _boundary(names):
 
 def _finding(fragment_id, function_name, names, facts):
     output, *inputs = names
-    return {"fragment": {"id": fragment_id, "enclosingFunction": function_name,
+    result = {"fragment": {"id": fragment_id, "enclosingFunction": function_name,
                           "outputs": [{"constraint": "=r", "symbolicName": output}],
                           "inputs": [{"constraint": "r", "symbolicName": item}
                                      for item in inputs]},
@@ -68,6 +69,8 @@ def _finding(fragment_id, function_name, names, facts):
                 "planId": "plan", "targetEnvironmentId": "environment",
                 "targetCatalogVersion": "catalog",
                 "l2ControlFlowProofFacts": facts.to_dict()}}
+    attach_effect_proof(result["approvalArtifact"], fragment_id, "control")
+    return result
 
 
 def _safe_facts(fragment_id, kind="branch"):
@@ -107,7 +110,7 @@ def test_branch_authority_is_semantic_not_round2_name_based(
     assert sidecar.control_flow[0].condition_kind == "unsigned_less"
     assert sidecar.control_flow[0].continuations == (
         "continuation:not-taken", "continuation:taken")
-    assert len(sidecar.approved_effect_relations) == 11
+    assert len(sidecar.approved_effect_relations) == 1
     assert all(item.relation_kind == "exact" for item in sidecar.approved_effect_relations)
 
     relation_authority = {

@@ -219,6 +219,8 @@ class L2ControlFlowObservation:
     event_kind: str
     logical_subject: str
     payload: Mapping[str, object]
+    sample_id: str = ""
+    effect_relation_identity: str = ""
 
     def __post_init__(self) -> None:
         if not self.event_id or not self.fragment_id:
@@ -259,41 +261,43 @@ class L2ControlFlowObservation:
         return {"schemaVersion": L2_CONTROL_FLOW_OBSERVATION_SCHEMA,
                 "eventId": self.event_id, "fragmentId": self.fragment_id,
                 "eventKind": self.event_kind, "logicalSubject": self.logical_subject,
-                "payload": dict(self.payload)}
+                "payload": dict(self.payload), "sampleId": self.sample_id,
+                "effectRelationIdentity": self.effect_relation_identity}
 
 
 def exact_control_flow_observations_match(
     source: Sequence[L2ControlFlowObservation], target: Sequence[L2ControlFlowObservation],
     relations: Sequence[ApprovedEffectRelation],
 ) -> tuple[bool, str]:
-    if not source or len(source) != len(target) or len(source) != len(relations):
+    if not source or len(source) != len(target):
         return False, "L2_CONTROL_FLOW_OBSERVATION_COUNT_MISMATCH"
-    source_by_id = {x.event_id: x for x in source}
-    target_by_id = {x.event_id: x for x in target}
+    source_by_id = {x.sample_id or f"sample:{index}": x
+                    for index, x in enumerate(source)}
+    target_by_id = {x.sample_id or f"sample:{index}": x
+                    for index, x in enumerate(target)}
     if len(source_by_id) != len(source) or len(target_by_id) != len(target):
         return False, "L2_CONTROL_FLOW_DUPLICATE_EVENT_ID"
-    approved_source_ids = {item.source_effect_id for item in relations}
-    approved_target_ids = {target_id for item in relations
-                           for target_id in item.target_effect_ids}
-    if (approved_source_ids != set(source_by_id)
-            or approved_target_ids != set(target_by_id)
-            or len(approved_source_ids) != len(relations)
-            or len(approved_target_ids) != len(relations)):
+    if set(source_by_id) != set(target_by_id):
         return False, "L2_CONTROL_FLOW_APPROVED_EVENT_MISSING"
     for relation in relations:
         if relation.relation_kind != "exact" or len(relation.target_effect_ids) != 1:
             return False, "L2_CONTROL_FLOW_EXACT_RELATION_REQUIRED"
-        left = source_by_id.get(relation.source_effect_id)
-        right = target_by_id.get(relation.target_effect_ids[0])
-        if left is None or right is None:
-            return False, "L2_CONTROL_FLOW_APPROVED_EVENT_MISSING"
-        required = ({"branch_condition", "branch_continuation", "branch_outcome",
-                     "kind", "value"} if left.event_kind == "Branch"
-                    else {"kind", "target", "value"})
-        if not required.issubset(relation.observable_requirements):
-            return False, "L2_CONTROL_FLOW_RELATION_OBSERVABLES_INCOMPLETE"
-        if (left.fragment_id != right.fragment_id or left.event_kind != right.event_kind
-                or left.logical_subject != right.logical_subject
-                or dict(left.payload) != dict(right.payload)):
-            return False, "L2_CONTROL_FLOW_OBSERVATION_MISMATCH"
+        for sample_id in source_by_id:
+            left, right = source_by_id[sample_id], target_by_id[sample_id]
+            required = ({"branch_condition", "branch_continuation", "branch_outcome",
+                         "kind", "value"} if left.event_kind == "Branch"
+                        else {"kind", "target", "value"})
+            if not required.issubset(relation.observable_requirements):
+                return False, "L2_CONTROL_FLOW_RELATION_OBSERVABLES_INCOMPLETE"
+            if ((left.effect_relation_identity and
+                 left.effect_relation_identity != relation.approval_identity)
+                    or (right.effect_relation_identity and
+                        right.effect_relation_identity != relation.approval_identity)
+                    or left.event_id != relation.source_effect_id
+                    or right.event_id not in relation.target_effect_ids
+                    or left.fragment_id != right.fragment_id
+                    or left.event_kind != right.event_kind
+                    or left.logical_subject != right.logical_subject
+                    or dict(left.payload) != dict(right.payload)):
+                return False, "L2_CONTROL_FLOW_OBSERVATION_MISMATCH"
     return True, ""

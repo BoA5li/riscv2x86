@@ -10,6 +10,7 @@ from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authori
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.l2_semantic_profile import L2PatternKind
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_effect_proof_fixtures import attach_effect_proof
 from riscv2x86_py.l2_internal_value import (
     L2CanonicalType,
     L2InstrumentationPlan,
@@ -176,6 +177,7 @@ def test_composite_authority_contains_internal_values_and_bound_plan(tmp_path: P
             "l2InternalValueProofFacts": _facts().to_dict(),
         },
     }
+    attach_effect_proof(finding["approvalArtifact"], "fragment:0")
     frontend = tmp_path / "frontend"
     frontend.write_bytes(b"frontend")
     assert materialize_automatic_l2_authority(
@@ -186,7 +188,4 @@ def test_composite_authority_contains_internal_values_and_bound_plan(tmp_path: P
     assert len(sidecar.internal_values) == 2
     assert {item.escape_kind for item in sidecar.internal_values} == {
         "non_escaping", "operand"}
-    assert any(
-        item.logical_subject.endswith(approval["l2InstrumentationPlan"]["planIdentity"])
-        for item in sidecar.source_effects
-    )
+    assert sidecar.approved_effect_relations[0].source_effect_id == "scalar:continuation"

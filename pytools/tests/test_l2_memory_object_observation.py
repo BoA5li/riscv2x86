@@ -17,6 +17,7 @@ from riscv2x86_py.l2_semantic_profile import (
     L2MemoryShape, L2OperandShape, L2OrderingShape, L2PatternKind,
     L2PrivilegedShape,
 )
+from tests.l2_effect_proof_fixtures import attach_effect_proof
 
 
 def _facts(**changes):
@@ -121,8 +122,9 @@ def test_authority_materialization_is_not_round2_name_based(tmp_path, directory,
           "architectureSemanticsPreserved":True, "shellSemanticsPreserved":True,
           "sourceModelId":"model", "constraintsId":"constraints",
           "preservationDecisionId":"decision", "planId":"plan",
-          "targetEnvironmentId":"environment", "targetCatalogVersion":"catalog",
-          "l2MemoryProofFacts":facts.to_dict()}}
+              "targetEnvironmentId":"environment", "targetCatalogVersion":"catalog",
+              "l2MemoryProofFacts":facts.to_dict()}}
+    attach_effect_proof(finding["approvalArtifact"], fragment_id, "memory")
     boundary = {"complete":True, "parameterDeclarationIds":["base"],
       "asmOperandDeclarationIds":["result", "base"], "returnDeclarationId":"result",
       "declarationReferenceCounts":{"result":2, "base":1},

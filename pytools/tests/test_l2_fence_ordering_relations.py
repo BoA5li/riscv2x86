@@ -28,6 +28,7 @@ from riscv2x86_py.l2_validator_resolution import (
 )
 from riscv2x86_py.translation_validation import ValidationLevel
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
+from tests.l2_effect_proof_fixtures import attach_effect_proof
 
 
 _SEMANTIC_CONTRACT = "x86.gnu-att.mfence.full-system-seq-cst.v1"
@@ -72,7 +73,7 @@ def _profile(fragment_id="fragment:fence", kind=L2PatternKind.FENCE):
 
 def _finding(facts=None, *, kind=L2PatternKind.FENCE):
     facts = facts or _facts()
-    return {"fragment":{"id":facts.fragment_id, "enclosingFunction":"synchronize_domain",
+    result = {"fragment":{"id":facts.fragment_id, "enclosingFunction":"synchronize_domain",
                          "outputs":[], "inputs":[]},
       "l2SemanticProfile":_profile(facts.fragment_id, kind).to_dict(),
       "approvalArtifact":{"proofStatus":"approved", "architectureSemanticsPreserved":True,
@@ -83,6 +84,8 @@ def _finding(facts=None, *, kind=L2PatternKind.FENCE):
         "rendererContractId":facts.target_renderer_contract_id,
         "rendererVersion":facts.target_renderer_version,
         "l2FenceProofFacts":facts.to_dict()}}
+    attach_effect_proof(result["approvalArtifact"], facts.fragment_id, "fence")
+    return result
 
 
 def test_proof_export_consumes_structured_barrier_and_registered_contract():

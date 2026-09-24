@@ -9,6 +9,7 @@ from .phase6c_constraints import TargetConstraintModel, TargetEnvironment
 from .plan_types import PlanRequirement, TargetLoweringKind, TargetLoweringPlan
 from .semantic_types import PreservationDecision
 from .source_model import SourceSemanticModel
+from .l2_effect_proof import L2EffectProofFacts
 from .target_register_policy import POLICY_VERSION, is_forbidden_host_stack_frame_register
 
 _STRICT_PRIVILEGED_KINDS = frozenset({
@@ -86,6 +87,7 @@ class SemanticProofRequest:
     privileged_runtime_registry: object | None = None
     privileged_functional_registry: object | None = None
     privileged_functional_policy: object | None = None
+    fragment_id: str = ""
 
 @dataclass(frozen=True)
 class ProofEvidence:
@@ -142,6 +144,7 @@ class SemanticProofResult:
     reason_codes: tuple[SemanticProofReasonCode,...] = ()
     details: Mapping[str,str|int|bool|None] = MappingProxyType({})
     evidence: ProofEvidence | None = None
+    l2_effect_proof_facts: L2EffectProofFacts | None = None
     def __post_init__(self):
         if self.approved and (self.reason_codes or self.evidence is None): raise ValueError("approved proof requires evidence and no reason codes")
         if not self.approved and not self.reason_codes: raise ValueError("failed proof needs reason code")
@@ -149,7 +152,7 @@ class SemanticProofResult:
         object.__setattr__(self,"reason_codes",tuple(sorted(set(self.reason_codes),key=lambda x:x.value)))
         object.__setattr__(self,"details",MappingProxyType(dict(self.details)))
     @classmethod
-    def passed(cls, plan_id, conclusions, evidence): return cls(True,plan_id,tuple(conclusions),(),{},evidence)
+    def passed(cls, plan_id, conclusions, evidence, l2_effect_proof_facts=None): return cls(True,plan_id,tuple(conclusions),(),{},evidence,l2_effect_proof_facts)
     @classmethod
     def failed(cls, plan_id, code, details=None): return cls(False,plan_id,(PreservationConclusion.NOT_PRESERVED,),(code,),{} if details is None else details)
 
@@ -405,13 +408,18 @@ def finalize(request, conclusions, privileged_effect_evidence=()):
     if result is not None:return result
     extra=() if not request.source_model.microarch.explicitly_microarch_sensitive else (PreservationConclusion.MICROARCH_INTENT_PRESERVED,)
     final=tuple(conclusions)+extra
-    return SemanticProofResult.passed(request.candidate_plan.plan_id,final,_evidence(request,final,request.candidate_plan.requirements,privileged_effect_evidence))
+    evidence = _evidence(request,final,request.candidate_plan.requirements,privileged_effect_evidence)
+    facts = None
+    if request.fragment_id:
+        from .l2_effect_proof import build_effect_proof_facts
+        facts = build_effect_proof_facts(request, evidence, request.fragment_id)
+    return SemanticProofResult.passed(request.candidate_plan.plan_id,final,evidence,facts)
 
-def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None, privileged_runtime_registry=None, privileged_functional_registry=None, privileged_functional_policy=None):
+def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None, privileged_runtime_registry=None, privileged_functional_registry=None, privileged_functional_policy=None, fragment_id=""):
     """D0-D4 then exactly one plan-specific proof; unknowns reject."""
     if preservation_decision is None and isinstance(source_model,SourceSemanticModel): preservation_decision=source_model.preservation
     if target_semantic_catalog is None or compiler_capabilities is None: return SemanticProofResult.failed(getattr(candidate_plan,"plan_id",None),SemanticProofReasonCode.INVALID_REQUEST)
-    request=SemanticProofRequest(source_model,preservation_decision,candidate_plan,constraints,target_environment,target_semantic_catalog,compiler_capabilities,helper_contract_registry,privileged_runtime_registry,privileged_functional_registry,privileged_functional_policy)
+    request=SemanticProofRequest(source_model,preservation_decision,candidate_plan,constraints,target_environment,target_semantic_catalog,compiler_capabilities,helper_contract_registry,privileged_runtime_registry,privileged_functional_registry,privileged_functional_policy,fragment_id)
     common=validate_common(request)
     if common is not None:return common
     from . import phase6d_c_expression as ce, phase6d_c_builtin as cb, phase6d_x86_inline_asm as xa, phase6d_atomic as ab, phase6d_control_flow as cf, phase6d_helper_abi as ha

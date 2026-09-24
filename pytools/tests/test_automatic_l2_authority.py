@@ -6,11 +6,38 @@ from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
 from riscv2x86_py.l2_semantic_profile import L2PatternKind
 from riscv2x86_py.l2_scalar_authority import scalar_authority_decision_from_dict
+from riscv2x86_py.l2_effect_proof import (
+    EffectRelationFact, L2EffectProofFacts, ShellRelationFact,
+    SourceEffectFact, TargetEffectFact, identity,
+)
 from tests.l2_profile_fixtures import profile_dict
 
 
 def _ref(identity):
     return {"kind": "DeclRefExpr", "referencedDecl": {"id": identity}}
+
+
+def _attach_effect_proof(approval, fragment_id, *, runtime=False):
+    proof = identity({key: approval.get(key, "") for key in (
+        "sourceModelId", "preservationDecisionId", "planId", "constraintsId",
+        "proofStatus", "targetEnvironmentId", "targetCatalogVersion")})
+    renderer = identity({"testRenderer": "semantic-v1"})
+    runtime_id = str(approval.get("runtimeContractId", "")) if runtime else ""
+    runtime_identity = identity({"runtimeContractId": runtime_id}) if runtime else ""
+    source = SourceEffectFact("shell:compiler", "CompilerShell", "shell:fragment", True)
+    target = TargetEffectFact("target:shell:compiler", "CompilerShell", "shell:fragment", True)
+    relation = EffectRelationFact(
+        "relation:shell:compiler", source.effect_id, (target.effect_id,),
+        "runtime_mediated" if runtime else "exact", ("kind", "subject"),
+        ("architectural_equivalence",) if runtime else (), runtime_id,
+        runtime_identity, True)
+    shell = ShellRelationFact((), (), (), (), True, True, True, True, True, True)
+    facts = L2EffectProofFacts(fragment_id, proof, str(approval["planId"]),
+                               str(approval["constraintsId"]), renderer,
+                               (source,), (target,), (relation,), shell, True)
+    approval["proofIdentity"] = proof
+    approval["rendererContractIdentity"] = renderer
+    approval["l2EffectProofFacts"] = facts.to_dict()
 
 
 def test_compiler_reference_counts_do_not_count_expression_wrappers_twice():
@@ -66,6 +93,7 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
         },
         "l2SemanticProfile": profile_dict("fragment"),
     }
+    _attach_effect_proof(finding["approvalArtifact"], "fragment")
     frontend = tmp_path / "frontend"
     frontend.write_bytes(b"frontend")
     assert materialize_automatic_l2_authority(
@@ -81,7 +109,8 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
     )
     assert sidecar.complete
     assert sidecar.operands[0].escape_kind == "function_return"
-    assert len(sidecar.approved_effect_relations) == 64
+    assert len(sidecar.approved_effect_relations) == 1
+    assert sidecar.approved_effect_relations[0].source_effect_id == "shell:compiler"
 
 
 def test_scalar_authority_rejection_records_precise_auditable_decision(tmp_path: Path):
@@ -146,6 +175,7 @@ def test_functional_counter_authority_is_typed_and_runtime_mediated(tmp_path: Pa
         "l2SemanticProfile": profile_dict(
             "fragment", L2PatternKind.PRIVILEGED_READ),
     }
+    _attach_effect_proof(finding["approvalArtifact"], "fragment", runtime=True)
     frontend = tmp_path / "frontend"
     frontend.write_bytes(b"frontend")
     assert materialize_automatic_l2_authority(
@@ -222,6 +252,7 @@ def _memory_facts(fragment_id="memory-fragment", *, complete=True):
 
 def test_memory_materializer_records_content_bound_eligibility_authority(tmp_path: Path):
     finding = _memory_finding()
+    _attach_effect_proof(finding["approvalArtifact"], "memory-fragment")
     finding["approvalArtifact"]["l2MemoryProofFacts"] = _memory_facts()
     frontend = tmp_path / "frontend"
     frontend.write_bytes(b"frontend")

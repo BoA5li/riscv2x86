@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import tempfile
 from pathlib import Path
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_effect_proof_fixtures import attach_effect_proof
 
 
 def _artifact():
@@ -58,6 +59,7 @@ def test_authority_joins_compiler_boundary_and_frontend_shell():
         "targetEnvironmentId": "environment",
         "targetCatalogVersion": "catalog",
     })
+    attach_effect_proof(finding["approvalArtifact"], "fragment")
     report = {"findings": [finding]}
     with tempfile.NamedTemporaryFile() as producer:
         assert materialize_automatic_l2_authority(

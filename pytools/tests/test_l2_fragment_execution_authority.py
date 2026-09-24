@@ -9,6 +9,7 @@ from riscv2x86_py.l2_fragment_execution import (
     program_execution_authority_from_dict,
 )
 from tests.l2_profile_fixtures import profile_dict
+from tests.l2_effect_proof_fixtures import attach_effect_proof
 
 
 def _function(*, cycle=False, same_name=False):
@@ -127,8 +128,11 @@ def _finding(fragment_id, output, input_):
 
 
 def _findings():
-    return [_finding("fragment:a", "tmp", "x"),
-            _finding("fragment:b", "out", "tmp")]
+    findings = [_finding("fragment:a", "tmp", "x"),
+                _finding("fragment:b", "out", "tmp")]
+    for finding in findings:
+        attach_effect_proof(finding["approvalArtifact"], finding["fragment"]["id"])
+    return findings
 
 
 def test_two_fragments_get_independent_boundaries_and_shared_execution(tmp_path: Path):

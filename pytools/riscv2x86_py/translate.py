@@ -3755,6 +3755,7 @@ def _translate_phase6_proof_pipeline(
             privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
             privileged_functional_policy=privileged_functional_policy,
+            fragment_id=context.fragment.id,
         )
         candidates.append(ProvenCandidate(plan, constraint_result, proof))
         if not proof.approved:
@@ -3863,6 +3864,11 @@ def _translate_phase6_proof_pipeline(
         "requiredHeaders": list(rendered.required_headers),
         "requiredLibraries": list(rendered.required_libraries),
     }
+    if proof.l2_effect_proof_facts is not None:
+        artifact["proofIdentity"] = proof.l2_effect_proof_facts.proof_identity
+        artifact["rendererContractIdentity"] = \
+            proof.l2_effect_proof_facts.renderer_contract_identity
+        artifact["l2EffectProofFacts"] = proof.l2_effect_proof_facts.to_dict()
     if rendered.kind in {
         RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER,
         RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK,
