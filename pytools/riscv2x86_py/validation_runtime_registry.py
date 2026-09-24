@@ -14,7 +14,10 @@ from .l2_dimensions import (
     L2ClaimScope, L2DimensionStatus, parse_l2_dimension,
 )
 from .l2_results import L2DimensionResult, L2FragmentResult
-from .l2_evidence_closure import validated_provider_evidence
+from .l2_evidence_closure import (
+    L2ProviderExecutionDisposition, partial_provider_evidence,
+    provider_execution_disposition, validated_provider_evidence,
+)
 from .l2_validator_resolution import (
     ExplicitL2Bindings, L2BindingKind, L2BindingStatus, L2RuntimeCapabilities,
     L2ValidatorResolver, fragment_requirement_from_dict, provider_from_dict,
@@ -398,18 +401,32 @@ def _requirement_driven_l2_validator(
                 provider_detail = json.loads(result.detail)
             except (TypeError, json.JSONDecodeError):
                 provider_detail = {}
-            evidence, closure_reasons = validated_provider_evidence(
-                provider_detail if isinstance(provider_detail, Mapping) else {}, artifact)
-            authority_identity = "" if evidence is None else evidence["authorityIdentity"]
-            effect_relation_identity = ("" if evidence is None else
-                                        evidence["effectRelationIdentity"])
-            source_identity = ("" if evidence is None else
-                               evidence["sourceObservationIdentity"])
-            target_identity = ("" if evidence is None else
-                               evidence["targetObservationIdentity"])
+            detail_mapping = (provider_detail
+                              if isinstance(provider_detail, Mapping) else {})
+            disposition, disposition_reasons = provider_execution_disposition(
+                detail_mapping, result.status.value)
+            total_evidence_required = disposition in {
+                L2ProviderExecutionDisposition.EXECUTED_FAILED,
+                L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+            }
+            if total_evidence_required:
+                total_evidence, closure_reasons = validated_provider_evidence(
+                    detail_mapping, artifact)
+                evidence = {} if total_evidence is None else total_evidence
+            elif disposition is L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE:
+                evidence, closure_reasons = partial_provider_evidence(
+                    detail_mapping, artifact)
+            else:
+                # Pre-execution rejection has no observations by construction.
+                # Its provider reason is the authoritative diagnostic; running
+                # total evidence validation here only creates derivative noise.
+                evidence, closure_reasons = {}, ()
+            authority_identity = evidence.get("authorityIdentity", "")
+            effect_relation_identity = evidence.get("effectRelationIdentity", "")
+            source_identity = evidence.get("sourceObservationIdentity", "")
+            target_identity = evidence.get("targetObservationIdentity", "")
             provider_verified, provider_not_claimed = _provider_claim_properties(result)
-            execution_identity = ("" if evidence is None else
-                                  evidence["executionIdentity"])
+            execution_identity = evidence.get("executionIdentity", "")
             identities = {
                 "authority": authority_identity, "source-observation": source_identity,
                 "target-observation": target_identity,
@@ -419,29 +436,33 @@ def _requirement_driven_l2_validator(
             missing = tuple(
                 "l2.dimension-identity-missing:" + name
                 for name, value in identities.items() if _SHA256.fullmatch(value) is None
-            )
-            reasons = tuple(sorted(set(_result_reason_codes(result) + closure_reasons)))
+            ) if total_evidence_required else ()
+            reasons = tuple(sorted(set(
+                _result_reason_codes(result) + closure_reasons + disposition_reasons)))
             scope_missing = claim_scope is L2ClaimScope.NONE
             authority_incomplete = not bool(
                 getattr(artifact, "l2_authority_complete", False)
             )
-            if authority_incomplete:
-                missing = tuple(sorted(set(missing + (
-                    "l2.authority.incomplete",
-                ))))
-                # A mismatch without complete producer authority is not a
-                # translation-semantic failure; the comparison is unauthorised.
+            if (authority_incomplete or disposition is
+                    L2ProviderExecutionDisposition.PRECONDITION_REJECTED):
+                # No comparison occurred, so absence of execution evidence is
+                # expected.  Preserve only the provider's primary gate reason.
+                dimension_status = L2DimensionStatus.INCONCLUSIVE
+                claim_scope = L2ClaimScope.NONE
+            elif disposition is L2ProviderExecutionDisposition.NOT_EXECUTED:
+                dimension_status = (L2DimensionStatus.NOT_RUN if not reasons else
+                                    L2DimensionStatus.INCONCLUSIVE)
+                claim_scope = L2ClaimScope.NONE
+            elif total_evidence_required and (missing or closure_reasons
+                                               or disposition_reasons):
                 dimension_status = L2DimensionStatus.INCONCLUSIVE
                 claim_scope = L2ClaimScope.NONE
                 reasons = tuple(sorted(set(reasons + missing)))
-            elif dimension_status is L2DimensionStatus.VERIFIED and (
-                    scope_missing or missing or closure_reasons):
+            elif dimension_status is L2DimensionStatus.VERIFIED and scope_missing:
                 dimension_status = L2DimensionStatus.INCONCLUSIVE
                 claim_scope = L2ClaimScope.NONE
-                reasons = tuple(sorted(set(reasons + missing + (
-                    (() if not scope_missing else
-                     ("l2.dimension-claim-scope-missing",))
-                ))))
+                reasons = tuple(sorted(set(reasons + (
+                    "l2.dimension-claim-scope-missing",))))
             dimension_results.append(L2DimensionResult.create(
                 dimension=binding.dimension, status=dimension_status,
                 claim_scope=claim_scope, authority_identity=(authority_identity

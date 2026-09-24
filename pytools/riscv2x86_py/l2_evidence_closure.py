@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from hashlib import sha256
 import json
 import re
@@ -13,6 +14,22 @@ L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+class L2ProviderExecutionDisposition(Enum):
+    """How far a provider progressed before producing its result."""
+
+    PRECONDITION_REJECTED = "precondition_rejected"
+    NOT_EXECUTED = "not_executed"
+    EXECUTED_INCONCLUSIVE = "executed_inconclusive"
+    EXECUTED_FAILED = "executed_failed"
+    EXECUTED_VERIFIED = "executed_verified"
+
+
+_TOTAL_EVIDENCE_DISPOSITIONS = {
+    L2ProviderExecutionDisposition.EXECUTED_FAILED,
+    L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+}
+
+
 def identity(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False).encode("utf-8")
@@ -22,6 +39,20 @@ def identity(value: object) -> str:
 def _binding_identity(kind: str, value: object) -> str:
     return identity({"schemaVersion": "riscv2x86.l2-declared-binding.v1",
                      "kind": kind, "value": value})
+
+
+def provider_precondition_detail(
+    reason_code: str, **extra: object,
+) -> dict[str, object]:
+    """Create the canonical detail for a provider rejected before execution."""
+    if not reason_code:
+        raise ValueError("provider precondition reason code is empty")
+    return {
+        "executionDisposition":
+            L2ProviderExecutionDisposition.PRECONDITION_REJECTED.value,
+        "reasonCode": reason_code,
+        **extra,
+    }
 
 
 @dataclass(frozen=True)
@@ -105,7 +136,13 @@ def provider_evidence_fields(
     artifact: object, *, provider_id: str, harness_identity: str,
     source_observation_identity: str, target_observation_identity: str,
     execution_nonce: object,
+    execution_disposition: L2ProviderExecutionDisposition =
+        L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
 ) -> dict[str, str]:
+    if execution_disposition not in {
+            L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+            *_TOTAL_EVIDENCE_DISPOSITIONS}:
+        raise ValueError("provider evidence disposition did not execute")
     plan = execution_plan_for_provider(
         artifact, provider_id=provider_id, harness_identity=harness_identity)
     for value in (source_observation_identity, target_observation_identity):
@@ -119,6 +156,7 @@ def provider_evidence_fields(
         "executionNonce": execution_nonce,
     })
     return {
+        "executionDisposition": execution_disposition.value,
         "evidenceSchemaVersion": L2_PROVIDER_EVIDENCE_SCHEMA,
         "authorityIdentity": plan.semantic_authority_identity,
         "effectRelationIdentity": plan.effect_relation_identity,
@@ -130,6 +168,81 @@ def provider_evidence_fields(
         "targetObservationIdentity": target_observation_identity,
         "executionIdentity": execution_identity,
     }
+
+
+def provider_execution_disposition(
+    detail: Mapping[str, object], status: str,
+) -> tuple[L2ProviderExecutionDisposition, tuple[str, ...]]:
+    """Parse an explicit disposition with a fail-closed legacy classification.
+
+    Legacy inconclusive results without any execution evidence are classified
+    as precondition rejections.  This preserves their primary reason without
+    pretending that observations should already exist.
+    """
+    expected = {
+        "verified": L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+        "failed": L2ProviderExecutionDisposition.EXECUTED_FAILED,
+    }
+    raw = detail.get("executionDisposition")
+    if isinstance(raw, str):
+        try:
+            disposition = L2ProviderExecutionDisposition(raw)
+        except ValueError:
+            return (L2ProviderExecutionDisposition.NOT_EXECUTED,
+                    ("l2.provider-execution-disposition.unsupported",))
+        allowed = {
+            "verified": {L2ProviderExecutionDisposition.EXECUTED_VERIFIED},
+            "failed": {L2ProviderExecutionDisposition.EXECUTED_FAILED},
+            "inconclusive": {
+                L2ProviderExecutionDisposition.PRECONDITION_REJECTED,
+                L2ProviderExecutionDisposition.NOT_EXECUTED,
+                L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+            },
+        }.get(status, set())
+        if disposition not in allowed:
+            return disposition, ("l2.provider-execution-disposition.status-mismatch",)
+        return disposition, ()
+    if status in expected:
+        return expected[status], ("l2.provider-execution-disposition.missing",)
+    evidence_names = (
+        "executionIdentity", "sourceObservationIdentity",
+        "targetObservationIdentity", "executionPlanIdentity",
+    )
+    if status == "inconclusive" and any(detail.get(name) for name in evidence_names):
+        return (L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+                ("l2.provider-execution-disposition.missing",))
+    if status == "inconclusive" and (
+            isinstance(detail.get("reasonCode"), str)
+            or isinstance(detail.get("reasonCodes"), list)):
+        return L2ProviderExecutionDisposition.PRECONDITION_REJECTED, ()
+    return L2ProviderExecutionDisposition.NOT_EXECUTED, ()
+
+
+def partial_provider_evidence(
+    detail: Mapping[str, object], artifact: object,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Retain formed identities after an inconclusive executed comparison."""
+    names = (
+        "authorityIdentity", "effectRelationIdentity", "executionPlanIdentity",
+        "environmentAuthorityIdentity", "runtimeAdapterIdentity", "harnessIdentity",
+        "sourceObservationIdentity", "targetObservationIdentity", "executionIdentity",
+    )
+    values = {name: str(detail.get(name)) for name in names
+              if isinstance(detail.get(name), str)
+              and _SHA.fullmatch(str(detail.get(name)))}
+    reasons: set[str] = set()
+    if detail.get("evidenceSchemaVersion") != L2_PROVIDER_EVIDENCE_SCHEMA:
+        reasons.add("l2.provider-evidence.schema-missing-or-unsupported")
+    for name in ("sourceObservationIdentity", "targetObservationIdentity"):
+        if name not in values:
+            reasons.add("l2.provider-evidence.identity-missing:" + name)
+    authority = values.get("authorityIdentity")
+    if authority and authority != str(getattr(artifact, "l2_authority_identity", "")):
+        reasons.add("l2.provider-evidence.authority-mismatch")
+    relation = values.get("effectRelationIdentity")
+    if relation and relation != str(getattr(artifact, "effect_relation_set_identity", "")):
+        reasons.add("l2.provider-evidence.effect-relation-mismatch")
+    return values, tuple(sorted(reasons))
 
 
 def validated_provider_evidence(

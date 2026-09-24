@@ -3,8 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 from riscv2x86_py.l2_evidence_closure import (
-    L2_PROVIDER_EVIDENCE_SCHEMA, execution_plan_for_provider,
-    provider_evidence_fields, validated_provider_evidence,
+    L2_PROVIDER_EVIDENCE_SCHEMA, L2ProviderExecutionDisposition,
+    execution_plan_for_provider, partial_provider_evidence,
+    provider_evidence_fields, provider_execution_disposition,
+    provider_precondition_detail, validated_provider_evidence,
 )
 
 
@@ -82,3 +84,32 @@ def test_incomplete_semantic_authority_cannot_create_execution_plan():
     value.l2_authority_complete = False
     with pytest.raises(ValueError, match="semantic authority is incomplete"):
         execution_plan_for_provider(value, provider_id="provider", harness_identity=H)
+
+
+def test_precondition_detail_has_typed_non_execution_disposition():
+    detail = provider_precondition_detail("L2_FRAGMENT_BOUNDARY_VALUE_FLOW_UNPROVED")
+    disposition, reasons = provider_execution_disposition(detail, "inconclusive")
+    assert disposition is L2ProviderExecutionDisposition.PRECONDITION_REJECTED
+    assert reasons == ()
+    assert set(detail) == {"executionDisposition", "reasonCode"}
+
+
+def test_executed_inconclusive_retains_partial_evidence_only():
+    detail = {
+        "evidenceSchemaVersion": L2_PROVIDER_EVIDENCE_SCHEMA,
+        "executionDisposition": "executed_inconclusive",
+        "authorityIdentity": H,
+    }
+    evidence, reasons = partial_provider_evidence(detail, artifact())
+    assert evidence == {"authorityIdentity": H}
+    assert reasons == (
+        "l2.provider-evidence.identity-missing:sourceObservationIdentity",
+        "l2.provider-evidence.identity-missing:targetObservationIdentity",
+    )
+
+
+def test_disposition_cannot_claim_verified_for_failed_result():
+    detail = {"executionDisposition": "executed_verified"}
+    disposition, reasons = provider_execution_disposition(detail, "failed")
+    assert disposition is L2ProviderExecutionDisposition.EXECUTED_VERIFIED
+    assert reasons == ("l2.provider-execution-disposition.status-mismatch",)

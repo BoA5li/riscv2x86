@@ -15,7 +15,10 @@ from typing import Mapping
 
 from .automatic_validation import build_auto_l1_validator
 from .l2_authority import l2_authority_sidecar_from_dict
-from .l2_evidence_closure import identity as closure_identity, provider_evidence_fields
+from .l2_evidence_closure import (
+    L2ProviderExecutionDisposition, identity as closure_identity,
+    provider_evidence_fields,
+)
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
 
@@ -193,7 +196,9 @@ def build_auto_l2_functional_relation_validator(config: Mapping[str, object]):
                 source_observation_identity=source_identity,
                 target_observation_identity=target_identity,
                 execution_nonce={"underlyingL1EvidenceIdentity": l1_result.evidence_identity,
-                                 "observationContract": observation_contract}))
+                                 "observationContract": observation_contract},
+                execution_disposition=
+                    L2ProviderExecutionDisposition.EXECUTED_VERIFIED))
         evidence = _identity(payload)
         assert _SHA.fullmatch(evidence)
         return ValidationLayerResult(

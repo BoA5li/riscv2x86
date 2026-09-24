@@ -18,7 +18,10 @@ from .l2_fragment_execution import (
     boundary_as_legacy, fragment_boundary_from_dict,
     program_execution_authority_from_dict,
 )
-from .l2_evidence_closure import provider_evidence_fields
+from .l2_evidence_closure import (
+    L2ProviderExecutionDisposition, provider_evidence_fields,
+    provider_precondition_detail,
+)
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -441,10 +444,10 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             report = json.loads(Path(str(config["translatedReport"])).read_text(encoding="utf-8"))
             finding = _finding(report, str(getattr(artifact, "fragment_id", ""))) if isinstance(report, Mapping) else None
             if finding is None:
-                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps({"reasonCode":"L2_OPERAND_FINDING_MISSING"}))
+                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail("L2_OPERAND_FINDING_MISSING")))
             authority, reason = _authority(finding, functions, artifact)
             if authority is None:
-                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps({"reasonCode":reason}))
+                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail(reason)))
             function_name = authority["function"]
             function = next(item for item in functions if isinstance(item, Mapping) and item.get("name") == function_name)
             wrapper = _wrapper(function)
@@ -511,7 +514,15 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 source_observation_identity=source_observation_identity,
                 target_observation_identity=target_observation_identity,
                 execution_nonce={"authorizedExecutionIdentity": authorized_execution,
-                                 "seed": seed, "inputDomain": observation["inputDomain"]})
+                                 "seed": seed, "inputDomain": observation["inputDomain"]},
+                execution_disposition={
+                    ValidationStatus.VERIFIED:
+                        L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+                    ValidationStatus.FAILED:
+                        L2ProviderExecutionDisposition.EXECUTED_FAILED,
+                    ValidationStatus.INCONCLUSIVE:
+                        L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+                }[status])
             summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],**closure,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:

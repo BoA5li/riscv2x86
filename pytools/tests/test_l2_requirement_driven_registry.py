@@ -15,7 +15,10 @@ from riscv2x86_py.l2_semantic_profile import (
 from riscv2x86_py.l2_memory_object import (
     AuthorityMaterializationDecision, MemoryAccessAuthority,
 )
-from riscv2x86_py.l2_evidence_closure import provider_evidence_fields
+from riscv2x86_py.l2_evidence_closure import (
+    L2ProviderExecutionDisposition, provider_evidence_fields,
+    provider_precondition_detail,
+)
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
 from riscv2x86_py.validation_runtime_registry import validation_runtime_registry_from_dict
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
@@ -210,6 +213,35 @@ def _legacy_verified_factory(_config):
         "sha256:" + "a" * 64, '{"claimScope":"architectural"}')
 
 
+def _precondition_factory(_config):
+    return lambda **kwargs: ValidationLayerResult(
+        kwargs["level"], ValidationStatus.INCONCLUSIVE, detail=json.dumps(
+            provider_precondition_detail(
+                "L2_FRAGMENT_BOUNDARY_VALUE_FLOW_UNPROVED")))
+
+
+def _failed_factory(*, complete):
+    def build(_config):
+        def validate(**kwargs):
+            detail = {"executionDisposition": "executed_failed",
+                      "reasonCode": "L2_OPERAND_VALUE_MISMATCH"}
+            if complete:
+                detail.update(provider_evidence_fields(
+                    kwargs["translation_artifact"],
+                    provider_id=kwargs["l2_provider_id"],
+                    harness_identity="sha256:" + "d" * 64,
+                    source_observation_identity="sha256:" + "c" * 64,
+                    target_observation_identity="sha256:" + "e" * 64,
+                    execution_nonce={"test": "mismatch"},
+                    execution_disposition=
+                        L2ProviderExecutionDisposition.EXECUTED_FAILED))
+            return ValidationLayerResult(
+                kwargs["level"], ValidationStatus.FAILED,
+                "sha256:" + "a" * 64, json.dumps(detail, sort_keys=True))
+        return validate
+    return build
+
+
 def _artifact():
     identity = "sha256:" + "b" * 64
     profile = profile_dict()
@@ -273,6 +305,54 @@ def test_provider_verified_without_total_evidence_chain_is_inconclusive(tmp_path
     dimensions = json.loads(result.detail)["dimensionResults"]
     assert all("l2.provider-evidence.schema-missing-or-unsupported"
                in item["reasonCodes"] for item in dimensions.values())
+
+
+def test_precondition_rejection_preserves_only_primary_reason(tmp_path):
+    providers = [{
+        "providerId": "both", "supportedDimensions": ["logical_operands", "shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation", "shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "automatic", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }]
+    registry, _ = _registry(tmp_path, providers, _precondition_factory)
+    result = registry.validator_for(ValidationLevel.L2)(
+        level=ValidationLevel.L2, translation_artifact=_artifact())
+    detail = json.loads(result.detail)
+    assert detail["requiredDimensions"] == ["logical_operands", "shell_semantics"]
+    assert all(item["reasonCodes"] == [
+        "L2_FRAGMENT_BOUNDARY_VALUE_FLOW_UNPROVED"]
+        for item in detail["dimensionResults"].values())
+
+
+@pytest.mark.parametrize("complete, expected", [
+    (False, ValidationStatus.INCONCLUSIVE),
+    (True, ValidationStatus.FAILED),
+])
+def test_executed_failure_requires_total_evidence(tmp_path, complete, expected):
+    providers = [{
+        "providerId": "both", "supportedDimensions": ["logical_operands", "shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["logical_operand_observation", "shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "automatic", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }]
+    registry, _ = _registry(tmp_path, providers, _failed_factory(complete=complete))
+    result = registry.validator_for(ValidationLevel.L2)(
+        level=ValidationLevel.L2, translation_artifact=_artifact())
+    assert result.status is expected
+    dimensions = json.loads(result.detail)["dimensionResults"]
+    if complete:
+        assert all(item["status"] == "failed" for item in dimensions.values())
+        assert all(item["executionIdentity"] for item in dimensions.values())
+    else:
+        assert all(item["status"] == "inconclusive" for item in dimensions.values())
+        assert all("l2.dimension-identity-missing:execution" in item["reasonCodes"]
+                   for item in dimensions.values())
 
 
 def test_registry_missing_required_provider_cannot_verify(tmp_path):

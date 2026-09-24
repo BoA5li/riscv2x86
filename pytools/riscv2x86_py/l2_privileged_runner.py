@@ -24,7 +24,10 @@ from .l2_privileged_routes import (
     L2CsrAuthority, L2PrivilegedRouteKind, canonical_identity,
     select_privileged_route,
 )
-from .l2_evidence_closure import identity as closure_identity, provider_evidence_fields
+from .l2_evidence_closure import (
+    L2ProviderExecutionDisposition, identity as closure_identity,
+    provider_evidence_fields,
+)
 
 
 LEGACY_PRIVILEGED_RUNNER_SCHEMA = "riscv2x86.l2-privileged-runner.v1"
@@ -665,7 +668,11 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
             source_observation_identity=str(detail["sourceObservationIdentity"]),
             target_observation_identity=str(detail["targetObservationIdentity"]),
             execution_nonce={"initialStateIdentity": initial_identity,
-                             "routeContractIdentity": routes.identity}))
+                             "routeContractIdentity": routes.identity},
+            execution_disposition=(
+                L2ProviderExecutionDisposition.EXECUTED_VERIFIED
+                if result.approved else
+                L2ProviderExecutionDisposition.EXECUTED_FAILED)))
     evidence = _digest({
         **detail,
         "baseEvidence": base.evidence_identity,

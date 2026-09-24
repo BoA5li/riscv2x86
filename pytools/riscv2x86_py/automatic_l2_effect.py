@@ -22,7 +22,10 @@ from .l2_memory_object import (
     L2MemoryObservation, exact_memory_observations_match,
     memory_proof_facts_from_dict,
 )
-from .l2_evidence_closure import provider_evidence_fields
+from .l2_evidence_closure import (
+    L2ProviderExecutionDisposition, provider_evidence_fields,
+    provider_precondition_detail,
+)
 from .l2_fence_ordering import (
     fence_ordering_events,
     fence_ordering_observations_match,
@@ -575,15 +578,15 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             finding = _finding(report, str(getattr(artifact, "fragment_id", ""))) if isinstance(report, Mapping) else None
             if finding is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                                             detail=json.dumps({"reasonCode":"L2_EFFECT_FINDING_MISSING"}))
+                                             detail=json.dumps(provider_precondition_detail("L2_EFFECT_FINDING_MISSING")))
             function = _function_for(finding, functions)
             if function is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                                             detail=json.dumps({"reasonCode":"L2_EFFECT_FUNCTION_BINDING_AMBIGUOUS"}))
+                                             detail=json.dumps(provider_precondition_detail("L2_EFFECT_FUNCTION_BINDING_AMBIGUOUS")))
             relation_authority, reason = _approved_relations(finding, artifact)
             if relation_authority is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
-                                             detail=json.dumps({"reasonCode":reason}))
+                                             detail=json.dumps(provider_precondition_detail(reason)))
             mode = str(config["mode"])
             approved = tuple(
                 approved_effect_relation_from_dict(item)
@@ -738,7 +741,15 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 harness_identity=str(observation["harnessDigest"]),
                 source_observation_identity=source_observation_identity,
                 target_observation_identity=target_observation_identity,
-                execution_nonce={"attemptId": observation["attemptId"], "mode": mode})
+                execution_nonce={"attemptId": observation["attemptId"], "mode": mode},
+                execution_disposition={
+                    ValidationStatus.VERIFIED:
+                        L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+                    ValidationStatus.FAILED:
+                        L2ProviderExecutionDisposition.EXECUTED_FAILED,
+                    ValidationStatus.INCONCLUSIVE:
+                        L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+                }[status])
             summary={"schemaVersion":"riscv2x86.auto-l2-effect-result.v2","status":status.value,
                      "reasonCode":reason,"fragmentId":observation["fragmentId"],
                      "attemptId":observation["attemptId"],"mode":mode,
