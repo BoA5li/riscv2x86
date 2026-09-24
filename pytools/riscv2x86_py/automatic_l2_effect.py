@@ -26,6 +26,11 @@ from .l2_evidence_closure import (
     L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
+from .l2_scalar_authority import (
+    assess_scalar_authority_materializability,
+    scalar_authority_decision_matches_assessment,
+    scalar_authority_decision_from_dict,
+)
 from .l2_fence_ordering import (
     fence_ordering_events,
     fence_ordering_observations_match,
@@ -118,11 +123,31 @@ def _function_for(finding: Mapping[str, object], functions: list[object]) -> Map
 
 def _approved_relations(
     finding: Mapping[str, object], artifact: object,
+    function: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object] | None, str]:
     """Read proof authority; never manufacture a relation from translation text."""
     approval = finding.get("approvalArtifact")
     if not isinstance(approval, Mapping):
         return None, "L2_EFFECT_AUTHORITY_MISSING"
+    raw_decision = approval.get("l2ScalarAuthorityDecision")
+    if isinstance(raw_decision, Mapping):
+        fragment = finding.get("fragment")
+        fragment_id = (str(fragment.get("id") or fragment.get("fragmentId") or "")
+                       if isinstance(fragment, Mapping) else "")
+        try:
+            stored = scalar_authority_decision_from_dict(
+                raw_decision, expected_fragment_id=fragment_id)
+        except ValueError:
+            return None, "L2_SCALAR_AUTHORITY_DECISION_INVALID"
+        boundary = approval.get("l2FragmentOperandBoundary")
+        if not isinstance(boundary, Mapping) and isinstance(function, Mapping):
+            boundary = function.get("l2OperandBoundary")
+        recomputed = assess_scalar_authority_materializability(
+            finding, function, boundary if isinstance(boundary, Mapping) else None)
+        if not scalar_authority_decision_matches_assessment(stored, recomputed):
+            return None, "L2_SCALAR_AUTHORITY_DECISION_STALE"
+        if not stored.materializable:
+            return None, stored.reason_codes[0]
     raw = approval.get("l2AuthoritySidecar")
     if not isinstance(raw, Mapping):
         materialization_reason = approval.get("l2AuthorityMaterializationReasonCode")
@@ -583,7 +608,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             if function is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                              detail=json.dumps(provider_precondition_detail("L2_EFFECT_FUNCTION_BINDING_AMBIGUOUS")))
-            relation_authority, reason = _approved_relations(finding, artifact)
+            relation_authority, reason = _approved_relations(finding, artifact, function)
             if relation_authority is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                              detail=json.dumps(provider_precondition_detail(reason)))

@@ -19,6 +19,11 @@ from .l2_dimensions import (
 )
 from .l2_semantic_profile import L2PatternKind, profile_from_finding
 from .l2_memory_object import assess_memory_authority_materializability
+from .l2_scalar_authority import (
+    assess_scalar_authority_materializability,
+    scalar_authority_decision_matches_assessment,
+    scalar_authority_decision_from_dict,
+)
 
 LEGACY_L2_REQUIREMENT_MANIFEST_SCHEMA = "riscv2x86.l2-requirement-manifest.v1"
 LEGACY_L2_FRAGMENT_REQUIREMENT_SCHEMA = "riscv2x86.l2-fragment-requirement.v1"
@@ -222,12 +227,38 @@ class L2EligibilityClassifier:
             semantic_profile = None
             profile_diagnostics = ("l2.semantic-profile.missing-or-invalid",)
         memory_authority_reason = ""
+        scalar_authority_reason = ""
+        scalar_authority_decision = None
         if (semantic_profile is not None
                 and semantic_profile.pattern_kind in {
                     L2PatternKind.MEMORY_LOAD, L2PatternKind.MEMORY_STORE,
                 }):
             memory_authority_reason = _memory_authority_eligibility_reason(
                 finding, fragment_id)
+        if (semantic_profile is not None
+                and semantic_profile.pattern_kind in {
+                    L2PatternKind.SCALAR, L2PatternKind.BRANCH,
+                    L2PatternKind.JUMP, L2PatternKind.COMPOSITE,
+                }):
+            approval = finding.get("approvalArtifact")
+            raw_decision = (approval.get("l2ScalarAuthorityDecision")
+                            if isinstance(approval, Mapping) else None)
+            if isinstance(raw_decision, Mapping):
+                try:
+                    parsed_decision = scalar_authority_decision_from_dict(
+                        raw_decision, expected_fragment_id=fragment_id)
+                    raw_boundary = approval.get("l2FragmentOperandBoundary")
+                    if isinstance(raw_boundary, Mapping):
+                        assessed = assess_scalar_authority_materializability(
+                            finding, None, raw_boundary)
+                        if not scalar_authority_decision_matches_assessment(
+                                parsed_decision, assessed):
+                            raise ValueError("stale scalar authority decision")
+                    scalar_authority_decision = parsed_decision.to_dict()
+                    if not parsed_decision.materializable:
+                        scalar_authority_reason = parsed_decision.reason_codes[0]
+                except ValueError:
+                    scalar_authority_reason = "L2_SCALAR_AUTHORITY_DECISION_INVALID"
         if outcome in _NO_CANDIDATE:
             eligibility = L2EligibilityStatus.NOT_APPLICABLE
             disposition = L2DimensionStatus.NOT_APPLICABLE
@@ -241,6 +272,10 @@ class L2EligibilityClassifier:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = (memory_authority_reason,)
+        elif scalar_authority_reason:
+            eligibility = L2EligibilityStatus.INCONCLUSIVE
+            disposition = L2DimensionStatus.INCONCLUSIVE
+            reason_codes = (scalar_authority_reason,)
         elif diagnostics or profile_diagnostics or not fragment_id or not dimensions:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
@@ -290,6 +325,8 @@ class L2EligibilityClassifier:
             payload["memoryAuthorityDecision"] = (
                 approval.get("l2MemoryAuthorityDecision")
                 if isinstance(approval, Mapping) else None)
+        if scalar_authority_decision is not None:
+            payload["scalarAuthorityDecision"] = scalar_authority_decision
         payload["requirementIdentity"] = _identity(payload)
         return payload
 
@@ -354,7 +391,9 @@ def validate_l2_requirement_manifest(value: Mapping[str, object]) -> None:
         if (not isinstance(item, Mapping)
                 or set(item) not in {frozenset(requirement_fields),
                                      frozenset(requirement_fields |
-                                               {"memoryAuthorityDecision"})}):
+                                               {"memoryAuthorityDecision"}),
+                                     frozenset(requirement_fields |
+                                               {"scalarAuthorityDecision"})}):
             raise ValueError("L2 fragment requirement fields are invalid")
         item_identity = item.get("requirementIdentity")
         item_payload = dict(item); item_payload.pop("requirementIdentity")

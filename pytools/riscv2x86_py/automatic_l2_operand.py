@@ -22,6 +22,11 @@ from .l2_evidence_closure import (
     L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
+from .l2_scalar_authority import (
+    assess_scalar_authority_materializability,
+    scalar_authority_decision_matches_assessment,
+    scalar_authority_decision_from_dict,
+)
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -93,6 +98,24 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     raw_fragment_boundary = (approval.get("l2FragmentOperandBoundary")
                              if isinstance(approval, Mapping) else None)
     per_fragment = isinstance(raw_fragment_boundary, Mapping)
+    raw_decision = (approval.get("l2ScalarAuthorityDecision")
+                    if isinstance(approval, Mapping) else None)
+    if isinstance(raw_decision, Mapping):
+        fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+        try:
+            stored = scalar_authority_decision_from_dict(
+                raw_decision, expected_fragment_id=fragment_id)
+        except ValueError:
+            return None, "L2_SCALAR_AUTHORITY_DECISION_INVALID"
+        decision_boundary = (raw_fragment_boundary if per_fragment
+                             else function_boundary)
+        recomputed = assess_scalar_authority_materializability(
+            finding, function,
+            decision_boundary if isinstance(decision_boundary, Mapping) else None)
+        if not scalar_authority_decision_matches_assessment(stored, recomputed):
+            return None, "L2_SCALAR_AUTHORITY_DECISION_STALE"
+        if not stored.materializable:
+            return None, stored.reason_codes[0]
     if per_fragment:
         try:
             parsed_boundary = fragment_boundary_from_dict(

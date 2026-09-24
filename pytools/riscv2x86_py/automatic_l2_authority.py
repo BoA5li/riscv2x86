@@ -43,6 +43,7 @@ from .l2_fragment_execution import (
     boundary_as_legacy, materialize_fragment_execution_authority,
 )
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
+from .l2_scalar_authority import assess_scalar_authority_materializability
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
@@ -111,6 +112,12 @@ def _scalar_authority(
     boundary = (boundary_as_legacy(raw_fragment_boundary, function_boundary)
                 if per_fragment and isinstance(function_boundary, Mapping)
                 else function_boundary)
+    decision_boundary = (raw_fragment_boundary if per_fragment else function_boundary)
+    decision = assess_scalar_authority_materializability(
+        finding, function,
+        decision_boundary if isinstance(decision_boundary, Mapping) else None)
+    if not decision.materializable:
+        return None
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     if (not isinstance(boundary, Mapping) or boundary.get("complete") is not True
             or not isinstance(outputs, list) or not outputs
@@ -679,18 +686,48 @@ def materialize_automatic_l2_authority(
     for finding in findings:
         if not isinstance(finding, dict):
             continue
+        raw_profile = finding.get("l2SemanticProfile")
+        pattern_kind = (raw_profile.get("patternKind")
+                        if isinstance(raw_profile, Mapping) else "")
+        is_scalar = pattern_kind in {
+            L2PatternKind.SCALAR.value, L2PatternKind.BRANCH.value,
+            L2PatternKind.JUMP.value, L2PatternKind.COMPOSITE.value,
+        }
+        approval = finding.get("approvalArtifact")
+        raw_fragment = finding.get("fragment")
+        function_matches = [item for item in functions
+                            if isinstance(raw_fragment, Mapping)
+                            and item.get("name") == raw_fragment.get("enclosingFunction")]
+        scalar_decision = None
+        if is_scalar and isinstance(approval, dict):
+            function = function_matches[0] if len(function_matches) == 1 else None
+            raw_boundary = approval.get("l2FragmentOperandBoundary")
+            if not isinstance(raw_boundary, Mapping) and isinstance(function, Mapping):
+                raw_boundary = function.get("l2OperandBoundary")
+            scalar_decision = assess_scalar_authority_materializability(
+                finding, function,
+                raw_boundary if isinstance(raw_boundary, Mapping) else None)
+            approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
         sidecar = (_functional_relation_authority(finding, producer_digest)
                    or _fence_authority(finding, functions, producer_digest)
                    or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))
-        raw_profile = finding.get("l2SemanticProfile")
-        pattern_kind = (raw_profile.get("patternKind")
-                        if isinstance(raw_profile, Mapping) else "")
         is_memory = pattern_kind in {
             L2PatternKind.MEMORY_LOAD.value, L2PatternKind.MEMORY_STORE.value,
         }
+        if is_scalar and isinstance(approval, dict):
+            assert scalar_decision is not None
+            if sidecar is None and scalar_decision.materializable:
+                scalar_decision = scalar_decision.with_reason(
+                    "L2_SCALAR_EFFECT_RELATION_MISSING")
+            elif sidecar is not None and not scalar_decision.materializable:
+                # A sidecar must never bypass a failed common decision.
+                sidecar = None
+            approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
+            approval["l2AuthorityMaterializationReasonCode"] = (
+                "L2_SCALAR_AUTHORITY_MATERIALIZED" if sidecar is not None else
+                scalar_decision.reason_codes[0])
         if sidecar is None:
-            approval = finding.get("approvalArtifact")
             if (pattern_kind == L2PatternKind.FENCE.value
                     and isinstance(approval, dict)):
                 approval["l2AuthorityMaterializationReasonCode"] = \
@@ -718,7 +755,6 @@ def materialize_automatic_l2_authority(
                     raw_fragment if isinstance(raw_fragment, Mapping) else {})
                 approval["l2MemoryAuthorityDecision"] = decision.to_dict()
             continue
-        approval = finding.get("approvalArtifact")
         assert isinstance(approval, dict)
         proof_payload = {
             key: approval.get(key, "") for key in (

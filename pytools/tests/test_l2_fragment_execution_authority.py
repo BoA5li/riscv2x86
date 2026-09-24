@@ -141,3 +141,17 @@ def test_same_operand_name_with_distinct_identity_does_not_create_edge():
     assert not boundaries["fragment:a"].complete
     assert graph.edges == ()
     assert not execution.complete
+
+
+def test_ambiguous_fragment_range_is_reported_without_guessing():
+    findings, function = _findings(), _function()
+    function = deepcopy(function)
+    candidates = function["l2OperandBoundary"]["fragmentCandidates"]
+    candidates[0].pop("fragmentId")
+    duplicate = deepcopy(candidates[0])
+    candidates.insert(1, duplicate)
+    boundaries, _graph, _execution = materialize_fragment_execution_authority(
+        findings, function, function["programId"])
+    assert not boundaries["fragment:a"].complete
+    assert "L2_FRAGMENT_BOUNDARY_RANGE_AMBIGUOUS" in \
+        boundaries["fragment:a"].reason_codes

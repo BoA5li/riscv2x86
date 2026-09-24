@@ -5,6 +5,7 @@ from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authori
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
 from riscv2x86_py.l2_semantic_profile import L2PatternKind
+from riscv2x86_py.l2_scalar_authority import scalar_authority_decision_from_dict
 from tests.l2_profile_fixtures import profile_dict
 
 
@@ -70,12 +71,55 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
     assert materialize_automatic_l2_authority(
         {"findings": [finding]}, [function], frontend,
     ) == 1
+    decision = scalar_authority_decision_from_dict(
+        finding["approvalArtifact"]["l2ScalarAuthorityDecision"],
+        expected_fragment_id="fragment")
+    assert decision.materializable
+    assert decision.boundary_identity and decision.proof_identity
     sidecar = l2_authority_sidecar_from_dict(
         finding["approvalArtifact"]["l2AuthoritySidecar"]
     )
     assert sidecar.complete
     assert sidecar.operands[0].escape_kind == "function_return"
     assert len(sidecar.approved_effect_relations) == 64
+
+
+def test_scalar_authority_rejection_records_precise_auditable_decision(tmp_path: Path):
+    function = {
+        "name": "add", "arity": 1,
+        "l2OperandBoundary": {
+            "complete": True, "parameterDeclarationIds": ["lhs"],
+            "asmOperandDeclarationIds": ["lhs"], "returnDeclarationId": "",
+            "declarationReferenceCounts": {"lhs": 1},
+            "declarations": {"lhs": {"name": "lhs", "type": "uint64_t"}},
+        },
+    }
+    finding = {
+        "translationOutcome": "emitted",
+        "fragment": {"id": "fragment", "enclosingFunction": "add",
+                     "outputs": [{"constraint": "=r"}],
+                     "inputs": [{"constraint": "r"}]},
+        "approvalArtifact": {
+            "proofStatus": "approved", "sourceModelId": "model",
+            "constraintsId": "constraints", "preservationDecisionId": "decision",
+            "planId": "plan", "targetEnvironmentId": "environment",
+            "targetCatalogVersion": "catalog",
+        },
+        "l2SemanticProfile": profile_dict("fragment"),
+    }
+    frontend = tmp_path / "frontend"; frontend.write_bytes(b"frontend")
+    assert materialize_automatic_l2_authority(
+        {"findings": [finding]}, [function], frontend) == 0
+    decision = scalar_authority_decision_from_dict(
+        finding["approvalArtifact"]["l2ScalarAuthorityDecision"],
+        expected_fragment_id="fragment")
+    assert not decision.materializable
+    assert "L2_SCALAR_OPERAND_ARITY_MISMATCH" in decision.reason_codes
+    assert "l2AuthoritySidecar" not in finding["approvalArtifact"]
+    requirement = L2EligibilityClassifier().classify(finding, 0)
+    assert requirement["eligibilityStatus"] == "inconclusive"
+    assert requirement["scalarAuthorityDecision"]["decisionIdentity"] == \
+        decision.decision_identity
 
 
 def test_functional_counter_authority_is_typed_and_runtime_mediated(tmp_path: Path):

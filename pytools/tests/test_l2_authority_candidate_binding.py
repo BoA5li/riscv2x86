@@ -152,4 +152,4 @@ def test_incomplete_authority_is_inconclusive_not_semantic_failure(tmp_path):
         source_observation=observation, target_observation=observation,
     )
     assert result.status is ValidationStatus.INCONCLUSIVE
-    assert "l2.authority.incomplete" in result.detail
+    assert "l2.provider-execution-disposition.missing" in result.detail

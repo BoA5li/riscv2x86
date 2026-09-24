@@ -209,11 +209,13 @@ def _width(type_name: object) -> int:
     return 0
 
 
-def _candidate_for(fragment: Mapping[str, object], candidates: Sequence[Mapping[str, object]]) -> Mapping[str, object] | None:
+def _candidate_for(fragment: Mapping[str, object], candidates: Sequence[Mapping[str, object]]) -> tuple[Mapping[str, object] | None, bool]:
     fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
     direct = [item for item in candidates if item.get("fragmentId") == fragment_id]
     if len(direct) == 1:
-        return direct[0]
+        return direct[0], False
+    if len(direct) > 1:
+        return None, True
     begin, end = fragment.get("beginOffset"), fragment.get("endOffset")
     if (isinstance(begin, int) and not isinstance(begin, bool)
             and isinstance(end, int) and not isinstance(end, bool)):
@@ -223,8 +225,10 @@ def _candidate_for(fragment: Mapping[str, object], candidates: Sequence[Mapping[
                     and int(item["beginOffset"]) <= begin
                     and end <= int(item["endOffset"])]
         if len(overlaps) == 1:
-            return overlaps[0]
-    return None
+            return overlaps[0], False
+        if len(overlaps) > 1:
+            return None, True
+    return None, False
 
 
 def materialize_fragment_execution_authority(
@@ -253,12 +257,13 @@ def materialize_fragment_execution_authority(
     for _finding, fragment in scoped:
         fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
         outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
-        candidate = _candidate_for(fragment, [item for item in candidates
-                                               if isinstance(item, Mapping)])
+        candidate, ambiguous = _candidate_for(
+            fragment, [item for item in candidates if isinstance(item, Mapping)])
         reasons: set[str] = set()
         asm_ids = candidate.get("asmOperandDeclarationIds") if candidate else None
         if candidate is None:
-            reasons.add("L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
+            reasons.add("L2_FRAGMENT_BOUNDARY_RANGE_AMBIGUOUS" if ambiguous
+                        else "L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
             asm_ids = []
         if (not isinstance(outputs, list) or not isinstance(inputs, list)
                 or not isinstance(asm_ids, list)
