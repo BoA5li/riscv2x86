@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts
 from riscv2x86_py.compiler_value_flow import (
     COMPILER_FRAGMENT_CANDIDATE_SCHEMA, COMPILER_VALUE_NODE_SCHEMA,
     CompilerOperandBinding, CompilerValueNode, identity,
 )
 from riscv2x86_py.l2_fragment_execution import (
-    _candidate_for, materialize_fragment_execution_authority,
+    FragmentOperandBoundary, OperandBinding, _candidate_for,
+    materialize_fragment_execution_authority,
 )
 
 
@@ -190,3 +193,73 @@ def test_input_only_fragment_materializes_without_fabricated_output():
     assert len(boundary.input_bindings) == 1
     assert graph.complete is True
     assert execution.complete is True
+
+
+
+def test_non_operand_ast_children_do_not_shift_candidate_operand_indices():
+    source = b"uint64_t probe(uint64_t input) { asm; return input; }\n"
+    function = {
+        "kind": "FunctionDecl",
+        "name": "probe",
+        "range": _range(0, len(source)),
+        "type": {"qualType": "uint64_t (uint64_t)"},
+        "inner": [
+            {
+                "kind": "ParmVarDecl", "id": "input", "name": "input",
+                "range": _range(15, 29), "type": {"qualType": "uint64_t"},
+            },
+            {
+                "kind": "GCCAsmStmt",
+                "range": _range(32, 36),
+                "outputConstraints": [],
+                "inputConstraints": ["r"],
+                "numOutputs": 0,
+                "numInputs": 1,
+                "inner": [
+                    {"kind": "StringLiteral", "range": _range(32, 33),
+                     "type": {"qualType": "const char[4]"}},
+                    _ref("input", 34, 35),
+                ],
+            },
+            {
+                "kind": "ReturnStmt", "range": _range(38, 50),
+                "inner": [_ref("input", 45, 50)],
+            },
+        ],
+    }
+
+    facts = _l2_operand_boundary_facts(
+        function,
+        source_digest="sha256:" + "4" * 64,
+        function_identity="sha256:" + "5" * 64,
+        source_file="/tmp/non-operand-child.c",
+        source_bytes=source,
+    )
+    candidate = facts["fragmentCandidates"][0]
+
+    assert candidate["complete"] is True
+    assert candidate["reasonCodes"] == []
+    assert len(candidate["operandBindings"]) == 1
+    assert candidate["operandBindings"][0]["operandIndex"] == 0
+    assert candidate["operandBindings"][0]["access"] == "input"
+
+
+def test_output_boundary_without_sink_remains_incomplete():
+    node_identity = "sha256:" + "1" * 64
+    binding = OperandBinding(
+        0, "decl:output", node_identity, "output", 64, True, "unsigned")
+
+    incomplete = FragmentOperandBoundary(
+        "program:test", "function:test", "fragment:test",
+        (), (binding,), (), (), False,
+        ("L2_FRAGMENT_LIVE_OUT_UNPROVED",),
+    )
+    assert incomplete.complete is False
+
+    with pytest.raises(
+            ValueError,
+            match="fragment operand boundary completeness is inconsistent"):
+        FragmentOperandBoundary(
+            "program:test", "function:test", "fragment:test",
+            (), (binding,), (), (), True,
+        )
