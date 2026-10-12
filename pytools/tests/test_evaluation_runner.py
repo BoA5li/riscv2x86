@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from riscv2x86_py.evaluation import (
-    EVALUATION_REQUEST_SCHEMA, _effective_validation_contract,
+    EVALUATION_REQUEST_SCHEMA, CommandRecord, _effective_validation_contract,
     evaluation_request_from_dict,
     persist_evaluation_result, run_evaluation,
 )
@@ -331,6 +331,171 @@ def test_translation_command_produces_report_and_archive_in_one_run(tmp_path):
     assert (work / "attempts.json").is_file()
     assert (work / "candidate-staging" / "case.c").is_file()
     assert (work / "build" / "target").is_file()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_status", "expected_reason"),
+    (
+        (TranslationOutcome.NEEDS_ROUTE, "needs_route",
+         "evaluation.translation-outcome-needs-route"),
+        (TranslationOutcome.UNSUPPORTED, "unsupported",
+         "evaluation.translation-outcome-unsupported"),
+        (TranslationOutcome.FAILED, "failed",
+         "evaluation.translation-outcome-failed"),
+    ),
+)
+def test_nonzero_translation_command_recovers_typed_terminal_outcome(
+    tmp_path, outcome, expected_status, expected_reason,
+):
+    request, _source, attempt = _setup(tmp_path, translation_outcome=outcome)
+    report_seed = tmp_path / "report-seed.json"
+    archive_seed = tmp_path / "archive-seed.json"
+    Path(request.translated_report).replace(report_seed)
+    Path(request.attempt_archive).replace(archive_seed)
+    script = (
+        "from pathlib import Path;"
+        f"Path(r'${{TRANSLATED_REPORT}}').write_bytes(Path(r'{report_seed}').read_bytes());"
+        f"Path(r'${{ATTEMPT_ARCHIVE}}').write_bytes(Path(r'{archive_seed}').read_bytes());"
+        "raise SystemExit(1)"
+    )
+    request = replace(
+        request, translated_report="translated-report.json", attempt_archive="attempts.json",
+        translation_command=(sys.executable, "-c", script),
+    )
+
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["status"] == expected_status
+    assert expected_reason in result["reasonCodes"]
+    assert "evaluation.translation-command-not-verified" not in result["reasonCodes"]
+    assert result["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
+    assert result["attempts"][0]["translationOutcome"] == outcome.value
+    assert result["commands"][0]["status"] == "failed"
+
+
+def test_nonzero_translation_command_preserves_withheld_candidate_reason(tmp_path):
+    request, _source, attempt = _setup(tmp_path)
+    report_seed = tmp_path / "report-seed.json"
+    archive_seed = tmp_path / "archive-seed.json"
+    Path(request.translated_report).replace(report_seed)
+    Path(request.attempt_archive).replace(archive_seed)
+    script = (
+        "from pathlib import Path;"
+        f"Path(r'${{TRANSLATED_REPORT}}').write_bytes(Path(r'{report_seed}').read_bytes());"
+        f"Path(r'${{ATTEMPT_ARCHIVE}}').write_bytes(Path(r'{archive_seed}').read_bytes());"
+        "raise SystemExit(1)"
+    )
+    request = replace(
+        request, translated_report="translated-report.json", attempt_archive="attempts.json",
+        translation_command=(sys.executable, "-c", script),
+    )
+
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["status"] == "inconclusive"
+    assert result["reasonCodes"] == [
+        "evaluation.translation-publication-withheld",
+        "publication.validation-failed",
+    ]
+    assert result["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
+    assert result["attempts"][0]["translationOutcome"] == "emitted"
+    assert result["attempts"][0]["validation"] is None
+
+
+def test_nonzero_translation_command_allows_authenticated_admitted_candidate(tmp_path):
+    request, _source, attempt = _setup(tmp_path)
+    admitted = replace(
+        attempt, publication_outcome=PublicationOutcome.ADMITTED, artifact_id="",
+    )
+    save_translation_attempt_archive((admitted,), request.attempt_archive)
+    report_seed = tmp_path / "report-seed.json"
+    archive_seed = tmp_path / "archive-seed.json"
+    Path(request.translated_report).replace(report_seed)
+    Path(request.attempt_archive).replace(archive_seed)
+    script = (
+        "from pathlib import Path;"
+        f"Path(r'${{TRANSLATED_REPORT}}').write_bytes(Path(r'{report_seed}').read_bytes());"
+        f"Path(r'${{ATTEMPT_ARCHIVE}}').write_bytes(Path(r'{archive_seed}').read_bytes());"
+        "raise SystemExit(1)"
+    )
+    request = replace(
+        request, translated_report="translated-report.json", attempt_archive="attempts.json",
+        translation_command=(sys.executable, "-c", script),
+    )
+
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["commands"][0]["status"] == "failed"
+    assert result["attempts"][0]["attemptArtifactId"] == admitted.artifact_id
+    assert result["attempts"][0]["translationOutcome"] == "emitted"
+    assert (tmp_path / "evaluation" / "candidate-staging" / "case.c").is_file()
+    assert "evaluation.translation-command-not-verified" not in result["reasonCodes"]
+
+
+def test_nonzero_translation_command_without_archive_is_process_failure(tmp_path):
+    request, _source, _attempt = _setup(tmp_path)
+    Path(request.translated_report).unlink()
+    Path(request.attempt_archive).unlink()
+    request = replace(
+        request, translated_report="translated-report.json", attempt_archive="attempts.json",
+        translation_command=(sys.executable, "-c", "raise SystemExit(2)"),
+    )
+
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["status"] == "failed"
+    assert result["reasonCodes"] == [
+        "evaluation.translation-attempt-archive-missing",
+    ]
+    assert result["attempts"] == []
+
+
+def test_nonzero_translation_command_with_invalid_archive_is_process_failure(tmp_path):
+    request, _source, _attempt = _setup(tmp_path)
+    Path(request.translated_report).unlink()
+    Path(request.attempt_archive).unlink()
+    script = (
+        "from pathlib import Path;"
+        "Path(r'${ATTEMPT_ARCHIVE}').write_text('{not-json');"
+        "raise SystemExit(2)"
+    )
+    request = replace(
+        request, translated_report="translated-report.json", attempt_archive="attempts.json",
+        translation_command=(sys.executable, "-c", script),
+    )
+
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["status"] == "failed"
+    assert result["reasonCodes"] == [
+        "evaluation.translation-attempt-archive-invalid",
+    ]
+    assert result["attempts"] == []
+
+
+def test_translation_timeout_is_not_overridden_by_partial_archive(tmp_path):
+    request, _source, _attempt = _setup(tmp_path)
+    archive_seed = Path(request.attempt_archive)
+    request = replace(
+        request, attempt_archive="attempts.json",
+        translation_command=("translator",),
+    )
+
+    def timeout_executor(command, work, timeout, phase):
+        Path(work, "attempts.json").write_bytes(archive_seed.read_bytes())
+        return CommandRecord(
+            phase, tuple(command), 124, "", "timed out", True,
+            ValidationStatus.INCONCLUSIVE,
+        )
+
+    result = run_evaluation(
+        request, work_directory=tmp_path / "evaluation",
+        command_executor=timeout_executor,
+    )
+
+    assert result["status"] == "failed"
+    assert result["reasonCodes"] == ["evaluation.translation-command-timeout"]
+    assert result["attempts"] == []
 
 
 def test_request_schema_and_work_tree_are_fail_closed(tmp_path):
