@@ -334,10 +334,29 @@ def _l2_operand_boundary_facts(
                         else asm_node.get("numOutputs"))
         if isinstance(output_count, bool) or not isinstance(output_count, int):
             output_count = -1
-        input_count = (len(input_constraints) if isinstance(input_constraints, list)
-                       else asm_node.get("numInputs"))
-        if isinstance(input_count, bool) or not isinstance(input_count, int):
-            input_count = -1
+        # A "+..." constraint is one read-write output operand, not a
+        # second explicit input.  Prefer compiler-exported input metadata, but
+        # older JSON AST producers may omit it.  In that case the compiler's
+        # ordered operand-expression sequence and authoritative output
+        # partition determine the remaining explicit input count.  An
+        # impossible partition stays unknown and therefore fail-closed.
+        if isinstance(input_constraints, list):
+            input_count = len(input_constraints)
+            input_count_authority = "clang-input-constraints"
+        else:
+            raw_input_count = asm_node.get("numInputs")
+            if (isinstance(raw_input_count, int)
+                    and not isinstance(raw_input_count, bool)
+                    and raw_input_count >= 0):
+                input_count = raw_input_count
+                input_count_authority = "clang-num-inputs"
+            elif 0 <= output_count <= len(candidate_ids):
+                input_count = len(candidate_ids) - output_count
+                input_count_authority = (
+                    "clang-operand-sequence-minus-output-partition")
+            else:
+                input_count = -1
+                input_count_authority = ""
         operand_bindings = []
         value_nodes = []
         for operand_index, (child, declaration_id) in enumerate(zip(
@@ -450,6 +469,11 @@ def _l2_operand_boundary_facts(
             "asmOperandDeclarationIds": candidate_ids,
             "valueNodes": value_nodes,
             "operandBindings": operand_bindings,
+            "operandCountAuthority": {
+                "outputCount": output_count,
+                "inputCount": input_count,
+                "inputCountAuthority": input_count_authority,
+            },
             "downstreamUses": downstream_uses,
             "complete": candidate_complete,
             "reasonCodes": sorted(candidate_reasons),
