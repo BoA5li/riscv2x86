@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from .compiler_value_flow import (
     COMPILER_FRAGMENT_CANDIDATE_SCHEMA,
     compiler_downstream_use_from_dict, compiler_operand_binding_from_dict,
-    compiler_value_node_from_dict,
+    compiler_operand_carrier_from_dict, compiler_value_node_from_dict,
 )
 from .l2_internal_value import internal_value_proof_facts_from_dict
 
@@ -463,11 +463,15 @@ def materialize_fragment_execution_authority(
                     or candidate.get("candidateIdentity") != expected_candidate):
                 reasons.add("L2_FRAGMENT_BINDING_KEY_MISMATCH")
         raw_bindings = candidate.get("operandBindings") if candidate else None
+        raw_carriers = candidate.get("operandCarriers") if candidate else None
         raw_nodes = candidate.get("valueNodes") if candidate else None
         raw_uses = candidate.get("downstreamUses") if candidate else None
+        operand_authority = (raw_carriers if isinstance(raw_carriers, list)
+                             else raw_bindings)
         if (not isinstance(outputs, list) or not isinstance(inputs, list)
-                or not isinstance(raw_bindings, list)
-                or len(raw_bindings) != len(outputs or ()) + len(inputs or ())):
+                or not isinstance(operand_authority, list)
+                or len(operand_authority)
+                != len(outputs or ()) + len(inputs or ())):
             reasons.add("L2_FRAGMENT_OPERAND_ARITY_MISMATCH")
         output_bindings: list[OperandBinding] = []
         input_bindings: list[OperandBinding] = []
@@ -480,36 +484,71 @@ def materialize_fragment_execution_authority(
                 reasons.add("L2_FRAGMENT_VALUE_NODE_INVALID")
         else:
             reasons.add("L2_FRAGMENT_VALUE_NODE_MISSING")
-        if isinstance(raw_bindings, list):
-            for index, (operand, raw_binding) in enumerate(zip(
-                    list(outputs or ()) + list(inputs or ()), raw_bindings)):
-                try:
-                    parsed = compiler_operand_binding_from_dict(raw_binding)
-                except (TypeError, ValueError):
-                    reasons.add("L2_FRAGMENT_VALUE_NODE_INVALID"); continue
+        if isinstance(operand_authority, list):
+            for index, (operand, raw_operand) in enumerate(zip(
+                    list(outputs or ()) + list(inputs or ()), operand_authority)):
                 is_output = index < len(outputs or ())
                 constraint = str(operand.get("constraint") or "") \
                     if isinstance(operand, Mapping) else ""
-                expected_access = ("read_write" if is_output and constraint.startswith("+")
+                expected_access = ("read_write"
+                                   if is_output and constraint.startswith("+")
                                    else "output" if is_output else "input")
-                if (parsed.operand_index != index or parsed.access != expected_access
-                        or parsed.value_node_identity not in node_ids):
-                    reasons.add("L2_FRAGMENT_OPERAND_BINDING_MISMATCH"); continue
+                try:
+                    if isinstance(raw_carriers, list):
+                        parsed_carrier = compiler_operand_carrier_from_dict(
+                            raw_operand)
+                        parsed_index = parsed_carrier.operand_index
+                        declaration_identity = (
+                            parsed_carrier.declaration_identity)
+                        value_node_identity = (
+                            parsed_carrier.value_node_identity)
+                        width_bits = parsed_carrier.width_bits
+                        signedness = parsed_carrier.signedness
+                        parsed_complete = parsed_carrier.complete
+                    else:
+                        parsed_binding = compiler_operand_binding_from_dict(
+                            raw_operand)
+                        parsed_index = parsed_binding.operand_index
+                        declaration_identity = (
+                            parsed_binding.declaration_identity)
+                        value_node_identity = (
+                            parsed_binding.value_node_identity)
+                        width_bits = parsed_binding.width_bits
+                        signedness = parsed_binding.signedness
+                        parsed_complete = parsed_binding.complete
+                        if parsed_binding.access != expected_access:
+                            raise ValueError("operand access mismatch")
+                except (TypeError, ValueError):
+                    reasons.add("L2_FRAGMENT_VALUE_NODE_INVALID")
+                    continue
+                if (parsed_index != index
+                        or value_node_identity not in node_ids):
+                    reasons.add("L2_FRAGMENT_OPERAND_BINDING_MISMATCH")
+                    continue
                 binding = OperandBinding(
-                    parsed.operand_index, parsed.declaration_identity,
-                    parsed.value_node_identity, parsed.access, parsed.width_bits,
-                    parsed.complete, parsed.signedness)
-                (output_bindings if is_output else input_bindings).append(binding)
+                    parsed_index, declaration_identity,
+                    value_node_identity, expected_access, width_bits,
+                    parsed_complete, signedness)
+                (output_bindings if is_output else input_bindings).append(
+                    binding)
         value_flow_edges: list[FragmentValueFlowEdge] = []
         sinks: list[ObservationSinkBinding] = []
         discarded: set[str] = set()
         instrumented: set[str] = set()
+        output_node_ids = {
+            item.value_node_identity for item in output_bindings
+        }
         if isinstance(raw_uses, list):
             for raw_use in raw_uses:
                 try:
                     use = compiler_downstream_use_from_dict(raw_use)
                 except (TypeError, ValueError):
                     reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
+                # The compiler exports use facts for every ordered carrier.
+                # Only frontend-classified outputs create live-out proof
+                # obligations.
+                if use.value_node_identity not in output_node_ids:
+                    continue
                 if not use.complete:
                     reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
                 consumer_fragment = ""
@@ -552,6 +591,14 @@ def materialize_fragment_execution_authority(
                     use.use_kind, True))
         else:
             reasons.add("L2_FRAGMENT_OBSERVATION_SINK_MISSING")
+        if (isinstance(candidate, Mapping)
+                and candidate.get("downstreamUseEnumerationComplete") is True):
+            accounted_uses = {
+                item.producer_value_node for item in value_flow_edges
+            } | discarded
+            for binding in output_bindings:
+                if binding.value_node_identity not in accounted_uses:
+                    discarded.add(binding.value_node_identity)
         approval = finding_by_fragment[fragment_id].get("approvalArtifact")
         raw_internal = (approval.get("l2InternalValueProofFacts")
                         if isinstance(approval, Mapping) else None)
