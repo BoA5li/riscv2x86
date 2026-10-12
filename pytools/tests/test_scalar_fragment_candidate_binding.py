@@ -17,7 +17,7 @@ def _candidate(source_file="/tmp/case.c", source_digest="sha256:" + "1" * 64):
     }
     return {
         "candidateIdentity": identity({
-            "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1",
+            "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v2",
             **key,
         }),
         "fragmentBindingKey": key,
