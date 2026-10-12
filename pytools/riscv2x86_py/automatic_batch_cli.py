@@ -529,6 +529,7 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
             function = {"name": name,
                         "functionId": function_identity,
                         "sourceDigest": source_digest,
+                        "sourceFile": str(source.resolve()),
                         "arity": len(params),
                         "returnType": return_type, "parameterTypes": param_types,
                         "pointerParameters": pointer_parameters}
