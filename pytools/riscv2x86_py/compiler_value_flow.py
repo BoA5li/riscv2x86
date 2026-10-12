@@ -10,7 +10,7 @@ from typing import Mapping
 
 COMPILER_VALUE_NODE_SCHEMA = "riscv2x86.compiler-value-node.v1"
 COMPILER_FRAGMENT_CANDIDATE_SCHEMA = \
-    "riscv2x86.compiler-fragment-boundary-candidate.v2"
+    "riscv2x86.compiler-fragment-boundary-candidate.v3"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACCESS = {"input", "output", "read_write"}
 _SIGNEDNESS = {"signed", "unsigned"}
