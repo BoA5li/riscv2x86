@@ -71,13 +71,32 @@ def test_typed_profile_cannot_be_inflated_by_legacy_reason_or_surface_hints():
     ]
 
 
-@pytest.mark.parametrize("outcome", ["keep", "needs_route", "unsupported"])
+@pytest.mark.parametrize(
+    "outcome", ["keep", "needs_route", "unsupported", "failed", "not_attempted"])
 def test_no_candidate_is_explicitly_not_applicable(outcome):
     item = L2EligibilityClassifier().classify(_finding(outcome=outcome), 0)
     assert item["eligibilityStatus"] == "not_applicable"
     assert item["disposition"] == "not_applicable"
     assert item["requiredDimensions"] == []
     assert item["reasonCodes"] == ["l2.no-target-candidate"]
+    assert "materializationDecision" not in item
+
+
+@pytest.mark.parametrize(
+    "outcome", ["keep", "needs_route", "unsupported", "failed", "not_attempted"])
+def test_no_candidate_manifest_round_trips_without_materialization_conflict(
+        tmp_path, outcome):
+    manifest = L2EligibilityClassifier().classify_report({
+        "findings": [_finding(outcome=outcome)],
+    })
+    path = tmp_path / f"{outcome}.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded = load_l2_requirement_manifest(path)
+    requirement = loaded["requirements"][0]
+    assert requirement["requiredDimensions"] == []
+    assert requirement["eligibilityStatus"] == "not_applicable"
+    assert "materializationDecision" not in requirement
 
 
 def test_candidate_without_fragment_authority_is_inconclusive():
