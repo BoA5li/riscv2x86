@@ -146,7 +146,13 @@ class FragmentOperandBoundary:
                     if item.consumer_fragment_id}
         accounted = observed | consumed | set(self.discarded_output_nodes) \
             | set(self.instrumentation_observed_nodes)
-        closed = bool(bindings and self.output_bindings and not self.reason_codes
+        # An input-only fragment has a closed operand boundary when every
+        # declared input is complete.  Output obligations remain universal:
+        # every real output must be observed, consumed, authoritatively
+        # discarded, or covered by an approved instrumentation point.  The
+        # vacuous all() for an empty output set is intentional and does not
+        # fabricate a source result.
+        closed = bool(bindings and not self.reason_codes
                       and all(item.complete for item in bindings)
                       and all(item.value_node_identity in accounted
                               for item in self.output_bindings))
