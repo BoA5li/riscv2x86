@@ -95,6 +95,14 @@ def _source_range(node: Mapping[str, object]) -> tuple[int, int] | None:
     return None
 
 
+def _line_column_at_byte_offset(source: bytes, offset: int) -> tuple[int, int] | None:
+    """Map Clang's byte offset to a one-based source location."""
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= len(source):
+        return None
+    prefix = source[:offset]
+    return prefix.count(b"\n") + 1, offset - prefix.rfind(b"\n")
+
+
 def _integer_type(type_name: str) -> tuple[int, str]:
     value = " ".join(type_name.replace("const", "").replace("volatile", "").split())
     fixed = re.fullmatch(r"u?int(8|16|32|64)_t", value)
@@ -192,7 +200,8 @@ def _counter_return_semantics(function: Mapping[str, object]) -> dict[str, str]:
 
 def _l2_operand_boundary_facts(
     function: Mapping[str, object], *, source_digest: str = "",
-    function_identity: str = "",
+    function_identity: str = "", source_file: str = "",
+    source_bytes: bytes = b"",
 ) -> dict[str, object]:
     """Export compiler-AST identities needed for bounded automatic L2-A.
 
@@ -275,12 +284,23 @@ def _l2_operand_boundary_facts(
     asm_statement_end = -1
     fragment_candidates: list[dict[str, object]] = []
     candidate_by_asm_id: dict[int, str] = {}
+    binding_key_by_asm_id: dict[int, dict[str, object]] = {}
     for asm_node in asm_nodes:
         asm_range = _source_range(asm_node) or (-1, -1)
+        source_location = _line_column_at_byte_offset(source_bytes, asm_range[0])
+        binding_key = {
+            "sourceDigest": source_digest,
+            "sourceFile": source_file,
+            "functionIdentity": function_identity,
+            "beginOffset": asm_range[0],
+            "endOffset": asm_range[1],
+            "beginLine": source_location[0] if source_location else -1,
+            "beginColumn": source_location[1] if source_location else -1,
+        }
+        binding_key_by_asm_id[id(asm_node)] = binding_key
         candidate_by_asm_id[id(asm_node)] = value_flow_identity({
             "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1",
-            "functionIdentity": function_identity,
-            "beginOffset": asm_range[0], "endOffset": asm_range[1],
+            **binding_key,
         })
     for asm_index, asm_node in enumerate(asm_nodes):
         candidate_ids = [stable_declaration(_decl_identity(item))
@@ -294,9 +314,7 @@ def _l2_operand_boundary_facts(
         token_length = end.get("tokLen") if isinstance(end, Mapping) else None
         range_complete = all(isinstance(item, int) and not isinstance(item, bool)
                              for item in (begin_offset, end_offset, token_length))
-        binding_key = {"functionIdentity": function_identity,
-                       "beginOffset": begin_offset if range_complete else -1,
-                       "endOffset": end_offset + token_length if range_complete else -1}
+        binding_key = binding_key_by_asm_id[id(asm_node)]
         candidate_identity = candidate_by_asm_id[id(asm_node)]
         output_constraints = asm_node.get("outputConstraints")
         input_constraints = asm_node.get("inputConstraints")
@@ -345,7 +363,8 @@ def _l2_operand_boundary_facts(
         downstream_uses = []
         output_nodes = {item["declarationIdentity"]: item["nodeIdentity"]
                         for item in value_nodes
-                        if operand_bindings[value_nodes.index(item)]["access"] == "output"}
+                        if operand_bindings[value_nodes.index(item)]["access"]
+                        in {"output", "read_write"}}
         for ref, ancestors in _walk_ast_with_ancestors(function):
             declaration_id = (stable_declaration(_decl_identity(ref))
                               if ref.get("kind") == "DeclRefExpr" else "")
@@ -516,7 +535,9 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
             function.update(_counter_return_semantics(node))
             function["l2OperandBoundary"] = _l2_operand_boundary_facts(
                 node, source_digest=source_digest,
-                function_identity=function_identity)
+                function_identity=function_identity,
+                source_file=str(source.resolve()),
+                source_bytes=source.read_bytes())
             functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
