@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+from pathlib import Path
 import re
 from typing import Mapping, Sequence
 from .compiler_value_flow import (
@@ -302,32 +303,96 @@ def _width(type_name: object) -> int:
     return 0
 
 
-def _candidate_for(fragment: Mapping[str, object], candidates: Sequence[Mapping[str, object]]) -> tuple[Mapping[str, object] | None, bool]:
+def _fragment_source_location(
+    fragment: Mapping[str, object],
+) -> tuple[str, int, int] | None:
+    """Read the frontend-owned source coordinate without inspecting asm text."""
+    raw = fragment.get("sourceLocation")
+    if isinstance(raw, Mapping):
+        source_file = raw.get("sourceFile")
+        line, column = raw.get("line"), raw.get("column")
+        if (isinstance(source_file, str) and source_file
+                and isinstance(line, int) and not isinstance(line, bool)
+                and isinstance(column, int) and not isinstance(column, bool)
+                and line > 0 and column > 0):
+            return source_file, line, column
+    fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    match = re.fullmatch(r"(.+):(\\d+):(\\d+)", fragment_id)
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2)), int(match.group(3))
+
+
+def _same_source_file(left: object, right: object) -> bool:
+    if not isinstance(left, str) or not left or not isinstance(right, str) or not right:
+        return False
+    return Path(left).resolve() == Path(right).resolve()
+
+
+def _candidate_for(
+    fragment: Mapping[str, object],
+    candidates: Sequence[Mapping[str, object]],
+    function: Mapping[str, object],
+) -> tuple[Mapping[str, object] | None, str]:
+    """Resolve exactly one compiler candidate from shared structured identity."""
+    binding = fragment.get("compilerFragmentBinding")
+    if isinstance(binding, Mapping):
+        candidate_identity = binding.get("candidateIdentity")
+        direct = [item for item in candidates
+                  if item.get("candidateIdentity") == candidate_identity]
+        if len(direct) == 1:
+            return direct[0], ""
+        return (None, "L2_FRAGMENT_CANDIDATE_IDENTITY_AMBIGUOUS"
+                if len(direct) > 1 else
+                "L2_FRAGMENT_CANDIDATE_IDENTITY_NOT_FOUND")
+
     fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
     direct = [item for item in candidates if item.get("fragmentId") == fragment_id]
     if len(direct) == 1:
-        return direct[0], False
+        return direct[0], ""
     if len(direct) > 1:
-        return None, True
+        return None, "L2_FRAGMENT_CANDIDATE_IDENTITY_AMBIGUOUS"
+
+    function_id = str(function.get("functionId") or function.get("name") or "")
+    source_digest = str(function.get("sourceDigest") or "")
+    location = _fragment_source_location(fragment)
+    if location is not None:
+        source_file, line, column = location
+        matches = []
+        for item in candidates:
+            key = item.get("fragmentBindingKey")
+            if (isinstance(key, Mapping)
+                    and key.get("functionIdentity") == function_id
+                    and key.get("sourceDigest") == source_digest
+                    and _same_source_file(key.get("sourceFile"), source_file)
+                    and key.get("beginLine") == line
+                    and key.get("beginColumn") == column):
+                matches.append(item)
+        if len(matches) == 1:
+            return matches[0], ""
+        if len(matches) > 1:
+            return None, "L2_FRAGMENT_CANDIDATE_IDENTITY_AMBIGUOUS"
+
+    # Compatibility for frontends which already export byte offsets.  The
+    # function and digest checks prevent a range in another source/function
+    # from being accepted.
     begin, end = fragment.get("beginOffset"), fragment.get("endOffset")
     if (isinstance(begin, int) and not isinstance(begin, bool)
             and isinstance(end, int) and not isinstance(end, bool)):
-        overlaps = []
+        matches = []
         for item in candidates:
             key = item.get("fragmentBindingKey")
-            candidate_begin = (key.get("beginOffset") if isinstance(key, Mapping)
-                               else item.get("beginOffset"))
-            candidate_end = (key.get("endOffset") if isinstance(key, Mapping)
-                             else item.get("endOffset"))
-            if (isinstance(candidate_begin, int) and not isinstance(candidate_begin, bool)
-                    and isinstance(candidate_end, int) and not isinstance(candidate_end, bool)
-                    and candidate_begin <= begin and end <= candidate_end):
-                overlaps.append(item)
-        if len(overlaps) == 1:
-            return overlaps[0], False
-        if len(overlaps) > 1:
-            return None, True
-    return None, False
+            if (isinstance(key, Mapping)
+                    and key.get("functionIdentity") == function_id
+                    and key.get("sourceDigest") == source_digest
+                    and key.get("beginOffset") == begin
+                    and key.get("endOffset") == end):
+                matches.append(item)
+        if len(matches) == 1:
+            return matches[0], ""
+        if len(matches) > 1:
+            return None, "L2_FRAGMENT_CANDIDATE_IDENTITY_AMBIGUOUS"
+    return None, "L2_FRAGMENT_CANDIDATE_IDENTITY_NOT_FOUND"
 
 
 def materialize_fragment_execution_authority(
@@ -356,9 +421,10 @@ def materialize_fragment_execution_authority(
     candidate_to_fragment: dict[str, str] = {}
     for _finding, fragment in scoped:
         fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
-        candidate, ambiguous = _candidate_for(
-            fragment, [item for item in candidates if isinstance(item, Mapping)])
-        resolved[fragment_id] = candidate, ambiguous, fragment
+        candidate, candidate_reason = _candidate_for(
+            fragment, [item for item in candidates if isinstance(item, Mapping)],
+            function)
+        resolved[fragment_id] = candidate, candidate_reason, fragment
         if isinstance(candidate, Mapping) and isinstance(candidate.get("candidateIdentity"), str):
             candidate_to_fragment[str(candidate["candidateIdentity"])] = fragment_id
 
@@ -368,12 +434,11 @@ def materialize_fragment_execution_authority(
         str(fragment.get("id") or fragment.get("fragmentId") or ""): finding
         for finding, fragment in scoped
     }
-    for fragment_id, (candidate, ambiguous, fragment) in resolved.items():
+    for fragment_id, (candidate, candidate_reason, fragment) in resolved.items():
         outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
         reasons: set[str] = set()
         if candidate is None:
-            reasons.add("L2_FRAGMENT_BOUNDARY_RANGE_AMBIGUOUS" if ambiguous
-                        else "L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
+            reasons.add(candidate_reason or "L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
         elif candidate.get("schemaVersion") != COMPILER_FRAGMENT_CANDIDATE_SCHEMA:
             reasons.add("L2_FRAGMENT_CANDIDATE_SCHEMA_UNSUPPORTED")
         elif candidate.get("complete") is not True:
