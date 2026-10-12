@@ -455,9 +455,16 @@ def _l2_operand_boundary_facts(
             "reasonCodes": sorted(candidate_reasons),
         })
     if len(asm_nodes) == 1:
-        asm_ids = [stable_declaration(_decl_identity(item))
-                   for item in asm_nodes[0].get("inner", [])
-                   if isinstance(item, Mapping)]
+        # Keep the compatibility boundary aligned with the canonical
+        # per-fragment operand sequence; non-operand AST children must not
+        # create empty declaration slots here either.
+        asm_ids = []
+        for item in asm_nodes[0].get("inner", []):
+            if not isinstance(item, Mapping):
+                continue
+            raw_declaration = _decl_identity(item)
+            if raw_declaration:
+                asm_ids.append(stable_declaration(raw_declaration))
         source_range = asm_nodes[0].get("range")
         end = source_range.get("end") if isinstance(source_range, Mapping) else None
         if isinstance(end, Mapping):
