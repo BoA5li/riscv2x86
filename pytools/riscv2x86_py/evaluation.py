@@ -15,7 +15,7 @@ from .candidate_materialization import (
     CandidateArtifactManifest, materialize_candidate_tree,
     verify_candidate_artifact_manifest,
 )
-from .schema import TranslationOutcome
+from .schema import PublicationOutcome, TranslationOutcome
 from .translation_attempt import TranslationAttemptArchive, load_translation_attempt_archive
 from .l2_dimensions import L2ClaimScope, L2DimensionStatus, parse_l2_dimensions
 from .l2_results import L2FragmentResult
@@ -326,6 +326,112 @@ def _non_candidate_result(attempt: object) -> dict[str, object]:
     )
 
 
+def _translation_terminal_result(attempt: object) -> dict[str, object]:
+    """Recover a terminal semantic result from an authenticated attempt.
+
+    A translator command uses a non-zero exit status both for process failures
+    and for deliberate fail-closed semantic outcomes.  The attempt archive is
+    the typed, content-addressed authority for distinguishing those cases.
+    This helper never upgrades a withheld candidate to an evaluable one.
+    """
+    outcome = getattr(attempt, "translation_outcome")
+    archived_reasons = tuple(getattr(attempt, "reason_codes", ()))
+    if outcome in _EMITTED:
+        publication = getattr(attempt, "publication_outcome")
+        reason = (
+            "evaluation.translation-publication-withheld"
+            if publication is PublicationOutcome.WITHHELD else
+            "evaluation.translation-publication-not-admitted"
+        )
+        reasons = archived_reasons + (reason,)
+        return _attempt_result(
+            attempt, None, ValidationStatus.INCONCLUSIVE, reasons,
+        )
+    if outcome is TranslationOutcome.FAILED:
+        reasons = archived_reasons + ("evaluation.translation-outcome-failed",)
+        return _attempt_result(attempt, None, ValidationStatus.FAILED, reasons)
+    if outcome in _NON_CANDIDATE_STATUS:
+        status = _NON_CANDIDATE_STATUS[outcome]
+        reasons = archived_reasons + (
+            "evaluation.translation-outcome-" + outcome.value.replace("_", "-"),
+        )
+        return _attempt_result(attempt, None, status, reasons)
+    reasons = archived_reasons + ("evaluation.translation-outcome-not-terminal",)
+    return _attempt_result(attempt, None, ValidationStatus.FAILED, reasons)
+
+
+def _translation_command_failure_result(
+    request: EvaluationRequest, work: Path, commands: Sequence[CommandRecord],
+    record: CommandRecord, plan: ValidationPlan, environment: object,
+    archive_path: Path,
+) -> dict[str, object] | None:
+    """Return a fail-closed result, or allow an admitted archive onward.
+
+    A valid archive may authoritatively report ``needs_route``, ``unsupported``,
+    a source/frontend failure, or an emitted-but-withheld candidate even when
+    the command exits non-zero. Missing or malformed evidence remains a real
+    command failure. Only emitted attempts explicitly admitted for publication
+    are allowed to continue to materialization and L0.
+    """
+    if record.timed_out:
+        return _result(
+            request, work, commands, (), ValidationStatus.FAILED,
+            ("evaluation.translation-command-timeout",), None,
+            plan=plan, environment=environment,
+        )
+    if not archive_path.is_file():
+        return _result(
+            request, work, commands, (), ValidationStatus.FAILED,
+            ("evaluation.translation-attempt-archive-missing",), None,
+            plan=plan, environment=environment,
+        )
+    try:
+        archive = load_translation_attempt_archive(archive_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return _result(
+            request, work, commands, (), ValidationStatus.FAILED,
+            ("evaluation.translation-attempt-archive-invalid",), None,
+            plan=plan, environment=environment,
+        )
+    attributable = tuple(
+        item for item in archive.attempts
+        if not request.selected_attempt_ids or item.artifact_id in request.selected_attempt_ids
+    )
+    if not attributable:
+        return _result(
+            request, work, commands, (), ValidationStatus.FAILED,
+            ("evaluation.translation-attempt-archive-empty",), None,
+            plan=plan, environment=environment,
+        )
+    admitted = all(
+        item.translation_outcome not in _EMITTED
+        or item.publication_outcome is PublicationOutcome.ADMITTED
+        for item in attributable
+    )
+    terminal_non_emitted = all(item.translation_outcome not in _EMITTED
+                               for item in attributable)
+    if admitted and not terminal_non_emitted:
+        # The failed process status remains in the audit log; the authenticated
+        # admitted artifact controls whether evaluation may proceed.
+        return None
+    attempts = tuple(
+        _translation_terminal_result(item)
+        if item in attributable else _attempt_result(
+            item, None, ValidationStatus.INCONCLUSIVE,
+            ("evaluation.attempt-not-in-validation-group",),
+        )
+        for item in archive.attempts
+    )
+    final = tuple(item for item in attempts if not request.selected_attempt_ids
+                  or item["attemptArtifactId"] in request.selected_attempt_ids)
+    status = _overall(tuple(ValidationStatus(str(item["status"])) for item in final))
+    reasons = tuple(sorted({reason for item in final for reason in item["reasonCodes"]}))
+    return _result(
+        request, work, commands, attempts, status, reasons, None,
+        plan=plan, environment=environment,
+    )
+
+
 def _tool_version(executable: str) -> str:
     try:
         result = subprocess.run((executable, "--version"), text=True, capture_output=True,
@@ -450,21 +556,24 @@ def run_evaluation(
     replay.mkdir()
     plan = load_validation_plan(request.validation_plan)
     environment = load_target_environment(request.target_environment)
+    report = _path(request.translated_report, work)
+    archive_path = _path(request.attempt_archive, work)
     variables = {"SOURCE_ROOT": str(source_root), "WORK_DIR": str(work),
                  "REPLAY_DIR": str(replay),
-                 "TRANSLATED_REPORT": str(_path(request.translated_report, work)),
-                 "ATTEMPT_ARCHIVE": str(_path(request.attempt_archive, work))}
+                 "TRANSLATED_REPORT": str(report),
+                 "ATTEMPT_ARCHIVE": str(archive_path)}
     commands: list[CommandRecord] = []
     if request.translation_command:
         command = tuple(str(item) for item in _replace(list(request.translation_command), variables))
         record = command_executor(command, work, plan.timeout_seconds, "translation")
         commands.append(record)
         if record.status is not ValidationStatus.VERIFIED:
-            return _result(request, work, commands, (), record.status,
-                           ("evaluation.translation-command-not-verified",), None)
+            terminal = _translation_command_failure_result(
+                request, work, commands, record, plan, environment, archive_path,
+            )
+            if terminal is not None:
+                return terminal
 
-    report = _path(request.translated_report, work)
-    archive_path = _path(request.attempt_archive, work)
     archive = load_translation_attempt_archive(archive_path)
     _materialize_l2_resolution_plans(request, report, archive, replay)
     staging = work / "candidate-staging"
@@ -576,10 +685,7 @@ def run_evaluation(
             ))
             continue
         if attempt.translation_outcome not in _EMITTED:
-            per_attempt.append(_attempt_result(
-                attempt, None, ValidationStatus.INCONCLUSIVE,
-                ("evaluation.translation-outcome-not-emitted",),
-            ))
+            per_attempt.append(_non_candidate_result(attempt))
             continue
         raw_artifact = request.translation_artifacts.get(attempt.finding_id)
         if raw_artifact is None and attempt.finding_id not in derived_artifacts:
