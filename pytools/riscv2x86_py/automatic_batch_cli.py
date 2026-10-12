@@ -303,9 +303,21 @@ def _l2_operand_boundary_facts(
             **binding_key,
         })
     for asm_index, asm_node in enumerate(asm_nodes):
-        candidate_ids = [stable_declaration(_decl_identity(item))
-                         for item in asm_node.get("inner", [])
-                         if isinstance(item, Mapping)]
+        # GCCAsmStmt may contain non-operand AST children.  Retain only
+        # expression nodes that carry a compiler declaration reference; an
+        # unresolved referenced declaration remains in the sequence as an
+        # empty stable identity so completeness fails closed instead of
+        # shifting subsequent operand indices.
+        operand_children: list[Mapping[str, object]] = []
+        candidate_ids: list[str] = []
+        for item in asm_node.get("inner", []):
+            if not isinstance(item, Mapping):
+                continue
+            raw_declaration = _decl_identity(item)
+            if not raw_declaration:
+                continue
+            operand_children.append(item)
+            candidate_ids.append(stable_declaration(raw_declaration))
         source_range = asm_node.get("range")
         begin = source_range.get("begin") if isinstance(source_range, Mapping) else None
         end = source_range.get("end") if isinstance(source_range, Mapping) else None
@@ -322,11 +334,14 @@ def _l2_operand_boundary_facts(
                         else asm_node.get("numOutputs"))
         if isinstance(output_count, bool) or not isinstance(output_count, int):
             output_count = -1
+        input_count = (len(input_constraints) if isinstance(input_constraints, list)
+                       else asm_node.get("numInputs"))
+        if isinstance(input_count, bool) or not isinstance(input_count, int):
+            input_count = -1
         operand_bindings = []
         value_nodes = []
         for operand_index, (child, declaration_id) in enumerate(zip(
-                [item for item in asm_node.get("inner", []) if isinstance(item, Mapping)],
-                candidate_ids)):
+                operand_children, candidate_ids)):
             declaration = declarations.get(declaration_id)
             type_name = str(declaration.get("type") or "") \
                 if isinstance(declaration, Mapping) else ""
@@ -361,10 +376,11 @@ def _l2_operand_boundary_facts(
             value_nodes.append(value_node.to_dict())
             operand_bindings.append(binding.to_dict())
         downstream_uses = []
-        output_nodes = {item["declarationIdentity"]: item["nodeIdentity"]
-                        for item in value_nodes
-                        if operand_bindings[value_nodes.index(item)]["access"]
-                        in {"output", "read_write"}}
+        output_nodes = {
+            node["declarationIdentity"]: node["nodeIdentity"]
+            for node, binding in zip(value_nodes, operand_bindings)
+            if binding["access"] in {"output", "read_write"}
+        }
         for ref, ancestors in _walk_ast_with_ancestors(function):
             declaration_id = (stable_declaration(_decl_identity(ref))
                               if ref.get("kind") == "DeclRefExpr" else "")
@@ -411,11 +427,21 @@ def _l2_operand_boundary_facts(
             downstream_uses.append(CompilerDownstreamUse(
                 node_id, use_id, "discarded", "", "", "discarded", True,
             ).to_dict())
-        candidate_complete = bool(
-            source_digest and source_file and range_complete
-            and binding_key["beginLine"] > 0 and binding_key["beginColumn"] > 0
-            and candidate_ids and len(operand_bindings) == len(candidate_ids)
-            and output_count >= 0)
+        candidate_reasons: set[str] = set()
+        if not source_digest or not source_file:
+            candidate_reasons.add("L2_FRAGMENT_SOURCE_IDENTITY_MISSING")
+        if (not range_complete or binding_key["beginLine"] <= 0
+                or binding_key["beginColumn"] <= 0):
+            candidate_reasons.add("L2_FRAGMENT_SOURCE_RANGE_INCOMPLETE")
+        if output_count < 0 or input_count < 0:
+            candidate_reasons.add("L2_FRAGMENT_OPERAND_CLASSIFICATION_MISSING")
+        elif len(candidate_ids) != output_count + input_count:
+            candidate_reasons.add("L2_FRAGMENT_OPERAND_ARITY_MISMATCH")
+        if any(not item for item in candidate_ids):
+            candidate_reasons.add("L2_FRAGMENT_DECLARATION_IDENTITY_MISSING")
+        if len(operand_bindings) != len(candidate_ids):
+            candidate_reasons.add("L2_FRAGMENT_VALUE_NODE_MISSING")
+        candidate_complete = not candidate_reasons
         fragment_candidates.append({
             "schemaVersion": COMPILER_FRAGMENT_CANDIDATE_SCHEMA,
             "asmIndex": asm_index,
@@ -426,6 +452,7 @@ def _l2_operand_boundary_facts(
             "operandBindings": operand_bindings,
             "downstreamUses": downstream_uses,
             "complete": candidate_complete,
+            "reasonCodes": sorted(candidate_reasons),
         })
     if len(asm_nodes) == 1:
         asm_ids = [stable_declaration(_decl_identity(item))
