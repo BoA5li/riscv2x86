@@ -417,7 +417,7 @@ def materialize_fragment_execution_authority(
                 and fragment.get("enclosingFunction") == function.get("name")):
             scoped.append((finding, fragment))
     scoped.sort(key=lambda pair: str(pair[1].get("id") or pair[1].get("fragmentId") or ""))
-    resolved: dict[str, tuple[Mapping[str, object] | None, bool, Mapping[str, object]]] = {}
+    resolved: dict[str, tuple[Mapping[str, object] | None, str, Mapping[str, object]]] = {}
     candidate_to_fragment: dict[str, str] = {}
     for _finding, fragment in scoped:
         fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
