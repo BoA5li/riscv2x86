@@ -299,7 +299,7 @@ def _l2_operand_boundary_facts(
         }
         binding_key_by_asm_id[id(asm_node)] = binding_key
         candidate_by_asm_id[id(asm_node)] = value_flow_identity({
-            "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1",
+            "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v2",
             **binding_key,
         })
     for asm_index, asm_node in enumerate(asm_nodes):
