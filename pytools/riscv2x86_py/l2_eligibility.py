@@ -133,10 +133,15 @@ class L2EligibilityClassifier:
         except ValueError:
             semantic_profile = None
             profile_diagnostics = ("l2.semantic-profile.missing-or-invalid",)
+        # Materialization is meaningful only after translation has produced a
+        # candidate.  A no-candidate outcome has no target plan, renderer
+        # contract, or executable effect relation to materialize.  Assessing it
+        # before outcome classification used to leave a non-empty decision
+        # attached to a not-applicable requirement whose dimensions were empty.
+        # The strict manifest loader correctly rejected that contradictory
+        # artifact.  Keep no-candidate diagnostics on the translation/approval
+        # artifacts and do not create an L2 execution decision for them.
         materialization_decision = None
-        if semantic_profile is not None and fragment_id and dimensions:
-            materialization_decision = assess_fragment_l2_materializability(
-                finding, dimensions)
         if outcome in _NO_CANDIDATE:
             eligibility = L2EligibilityStatus.NOT_APPLICABLE
             disposition = L2DimensionStatus.NOT_APPLICABLE
@@ -146,19 +151,24 @@ class L2EligibilityClassifier:
             eligibility = L2EligibilityStatus.INCONCLUSIVE
             disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = ("l2.translation-outcome-unknown",)
-        elif materialization_decision is not None and not materialization_decision.executable:
-            eligibility = L2EligibilityStatus.INCONCLUSIVE
-            disposition = L2DimensionStatus.INCONCLUSIVE
-            reason_codes = materialization_decision.reason_codes
-        elif diagnostics or profile_diagnostics or not fragment_id or not dimensions:
-            eligibility = L2EligibilityStatus.INCONCLUSIVE
-            disposition = L2DimensionStatus.INCONCLUSIVE
-            reason_codes = diagnostics or profile_diagnostics or (
-                "l2.classification-facts-incomplete",)
         else:
-            eligibility = L2EligibilityStatus.ELIGIBLE
-            disposition = L2DimensionStatus.NOT_RUN
-            reason_codes = ("l2.execution-not-yet-configured",)
+            if semantic_profile is not None and fragment_id and dimensions:
+                materialization_decision = assess_fragment_l2_materializability(
+                    finding, dimensions)
+            if (materialization_decision is not None
+                    and not materialization_decision.executable):
+                eligibility = L2EligibilityStatus.INCONCLUSIVE
+                disposition = L2DimensionStatus.INCONCLUSIVE
+                reason_codes = materialization_decision.reason_codes
+            elif diagnostics or profile_diagnostics or not fragment_id or not dimensions:
+                eligibility = L2EligibilityStatus.INCONCLUSIVE
+                disposition = L2DimensionStatus.INCONCLUSIVE
+                reason_codes = diagnostics or profile_diagnostics or (
+                    "l2.classification-facts-incomplete",)
+            else:
+                eligibility = L2EligibilityStatus.ELIGIBLE
+                disposition = L2DimensionStatus.NOT_RUN
+                reason_codes = ("l2.execution-not-yet-configured",)
         validators = tuple(sorted({_DIMENSION_VALIDATOR[item] for item in dimensions}))
         plan = {
             "schemaVersion": L2_VALIDATOR_PLAN_SCHEMA,
