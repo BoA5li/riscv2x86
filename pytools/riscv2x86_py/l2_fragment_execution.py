@@ -446,7 +446,7 @@ def materialize_fragment_execution_authority(
         if isinstance(candidate, Mapping):
             binding_key = candidate.get("fragmentBindingKey")
             expected_candidate = (identity({
-                "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1",
+                "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v2",
                 **dict(binding_key),
             }) if isinstance(binding_key, Mapping) else "")
             if (not isinstance(binding_key, Mapping)
