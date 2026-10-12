@@ -159,8 +159,8 @@ def _scalar_authority(
         return None
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     if (not isinstance(boundary, Mapping) or boundary.get("complete") is not True
-            or not isinstance(outputs, list) or not outputs
-            or not isinstance(inputs, list)):
+            or not isinstance(outputs, list) or not isinstance(inputs, list)
+            or not outputs + inputs):
         return None
     declarations = boundary.get("declarations")
     asm_ids = boundary.get("asmOperandDeclarationIds")
