@@ -451,6 +451,9 @@ def materialize_fragment_execution_authority(
             }) if isinstance(binding_key, Mapping) else "")
             if (not isinstance(binding_key, Mapping)
                     or binding_key.get("functionIdentity") != function_id
+                    or binding_key.get("sourceDigest") != function.get("sourceDigest")
+                    or not _same_source_file(
+                        binding_key.get("sourceFile"), function.get("sourceFile"))
                     or candidate.get("candidateIdentity") != expected_candidate):
                 reasons.add("L2_FRAGMENT_BINDING_KEY_MISMATCH")
         raw_bindings = candidate.get("operandBindings") if candidate else None
