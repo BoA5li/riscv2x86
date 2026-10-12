@@ -317,7 +317,7 @@ def _fragment_source_location(
                 and line > 0 and column > 0):
             return source_file, line, column
     fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
-    match = re.fullmatch(r"(.+):(\\d+):(\\d+)", fragment_id)
+    match = re.fullmatch(r"(.+):(\d+):(\d+)", fragment_id)
     if match is None:
         return None
     return match.group(1), int(match.group(2)), int(match.group(3))
