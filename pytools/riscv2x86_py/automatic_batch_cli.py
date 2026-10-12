@@ -19,8 +19,8 @@ from .l2_validator_resolution import (
 from .l3_provider_resolution import provider_from_dict as l3_provider_from_dict
 from .compiler_value_flow import (
     COMPILER_FRAGMENT_CANDIDATE_SCHEMA, COMPILER_VALUE_NODE_SCHEMA,
-    CompilerDownstreamUse,
-    CompilerOperandBinding, CompilerValueNode, identity as value_flow_identity,
+    CompilerDownstreamUse, CompilerOperandBinding, CompilerOperandCarrier,
+    CompilerValueNode, identity as value_flow_identity,
 )
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
@@ -112,6 +112,17 @@ def _integer_type(type_name: str) -> tuple[int, str]:
             "int", "signed", "signed int", "unsigned", "unsigned int"} else 0)
     signedness = "unsigned" if value.startswith(("u", "unsigned")) else "signed"
     return width, signedness
+
+
+def _operand_carrier_type(
+    type_name: str, *, pointer_width_bits: int,
+) -> tuple[str, int, str, str]:
+    """Classify a compiler value carrier without confusing pointer/pointee width."""
+    value = " ".join(type_name.split())
+    if _INTEGER_POINTER_TYPE.fullmatch(value):
+        return "pointer", pointer_width_bits, "unsigned", "c.default"
+    width, signedness = _integer_type(value)
+    return ("integer", width, signedness, "") if width else ("", 0, "", "")
 
 
 def _ast_identity(source_digest: str, function_identity: str,
@@ -358,13 +369,15 @@ def _l2_operand_boundary_facts(
                 input_count = -1
                 input_count_authority = ""
         operand_bindings = []
+        operand_carriers = []
         value_nodes = []
         for operand_index, (child, declaration_id) in enumerate(zip(
                 operand_children, candidate_ids)):
             declaration = declarations.get(declaration_id)
             type_name = str(declaration.get("type") or "") \
                 if isinstance(declaration, Mapping) else ""
-            width, signedness = _integer_type(type_name)
+            carrier_kind, width, signedness, address_space = (
+                _operand_carrier_type(type_name, pointer_width_bits=64))
             constraint = (str(output_constraints[operand_index])
                           if isinstance(output_constraints, list)
                           and operand_index < len(output_constraints) else "")
@@ -387,23 +400,33 @@ def _l2_operand_boundary_facts(
                 value_node = CompilerValueNode(
                     node_id, declaration_id, ast_id, candidate_identity,
                     type_id, width, signedness, True)
-                binding = CompilerOperandBinding(
+                carrier = CompilerOperandCarrier(
+                    operand_index, declaration_id, node_id, carrier_kind,
+                    width, signedness, address_space, True)
+                binding = (CompilerOperandBinding(
                     operand_index, declaration_id, node_id, access,
                     width, signedness, True)
+                    if output_count >= 0 else None)
             except ValueError:
                 continue
             value_nodes.append(value_node.to_dict())
-            operand_bindings.append(binding.to_dict())
+            operand_carriers.append(carrier.to_dict())
+            if binding is not None:
+                operand_bindings.append(binding.to_dict())
         downstream_uses = []
-        output_nodes = {
+        carrier_nodes = {
             node["declarationIdentity"]: node["nodeIdentity"]
-            for node, binding in zip(value_nodes, operand_bindings)
+            for node in value_nodes
+        }
+        classified_output_nodes = {
+            carrier["declarationIdentity"]: carrier["valueNodeIdentity"]
+            for carrier, binding in zip(operand_carriers, operand_bindings)
             if binding["access"] in {"output", "read_write"}
         }
         for ref, ancestors in _walk_ast_with_ancestors(function):
             declaration_id = (stable_declaration(_decl_identity(ref))
                               if ref.get("kind") == "DeclRefExpr" else "")
-            if declaration_id not in output_nodes or asm_node in ancestors:
+            if declaration_id not in carrier_nodes or asm_node in ancestors:
                 continue
             ref_range = _source_range(ref)
             if ref_range is None:
@@ -429,12 +452,12 @@ def _l2_operand_boundary_facts(
             complete_use = kind not in {"call_argument", "escape_unknown", "memory_store"}
             try:
                 downstream_uses.append(CompilerDownstreamUse(
-                    output_nodes[declaration_id], use_id, kind, consumer,
+                    carrier_nodes[declaration_id], use_id, kind, consumer,
                     sink if complete_use else "", relation, complete_use).to_dict())
             except ValueError:
                 pass
         used_outputs = {item["valueNodeIdentity"] for item in downstream_uses}
-        for declaration_id, node_id in output_nodes.items():
+        for declaration_id, node_id in classified_output_nodes.items():
             if node_id in used_outputs:
                 continue
             use_id = value_flow_identity({
@@ -447,20 +470,23 @@ def _l2_operand_boundary_facts(
                 node_id, use_id, "discarded", "", "", "discarded", True,
             ).to_dict())
         candidate_reasons: set[str] = set()
+        classification_reasons: set[str] = set()
         if not source_digest or not source_file:
             candidate_reasons.add("L2_FRAGMENT_SOURCE_IDENTITY_MISSING")
         if (not range_complete or binding_key["beginLine"] <= 0
                 or binding_key["beginColumn"] <= 0):
             candidate_reasons.add("L2_FRAGMENT_SOURCE_RANGE_INCOMPLETE")
         if output_count < 0 or input_count < 0:
-            candidate_reasons.add("L2_FRAGMENT_OPERAND_CLASSIFICATION_MISSING")
+            classification_reasons.add(
+                "L2_FRAGMENT_OPERAND_CLASSIFICATION_DEFERRED")
         elif len(candidate_ids) != output_count + input_count:
-            candidate_reasons.add("L2_FRAGMENT_OPERAND_ARITY_MISMATCH")
+            classification_reasons.add("L2_FRAGMENT_OPERAND_ARITY_MISMATCH")
         if any(not item for item in candidate_ids):
             candidate_reasons.add("L2_FRAGMENT_DECLARATION_IDENTITY_MISSING")
-        if len(operand_bindings) != len(candidate_ids):
+        if len(operand_carriers) != len(candidate_ids):
             candidate_reasons.add("L2_FRAGMENT_VALUE_NODE_MISSING")
         candidate_complete = not candidate_reasons
+        classification_complete = not classification_reasons
         fragment_candidates.append({
             "schemaVersion": COMPILER_FRAGMENT_CANDIDATE_SCHEMA,
             "asmIndex": asm_index,
@@ -468,7 +494,11 @@ def _l2_operand_boundary_facts(
             "candidateIdentity": candidate_identity,
             "asmOperandDeclarationIds": candidate_ids,
             "valueNodes": value_nodes,
+            "operandCarriers": operand_carriers,
             "operandBindings": operand_bindings,
+            "compilerStructureComplete": candidate_complete,
+            "operandClassificationComplete": classification_complete,
+            "downstreamUseEnumerationComplete": True,
             "operandCountAuthority": {
                 "outputCount": output_count,
                 "inputCount": input_count,
@@ -477,6 +507,7 @@ def _l2_operand_boundary_facts(
             "downstreamUses": downstream_uses,
             "complete": candidate_complete,
             "reasonCodes": sorted(candidate_reasons),
+            "classificationReasonCodes": sorted(classification_reasons),
         })
     if len(asm_nodes) == 1:
         # Keep the compatibility boundary aligned with the canonical
