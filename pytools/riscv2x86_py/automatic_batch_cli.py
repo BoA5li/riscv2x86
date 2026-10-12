@@ -412,8 +412,9 @@ def _l2_operand_boundary_facts(
                 node_id, use_id, "discarded", "", "", "discarded", True,
             ).to_dict())
         candidate_complete = bool(
-            source_digest and range_complete and candidate_ids
-            and len(operand_bindings) == len(candidate_ids)
+            source_digest and source_file and range_complete
+            and binding_key["beginLine"] > 0 and binding_key["beginColumn"] > 0
+            and candidate_ids and len(operand_bindings) == len(candidate_ids)
             and output_count >= 0)
         fragment_candidates.append({
             "schemaVersion": COMPILER_FRAGMENT_CANDIDATE_SCHEMA,
