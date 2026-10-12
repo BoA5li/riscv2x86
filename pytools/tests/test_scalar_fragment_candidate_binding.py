@@ -124,6 +124,14 @@ def test_read_write_output_keeps_authoritative_downstream_value_flow():
     candidate = facts["fragmentCandidates"][0]
 
     assert candidate["complete"] is True
+    assert candidate["reasonCodes"] == []
+    assert candidate["operandCountAuthority"] == {
+        "outputCount": 1,
+        "inputCount": 0,
+        "inputCountAuthority":
+            "clang-operand-sequence-minus-output-partition",
+    }
+    assert len(candidate["operandBindings"]) == 1
     assert candidate["operandBindings"][0]["access"] == "read_write"
     assert [item["useKind"] for item in candidate["downstreamUses"]] == [
         "function_return"
@@ -239,6 +247,11 @@ def test_non_operand_ast_children_do_not_shift_candidate_operand_indices():
 
     assert candidate["complete"] is True
     assert candidate["reasonCodes"] == []
+    assert candidate["operandCountAuthority"] == {
+        "outputCount": 0,
+        "inputCount": 1,
+        "inputCountAuthority": "clang-input-constraints",
+    }
     assert len(candidate["operandBindings"]) == 1
     assert candidate["operandBindings"][0]["operandIndex"] == 0
     assert candidate["operandBindings"][0]["access"] == "input"
