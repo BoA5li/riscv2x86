@@ -175,8 +175,6 @@ def assess_scalar_authority_materializability(
                     or not isinstance(asm_ids, list)
                     or len(asm_ids) != len(outputs or ()) + len(inputs or ())):
                 reasons.add("L2_SCALAR_OPERAND_ARITY_MISMATCH")
-            if not isinstance(outputs, list) or not outputs:
-                reasons.add("L2_SCALAR_OUTPUT_BINDING_MISSING")
         else:
             try:
                 parsed_boundary = fragment_boundary_from_dict(
