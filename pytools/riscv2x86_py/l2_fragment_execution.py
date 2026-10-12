@@ -463,8 +463,6 @@ def materialize_fragment_execution_authority(
                 or not isinstance(raw_bindings, list)
                 or len(raw_bindings) != len(outputs or ()) + len(inputs or ())):
             reasons.add("L2_FRAGMENT_OPERAND_ARITY_MISMATCH")
-        if not isinstance(outputs, list) or not outputs:
-            reasons.add("L2_FRAGMENT_OUTPUT_BINDING_MISSING")
         output_bindings: list[OperandBinding] = []
         input_bindings: list[OperandBinding] = []
         node_ids: set[str] = set()
