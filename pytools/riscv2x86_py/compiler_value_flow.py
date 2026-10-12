@@ -10,7 +10,8 @@ from typing import Mapping
 
 COMPILER_VALUE_NODE_SCHEMA = "riscv2x86.compiler-value-node.v1"
 COMPILER_FRAGMENT_CANDIDATE_SCHEMA = \
-    "riscv2x86.compiler-fragment-boundary-candidate.v3"
+    "riscv2x86.compiler-fragment-boundary-candidate.v4"
+COMPILER_OPERAND_CARRIER_SCHEMA = "riscv2x86.compiler-operand-carrier.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACCESS = {"input", "output", "read_write"}
 _SIGNEDNESS = {"signed", "unsigned"}
@@ -73,6 +74,47 @@ class CompilerValueNode:
                 "typeIdentity": self.type_identity,
                 "widthBits": self.width_bits,
                 "signedness": self.signedness, "complete": self.complete}
+
+
+@dataclass(frozen=True)
+class CompilerOperandCarrier:
+    operand_index: int
+    declaration_identity: str
+    value_node_identity: str
+    carrier_kind: str
+    width_bits: int
+    signedness: str
+    address_space_identity: str
+    complete: bool
+    schema_version: str = COMPILER_OPERAND_CARRIER_SCHEMA
+
+    def __post_init__(self) -> None:
+        if (self.schema_version != COMPILER_OPERAND_CARRIER_SCHEMA
+                or isinstance(self.operand_index, bool) or self.operand_index < 0
+                or not self.declaration_identity
+                or _SHA.fullmatch(self.value_node_identity) is None
+                or self.carrier_kind not in {"integer", "pointer"}
+                or self.width_bits not in {8, 16, 32, 64}
+                or self.signedness not in _SIGNEDNESS
+                or (self.carrier_kind == "pointer"
+                    and not self.address_space_identity)
+                or (self.carrier_kind == "integer"
+                    and self.address_space_identity)
+                or self.complete is not True):
+            raise ValueError("compiler operand carrier is incomplete")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schemaVersion": self.schema_version,
+            "operandIndex": self.operand_index,
+            "declarationIdentity": self.declaration_identity,
+            "valueNodeIdentity": self.value_node_identity,
+            "carrierKind": self.carrier_kind,
+            "widthBits": self.width_bits,
+            "signedness": self.signedness,
+            "addressSpaceIdentity": self.address_space_identity,
+            "complete": self.complete,
+        }
 
 
 @dataclass(frozen=True)
@@ -149,6 +191,29 @@ def compiler_value_node_from_dict(value: Mapping[str, object]) -> CompilerValueN
         str(value["definingAstNodeIdentity"]), str(value["definingFragmentId"]),
         str(value["typeIdentity"]), width, str(value["signedness"]),
         value.get("complete") is True, str(value["schemaVersion"]))
+
+
+def compiler_operand_carrier_from_dict(
+    value: Mapping[str, object],
+) -> CompilerOperandCarrier:
+    expected = {
+        "schemaVersion", "operandIndex", "declarationIdentity",
+        "valueNodeIdentity", "carrierKind", "widthBits", "signedness",
+        "addressSpaceIdentity", "complete",
+    }
+    if set(value) != expected:
+        raise ValueError("compiler operand carrier fields are invalid")
+    index, width = value.get("operandIndex"), value.get("widthBits")
+    if any(isinstance(item, bool) or not isinstance(item, int)
+           for item in (index, width)):
+        raise ValueError("compiler operand carrier numeric fields are invalid")
+    return CompilerOperandCarrier(
+        index, str(value["declarationIdentity"]),
+        str(value["valueNodeIdentity"]), str(value["carrierKind"]),
+        width, str(value["signedness"]),
+        str(value["addressSpaceIdentity"]), value.get("complete") is True,
+        str(value["schemaVersion"]),
+    )
 
 
 def compiler_operand_binding_from_dict(value: Mapping[str, object]) -> CompilerOperandBinding:
