@@ -276,3 +276,103 @@ def test_output_boundary_without_sink_remains_incomplete():
             "program:test", "function:test", "fragment:test",
             (), (binding,), (), (), True,
         )
+
+
+
+def test_real_clang_shape_joins_pointer_carrier_with_frontend_roles():
+    source = (
+        b"#include <stdint.h>\n"
+        b"uint64_t probe(const uint64_t *base) { "
+        b"uint64_t out; asm; return out; }\n"
+    )
+    out_ref = _ref("out", 62, 65)
+    base_ref = _ref("base", 67, 71)
+    function = {
+        "kind": "FunctionDecl",
+        "name": "probe",
+        "range": _range(20, len(source)),
+        "type": {"qualType": "uint64_t (const uint64_t *)"},
+        "inner": [
+            {
+                "kind": "ParmVarDecl", "id": "base", "name": "base",
+                "range": _range(35, 55),
+                "type": {"qualType": "const uint64_t *"},
+            },
+            {
+                "kind": "VarDecl", "id": "out", "name": "out",
+                "range": _range(56, 61),
+                "type": {"qualType": "uint64_t"},
+            },
+            {
+                # Clang 10 JSON AST shape: ordered expressions, but no
+                # outputConstraints/inputConstraints/numOutputs/numInputs.
+                "kind": "GCCAsmStmt",
+                "range": _range(61, 72),
+                "inner": [
+                    out_ref,
+                    {
+                        "kind": "ImplicitCastExpr",
+                        "range": _range(67, 71),
+                        "type": {"qualType": "const uint64_t *"},
+                        "inner": [base_ref],
+                    },
+                ],
+            },
+            {
+                "kind": "ReturnStmt", "range": _range(73, 84),
+                "inner": [_ref("out", 80, 83)],
+            },
+        ],
+    }
+    source_digest = "sha256:" + "6" * 64
+    function_identity = "sha256:" + "7" * 64
+    facts = _l2_operand_boundary_facts(
+        function,
+        source_digest=source_digest,
+        function_identity=function_identity,
+        source_file="/tmp/real-clang-shape.c",
+        source_bytes=source,
+    )
+    candidate = facts["fragmentCandidates"][0]
+
+    assert candidate["compilerStructureComplete"] is True
+    assert candidate["operandClassificationComplete"] is False
+    assert candidate["complete"] is True
+    assert candidate["reasonCodes"] == []
+    assert candidate["classificationReasonCodes"] == [
+        "L2_FRAGMENT_OPERAND_CLASSIFICATION_DEFERRED"
+    ]
+    assert [item["carrierKind"] for item in candidate["operandCarriers"]] == [
+        "integer", "pointer"
+    ]
+    assert [item["widthBits"] for item in candidate["operandCarriers"]] == [
+        64, 64
+    ]
+
+    function_facts = {
+        "name": "probe",
+        "functionId": function_identity,
+        "sourceDigest": source_digest,
+        "sourceFile": "/tmp/real-clang-shape.c",
+        "l2OperandBoundary": facts,
+    }
+    finding = {
+        "fragment": {
+            "id": "/tmp/real-clang-shape.c:2:42",
+            "enclosingFunction": "probe",
+            "outputs": [{"constraint": "=r"}],
+            "inputs": [{"constraint": "r"}],
+        },
+        "approvalArtifact": {},
+    }
+
+    boundaries, graph, execution = materialize_fragment_execution_authority(
+        [finding], function_facts, "program:test")
+    boundary = boundaries["/tmp/real-clang-shape.c:2:42"]
+
+    assert boundary.complete is True
+    assert [item.access for item in boundary.output_bindings] == ["output"]
+    assert [item.access for item in boundary.input_bindings] == ["input"]
+    assert boundary.input_bindings[0].width_bits == 64
+    assert graph.complete is True
+    assert execution.complete is True
