@@ -5,6 +5,7 @@ from riscv2x86_py.schema import (
     ValidationOutcome, make_translation_attempt_artifact,
 )
 from riscv2x86_py.translation_attempt import (
+    AttemptStagingDisposition,
     TranslationAttemptArchive, load_translation_attempt_archive,
     save_translation_attempt_archive, terminal_attempt_from_finding,
     translation_attempt_archive_from_dict, translation_attempt_from_dict,
@@ -76,6 +77,24 @@ def test_emitted_attempt_binds_plan_proof_and_renderer():
     assert attempt.proof_status == "approved"
     assert attempt.proof_binding_identity.startswith("sha256:")
     assert attempt.renderer_contract_id == "renderer-contract:1"
+
+
+def test_skip_verify_attempt_is_explicitly_staged_for_external_validation():
+    finding = _finding(TranslationOutcome.EMITTED)
+    finding.validationOutcome = ValidationOutcome.NOT_VERIFIED.value
+    finding.publicationOutcome = PublicationOutcome.WITHHELD.value
+    finding.translationAttemptArtifact["reasonCodes"] = [
+        "validation.explicitly-disabled"]
+    attempt = terminal_attempt_from_finding(finding, 0)
+    assert attempt.staging_disposition is \
+        AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
+    assert attempt.to_dict()["stagingDisposition"] == \
+        "external_validation_pending"
+
+
+def test_failed_validation_is_not_confused_with_external_staging():
+    attempt = terminal_attempt_from_finding(_finding(TranslationOutcome.EMITTED), 0)
+    assert attempt.staging_disposition is AttemptStagingDisposition.VALIDATION_REJECTED
 
 
 def test_evaluation_and_publication_binding_are_distinct():

@@ -59,7 +59,13 @@ def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer"):
                  "compilerStructureComplete": True,
                  "operandClassificationComplete": True,
                  "operandBindings": [value_binding, binding],
-                 "operandCarriers": [value_carrier, carrier]}
+                 "operandCarriers": [value_carrier, carrier],
+                 "valueNodes": [
+                     {"nodeIdentity": value_binding["valueNodeIdentity"]},
+                     {"nodeIdentity": binding["valueNodeIdentity"]},
+                 ],
+                 "downstreamUses": [],
+                 "downstreamUseEnumerationComplete": True}
     authority = {"schemaVersion": COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
                  "sourceDigest": digest, "fragmentId": fragment_id,
                  "targetTriple": "riscv64-linux-gnu",
@@ -126,7 +132,9 @@ def test_automatic_wrapper_binds_candidate_by_exact_source_range(tmp_path):
     raw = tmp_path / "raw.json"
     raw.write_text(json.dumps({"findings": [{"fragment": {
         "id": "source.c:7:3", "fileName": "/tmp/source.c",
-        "beginOffset": 100, "endOffset": 140}}]}))
+        "beginOffset": 100, "endOffset": 140,
+        "outputs": [{"constraint": "+r"}],
+        "inputs": [{"constraint": "r"}]}}]}))
     authority = _compiler_authority()
     function = {"sourceDigest": authority["sourceDigest"],
                 "functionId": authority["functionIdentity"],
@@ -137,3 +145,25 @@ def test_automatic_wrapper_binds_candidate_by_exact_source_range(tmp_path):
     fragment = json.loads(raw.read_text())["findings"][0]["fragment"]
     assert fragment["compilerFragmentAuthority"]["authorityIdentity"]
     assert fragment["compilerFragmentAuthority"]["fragmentId"] == "source.c:7:3"
+    closed = fragment["compilerFragmentAuthority"]["candidate"]
+    assert closed["schemaVersion"] == "riscv2x86.closed-compiler-fragment.v1"
+    assert [item["access"] for item in closed["operandBindings"]] == [
+        "read_write", "input"]
+
+
+def test_automatic_wrapper_rejects_frontend_compiler_operand_disagreement(tmp_path):
+    source = tmp_path / "source.c"
+    source.write_text("void f(void) {}\n")
+    raw = tmp_path / "raw.json"
+    raw.write_text(json.dumps({"findings": [{"fragment": {
+        "id": "source.c:7:3", "fileName": "/tmp/source.c",
+        "beginOffset": 100, "endOffset": 140,
+        "outputs": [], "inputs": [{"constraint": "r"}]}}]}))
+    authority = _compiler_authority()
+    function = {"sourceDigest": authority["sourceDigest"],
+                "functionId": authority["functionIdentity"],
+                "l2OperandBoundary": {
+                    "fragmentCandidates": [authority["candidate"]],
+                    "memoryObjectBindings": authority["memoryObjectBindings"]}}
+    with pytest.raises(ValueError, match="arity mismatch"):
+        _inject_compiler_fragment_authority(raw, source, (function,))

@@ -23,6 +23,7 @@ from .privileged_environment import (
 from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
 from .csr_environment_contract import load_csr_environment_contract
 from .atomic_authority import COMPILER_FRAGMENT_AUTHORITY_SCHEMA
+from .compiler_fragment_closure import close_compiler_fragment_candidate
 
 
 def _identity(value: object) -> str:
@@ -114,6 +115,11 @@ def _inject_compiler_fragment_authority(
             continue
         payload = dict(matched[0])
         payload["fragmentId"] = str(fragment.get("fragmentId") or fragment.get("id") or "")
+        payload["candidate"] = close_compiler_fragment_candidate(
+            payload["candidate"], fragment,
+            source_digest=str(payload["sourceDigest"]),
+            function_identity=str(payload["functionIdentity"]),
+        )
         payload["authorityIdentity"] = _identity(payload)
         fragment["compilerFragmentAuthority"] = payload
         finding["sourceDigest"] = payload["sourceDigest"]

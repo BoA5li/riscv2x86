@@ -763,6 +763,13 @@ def run_evaluation(
                 attempt, None, ValidationStatus.INCONCLUSIVE,
                 ("evaluation.attempt-validation-error",),
                 (str(failure.relative_to(work)),),
+                diagnostic={
+                    "schemaVersion": "riscv2x86.evaluation-diagnostic.v1",
+                    "stage": "attempt_validation",
+                    "errorType": type(exc).__name__,
+                    "detail": str(exc),
+                    "artifactPath": str(failure.relative_to(work)),
+                },
             ))
     attributable = [item for item in per_attempt if not request.selected_attempt_ids
                     or item["attemptArtifactId"] in request.selected_attempt_ids]
@@ -782,7 +789,8 @@ def _attempt_result(attempt: object, validation: TranslationValidationResult | N
                     requested_profile: str = "", effective_profile: str = "",
                     profile_selection_reason: str = "",
                     requested_comparison_policy: str = "",
-                    effective_comparison_policy: str = "") -> dict[str, object]:
+                    effective_comparison_policy: str = "",
+                    diagnostic: Mapping[str, object] | None = None) -> dict[str, object]:
     return {
         "findingId": getattr(attempt, "finding_id"),
         "fragmentId": getattr(attempt, "fragment_id"),
@@ -815,6 +823,7 @@ def _attempt_result(attempt: object, validation: TranslationValidationResult | N
         },
         "reasonCodes": list(sorted(set(reasons))),
         "replayArtifacts": list(replay_artifacts),
+        "diagnostic": None if diagnostic is None else dict(diagnostic),
     }
 
 

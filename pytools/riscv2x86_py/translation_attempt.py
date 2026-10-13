@@ -6,15 +6,46 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
+from enum import Enum
 from typing import Mapping, Sequence
 
 from .schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
 from .l2_authority import l2_authority_sidecar_from_dict
 
 
-TRANSLATION_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v1"
-TRANSLATION_ATTEMPT_ARCHIVE_SCHEMA = "riscv2x86.translation-attempt-archive.v1"
+TRANSLATION_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v2"
+TRANSLATION_ATTEMPT_ARCHIVE_SCHEMA = "riscv2x86.translation-attempt-archive.v2"
+_LEGACY_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v1"
+_LEGACY_ARCHIVE_SCHEMA = "riscv2x86.translation-attempt-archive.v1"
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+class AttemptStagingDisposition(str, Enum):
+    """Why a terminal translation record is not (or is) public yet."""
+
+    EXTERNAL_VALIDATION_PENDING = "external_validation_pending"
+    VALIDATION_REJECTED = "validation_rejected"
+    PUBLISHED = "published"
+    NOT_APPLICABLE = "not_applicable"
+
+
+def _staging_disposition(translation: TranslationOutcome,
+                         validation: ValidationOutcome,
+                         publication: PublicationOutcome,
+                         reasons: Sequence[str]) -> AttemptStagingDisposition:
+    emitted = translation in {
+        TranslationOutcome.EMITTED, TranslationOutcome.STRENGTHENED,
+        TranslationOutcome.FUNCTIONAL_FALLBACK,
+    }
+    if not emitted:
+        return AttemptStagingDisposition.NOT_APPLICABLE
+    if publication is PublicationOutcome.ADMITTED:
+        return AttemptStagingDisposition.PUBLISHED
+    if (publication is PublicationOutcome.WITHHELD
+            and validation is ValidationOutcome.NOT_VERIFIED
+            and "validation.explicitly-disabled" in reasons):
+        return AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
+    return AttemptStagingDisposition.VALIDATION_REJECTED
 
 
 def _canonical(payload: Mapping[str, object]) -> bytes:
@@ -81,6 +112,7 @@ class TranslationAttempt:
     l2_authority_identity: str = ""
     effect_relation_set_identity: str = ""
     l2_authority_complete: bool = False
+    staging_disposition: AttemptStagingDisposition | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != TRANSLATION_ATTEMPT_SCHEMA:
@@ -102,6 +134,13 @@ class TranslationAttempt:
             raise ValueError("non-emitted translation attempt cannot archive candidate text")
         if self.publication_outcome is PublicationOutcome.PENDING:
             raise ValueError("archive accepts terminal publication outcomes only")
+        expected_disposition = _staging_disposition(
+            self.translation_outcome, self.validation_outcome,
+            self.publication_outcome, self.reason_codes)
+        # The disposition is derived state.  Replacements used by promotion
+        # code may change validation/publication fields; recompute rather than
+        # carrying a stale value into the new content identity.
+        object.__setattr__(self, "staging_disposition", expected_disposition)
         binding_values = (
             self.source_model_id, self.preservation_decision_id, self.plan_id,
             self.constraints_id, self.proof_status, self.proof_binding_identity,
@@ -174,6 +213,7 @@ class TranslationAttempt:
             "translationOutcome": self.translation_outcome.value,
             "validationOutcome": self.validation_outcome.value,
             "publicationOutcome": self.publication_outcome.value,
+            "stagingDisposition": self.staging_disposition.value,
             "reasonCodes": list(self.reason_codes),
             "sourceModelId": self.source_model_id,
             "preservationDecisionId": self.preservation_decision_id,
@@ -205,6 +245,7 @@ _ATTEMPT_FIELDS = {
     "candidateKind", "candidateRoute", "candidateReplacement",
     "candidateReplacementDigest", "candidateRuleName", "translationOutcome",
     "validationOutcome", "publicationOutcome", "reasonCodes", "sourceModelId",
+    "stagingDisposition",
     "preservationDecisionId", "planId", "constraintsId", "proofStatus",
     "proofBindingIdentity", "targetEnvironmentId", "rendererId",
     "rendererVersion", "rendererContractId", "rendererRegistryId",
@@ -214,11 +255,24 @@ _ATTEMPT_FIELDS = {
 
 
 def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAttempt:
-    if set(value) != _ATTEMPT_FIELDS:
+    legacy = value.get("schemaVersion") == _LEGACY_ATTEMPT_SCHEMA
+    expected_fields = _ATTEMPT_FIELDS - ({"stagingDisposition"} if legacy else set())
+    if set(value) != expected_fields:
         raise ValueError("translation attempt fields are invalid")
     if (not isinstance(value.get("bindingComplete"), bool)
             or not isinstance(value.get("l2AuthorityComplete"), bool)):
         raise ValueError("translation attempt completeness fields must be boolean")
+    if not legacy:
+        declared_disposition = AttemptStagingDisposition(
+            _text(value.get("stagingDisposition"), "stagingDisposition"))
+        expected_disposition = _staging_disposition(
+            TranslationOutcome(_text(value.get("translationOutcome"), "translationOutcome")),
+            ValidationOutcome(_text(value.get("validationOutcome"), "validationOutcome")),
+            PublicationOutcome(_text(value.get("publicationOutcome"), "publicationOutcome")),
+            tuple(value.get("reasonCodes", ())),
+        )
+        if declared_disposition is not expected_disposition:
+            raise ValueError("translation attempt staging disposition is inconsistent")
     return TranslationAttempt(
         finding_id=_text(value.get("findingId"), "findingId"),
         fragment_id=_text(value.get("fragmentId"), "fragmentId"),
@@ -230,6 +284,14 @@ def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAtt
         translation_outcome=TranslationOutcome(_text(value.get("translationOutcome"), "translationOutcome")),
         validation_outcome=ValidationOutcome(_text(value.get("validationOutcome"), "validationOutcome")),
         publication_outcome=PublicationOutcome(_text(value.get("publicationOutcome"), "publicationOutcome")),
+        staging_disposition=(
+            _staging_disposition(
+                TranslationOutcome(_text(value.get("translationOutcome"), "translationOutcome")),
+                ValidationOutcome(_text(value.get("validationOutcome"), "validationOutcome")),
+                PublicationOutcome(_text(value.get("publicationOutcome"), "publicationOutcome")),
+                tuple(value.get("reasonCodes", ())),
+            ) if legacy else AttemptStagingDisposition(
+                _text(value.get("stagingDisposition"), "stagingDisposition"))),
         reason_codes=_ordered_strings(value.get("reasonCodes"), "reasonCodes"),
         source_model_id=_text(value.get("sourceModelId"), "sourceModelId", optional=True),
         preservation_decision_id=_text(value.get("preservationDecisionId"), "preservationDecisionId", optional=True),
@@ -247,8 +309,11 @@ def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAtt
         effect_relation_set_identity=_sha(value.get("effectRelationSetIdentity"), "effectRelationSetIdentity", optional=True),
         l2_authority_complete=value["l2AuthorityComplete"],
         binding_complete=value["bindingComplete"],
-        artifact_id=_sha(value.get("artifactId"), "artifactId"),
-        schema_version=_text(value.get("schemaVersion"), "schemaVersion"),
+        # A v1 identity covers the v1 payload.  Compatibility adaptation
+        # intentionally re-addresses the upgraded v2 payload.
+        artifact_id=("" if legacy else _sha(value.get("artifactId"), "artifactId")),
+        schema_version=(TRANSLATION_ATTEMPT_SCHEMA if legacy else
+                        _text(value.get("schemaVersion"), "schemaVersion")),
     )
 
 
@@ -320,6 +385,13 @@ def terminal_attempt_from_finding(finding: object, finding_index: int) -> Transl
         translation_outcome=TranslationOutcome(str(getattr(finding, "translationOutcome"))),
         validation_outcome=ValidationOutcome(str(getattr(finding, "validationOutcome"))),
         publication_outcome=PublicationOutcome(str(getattr(finding, "publicationOutcome"))),
+        staging_disposition=_staging_disposition(
+            TranslationOutcome(str(getattr(finding, "translationOutcome"))),
+            ValidationOutcome(str(getattr(finding, "validationOutcome"))),
+            PublicationOutcome(str(getattr(finding, "publicationOutcome"))),
+            tuple(sorted(set(str(item) for item in artifact.get("reasonCodes", [])
+                             if str(item)))),
+        ),
         reason_codes=tuple(sorted(set(str(item) for item in artifact.get("reasonCodes", []) if str(item)))),
         l2_authority_identity=l2_identity,
         effect_relation_set_identity=relation_identity,
@@ -364,10 +436,12 @@ def translation_attempt_archive_from_dict(value: Mapping[str, object]) -> Transl
     raw = value.get("attempts")
     if not isinstance(raw, list) or not all(isinstance(item, Mapping) for item in raw):
         raise ValueError("translation attempt archive attempts are malformed")
+    legacy = value.get("schemaVersion") == _LEGACY_ARCHIVE_SCHEMA
     return TranslationAttemptArchive(
         attempts=tuple(translation_attempt_from_dict(item) for item in raw),
-        archive_id=_sha(value.get("archiveId"), "archiveId"),
-        schema_version=_text(value.get("schemaVersion"), "schemaVersion"),
+        archive_id=("" if legacy else _sha(value.get("archiveId"), "archiveId")),
+        schema_version=(TRANSLATION_ATTEMPT_ARCHIVE_SCHEMA if legacy else
+                        _text(value.get("schemaVersion"), "schemaVersion")),
     )
 
 
