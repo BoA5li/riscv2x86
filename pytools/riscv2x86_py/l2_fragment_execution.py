@@ -771,6 +771,46 @@ def fragment_boundary_from_dict(
     return result
 
 
+def fragment_dependency_graph_from_dict(
+    value: Mapping[str, object], *, expected_fragment_id: str = "",
+) -> FragmentDependencyGraph:
+    """Parse a content-addressed dependency graph without inferring edges.
+
+    The graph is program authority.  Consumers must not reconstruct it from
+    declaration names because distinct compiler value nodes may legitimately
+    share one spelling.
+    """
+    payload = dict(value)
+    claimed = payload.pop("graphIdentity", None)
+    if claimed != identity(payload):
+        raise ValueError("fragment dependency graph identity does not match content")
+    members, raw_edges, reasons = (
+        value.get("fragmentIds"), value.get("edges"), value.get("reasonCodes"))
+    if (not isinstance(members, list) or not all(isinstance(item, str) for item in members)
+            or not isinstance(raw_edges, list) or not isinstance(reasons, list)
+            or not all(isinstance(item, str) for item in reasons)):
+        raise ValueError("fragment dependency graph arrays are invalid")
+    edges = []
+    for item in raw_edges:
+        if not isinstance(item, Mapping):
+            raise ValueError("fragment dependency graph edge is invalid")
+        edges.append(FragmentDependencyEdge(
+            str(item.get("producerFragmentId") or ""),
+            str(item.get("consumerFragmentId") or ""),
+            str(item.get("valueNodeIdentity") or ""),
+            str(item.get("consumerValueNodeIdentity") or ""),
+        ))
+    result = FragmentDependencyGraph(
+        str(value.get("programId") or ""), str(value.get("functionId") or ""),
+        tuple(members), tuple(edges), str(value.get("executionMode") or ""),
+        value.get("complete") is True, tuple(reasons),
+        str(value.get("schemaVersion") or ""),
+    )
+    if expected_fragment_id and expected_fragment_id not in result.fragment_ids:
+        raise ValueError("fragment dependency graph does not contain fragment")
+    return result
+
+
 def program_execution_authority_from_dict(
     value: Mapping[str, object], *, expected_fragment_id: str = "",
 ) -> ProgramExecutionAuthority:
