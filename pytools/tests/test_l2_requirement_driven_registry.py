@@ -36,7 +36,8 @@ def _requirement(kind=L2PatternKind.SCALAR, dimensions=None):
         authority = MemoryAccessAuthority(
             "fragment:1", access, "parameter-object:base", "base", "base",
             0, 8, 8, 8, 32, "0<=0 && 8<=32", "alias:base", "c.default",
-            "value", False, True)
+            "value", False, True, "decoder-address:base",
+            "sha256:" + "1" * 64)
         decision = AuthorityMaterializationDecision(
             "fragment:1", True, (), authority).to_dict()
     required = dimensions or (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS)
