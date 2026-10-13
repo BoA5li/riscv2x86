@@ -17,6 +17,8 @@ _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 L2_MEMORY_MATERIALIZATION_DECISION_SCHEMA = \
     "riscv2x86.l2-memory-authority-decision.v1"
+L2_MEMORY_DIMENSION_CLOSURE_SCHEMA = \
+    "riscv2x86.l2-memory-dimension-closure.v1"
 
 
 def _c_scalar_width_bytes(type_name: object) -> int:
@@ -131,6 +133,151 @@ class AuthorityMaterializationDecision:
         if include_identity:
             value["decisionIdentity"] = self.decision_identity
         return value
+
+
+@dataclass(frozen=True)
+class MemoryDimensionClosure:
+    """Auditable authority closure for one required memory L2 dimension."""
+    dimension: str
+    object_complete: bool
+    address_complete: bool
+    value_complete: bool
+    effect_complete: bool
+    observation_contract_complete: bool
+    reason_codes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.dimension not in {"logical_operands", "memory_effects", "shell_semantics"}:
+            raise ValueError("unsupported memory L2 dimension")
+        if self.reason_codes != tuple(sorted(set(self.reason_codes))):
+            raise ValueError("memory dimension reasons must be sorted and unique")
+
+    @property
+    def complete(self) -> bool:
+        required = {
+            "logical_operands": (self.address_complete, self.value_complete),
+            "memory_effects": (self.object_complete, self.address_complete,
+                               self.value_complete, self.effect_complete,
+                               self.observation_contract_complete),
+            "shell_semantics": (self.effect_complete,
+                                self.observation_contract_complete),
+        }[self.dimension]
+        return all(required) and not self.reason_codes
+
+    def to_dict(self) -> dict[str, object]:
+        return {"dimension": self.dimension,
+                "objectComplete": self.object_complete,
+                "addressComplete": self.address_complete,
+                "valueComplete": self.value_complete,
+                "effectComplete": self.effect_complete,
+                "observationContractComplete": self.observation_contract_complete,
+                "complete": self.complete,
+                "reasonCodes": list(self.reason_codes)}
+
+
+@dataclass(frozen=True)
+class MemoryL2DimensionClosure:
+    fragment_id: str
+    dimensions: tuple[MemoryDimensionClosure, ...]
+    observation_contract_identity: str
+    schema_version: str = L2_MEMORY_DIMENSION_CLOSURE_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema_version != L2_MEMORY_DIMENSION_CLOSURE_SCHEMA or not self.fragment_id:
+            raise ValueError("memory dimension closure identity is invalid")
+        names = tuple(item.dimension for item in self.dimensions)
+        if names != tuple(sorted(set(names))):
+            raise ValueError("memory dimensions must be sorted and unique")
+        if self.observation_contract_identity and not _SHA256.fullmatch(
+                self.observation_contract_identity):
+            raise ValueError("memory observation contract identity is invalid")
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.dimensions) and all(item.complete for item in self.dimensions)
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, object]:
+        value = {"schemaVersion": self.schema_version,
+                 "fragmentId": self.fragment_id,
+                 "dimensions": [item.to_dict() for item in self.dimensions],
+                 "observationContractIdentity": self.observation_contract_identity,
+                 "complete": self.complete}
+        if include_identity:
+            value["closureIdentity"] = _identity(value)
+        return value
+
+
+def assess_memory_l2_dimension_closure(
+    decision: AuthorityMaterializationDecision,
+    effect_proof: Mapping[str, object] | None,
+) -> MemoryL2DimensionClosure:
+    """Close dimensions from typed authority and Phase-6D facts only."""
+    reasons = set(decision.reason_codes)
+    invalid = bool(reasons & {"L2_MEMORY_AUTHORITY_DECISION_INVALID",
+                              "L2_FRAGMENT_IDENTITY_MISMATCH"})
+    object_complete = not invalid and not bool(reasons & {
+        "L2_MEMORY_OBJECT_IDENTITY_MISSING", "L2_MEMORY_BOUNDS_UNPROVED",
+        "L2_MEMORY_ADDRESS_BINDING_MISSING"})
+    address_complete = not invalid and not bool(reasons & {
+        "L2_MEMORY_ADDRESS_BINDING_MISSING", "L2_MEMORY_ALIGNMENT_UNPROVED"})
+    value_complete = not invalid and "L2_MEMORY_VALUE_FLOW_UNPROVED" not in reasons
+    effect_complete = False
+    facts_identity = ""
+    if isinstance(effect_proof, Mapping):
+        try:
+            from .l2_effect_proof import effect_proof_facts_from_dict
+            parsed = effect_proof_facts_from_dict(effect_proof)
+            effect_complete = parsed.complete and parsed.fragment_id == decision.fragment_id
+            facts_identity = str(effect_proof.get("factsIdentity") or "")
+        except ValueError:
+            effect_complete = False
+    observation_identity = ""
+    if (decision.materializable and decision.authority is not None
+            and effect_complete and _SHA256.fullmatch(facts_identity)):
+        observation_identity = _identity({
+            "schemaVersion": "riscv2x86.memory-observation-contract.v1",
+            "fragmentId": decision.fragment_id,
+            "authority": decision.authority.to_dict(),
+            "effectProofIdentity": facts_identity,
+            "coordinates": ["objectIdentity", "offsetBytes", "accessWidthBytes",
+                            "valueBitPattern"],
+        })
+    observation_complete = bool(observation_identity)
+
+    reason_domains = {
+        "object": {"L2_MEMORY_OBJECT_IDENTITY_MISSING", "L2_MEMORY_BOUNDS_UNPROVED"},
+        "address": {"L2_MEMORY_ADDRESS_BINDING_MISSING", "L2_MEMORY_ALIGNMENT_UNPROVED",
+                    "L2_FRAGMENT_IDENTITY_MISMATCH", "L2_MEMORY_AUTHORITY_DECISION_INVALID"},
+        "value": {"L2_MEMORY_VALUE_FLOW_UNPROVED"},
+        "effect": {"L2_MEMORY_TRANSLATION_PROOF_UNAPPROVED"},
+    }
+
+    def dimension(name: str, domains: tuple[str, ...],
+                  required: tuple[tuple[bool, str], ...]) -> MemoryDimensionClosure:
+        missing = set().union(*(reasons & reason_domains[item] for item in domains))
+        for approved, code in required:
+            if not approved:
+                missing.add(code)
+        return MemoryDimensionClosure(
+            name, object_complete, address_complete, value_complete,
+            effect_complete, observation_complete, tuple(sorted(missing)))
+
+    dimensions = (
+        dimension("logical_operands", ("address", "value"), (
+            (address_complete, "L2_MEMORY_ADDRESS_AUTHORITY_INCOMPLETE"),
+            (value_complete, "L2_MEMORY_VALUE_AUTHORITY_INCOMPLETE"))),
+        dimension("memory_effects", ("object", "address", "value", "effect"), (
+            (object_complete, "L2_MEMORY_OBJECT_AUTHORITY_INCOMPLETE"),
+            (address_complete, "L2_MEMORY_ADDRESS_AUTHORITY_INCOMPLETE"),
+            (value_complete, "L2_MEMORY_VALUE_AUTHORITY_INCOMPLETE"),
+            (effect_complete, "L2_MEMORY_EFFECT_RELATION_MISSING"),
+            (observation_complete, "L2_MEMORY_OBSERVATION_AUTHORITY_MISSING"))),
+        dimension("shell_semantics", ("effect",), (
+            (effect_complete, "L2_MEMORY_EFFECT_RELATION_MISSING"),
+            (observation_complete, "L2_MEMORY_OBSERVATION_AUTHORITY_MISSING"))),
+    )
+    return MemoryL2DimensionClosure(decision.fragment_id, dimensions,
+                                    observation_identity)
 
 
 def assess_memory_authority_materializability(
