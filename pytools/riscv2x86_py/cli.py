@@ -15,6 +15,7 @@ from .whole_function_sidecar import load_whole_function_sidecar
 from .privileged_pipeline_inputs import load_privileged_pipeline_inputs
 from .pipeline_validation_context import load_pipeline_validation_context
 from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
+from .csr_environment_contract import load_csr_environment_contract
 
 
 def main() -> int:
@@ -129,6 +130,11 @@ def main() -> int:
         default=None,
         help="Versioned independent instruction-stream synchronization registry.",
     )
+    ap.add_argument(
+        "--csr-environment-contract",
+        default=None,
+        help="Content-bound CSR runtime, counter-relation, and renderer contract.",
+    )
 
     args = ap.parse_args()
 
@@ -192,6 +198,10 @@ def main() -> int:
                 args.instruction_stream_sync_registry
             )
         )
+        csr_environment_contract = (
+            None if args.csr_environment_contract is None
+            else load_csr_environment_contract(args.csr_environment_contract)
+        )
         validation_runner = (
             None if args.validation_context is None
             else load_pipeline_validation_context(args.validation_context)
@@ -208,6 +218,10 @@ def main() -> int:
             whole_function_sidecar=whole_function_sidecar,
             privileged_pipeline_inputs=privileged_pipeline_inputs,
             instruction_stream_sync_registry=instruction_stream_sync_registry,
+            csr_runtime_registry=(None if csr_environment_contract is None
+                                  else csr_environment_contract.runtime_registry),
+            csr_renderer_registry=(None if csr_environment_contract is None
+                                   else csr_environment_contract.renderer_registry),
             allow_functional_fallbacks=args.allow_functional_fallbacks,
             validation_runner=validation_runner,
         )

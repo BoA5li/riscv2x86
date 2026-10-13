@@ -21,6 +21,7 @@ from .privileged_environment import (
     validate_privileged_environment_pipeline_authority,
 )
 from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
+from .csr_environment_contract import load_csr_environment_contract
 
 
 def _identity(value: object) -> str:
@@ -113,6 +114,7 @@ def main() -> int:
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
+    parser.add_argument("--csr-environment-contract")
     parser.add_argument("--privileged-environment-sidecar")
     parser.add_argument("--instruction-stream-sync-registry")
     args = parser.parse_args()
@@ -148,6 +150,27 @@ def main() -> int:
                                   Path(args.csr_authority_sidecar).resolve())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print("CSR authority binding failed: " + str(exc), file=sys.stderr)
+            return 2
+    if args.csr_environment_contract:
+        try:
+            csr_environment = load_csr_environment_contract(
+                args.csr_environment_contract, source=args.source,
+            )
+            raw_value = json.loads(raw.read_text(encoding="utf-8"))
+            raw_findings = (raw_value if isinstance(raw_value, list)
+                            else raw_value.get("findings", []))
+            fragment_ids = {
+                str(item.get("fragment", {}).get("fragmentId") or
+                    item.get("fragment", {}).get("id"))
+                for item in raw_findings if isinstance(item, dict)
+            }
+            if csr_environment.fragment_id not in fragment_ids:
+                raise ValueError("CSR environment contract references a nonexistent frontend fragment")
+            if (csr_environment.relation_kind == "functional-monotonic-observation"
+                    and not args.allow_functional_fallbacks):
+                raise ValueError("functional CSR relation requires --allow-functional-fallbacks")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print("CSR environment binding failed: " + str(exc), file=sys.stderr)
             return 2
     backend = [sys.executable, "-m", "riscv2x86_py.cli", "--in", str(raw),
                "--out", str(report), "--xlen", "64", "--skip-verify"]
@@ -191,6 +214,9 @@ def main() -> int:
             return 2
     if args.allow_functional_fallbacks:
         backend.append("--allow-functional-fallbacks")
+    if args.csr_environment_contract:
+        backend.extend(("--csr-environment-contract",
+                        str(Path(args.csr_environment_contract).resolve())))
     if args.instruction_stream_sync_registry:
         try:
             load_instruction_stream_sync_registry(

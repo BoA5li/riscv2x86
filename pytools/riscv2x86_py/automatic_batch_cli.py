@@ -827,6 +827,7 @@ def prepare_automatic_inventory(
     l3_provider_directory: str | Path | None = None,
     atomic_authority_directory: str | Path | None = None,
     csr_authority_directory: str | Path | None = None,
+    csr_environment_contract_directory: str | Path | None = None,
     instruction_stream_sync_directory: str | Path | None = None,
     l3_diagnostic: bool = False,
 ) -> dict[str, object]:
@@ -857,6 +858,12 @@ def prepare_automatic_inventory(
                 else Path(csr_authority_directory).resolve())
     if csr_root is not None and not csr_root.is_dir():
         raise ValueError("CSR authority directory is unavailable")
+    csr_environment_root = (
+        None if csr_environment_contract_directory is None
+        else Path(csr_environment_contract_directory).resolve()
+    )
+    if csr_environment_root is not None and not csr_environment_root.is_dir():
+        raise ValueError("CSR environment contract directory is unavailable")
     instruction_stream_root = (
         None if instruction_stream_sync_directory is None
         else Path(instruction_stream_sync_directory).resolve()
@@ -980,6 +987,10 @@ def prepare_automatic_inventory(
             csr_sidecar = csr_root / (relative + ".csr-authority.json")
             if csr_sidecar.is_file():
                 translation.extend(("--csr-authority-sidecar", str(csr_sidecar)))
+        if csr_environment_root is not None:
+            csr_environment = csr_environment_root / (relative + ".csr-environment.json")
+            if csr_environment.is_file():
+                translation.extend(("--csr-environment-contract", str(csr_environment)))
         if privileged_root is not None:
             environment_sidecar = privileged_root / (relative + ".privileged-environment.json")
             if environment_sidecar.is_file():
@@ -1342,6 +1353,9 @@ def main() -> int:
                         help="directory containing <source>.c.atomic-authority.json bindings")
     parser.add_argument("--csr-authority-directory",
                         help="directory containing <source>.c.csr-authority.json bindings")
+    parser.add_argument("--csr-environment-contract-directory",
+                        help=("directory containing <source>.c.csr-environment.json "
+                              "content-bound runtime contracts"))
     parser.add_argument("--instruction-stream-sync-directory",
                         help=("directory containing <source>.c.instruction-stream-sync.json "
                               "runtime contract registries"))
@@ -1360,6 +1374,7 @@ def main() -> int:
                                     l3_provider_directory=args.l3_provider_directory,
                                     atomic_authority_directory=args.atomic_authority_directory,
                                     csr_authority_directory=args.csr_authority_directory,
+                                    csr_environment_contract_directory=args.csr_environment_contract_directory,
                                     instruction_stream_sync_directory=args.instruction_stream_sync_directory,
                                     l3_diagnostic=args.l3_diagnostic)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)

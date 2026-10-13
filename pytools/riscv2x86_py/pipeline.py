@@ -50,6 +50,7 @@ from .csr_value_flow import authority_from_phase4_facts, join_csr_operand_bindin
 from .csr_authority import csr_operand_authority_from_bundle
 from .csr_state_dataflow import analyze_csr_state_dataflow
 from .source_csr_semantic_model import adapt_source_csr_semantic_model
+from .csr_translation_pipeline import CsrRendererRegistry, CsrRuntimeRegistry
 from .shell_model import SourceShellModel
 from .privileged_emitted_audit import (
     PRIVILEGED_EMITTED_TEXT_AUDIT_VERSION,
@@ -1188,6 +1189,8 @@ def run(
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     privileged_pipeline_inputs: PrivilegedPipelineInputs | None = None,
     instruction_stream_sync_registry: InstructionStreamSyncRegistry | None = None,
+    csr_runtime_registry: CsrRuntimeRegistry | None = None,
+    csr_renderer_registry: CsrRendererRegistry | None = None,
     allow_functional_fallbacks: bool = False,
     validation_runner: PipelineValidationRunner | None = None,
 ) -> dict:
@@ -1783,6 +1786,8 @@ def run(
             privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
             instruction_stream_sync_registry=instruction_stream_sync_registry,
+            csr_runtime_registry=csr_runtime_registry,
+            csr_renderer_registry=csr_renderer_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,
         )
 
