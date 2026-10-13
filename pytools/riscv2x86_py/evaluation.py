@@ -20,6 +20,7 @@ from .translation_attempt import TranslationAttemptArchive, load_translation_att
 from .l2_dimensions import L2ClaimScope, L2DimensionStatus, parse_l2_dimensions
 from .l2_results import L2FragmentResult
 from .l2_program_results import (
+    aggregate_observation_identity,
     ProgramExecutionEvidence, ProgramL2GroupResult, ProgramL2MemberResult,
     sample_set_identity,
 )
@@ -1108,7 +1109,7 @@ def _translation_evaluation_linkage(
                 "l2Result": member,
             })
     required_l2_members = [item for item in l2_member_results if item["required"]]
-    execution_groups: dict[tuple[str, str, str], set[str]] = {}
+    execution_groups: dict[str, dict[str, set[str]]] = {}
     for fragment_id, fragment_result in parsed_l2_results.items():
         required_results = tuple(
             item for item in fragment_result.dimension_results
@@ -1120,17 +1121,23 @@ def _translation_evaluation_linkage(
         for item in required_results:
             if (item.execution_identity and item.source_observation_identity
                     and item.target_observation_identity):
-                key = (item.execution_identity, item.source_observation_identity,
-                       item.target_observation_identity)
-                execution_groups.setdefault(key, set()).add(fragment_id)
-    program_execution_evidence = tuple(
-        ProgramExecutionEvidence(
+                group = execution_groups.setdefault(item.execution_identity, {
+                    "source": set(), "target": set(), "members": set()})
+                group["source"].add(item.source_observation_identity)
+                group["target"].add(item.target_observation_identity)
+                group["members"].add(fragment_id)
+    program_execution_evidence_items = []
+    for execution_id, group in sorted(execution_groups.items()):
+        source_id = aggregate_observation_identity(
+            execution_id, "source", tuple(group["source"]))
+        target_id = aggregate_observation_identity(
+            execution_id, "target", tuple(group["target"]))
+        program_execution_evidence_items.append(ProgramExecutionEvidence(
             execution_id, request.source_relative_path, source_id, target_id,
-            sample_set_identity(source_id, target_id), tuple(sorted(member_ids)),
-        )
-        for (execution_id, source_id, target_id), member_ids
-        in sorted(execution_groups.items())
-    )
+            sample_set_identity(source_id, target_id),
+            tuple(sorted(group["members"])),
+        ))
+    program_execution_evidence = tuple(program_execution_evidence_items)
     required_fragment_ids = tuple(
         str(item["fragmentId"]) for item in required_l2_members
     )
