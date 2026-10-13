@@ -102,6 +102,30 @@ def _build_failure_detail(
     }
 
 
+def _fence_wrapper(function: Mapping[str, object]) -> str:
+    """Build an ordering observation harness for an operand-free fence route.
+
+    Fence validation is intentionally not expressed through the scalar
+    wrapper: its observable is completion around a proof-owned ordering edge,
+    and accepting parameters or a return value would silently change that
+    route's authority boundary.
+    """
+    name = function.get("name")
+    if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z_]\w*", name) is None
+            or function.get("arity") != 0 or function.get("returnType") != "void"
+            or function.get("parameterTypes") != []):
+        raise ValueError("fence ordering harness requires a void zero-operand function")
+    return "\n".join((
+        "#include <stdio.h>",
+        f"void {name}(void);",
+        "int main(void){",
+        f"  {name}();",
+        f'  printf("{name}=completed\\n");',
+        "  return 0;",
+        "}",
+    )) + "\n"
+
+
 def _finding(report: Mapping[str, object], fragment_id: str) -> Mapping[str, object] | None:
     findings = report.get("findings")
     if not isinstance(findings, list):
@@ -697,6 +721,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             wrapper = (_object_relative_memory_wrapper(
                            function, relation_authority, memory_facts)
                        if mode == "memory-object-functions" else
+                       _fence_wrapper(function) if mode == "fence-functions" else
                        _branch_domain_wrapper([function]) if mode == "branch-domain-functions" else
                        _branch_domain_wrapper([function]) if control_kind == "conditional" else
                        _operand_trace_wrapper(function) if control_kind == "direct" else
