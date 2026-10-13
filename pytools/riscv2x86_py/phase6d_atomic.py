@@ -55,10 +55,18 @@ def prove_barrier(r):
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
     if contract is None or not isinstance(semantic_id, str):
         return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
-    if (contract.semantic_contract_id != semantic_id or
+    # A fence has a valid zero-operand semantic domain.  Its observable
+    # contract is the ordering edge plus the compiler shell; no synthetic
+    # scalar binding may be introduced merely to satisfy a generic operand
+    # path.
+    if (s.operands.operands or c.operand_constraints or
+            contract.semantic_contract_id != semantic_id or
             semantic_id not in r.target_semantic_catalog.semantic_contract_ids or
             contract.ordering != s.barrier.ordering or
             contract.scope != s.barrier.scope or
+            not s.barrier.compiler_barrier or
+            not s.shell.has_memory_clobber or
+            not contract.compiler_barrier or
             not c.preserve_volatile or
             not c.memory_constraint.requires_compiler_barrier or
             not c.memory_constraint.requires_memory_clobber):

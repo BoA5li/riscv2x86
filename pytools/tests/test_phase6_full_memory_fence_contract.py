@@ -121,8 +121,19 @@ def test_full_rw_fence_has_proven_mfence_contract_and_compiles() -> None:
             supports_gnu_inline_asm=True,
             supports_asm_goto=False,
         ),
+        fragment_id="fragment:fence",
     )
     assert proof.approved and proof.evidence is not None
+    assert proof.l2_effect_proof_facts is not None
+    effect_facts = proof.l2_effect_proof_facts
+    assert effect_facts.shell_relation.memory_clobber_preserved
+    assert effect_facts.shell_relation.operand_modes == ()
+    assert effect_facts.shell_relation.constraints == ()
+    fence_relation = next(
+        item for item in effect_facts.relations
+        if item.source_effect_id == "fence:0"
+    )
+    assert fence_relation.ordering_requirements == (("before:read", "after:write"),)
 
     approved = ApprovedTargetLoweringPlan(
         plan=plan,

@@ -324,9 +324,18 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
     tied = tuple(sorted(f"{x.source_operand_index}:{x.tied_to_source_operand_index}"
                         for x in source.operands.operands
                         if x.tied_to_source_operand_index is not None))
+    # A compiler memory barrier is a shell property, not a data-memory
+    # effect.  In particular, a standalone fence legitimately has no address
+    # or value operands and does not itself read or write a C object, while
+    # its GNU ``memory`` clobber is still mandatory.  Deriving this bit from
+    # reads_memory/writes_memory therefore dropped the principal shell
+    # obligation of operand-free fences.
+    source_memory_clobber = bool(
+        source.shell.has_memory_clobber or source.barrier.compiler_barrier
+    )
     shell = ShellRelationFact(
         operand_modes, target_constraints, early, tied,
-        source.memory.writes_memory or source.memory.reads_memory,
+        source_memory_clobber,
         True, True, True, True, True)
     return L2EffectProofFacts(
         fragment_id, proof_identity(evidence), plan.plan_id, evidence.constraints_id,

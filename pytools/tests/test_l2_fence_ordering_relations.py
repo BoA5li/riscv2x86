@@ -23,6 +23,8 @@ from riscv2x86_py.l2_semantic_profile import (
     L2PrivilegedShape,
 )
 from riscv2x86_py.l2_dimensions import L2Dimension, L2EligibilityStatus
+from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
+from riscv2x86_py.l2_materialization import assess_fragment_l2_materializability
 from riscv2x86_py.l2_validator_resolution import (
     L2BindingKind, L2FragmentRequirement, L2RuntimeCapabilities, L2ValidatorProvider,
 )
@@ -75,6 +77,7 @@ def _finding(facts=None, *, kind=L2PatternKind.FENCE):
     facts = facts or _facts()
     result = {"fragment":{"id":facts.fragment_id, "enclosingFunction":"synchronize_domain",
                          "outputs":[], "inputs":[]},
+      "translationOutcome":"emitted",
       "l2SemanticProfile":_profile(facts.fragment_id, kind).to_dict(),
       "approvalArtifact":{"proofStatus":"approved", "architectureSemanticsPreserved":True,
         "shellSemanticsPreserved":True, "sourceModelId":"model", "constraintsId":"constraints",
@@ -172,6 +175,33 @@ def test_fence_authority_materializes_three_anchors(tmp_path):
       "before:read", "fence:0", "after:write"}
     assert sidecar.ordering[0].before_effect_id == "before:read"
     assert sidecar.ordering[0].after_effect_id == "after:write"
+    assert sidecar.operands == ()
+    decision = assess_fragment_l2_materializability(finding)
+    assert decision.executable
+    assert decision.boundary_complete
+    assert decision.relation_complete
+    assert decision.shell_complete
+    requirement = L2EligibilityClassifier().classify(finding, 0)
+    assert requirement["eligibilityStatus"] == L2EligibilityStatus.ELIGIBLE.value
+    assert requirement["requiredDimensions"] == ["memory_effects", "shell_semantics"]
+
+
+def test_operand_free_fence_requires_explicit_memory_clobber_shell_relation(tmp_path):
+    finding = _finding()
+    raw_effect = finding["approvalArtifact"]["l2EffectProofFacts"]
+    raw_effect["shellRelation"]["memoryClobberPreserved"] = False
+    payload = {key:value for key, value in raw_effect.items() if key != "factsIdentity"}
+    raw_effect["factsIdentity"] = _digest(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")))
+    frontend = tmp_path / "frontend"; frontend.write_bytes(b"frontend")
+    function = {"name":"synchronize_domain", "arity":0, "returnType":"void",
+                "parameterTypes":[], "pointerParameters":[],
+                "l2OperandBoundary":{"complete":True}}
+    assert materialize_automatic_l2_authority(
+      {"findings":[finding]}, [function], frontend) == 0
+    decision = finding["approvalArtifact"]["l2MaterializationDecision"]
+    assert decision["executable"] is False
+    assert "L2_FENCE_MEMORY_CLOBBER_SHELL_RELATION_MISSING" in decision["reasonCodes"]
 
 
 def test_missing_fence_proof_facts_preserve_precise_fail_closed_reason(tmp_path):

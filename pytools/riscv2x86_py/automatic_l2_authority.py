@@ -631,6 +631,17 @@ def _fence_authority_failure_reason(
             or approval.get("rendererContractId") != facts.target_renderer_contract_id
             or approval.get("rendererVersion") != facts.target_renderer_version):
         return "L2_FENCE_TARGET_CONTRACT_MISMATCH"
+    raw_effect = approval.get("l2EffectProofFacts")
+    if not isinstance(raw_effect, Mapping):
+        return "L2_FENCE_EFFECT_PROOF_FACTS_MISSING"
+    try:
+        effect_facts = effect_proof_facts_from_dict(raw_effect)
+    except ValueError:
+        return "L2_FENCE_EFFECT_PROOF_FACTS_INVALID"
+    if (effect_facts.fragment_id != fragment_id or not effect_facts.complete):
+        return "L2_FENCE_EFFECT_PROOF_FACTS_INCOMPLETE"
+    if not effect_facts.shell_relation.memory_clobber_preserved:
+        return "L2_FENCE_MEMORY_CLOBBER_SHELL_RELATION_MISSING"
     return "L2_FENCE_AUTHORITY_MATERIALIZATION_REJECTED"
 
 

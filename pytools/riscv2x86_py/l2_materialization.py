@@ -234,6 +234,14 @@ def assess_fragment_l2_materializability(
             facts = effect_proof_facts_from_dict(raw_effect)
             shell_complete = bool(facts.complete and facts.shell_relation.complete
                                   and facts.fragment_id == fragment_id)
+            # The fence profile is operand-free by design, but it is not
+            # shell-free: its compiler memory barrier must be an explicit
+            # Phase-6D fact.  Do not accept a generic "complete" shell record
+            # that omits the GNU memory-clobber obligation.
+            if (profile is not None and profile.pattern_kind is L2PatternKind.FENCE
+                    and not facts.shell_relation.memory_clobber_preserved):
+                shell_complete = False
+                reasons.append("L2_FENCE_MEMORY_CLOBBER_SHELL_RELATION_MISSING")
         except ValueError:
             reasons.append("L2_FRAGMENT_SHELL_PROOF_INVALID")
     else:
