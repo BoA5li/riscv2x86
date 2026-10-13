@@ -32,6 +32,31 @@ def sample_set_identity(source_identity: str, target_identity: str) -> str:
     })
 
 
+def aggregate_observation_identity(
+    execution_identity: str, side: str, observations: Sequence[str],
+) -> str:
+    """Bind all per-fragment observations belonging to one execution.
+
+    A single observation keeps its identity for backwards compatibility.  A
+    multi-fragment execution receives one content-addressed program identity;
+    this prevents counting the same execution once per fragment while keeping
+    every fragment observation in the commitment.
+    """
+    canonical = tuple(sorted(set(observations)))
+    if not canonical or side not in {"source", "target"}:
+        raise ValueError("program observation aggregation is incomplete")
+    if any(_SHA256.fullmatch(item) is None for item in canonical):
+        raise ValueError("program observation aggregation identity is invalid")
+    if len(canonical) == 1:
+        return canonical[0]
+    return canonical_identity({
+        "schemaVersion": "riscv2x86.l2-program-observation-set.v1",
+        "executionIdentity": execution_identity,
+        "side": side,
+        "fragmentObservationIdentities": list(canonical),
+    })
+
+
 @dataclass(frozen=True)
 class ProgramExecutionEvidence:
     execution_identity: str
