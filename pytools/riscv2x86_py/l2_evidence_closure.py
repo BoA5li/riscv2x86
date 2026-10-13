@@ -160,6 +160,7 @@ def provider_evidence_fields(
     source_observation_identity: str, target_observation_identity: str,
     execution_nonce: object,
     dimensions: Sequence[str],
+    authorized_execution_identity: str = "",
     execution_disposition: L2ProviderExecutionDisposition =
         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
 ) -> dict[str, object]:
@@ -172,11 +173,16 @@ def provider_evidence_fields(
     for value in (source_observation_identity, target_observation_identity):
         if _SHA.fullmatch(value) is None:
             raise ValueError("provider observations are incomplete")
-    execution_identity = identity({
-        "schemaVersion": "riscv2x86.l2-authorized-execution.v1",
-        "executionPlanIdentity": plan.plan_identity,
-        "executionNonce": execution_nonce,
-    })
+    if authorized_execution_identity:
+        if _SHA.fullmatch(authorized_execution_identity) is None:
+            raise ValueError("authorized provider execution identity is invalid")
+        execution_identity = authorized_execution_identity
+    else:
+        execution_identity = identity({
+            "schemaVersion": "riscv2x86.l2-authorized-execution.v1",
+            "executionPlanIdentity": plan.plan_identity,
+            "executionNonce": execution_nonce,
+        })
     canonical_dimensions = tuple(sorted(set(dimensions)))
     if not canonical_dimensions or any(not item for item in canonical_dimensions):
         raise ValueError("provider evidence dimensions are incomplete")
