@@ -96,6 +96,38 @@ def test_three_fragments_share_one_program_execution_sample(tmp_path):
                for item in group["memberResults"])
 
 
+def test_distinct_fragment_observations_still_form_one_program_execution(tmp_path):
+    request, requirements = _setup(tmp_path, 2)
+    results = []
+    for index in range(2):
+        dimensions = tuple(L2Dimension(item)
+                           for item in requirements[index]["requiredDimensions"])
+        fragment = f"fragment:{index}"
+        source = _id(str(index + 1))
+        target = _id(str(index + 3))
+        dimension_results = tuple(L2DimensionResult.create(
+            dimension=dimension, status=L2DimensionStatus.VERIFIED,
+            claim_scope=L2ClaimScope.ARCHITECTURAL,
+            authority_identity=_id("a"), source_observation_identity=source,
+            target_observation_identity=target, effect_relation_identity=_id("d"),
+            execution_identity=EXECUTION,
+        ) for dimension in dimensions)
+        results.append(L2FragmentResult.close(
+            fragment_id=fragment,
+            requirement_identity=requirements[index]["requirementIdentity"],
+            required_dimensions=dimensions, dimension_results=dimension_results,
+        ))
+    linkage = _translation_evaluation_linkage(
+        request, tmp_path,
+        [_attempt(index, f"fragment:{index}", results[index]) for index in range(2)],
+    )
+    group = next(item for item in linkage["validationGroups"] if item["level"] == "L2")
+    assert group["status"] == "verified"
+    assert group["executionSampleCount"] == 1
+    assert linkage["programExecutionEvidence"][0]["memberFragmentIds"] == [
+        "fragment:0", "fragment:1"]
+
+
 def test_uniform_functional_relation_is_verified_at_program_scope(tmp_path):
     request, requirements = _setup(tmp_path, 1)
     result = _fragment_result(
