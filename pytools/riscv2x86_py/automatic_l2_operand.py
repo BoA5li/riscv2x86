@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import Mapping, Sequence
 
 from .l1_differential import ARCHITECTURAL_COMPARISON_POLICY
@@ -16,6 +17,7 @@ from .l2_authority import l2_authority_sidecar_from_dict
 from .l2_internal_value import instrumentation_plan_from_dict
 from .l2_fragment_execution import (
     boundary_as_legacy, fragment_boundary_from_dict,
+    fragment_dependency_graph_from_dict,
     program_execution_authority_from_dict,
 )
 from .l2_evidence_closure import (
@@ -179,6 +181,9 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     if not isinstance(shell_identity, str) or _SHA.fullmatch(shell_identity) is None:
         return None, "L2_OPERAND_SHELL_IDENTITY_MISSING"
     facts = []
+    binding_by_index = ({item.operand_index: item for item in
+                         parsed_boundary.output_bindings + parsed_boundary.input_bindings}
+                        if per_fragment else {})
     combined = [(item, output_ids[index], "output") for index, item in enumerate(outputs)]
     combined += [(item, input_ids[index], "input") for index, item in enumerate(inputs)]
     for index, (raw, declaration_id, role) in enumerate(combined):
@@ -204,6 +209,9 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "earlyClobber": bool(raw.get("isEarlyClobber")) or "&" in constraint,
             "sourceConstraint": constraint, "targetContractCarriedByProof": True,
             "escaped": False,
+            "valueNodeIdentity": (
+                binding_by_index[index].value_node_identity
+                if index in binding_by_index else ""),
         })
     raw_sidecar = approval.get("l2AuthoritySidecar")
     if not isinstance(raw_sidecar, Mapping):
@@ -242,20 +250,30 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     }
     if per_fragment:
         raw_execution = approval.get("l2ProgramExecutionAuthority")
+        raw_graph = approval.get("l2FragmentDependencyGraph")
         if not isinstance(raw_execution, Mapping):
             return None, "L2_PROGRAM_EXECUTION_AUTHORITY_MISSING"
+        if not isinstance(raw_graph, Mapping):
+            return None, "L2_FRAGMENT_DEPENDENCY_GRAPH_MISSING"
         try:
             execution = program_execution_authority_from_dict(
                 raw_execution, expected_fragment_id=str(getattr(artifact, "fragment_id", "")))
+            graph = fragment_dependency_graph_from_dict(
+                raw_graph, expected_fragment_id=str(getattr(artifact, "fragment_id", "")))
         except ValueError:
             return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INVALID"
-        if not execution.complete:
+        if (not execution.complete or not graph.complete
+                or execution.dependency_graph_identity != graph.graph_identity
+                or execution.execution_mode != graph.execution_mode):
             return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INCOMPLETE"
         payload.update({
             "fragmentBoundaryIdentity": parsed_boundary.boundary_identity,
             "programExecutionAuthorityIdentity": execution.authority_identity,
             "programExecutionIdentity": execution.execution_identity,
             "executionMode": execution.execution_mode,
+            "fragmentDependencyEdges": [item.to_dict() for item in graph.edges],
+            "observationSinks": [item.to_dict()
+                                 for item in parsed_boundary.observation_sinks],
             "sourceFragmentObservationIdentity": execution.observation_identity(
                 parsed_boundary.fragment_id, "logical_operands", "source"),
             "targetFragmentObservationIdentity": execution.observation_identity(
@@ -404,27 +422,108 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
                            for index, item in enumerate(plan["points"])
                            if isinstance(item, Mapping)}
     result = []
+    dependency_edges = authority.get("fragmentDependencyEdges", [])
+    observation_sinks = authority.get("observationSinks", [])
+    incoming = {
+        item.get("consumerValueNodeIdentity")
+        for item in dependency_edges if isinstance(item, Mapping)
+        and item.get("consumerFragmentId") == authority.get("fragmentId")
+    }
+    outgoing = {
+        item.get("valueNodeIdentity")
+        for item in dependency_edges if isinstance(item, Mapping)
+        and item.get("producerFragmentId") == authority.get("fragmentId")
+    }
+    returned = {
+        item.get("valueNodeIdentity")
+        for item in observation_sinks if isinstance(item, Mapping)
+        and item.get("sinkKind") == "function_return"
+    }
     for sample_index, row in enumerate(rows):
         operands = []
         for fact in input_facts:
             parameter_index = fact["parameterIndex"]
-            assert isinstance(parameter_index, int)
+            node = fact.get("valueNodeIdentity")
+            if isinstance(parameter_index, int):
+                before, observation_kind = f"0x{row[parameter_index]:016x}", "function_parameter"
+            elif node in incoming:
+                before, observation_kind = None, "composite_dependency"
+            else:
+                raise ValueError("L2_OPERAND_INPUT_OBSERVATION_AUTHORITY_MISSING")
             operands.append({"operandId": fact["operandId"], "access": "input",
-                             "valueBefore": f"0x{row[parameter_index]:016x}", "valueAfter": None,
+                             "valueBefore": before, "valueAfter": None,
+                             "observationKind": observation_kind,
                              "widthBits": fact["widthBits"], "signedness": fact["signedness"]})
         for fact in output_facts:
             parameter_index = fact["parameterIndex"]
             internal_position = point_positions.get(fact["operandIndex"])
-            after = (internal_rows[sample_index][internal_position]
-                     if internal_rows is not None and isinstance(internal_position, int)
-                     and sample_index < len(internal_rows) else row[-1])
+            node = fact.get("valueNodeIdentity")
+            if (internal_rows is not None and isinstance(internal_position, int)
+                    and sample_index < len(internal_rows)):
+                after, observation_kind = internal_rows[sample_index][internal_position], "instrumentation"
+            elif node in returned:
+                after, observation_kind = row[-1], "function_return"
+            elif node in outgoing:
+                after, observation_kind = None, "composite_dependency"
+            else:
+                raise ValueError("L2_OPERAND_OUTPUT_OBSERVATION_AUTHORITY_MISSING")
             operands.append({"operandId": fact["operandId"], "access": fact["accessMode"],
                              "valueBefore": (f"0x{row[parameter_index]:016x}"
                                              if isinstance(parameter_index, int) else None),
-                             "valueAfter": f"0x{after:016x}",
+                             "valueAfter": (f"0x{after:016x}"
+                                            if isinstance(after, int) else None),
+                             "observationKind": observation_kind,
                              "widthBits": fact["widthBits"], "signedness": fact["signedness"]})
         result.append({"sampleIndex": sample_index, "logicalOperands": operands})
     return result
+
+
+def _load_shared_execution(path: Path, binding: Mapping[str, object]) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (not isinstance(value, dict)
+            or set(value) != {"schemaVersion", "binding", "source", "target",
+                              "evidenceIdentity"}
+            or value.get("schemaVersion") != "riscv2x86.l2-shared-program-execution.v1"
+            or value.get("binding") != dict(binding)):
+        return None
+    for side in ("source", "target"):
+        run = value.get(side)
+        if (not isinstance(run, dict)
+                or set(run) != {"returnCode", "stdout", "stderr"}
+                or isinstance(run.get("returnCode"), bool)
+                or not isinstance(run.get("returnCode"), int)
+                or not isinstance(run.get("stdout"), str)
+                or not isinstance(run.get("stderr"), str)):
+            return None
+    claimed = value.get("evidenceIdentity")
+    payload = {key: item for key, item in value.items() if key != "evidenceIdentity"}
+    return value if claimed == _identity(payload) else None
+
+
+def _save_shared_execution(path: Path, binding: Mapping[str, object], *,
+                           source: subprocess.CompletedProcess[str],
+                           target: subprocess.CompletedProcess[str]) -> None:
+    payload = {
+        "schemaVersion": "riscv2x86.l2-shared-program-execution.v1",
+        "binding": dict(binding),
+        "source": {"returnCode": source.returncode, "stdout": source.stdout,
+                   "stderr": source.stderr},
+        "target": {"returnCode": target.returncode, "stdout": target.stdout,
+                   "stderr": target.stderr},
+    }
+    payload["evidenceIdentity"] = _identity(payload)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+        stream.write(json.dumps(payload, sort_keys=True) + "\n")
+        temporary = Path(stream.name)
+    temporary.replace(path)
 
 
 def build_auto_l2_operand_validator(config: Mapping[str, object]):
@@ -490,13 +589,41 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 (replay / "source-instrumented.c").write_bytes(build_source.read_bytes())
                 (replay / "target-instrumented.c").write_bytes(build_target.read_bytes())
             dependencies = resolve_runtime_contracts((getattr(artifact, "runtime_contract_id"),))
-            source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
-            left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
-            right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
-            if left_build.returncode or right_build.returncode:
-                detail={"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
-                return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
-            left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout); right=_run((str(target_exe),),work,timeout)
+            authorized_execution = str(authority.get("programExecutionIdentity", ""))
+            shared_binding = {
+                "authorizedExecutionIdentity": authorized_execution,
+                "sourceDigest": config["sourceDigest"], "targetDigest": config["targetDigest"],
+                "harnessDigest": _digest_bytes(wrapper.encode()),
+                "instrumentationPlanIdentity": (
+                    plan.get("planIdentity", "") if isinstance(plan, Mapping) else ""),
+            }
+            shared_path = work.parent / ".program-executions" / (
+                _identity(shared_binding).removeprefix("sha256:") + ".json")
+            shared = (_load_shared_execution(shared_path, shared_binding)
+                      if authorized_execution and not isinstance(plan, Mapping) else None)
+            if shared is None:
+                source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
+                left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
+                right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
+                if left_build.returncode or right_build.returncode:
+                    detail={"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
+                    return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
+                left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
+                right=_run((str(target_exe),),work,timeout)
+                if authorized_execution and not isinstance(plan, Mapping):
+                    _save_shared_execution(shared_path, shared_binding, source=left, target=right)
+                shared_reused = False
+            else:
+                source_run, target_run = shared.get("source"), shared.get("target")
+                if not isinstance(source_run, Mapping) or not isinstance(target_run, Mapping):
+                    raise ValueError("shared program execution record is malformed")
+                left = subprocess.CompletedProcess(
+                    (), int(source_run["returnCode"]), str(source_run["stdout"]),
+                    str(source_run["stderr"]))
+                right = subprocess.CompletedProcess(
+                    (), int(target_run["returnCode"]), str(target_run["stdout"]),
+                    str(target_run["stderr"]))
+                shared_reused = True
             arity=int(function["arity"]); source_rows=_traces(left.stdout,str(function_name),arity); target_rows=_traces(right.stdout,str(function_name),arity)
             point_count = len(plan.get("points", [])) if isinstance(plan, Mapping) else 0
             source_internal = _internal_traces(left.stdout, point_count) if point_count else ()
@@ -515,7 +642,6 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 status=ValidationStatus.VERIFIED; observation["reasonCode"]=""
             evidence=_identity(observation)
             (replay / "operand-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-            authorized_execution = str(authority.get("programExecutionIdentity", ""))
             fragment_id = str(observation["fragmentId"])
             def observation_identity(dimension: str, side: str, fallback: object) -> str:
                 if not authorized_execution:
@@ -537,8 +663,10 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 source_observation_identity=source_observation_identity,
                 target_observation_identity=target_observation_identity,
                 execution_nonce={"authorizedExecutionIdentity": authorized_execution,
-                                 "seed": seed, "inputDomain": observation["inputDomain"]},
+                                 "seed": seed, "inputDomain": observation["inputDomain"],
+                                 "sharedExecutionBinding": _identity(shared_binding)},
                 dimensions=("logical_operands", "shell_semantics"),
+                authorized_execution_identity=authorized_execution,
                 execution_disposition={
                     ValidationStatus.VERIFIED:
                         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -547,7 +675,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     ValidationStatus.INCONCLUSIVE:
                         L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
                 }[status])
-            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],**closure,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
+            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"sharedProgramExecutionReused":shared_reused,**closure,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))
