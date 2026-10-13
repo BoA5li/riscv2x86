@@ -54,7 +54,8 @@ def _requirement(profile):
         authority = MemoryAccessAuthority(
             profile.fragment_id, access, "parameter-object:base", "base", "base",
             0, 8, 8, 8, 32, "0<=0 && 8<=32", "alias:base", "c.default",
-            "value", False, True)
+            "value", False, True, "decoder-address:base",
+            "sha256:" + "1" * 64)
         decision = AuthorityMaterializationDecision(
             profile.fragment_id, True, (), authority).to_dict()
     dimensions = tuple(sorted(_DIMENSIONS[profile.pattern_kind], key=lambda item: item.value))
