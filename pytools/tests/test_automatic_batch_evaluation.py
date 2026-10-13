@@ -99,6 +99,43 @@ def test_frontend_binds_pointer_object_to_fragment_compiler_value_node():
     assert claimed == auto.value_flow_identity(payload)
 
 
+def test_frontend_emits_identity_bound_inter_fragment_use():
+    function = {
+        "id": "ast:function", "kind": "FunctionDecl", "name": "chain",
+        "range": _ast_range(0, 160), "type": {"qualType": "uint64_t (uint64_t)"},
+        "inner": [
+            {"id": "x", "kind": "ParmVarDecl", "name": "x",
+             "range": _ast_range(2, 4), "type": {"qualType": "uint64_t"}},
+            {"id": "tmp", "kind": "VarDecl", "name": "tmp",
+             "range": _ast_range(8, 12), "type": {"qualType": "uint64_t"}},
+            {"id": "out", "kind": "VarDecl", "name": "out",
+             "range": _ast_range(14, 18), "type": {"qualType": "uint64_t"}},
+            {"id": "asm:0", "kind": "GCCAsmStmt", "range": _ast_range(30, 55),
+             "outputConstraints": ["=r"], "inputConstraints": ["r"],
+             "inner": [_ast_ref("tmp", 40), _ast_ref("x", 45)]},
+            {"id": "asm:1", "kind": "GCCAsmStmt", "range": _ast_range(70, 95),
+             "outputConstraints": ["=r"], "inputConstraints": ["r"],
+             "inner": [_ast_ref("out", 80), _ast_ref("tmp", 85)]},
+            {"id": "return:0", "kind": "ReturnStmt", "range": _ast_range(120, 130),
+             "inner": [_ast_ref("out", 125)]},
+        ],
+    }
+    candidates = auto._l2_operand_boundary_facts(
+        function, source_digest="sha256:" + "1" * 64,
+        function_identity="sha256:" + "2" * 64,
+        source_file="/src/chain.c", source_bytes=b" " * 161,
+    )["fragmentCandidates"]
+    uses = [item for item in candidates[0]["downstreamUses"]
+            if item["useKind"] == "subsequent_asm_input"]
+    assert len(uses) == 1
+    assert uses[0]["consumerFragmentIdentity"] == candidates[1]["candidateIdentity"]
+    assert uses[0]["relationKind"] == "fragment_operand"
+    assert uses[0]["valueNodeIdentity"] == \
+        candidates[0]["operandCarriers"][0]["valueNodeIdentity"]
+    assert uses[0]["valueNodeIdentity"] != \
+        candidates[1]["operandCarriers"][1]["valueNodeIdentity"]
+
+
 def test_frontend_marks_uncontracted_call_escape_incomplete():
     function = {
         "id": "ast:function", "kind": "FunctionDecl", "name": "f",

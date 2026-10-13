@@ -25,12 +25,18 @@ def _function(*, cycle=False, same_name=False):
     first_ids = [first_out, "out" if cycle else "x"]
     second_ids = ["out", second_in]
     function_id = "sha256:" + "8" * 64
-    key_a = {"functionIdentity": function_id, "beginOffset": 10, "endOffset": 20}
-    key_b = {"functionIdentity": function_id, "beginOffset": 30, "endOffset": 40}
+    source_digest = "sha256:" + "7" * 64
+    source_file = "/src/sequence.c"
+    key_a = {"sourceDigest": source_digest, "sourceFile": source_file,
+             "functionIdentity": function_id, "beginOffset": 10, "endOffset": 20,
+             "beginLine": 2, "beginColumn": 3}
+    key_b = {"sourceDigest": source_digest, "sourceFile": source_file,
+             "functionIdentity": function_id, "beginOffset": 30, "endOffset": 40,
+             "beginLine": 3, "beginColumn": 3}
     candidate_a = flow_identity({
-        "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1", **key_a})
+        "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v2", **key_a})
     candidate_b = flow_identity({
-        "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v1", **key_b})
+        "schemaVersion": "riscv2x86.compiler-fragment-binding-key.v2", **key_b})
     def node(tag):
         return "sha256:" + tag * 64
     def value_node(declaration, value, candidate):
@@ -50,6 +56,12 @@ def _function(*, cycle=False, same_name=False):
         return {"operandIndex": index, "declarationIdentity": declaration,
                 "valueNodeIdentity": value, "access": access, "widthBits": 64,
                 "signedness": "unsigned", "complete": True}
+    def carrier(index, declaration, value):
+        return {"schemaVersion": "riscv2x86.compiler-operand-carrier.v1",
+                "operandIndex": index, "declarationIdentity": declaration,
+                "valueNodeIdentity": value, "carrierKind": "integer",
+                "widthBits": 64, "signedness": "unsigned",
+                "addressSpaceIdentity": "", "complete": True}
     a_out = value_node(first_ids[0], "", candidate_a)["nodeIdentity"]
     a_in = value_node(first_ids[1], "", candidate_a)["nodeIdentity"]
     b_out = value_node(second_ids[0], "", candidate_b)["nodeIdentity"]
@@ -68,22 +80,28 @@ def _function(*, cycle=False, same_name=False):
              "observationSinkIdentity": node("9"), "relationKind": "function_return",
              "complete": True}
     candidates = [
-        {"schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v2",
+        {"schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v4",
          "asmIndex": 0, "fragmentBindingKey": key_a, "candidateIdentity": candidate_a,
          "asmOperandDeclarationIds": first_ids,
          "valueNodes": [value_node(first_ids[0], a_out, candidate_a),
                         value_node(first_ids[1], a_in, candidate_a)],
          "operandBindings": [binding(0, first_ids[0], a_out, "output"),
                              binding(1, first_ids[1], a_in, "input")],
-         "downstreamUses": [a_use], "complete": True},
-        {"schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v2",
+         "operandCarriers": [carrier(0, first_ids[0], a_out),
+                             carrier(1, first_ids[1], a_in)],
+         "downstreamUses": [a_use], "downstreamUseEnumerationComplete": True,
+         "complete": True},
+        {"schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v4",
          "asmIndex": 1, "fragmentBindingKey": key_b, "candidateIdentity": candidate_b,
          "asmOperandDeclarationIds": second_ids,
          "valueNodes": [value_node(second_ids[0], b_out, candidate_b),
                         value_node(second_ids[1], b_in, candidate_b)],
          "operandBindings": [binding(0, second_ids[0], b_out, "output"),
                              binding(1, second_ids[1], b_in, "input")],
-         "downstreamUses": [b_use], "complete": True},
+         "operandCarriers": [carrier(0, second_ids[0], b_out),
+                             carrier(1, second_ids[1], b_in)],
+         "downstreamUses": [b_use], "downstreamUseEnumerationComplete": True,
+         "complete": True},
     ]
     if cycle:
         candidates[1]["downstreamUses"] = [{
@@ -93,6 +111,7 @@ def _function(*, cycle=False, same_name=False):
             "complete": True}]
     return {
         "name": "sequence", "functionId": function_id,
+        "sourceDigest": source_digest, "sourceFile": source_file,
         "programId": "sha256:" + "9" * 64, "arity": 1,
         "returnType": "uint64_t", "parameterTypes": ["uint64_t"],
         "l2OperandBoundary": {
@@ -111,8 +130,8 @@ def _finding(fragment_id, output, input_):
     return {
         "translationOutcome": "emitted",
         "fragment": {"id": fragment_id, "enclosingFunction": "sequence",
-                     "beginOffset": 12 if fragment_id.endswith("a") else 32,
-                     "endOffset": 18 if fragment_id.endswith("a") else 38,
+                     "beginOffset": 10 if fragment_id.endswith("a") else 30,
+                     "endOffset": 20 if fragment_id.endswith("a") else 40,
                      "outputs": [{"constraint": "=r", "symbolicName": output}],
                      "inputs": [{"constraint": "r", "symbolicName": input_}]},
         "l2SemanticProfile": profile_dict(fragment_id),
@@ -168,6 +187,34 @@ def test_two_fragments_get_independent_boundaries_and_shared_execution(tmp_path:
     assert edge["valueNodeIdentity"].startswith("sha256:")
     assert edge["consumerValueNodeIdentity"].startswith("sha256:")
     assert edge["valueNodeIdentity"] != edge["consumerValueNodeIdentity"]
+    first_boundary = findings[0]["approvalArtifact"]["l2FragmentOperandBoundary"]
+    assert first_boundary["valueFlowEdges"][0]["relationKind"] == "fragment_operand"
+
+
+def test_consumer_resolution_uses_carriers_when_access_classification_is_deferred():
+    findings, function = _findings(), _function()
+    for candidate in function["l2OperandBoundary"]["fragmentCandidates"]:
+        candidate["operandBindings"] = []
+        candidate["operandClassificationComplete"] = False
+    boundaries, graph, execution = materialize_fragment_execution_authority(
+        findings, function, function["programId"])
+    assert all(item.complete for item in boundaries.values())
+    assert len(graph.edges) == 1
+    assert graph.edges[0].producer_fragment_id == "fragment:a"
+    assert graph.edges[0].consumer_fragment_id == "fragment:b"
+    assert graph.execution_mode == "composite" and execution.complete
+
+
+def test_unknown_consumer_identity_does_not_guess_by_declaration_name():
+    findings, function = _findings(), _function()
+    use = function["l2OperandBoundary"]["fragmentCandidates"][0]["downstreamUses"][0]
+    use["consumerFragmentIdentity"] = "sha256:" + "4" * 64
+    boundaries, graph, execution = materialize_fragment_execution_authority(
+        findings, function, function["programId"])
+    assert not boundaries["fragment:a"].complete
+    assert "L2_FRAGMENT_CONSUMER_IDENTITY_CONFLICT" in \
+        boundaries["fragment:a"].reason_codes
+    assert not graph.complete and not execution.complete
 
 
 def test_swapping_fragment_boundaries_is_rejected(tmp_path: Path):
@@ -222,7 +269,7 @@ def test_ambiguous_fragment_range_is_reported_without_guessing():
     boundaries, _graph, _execution = materialize_fragment_execution_authority(
         findings, function, function["programId"])
     assert not boundaries["fragment:a"].complete
-    assert "L2_FRAGMENT_BOUNDARY_RANGE_AMBIGUOUS" in \
+    assert "L2_FRAGMENT_CANDIDATE_IDENTITY_AMBIGUOUS" in \
         boundaries["fragment:a"].reason_codes
 
 

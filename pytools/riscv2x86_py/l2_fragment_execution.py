@@ -424,7 +424,7 @@ def materialize_fragment_execution_authority(
             scoped.append((finding, fragment))
     scoped.sort(key=lambda pair: str(pair[1].get("id") or pair[1].get("fragmentId") or ""))
     resolved: dict[str, tuple[Mapping[str, object] | None, str, Mapping[str, object]]] = {}
-    candidate_to_fragment: dict[str, str] = {}
+    candidate_fragments: dict[str, set[str]] = {}
     for _finding, fragment in scoped:
         fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
         candidate, candidate_reason = _candidate_for(
@@ -432,7 +432,8 @@ def materialize_fragment_execution_authority(
             function)
         resolved[fragment_id] = candidate, candidate_reason, fragment
         if isinstance(candidate, Mapping) and isinstance(candidate.get("candidateIdentity"), str):
-            candidate_to_fragment[str(candidate["candidateIdentity"])] = fragment_id
+            candidate_fragments.setdefault(
+                str(candidate["candidateIdentity"]), set()).add(fragment_id)
 
     boundaries: dict[str, FragmentOperandBoundary] = {}
     graph_edges: list[FragmentDependencyEdge] = []
@@ -554,25 +555,55 @@ def materialize_fragment_execution_authority(
                 consumer_fragment = ""
                 consumer_node = use.use_node_identity
                 if use.use_kind == "subsequent_asm_input":
-                    consumer_fragment = candidate_to_fragment.get(
-                        use.consumer_fragment_identity, "")
-                    consumer_candidate = resolved.get(consumer_fragment, (None, False, {}))[0]
-                    consumer_bindings = (consumer_candidate.get("operandBindings")
-                                         if isinstance(consumer_candidate, Mapping) else None)
+                    consumer_fragments = candidate_fragments.get(
+                        use.consumer_fragment_identity, set())
+                    if len(consumer_fragments) != 1:
+                        reasons.add("L2_FRAGMENT_CONSUMER_IDENTITY_CONFLICT"); continue
+                    consumer_fragment = next(iter(consumer_fragments))
+                    consumer_candidate, _reason, consumer_report_fragment = \
+                        resolved.get(consumer_fragment, (None, "", {}))
+                    raw_consumer_carriers = (
+                        consumer_candidate.get("operandCarriers")
+                        if isinstance(consumer_candidate, Mapping) else None)
+                    raw_consumer_bindings = (
+                        consumer_candidate.get("operandBindings")
+                        if isinstance(consumer_candidate, Mapping) else None)
+                    consumer_authority = (
+                        raw_consumer_carriers
+                        if isinstance(raw_consumer_carriers, list)
+                        else raw_consumer_bindings)
+                    consumer_outputs = consumer_report_fragment.get("outputs")
                     producer_decl = next((item.declaration_identity
                                           for item in output_bindings
                                           if item.value_node_identity == use.value_node_identity), "")
                     matches = []
-                    if isinstance(consumer_bindings, list):
-                        for item in consumer_bindings:
+                    if (isinstance(consumer_authority, list)
+                            and isinstance(consumer_outputs, list)):
+                        for item in consumer_authority:
                             try:
-                                parsed_consumer = compiler_operand_binding_from_dict(item)
+                                if isinstance(raw_consumer_carriers, list):
+                                    parsed_consumer = compiler_operand_carrier_from_dict(item)
+                                    is_input = parsed_consumer.operand_index >= len(consumer_outputs)
+                                else:
+                                    parsed_consumer = compiler_operand_binding_from_dict(item)
+                                    is_input = parsed_consumer.access == "input"
                             except (TypeError, ValueError):
                                 continue
-                            if (parsed_consumer.access == "input"
+                            if (is_input
                                     and parsed_consumer.declaration_identity == producer_decl):
                                 matches.append(parsed_consumer.value_node_identity)
-                    if len(matches) != 1 or not consumer_fragment:
+                    consumer_nodes = (consumer_candidate.get("valueNodes")
+                                      if isinstance(consumer_candidate, Mapping) else None)
+                    try:
+                        valid_nodes = {
+                            compiler_value_node_from_dict(item).node_identity
+                            for item in consumer_nodes
+                            if isinstance(item, Mapping)
+                        } if isinstance(consumer_nodes, list) else set()
+                    except ValueError:
+                        valid_nodes = set()
+                    if (len(matches) != 1 or matches[0] not in valid_nodes
+                            or use.relation_kind != "fragment_operand"):
                         reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
                     consumer_node = matches[0]
                     graph_edges.append(FragmentDependencyEdge(
@@ -591,14 +622,9 @@ def materialize_fragment_execution_authority(
                     use.use_kind, True))
         else:
             reasons.add("L2_FRAGMENT_OBSERVATION_SINK_MISSING")
-        if (isinstance(candidate, Mapping)
-                and candidate.get("downstreamUseEnumerationComplete") is True):
-            accounted_uses = {
-                item.producer_value_node for item in value_flow_edges
-            } | discarded
-            for binding in output_bindings:
-                if binding.value_node_identity not in accounted_uses:
-                    discarded.add(binding.value_node_identity)
+        # Enumeration completeness is not evidence that an unmentioned output
+        # is dead.  The frontend must emit an explicit discarded/dead use;
+        # otherwise the output remains an unproved live-out obligation.
         approval = finding_by_fragment[fragment_id].get("approvalArtifact")
         raw_internal = (approval.get("l2InternalValueProofFacts")
                         if isinstance(approval, Mapping) else None)
