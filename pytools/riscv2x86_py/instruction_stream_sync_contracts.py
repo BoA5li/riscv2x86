@@ -136,6 +136,11 @@ class InstructionStreamSyncRegistry:
     def resolve(self, fragment_id: str, target_environment_id: str):
         return self._contracts.get((fragment_id, target_environment_id))
 
+    def binds_fragment(self, fragment_id: str) -> bool:
+        """Report an explicit fragment binding without exposing registry internals."""
+        return any(bound_fragment == fragment_id
+                   for bound_fragment, _environment in self._contracts)
+
 
 @dataclass(frozen=True)
 class InstructionStreamSyncProof:
