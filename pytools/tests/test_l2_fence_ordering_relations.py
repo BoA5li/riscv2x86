@@ -8,7 +8,7 @@ import pytest
 import riscv2x86_py.automatic_batch_cli as auto
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
 from riscv2x86_py.automatic_l2_effect import (
-    _shell_relation, build_auto_l2_effect_validator,
+    _fence_wrapper, _shell_relation, build_auto_l2_effect_validator,
 )
 from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
@@ -24,7 +24,9 @@ from riscv2x86_py.l2_semantic_profile import (
 )
 from riscv2x86_py.l2_dimensions import L2Dimension, L2EligibilityStatus
 from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
-from riscv2x86_py.l2_materialization import assess_fragment_l2_materializability
+from riscv2x86_py.l2_materialization import (
+    assess_fragment_l2_materializability, FragmentL2MaterializationDecision,
+)
 from riscv2x86_py.l2_validator_resolution import (
     L2BindingKind, L2FragmentRequirement, L2RuntimeCapabilities, L2ValidatorProvider,
 )
@@ -186,6 +188,30 @@ def test_fence_authority_materializes_three_anchors(tmp_path):
     assert requirement["requiredDimensions"] == ["memory_effects", "shell_semantics"]
 
 
+def test_fence_harness_is_route_specific_and_operand_free():
+    function = {"name":"synchronize_domain", "arity":0, "returnType":"void",
+                "parameterTypes":[], "pointerParameters":[]}
+    wrapper = _fence_wrapper(function)
+    assert "synchronize_domain();" in wrapper
+    assert "operand_trace" not in wrapper
+    with pytest.raises(ValueError, match="zero-operand"):
+        _fence_wrapper({**function, "arity":1, "parameterTypes":["uint64_t"]})
+
+
+def test_fence_materialization_does_not_require_scalar_operand_boundary(tmp_path):
+    finding = _finding()
+    frontend = tmp_path / "frontend"
+    frontend.write_bytes(b"frontend")
+    function = {"name":"synchronize_domain", "arity":0, "returnType":"void",
+                "parameterTypes":[], "pointerParameters":[]}
+    assert materialize_automatic_l2_authority(
+        {"findings":[finding]}, [function], frontend) == 1
+    decision = finding["approvalArtifact"]["l2MaterializationDecision"]
+    assert decision["boundaryComplete"] is True
+    assert decision["executable"] is True
+    assert decision["requiredDimensions"] == ["memory_effects", "shell_semantics"]
+
+
 def test_operand_free_fence_requires_explicit_memory_clobber_shell_relation(tmp_path):
     finding = _finding()
     raw_effect = finding["approvalArtifact"]["l2EffectProofFacts"]
@@ -262,10 +288,13 @@ def test_instruction_visibility_profile_is_not_claimed_by_normal_fence_provider(
     profile = _profile("fragment:fence-i", L2PatternKind.INSTRUCTION_VISIBILITY_FENCE)
     assert profile.required_capabilities == ("instruction_visibility", "shell_observation")
     assert profile.pattern_kind is not L2PatternKind.FENCE
+    decision = FragmentL2MaterializationDecision(
+      profile.fragment_id, (L2Dimension.MEMORY_EFFECTS,), True, True, True,
+      True, (), _digest(b"authority"))
     requirement = L2FragmentRequirement(
       profile.fragment_id, _digest(b"requirement"), (L2Dimension.MEMORY_EFFECTS,),
       L2EligibilityStatus.ELIGIBLE, profile.profile_identity, profile.pattern_kind.value,
-      profile.required_capabilities)
+      profile.required_capabilities, materialization_decision=decision.to_dict())
     provider = L2ValidatorProvider(
       "normal-fence", (L2Dimension.MEMORY_EFFECTS,), (L2PatternKind.FENCE,),
       ("ordering_observation",), (profile.execution_profile,), L2BindingKind.AUTOMATIC,
