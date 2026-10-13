@@ -1,15 +1,75 @@
 from copy import deepcopy
+import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
+from riscv2x86_py.automatic_l2_operand import (
+    _load_shared_execution, _sample_observations, _save_shared_execution,
+)
 from riscv2x86_py.l2_fragment_execution import (
     fragment_boundary_from_dict, materialize_fragment_execution_authority,
     program_execution_authority_from_dict,
 )
 from tests.l2_profile_fixtures import profile_dict
 from tests.l2_effect_proof_fixtures import attach_effect_proof
+
+
+def test_composite_fragment_operand_is_not_mistaken_for_function_parameter():
+    producer_node = "sha256:" + "1" * 64
+    consumer_node = "sha256:" + "2" * 64
+    authority = {
+        "fragmentId": "fragment:consumer",
+        "operands": [{
+            "operandIndex": 0, "operandId": "operand:0", "accessMode": "input",
+            "parameterIndex": None, "widthBits": 64, "signedness": "unsigned",
+            "valueNodeIdentity": consumer_node,
+        }],
+        "fragmentDependencyEdges": [{
+            "producerFragmentId": "fragment:producer",
+            "consumerFragmentId": "fragment:consumer",
+            "valueNodeIdentity": producer_node,
+            "consumerValueNodeIdentity": consumer_node,
+        }],
+        "observationSinks": [],
+        "instrumentationPlan": None,
+    }
+    samples = _sample_observations(((7, 9),), authority)
+    operand = samples[0]["logicalOperands"][0]
+    assert operand["observationKind"] == "composite_dependency"
+    assert operand["valueBefore"] is None
+
+
+def test_unbound_internal_fragment_operand_fails_closed():
+    authority = {
+        "fragmentId": "fragment:consumer",
+        "operands": [{
+            "operandIndex": 0, "operandId": "operand:0", "accessMode": "input",
+            "parameterIndex": None, "widthBits": 64, "signedness": "unsigned",
+            "valueNodeIdentity": "sha256:" + "2" * 64,
+        }],
+        "fragmentDependencyEdges": [], "observationSinks": [],
+        "instrumentationPlan": None,
+    }
+    with pytest.raises(ValueError, match="INPUT_OBSERVATION_AUTHORITY_MISSING"):
+        _sample_observations(((7, 9),), authority)
+
+
+def test_shared_program_execution_record_is_content_bound(tmp_path):
+    path = tmp_path / "execution.json"
+    binding = {"authorizedExecutionIdentity": "sha256:" + "3" * 64,
+               "harnessDigest": "sha256:" + "4" * 64}
+    source = subprocess.CompletedProcess((), 0, "source\n", "")
+    target = subprocess.CompletedProcess((), 0, "target\n", "")
+    _save_shared_execution(path, binding, source=source, target=target)
+    assert _load_shared_execution(path, binding)["source"]["stdout"] == "source\n"
+    assert _load_shared_execution(path, {**binding, "harnessDigest": "changed"}) is None
+    forged = json.loads(path.read_text())
+    forged["source"]["stdout"] = "forged\n"
+    path.write_text(json.dumps(forged))
+    assert _load_shared_execution(path, binding) is None
 
 
 def _function(*, cycle=False, same_name=False):
