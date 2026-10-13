@@ -22,6 +22,7 @@ from .privileged_environment import (
 )
 from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
 from .csr_environment_contract import load_csr_environment_contract
+from .atomic_authority import COMPILER_FRAGMENT_AUTHORITY_SCHEMA
 
 
 def _identity(value: object) -> str:
@@ -64,6 +65,58 @@ def _inject_atomic_authority(raw_report: Path, source: Path, sidecar: Path) -> N
             seen.add(fragment_id)
     if seen != set(bundles):
         raise ValueError("atomic authority references a nonexistent frontend fragment")
+    raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
+
+
+def _inject_compiler_fragment_authority(
+    raw_report: Path, source: Path, functions: tuple[dict[str, object], ...],
+) -> None:
+    """Bind Clang AST fragment/object facts to exact frontend fragments.
+
+    This payload does not assert an atomic operation.  Phase 5 may consume it
+    only after the decoder independently reports a typed AMO operation.
+    """
+    report = json.loads(raw_report.read_text(encoding="utf-8"))
+    findings = report if isinstance(report, list) else report.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError("frontend report has no findings")
+    candidates: dict[tuple[str, int, int], list[dict[str, object]]] = {}
+    for function in functions:
+        boundary = function.get("l2OperandBoundary")
+        if not isinstance(boundary, dict):
+            continue
+        for candidate in boundary.get("fragmentCandidates", []):
+            key = candidate.get("fragmentBindingKey") if isinstance(candidate, dict) else None
+            if not isinstance(key, dict):
+                continue
+            match = (str(Path(str(key.get("sourceFile") or "")).resolve()),
+                     int(key.get("beginOffset", -1)), int(key.get("endOffset", -1)))
+            payload = {
+                "schemaVersion": COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
+                "sourceDigest": str(function.get("sourceDigest") or ""),
+                "fragmentId": "", "targetTriple": "riscv64-linux-gnu",
+                "functionIdentity": str(function.get("functionId") or ""),
+                "fragmentBindingKey": key, "candidate": candidate,
+                "memoryObjectBindings": boundary.get("memoryObjectBindings", {}),
+            }
+            candidates.setdefault(match, []).append(payload)
+    for finding in findings:
+        fragment = finding.get("fragment") if isinstance(finding, dict) else None
+        if not isinstance(fragment, dict):
+            continue
+        match = (str(Path(str(fragment.get("fileName") or source)).resolve()),
+                 int(fragment.get("beginOffset", -1)), int(fragment.get("endOffset", -1)))
+        matched = candidates.get(match, [])
+        if len(matched) > 1:
+            raise ValueError("compiler fragment authority binding is ambiguous")
+        if len(matched) != 1:
+            continue
+        payload = dict(matched[0])
+        payload["fragmentId"] = str(fragment.get("fragmentId") or fragment.get("id") or "")
+        payload["authorityIdentity"] = _identity(payload)
+        fragment["compilerFragmentAuthority"] = payload
+        finding["sourceDigest"] = payload["sourceDigest"]
     raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                           encoding="utf-8")
 
@@ -137,6 +190,13 @@ def main() -> int:
     (report.parent / "frontend.stderr").write_text(front.stderr, encoding="utf-8")
     if front.returncode or not raw.is_file():
         print(front.stderr, file=sys.stderr); return front.returncode or 2
+    try:
+        _, compiler_functions = inspect_entry_points(Path(args.source).resolve())
+        _inject_compiler_fragment_authority(raw, Path(args.source).resolve(),
+                                            compiler_functions)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print("Compiler fragment authority binding failed: " + str(exc), file=sys.stderr)
+        return 2
     if args.atomic_authority_sidecar:
         try:
             _inject_atomic_authority(raw, Path(args.source).resolve(),
@@ -238,9 +298,9 @@ def main() -> int:
             translated = json.loads(report.read_text(encoding="utf-8"))
             if not isinstance(translated, dict):
                 raise ValueError("translated report root must be an object")
-            _, functions = inspect_entry_points(Path(args.source).resolve())
             materialize_automatic_l2_authority(
-                translated, tuple(item for item in functions if isinstance(item, dict)),
+                translated, tuple(item for item in compiler_functions
+                                  if isinstance(item, dict)),
                 args.frontend,
             )
             report.write_text(

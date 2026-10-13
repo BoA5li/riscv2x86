@@ -349,6 +349,10 @@ class AsmFragment:
     # wrapper. It remains raw until Phase 4 can validate assembler operand
     # identities against the sidecar's referenced nodes.
     atomicAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
+    # Compiler-owned fragment/object facts.  The automatic wrapper binds this
+    # content-addressed payload by source range; Phase 5 joins it with decoder
+    # atomic metadata and never derives atomicity from C or asm text.
+    compilerFragmentAuthority: Dict[str, Any] = field(default_factory=dict)
     csrAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

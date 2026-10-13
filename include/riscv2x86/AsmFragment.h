@@ -32,6 +32,9 @@ enum class AsmKind {
 struct AsmGotoEdge {
     std::string asmTarget;
     std::string cLabel;
+    // Index in Clang's resolved goto-label array.  This is deliberately
+    // distinct from GNU's numeric %lN operand number, which is offset by all
+    // output and input operands.
     unsigned exitCode = 0;
     // Stable host-C continuation identity.  This is created by the frontend
     // from its resolved asm-goto label list; it is not a lifted machine-code

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
+import json
 
 from .runtime_facts import AtomicMemoryObjectRuntimeFact
 from .semantic_authority import (
@@ -15,6 +17,149 @@ ATOMIC_AUTHORITY_PRODUCER_REGISTRY = AuthorityProducerRegistry((
         "frontend-compiler-sidecar", ("v1",), ("atomic_operation",),
     ),
 ))
+
+
+COMPILER_FRAGMENT_AUTHORITY_SCHEMA = (
+    "riscv2x86.compiler-fragment-authority.v1"
+)
+
+
+def _identity(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    return "sha256:" + sha256(encoded).hexdigest()
+
+
+def atomic_runtime_object_from_compiler_authority(
+    raw_authority: Mapping[str, object], *, fragment_id: str,
+    source_digest: str, begin_offset: int, end_offset: int,
+    runtime_facts: object, atomic_operation: object,
+) -> dict[int, AtomicMemoryObjectRuntimeFact]:
+    """Join compiler object authority with decoder-owned AMO semantics.
+
+    The compiler payload never claims that an instruction is atomic.  It only
+    identifies GNU operands and their source objects.  Operation kind,
+    ordering, width and register roles come exclusively from the canonical
+    decoder fact supplied here.
+    """
+    required = {
+        "schemaVersion", "sourceDigest", "fragmentId", "targetTriple",
+        "functionIdentity", "fragmentBindingKey", "candidate",
+        "memoryObjectBindings", "authorityIdentity",
+    }
+    if set(raw_authority) != required:
+        raise SemanticAuthorityError("compiler fragment authority fields are invalid")
+    unsigned = {key: value for key, value in raw_authority.items()
+                if key != "authorityIdentity"}
+    if (raw_authority.get("schemaVersion") != COMPILER_FRAGMENT_AUTHORITY_SCHEMA
+            or raw_authority.get("sourceDigest") != source_digest
+            or raw_authority.get("fragmentId") != fragment_id
+            or raw_authority.get("targetTriple") != "riscv64-linux-gnu"
+            or raw_authority.get("authorityIdentity") != _identity(unsigned)):
+        raise SemanticAuthorityError("compiler fragment authority is stale or malformed")
+    key = raw_authority.get("fragmentBindingKey")
+    candidate = raw_authority.get("candidate")
+    objects = raw_authority.get("memoryObjectBindings")
+    if not isinstance(key, Mapping) or not isinstance(candidate, Mapping) \
+            or not isinstance(objects, Mapping):
+        raise SemanticAuthorityError("compiler fragment authority payload is malformed")
+    if (key.get("sourceDigest") != source_digest
+            or key.get("beginOffset") != begin_offset
+            or key.get("endOffset") != end_offset
+            or candidate.get("fragmentBindingKey") != key
+            or candidate.get("complete") is not True
+            or candidate.get("compilerStructureComplete") is not True
+            or candidate.get("operandClassificationComplete") is not True):
+        raise SemanticAuthorityError("compiler fragment binding does not match frontend fragment")
+    register_map = getattr(runtime_facts, "rv_to_operand_index", {})
+    width_map = getattr(runtime_facts, "operand_width_bits", {})
+    address_register = getattr(atomic_operation, "address_binding", "")
+    address_index = register_map.get(address_register)
+    width_bits = getattr(atomic_operation, "width_bits", None)
+    if (not isinstance(address_index, int) or isinstance(address_index, bool)
+            or width_bits not in {32, 64}):
+        raise SemanticAuthorityError("atomic decoder address binding is unavailable")
+    bindings = candidate.get("operandBindings")
+    carriers = candidate.get("operandCarriers")
+    if not isinstance(bindings, list) or not isinstance(carriers, list):
+        raise SemanticAuthorityError("compiler operand authority is unavailable")
+    expected_indexes = set(int(item) for item in width_map)
+    binding_indexes = {item.get("operandIndex") for item in bindings
+                       if isinstance(item, Mapping)}
+    carrier_by_index = {item.get("operandIndex"): item for item in carriers
+                        if isinstance(item, Mapping)}
+    if binding_indexes != expected_indexes or set(carrier_by_index) != expected_indexes:
+        raise SemanticAuthorityError("compiler/assembler operand authority mismatch")
+    binding = next((item for item in bindings if isinstance(item, Mapping)
+                    and item.get("operandIndex") == address_index), None)
+    carrier = carrier_by_index.get(address_index)
+    if (not isinstance(binding, Mapping) or not isinstance(carrier, Mapping)
+            or carrier.get("carrierKind") != "pointer"
+            or binding.get("access") not in {"input", "read_write"}
+            or binding.get("declarationIdentity") != carrier.get("declarationIdentity")
+            or binding.get("valueNodeIdentity") != carrier.get("valueNodeIdentity")
+            or binding.get("complete") is not True or carrier.get("complete") is not True):
+        raise SemanticAuthorityError("atomic address is not a complete compiler pointer binding")
+    declaration = str(binding.get("declarationIdentity") or "")
+    memory_object = objects.get(declaration)
+    if not isinstance(memory_object, Mapping):
+        raise SemanticAuthorityError("atomic memory object binding is missing")
+    object_required = {
+        "schemaVersion", "objectIdentity", "baseDeclarationIdentity",
+        "objectSizeBytes", "provenAlignmentBytes", "aliasDomainIdentity",
+        "addressSpaceIdentity", "volatile", "bindingOrigin",
+        "producerIdentity", "sourceDigest", "bindingIdentity",
+    }
+    object_unsigned = {k: v for k, v in memory_object.items()
+                       if k != "bindingIdentity"}
+    alignment = memory_object.get("provenAlignmentBytes")
+    if (set(memory_object) != object_required
+            or memory_object.get("sourceDigest") != source_digest
+            or memory_object.get("baseDeclarationIdentity") != declaration
+            or memory_object.get("bindingIdentity") != _identity(object_unsigned)
+            or not isinstance(alignment, int) or isinstance(alignment, bool)
+            or alignment < width_bits // 8):
+        raise SemanticAuthorityError("atomic memory object alignment/provenance is incomplete")
+    operation_kind = getattr(atomic_operation, "operation_kind", "")
+    arithmetic = {
+        "exchange": "exchange", "fetch_add": "add_mod_2n",
+        "fetch_and": "and_bits", "fetch_or": "or_bits",
+        "fetch_xor": "xor_bits",
+    }.get(operation_kind)
+    if arithmetic is None or getattr(atomic_operation, "complete", False) is not True:
+        raise SemanticAuthorityError("atomic operation is outside the production RMW capability")
+    ordering = (
+        "before:" + str(getattr(atomic_operation, "ordering_before", "")),
+        "after:" + str(getattr(atomic_operation, "ordering_after", "")),
+    )
+    relation = {
+        "schemaVersion": "riscv2x86.atomic-compiler-decoder-join.v1",
+        "compilerAuthorityIdentity": raw_authority["authorityIdentity"],
+        "fragmentId": fragment_id, "addressOperandIndex": address_index,
+        "decoderOperationKind": operation_kind, "widthBits": width_bits,
+        "ordering": list(ordering),
+        "sourceAddressSpace": memory_object["addressSpaceIdentity"],
+        "architecturalAddressSpace": getattr(
+            atomic_operation, "address_space_identity", ""),
+        "targetTriple": raw_authority["targetTriple"],
+    }
+    join_identity = _identity(relation)
+    return {address_index: AtomicMemoryObjectRuntimeFact(
+        object_identity=str(memory_object["objectIdentity"]),
+        address_space_identity=str(getattr(
+            atomic_operation, "address_space_identity", "")),
+        alignment_bytes=alignment,
+        pointee_type_id=str(carrier.get("typeIdentity") or
+                            carrier.get("valueNodeIdentity") or ""),
+        authority_identity=join_identity,
+        operation_kind=operation_kind,
+        arithmetic_relation=arithmetic,
+        wraparound_width_bits=width_bits,
+        ordering=ordering,
+        read_effect_identity=join_identity + ":read",
+        write_effect_identity=join_identity + ":write",
+        address_space_relation_identity=join_identity + ":address-space",
+    )}
 
 
 def atomic_runtime_objects_from_bundle(
@@ -61,4 +206,6 @@ def atomic_runtime_objects_from_bundle(
         ordering=tuple(payload.ordering),
         read_effect_identity=str(payload.read_effect_identity),
         write_effect_identity=str(payload.write_effect_identity),
+        address_space_relation_identity=authority.authority_identity
+        + ":address-space-relation",
     )}

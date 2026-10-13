@@ -102,6 +102,7 @@ def _atomic_model(*, alignment=8, target_feature=True):
             "uint64_t", "authority:test-atomic", "fetch_add", "add_mod_2n", 64,
             ("before:release", "after:acquire"),
             "effect:atomic-read", "effect:atomic-write",
+            "effect:address-space-relation",
         )},
     )
     return build_source_semantic_model(

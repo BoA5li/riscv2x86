@@ -20,6 +20,7 @@ class AtomicMemoryObjectRuntimeFact:
     ordering: tuple[str, ...] = ()
     read_effect_identity: str | None = None
     write_effect_identity: str | None = None
+    address_space_relation_identity: str | None = None
 
     def __post_init__(self) -> None:
         if (not self.object_identity or not self.address_space_identity or
@@ -35,7 +36,8 @@ class AtomicMemoryObjectRuntimeFact:
         return all((self.pointee_type_id, self.authority_identity,
                     self.operation_kind, self.arithmetic_relation,
                     self.wraparound_width_bits, self.ordering,
-                    self.read_effect_identity, self.write_effect_identity))
+                    self.read_effect_identity, self.write_effect_identity,
+                    self.address_space_relation_identity))
 
 
 @dataclass(frozen=True)
@@ -550,6 +552,7 @@ def translation_runtime_facts_to_dict(
                 "ordering": list(item.ordering),
                 "readEffectIdentity": item.read_effect_identity,
                 "writeEffectIdentity": item.write_effect_identity,
+                "addressSpaceRelationIdentity": item.address_space_relation_identity,
             }
             for index, item in facts.atomic_memory_objects.items()
         },
@@ -627,7 +630,9 @@ def translation_runtime_facts_from_dict(
                     "pointeeTypeId", "authorityIdentity", "operationKind",
                     "arithmeticRelation", "wraparoundWidthBits", "ordering"}
         required.update({"readEffectIdentity", "writeEffectIdentity"})
-        if set(raw_item) != required or not isinstance(raw_item.get("ordering"), list):
+        allowed = required | {"addressSpaceRelationIdentity"}
+        if (not required.issubset(raw_item) or not set(raw_item).issubset(allowed)
+                or not isinstance(raw_item.get("ordering"), list)):
             raise ValueError("atomic memory object authority fields are invalid")
         atomic_objects[index] = AtomicMemoryObjectRuntimeFact(
             object_identity=raw_item["objectIdentity"],
@@ -641,6 +646,8 @@ def translation_runtime_facts_from_dict(
             ordering=tuple(raw_item["ordering"]),
             read_effect_identity=raw_item["readEffectIdentity"],
             write_effect_identity=raw_item["writeEffectIdentity"],
+            address_space_relation_identity=raw_item.get(
+                "addressSpaceRelationIdentity"),
         )
 
     rv_to_operand_index, register_errors = _normalize_register_map(

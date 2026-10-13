@@ -417,8 +417,13 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
             // Clang has already resolved this identifier as an asm-goto
             // label.  Preserve the binding as source-shell metadata instead
             // of asking Phase 4/6 to infer it from "%l" text.
+            // GNU numeric asm-goto labels are numbered after every output and
+            // input operand.  Preserve that compiler-defined number instead
+            // of incorrectly treating the label-local ordinal as %lN.
+            const unsigned gnuLabelOperand =
+                S->getNumOutputs() + S->getNumInputs() + i;
             frag.gotoEdges.push_back(AsmGotoEdge{
-                "%l" + std::to_string(i), label, i, continuationId
+                "%l" + std::to_string(gnuLabelOperand), label, i, continuationId
             });
             frag.asmGotoSuccessorContinuationIds.push_back(continuationId);
         }

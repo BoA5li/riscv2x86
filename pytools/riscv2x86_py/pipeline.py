@@ -17,7 +17,10 @@ from .lift import lift, GhidraLanguageRegisterResolver
 from .pcode_ir import from_lifted
 from .translate import translate, _replacement_has_early_clobber_output_constraint
 from .runtime_facts import build_translation_runtime_facts
-from .atomic_authority import atomic_runtime_objects_from_bundle
+from .atomic_authority import (
+    atomic_runtime_objects_from_bundle,
+    atomic_runtime_object_from_compiler_authority,
+)
 from .semantic_authority import SemanticAuthorityError
 from .cfg import build_cfg_from_blocks
 from .phase6c_constraints import TargetEnvironment
@@ -1558,6 +1561,43 @@ def run(
             f.verificationDetail = detail
             stats["failed"] += 1
             continue
+
+        # Production atomic closure joins two independent authorities here:
+        # the compiler-bound C object/operand payload and the decoder-owned
+        # typed AMO operation.  Neither source is allowed to manufacture the
+        # other's facts.  An explicit atomic sidecar, when supplied, remains
+        # authoritative and is never silently replaced.
+        compiler_authority = getattr(
+            f.fragment, "compilerFragmentAuthority", {},
+        )
+        if (getattr(summary, "atomic_semantics", None) is not None
+                and compiler_authority
+                and not f.translationRuntimeFacts.atomic_memory_objects):
+            try:
+                atomic_objects = atomic_runtime_object_from_compiler_authority(
+                    compiler_authority,
+                    fragment_id=str(f.fragment.fragmentId or f.fragment.id),
+                    source_digest=str(getattr(f, "sourceDigest", "")),
+                    begin_offset=int(f.fragment.beginOffset),
+                    end_offset=int(f.fragment.endOffset),
+                    runtime_facts=f.translationRuntimeFacts,
+                    atomic_operation=summary.atomic_semantics,
+                )
+                f.translationRuntimeFacts = replace(
+                    f.translationRuntimeFacts,
+                    atomic_memory_objects=atomic_objects,
+                    provenance="compiler-decoder-atomic-authority-join.v1",
+                )
+            except (SemanticAuthorityError, TypeError, ValueError) as exc:
+                detail = "production atomic authority rejected: " + str(exc)
+                f.notes.append("phase5-atomic-ingress: " + detail)
+                f.category = "Unsupported"
+                f.ruleName = "phase5.atomic_production_authority_unsupported"
+                f.suggestedReplacement = ""
+                f.verificationStatus = "unsupported"
+                f.verificationDetail = detail
+                stats["unsupported"] += 1
+                continue
 
         if blocks is None:
             detail = (
