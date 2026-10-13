@@ -279,6 +279,12 @@ def test_memory_materializer_records_content_bound_eligibility_authority(tmp_pat
     assert record["reasonCode"] == "L2_MEMORY_AUTHORITY_MATERIALIZED"
     assert record["authorityIdentity"] == sidecar.authority_identity
     assert record["materializationIdentity"].startswith("sha256:")
+    closure = finding["approvalArtifact"]["l2MemoryDimensionClosure"]
+    assert closure["schemaVersion"] == "riscv2x86.l2-memory-dimension-closure.v1"
+    assert closure["complete"] is True
+    assert closure["observationContractIdentity"].startswith("sha256:")
+    assert {item["dimension"] for item in closure["dimensions"]} == {
+        "logical_operands", "memory_effects", "shell_semantics"}
     requirement = L2EligibilityClassifier().classify(finding, 0)
     assert requirement["eligibilityStatus"] == "eligible"
     assert requirement["disposition"] == "not_run"
@@ -294,4 +300,10 @@ def test_memory_materializer_records_precise_fail_closed_reason(tmp_path: Path):
     record = finding["approvalArtifact"]["l2AuthorityMaterialization"]
     assert record["status"] == "rejected"
     assert record["reasonCode"] == "L2_MEMORY_ALIGNMENT_UNPROVED"
+    closure = finding["approvalArtifact"]["l2MemoryDimensionClosure"]
+    assert closure["complete"] is False
+    memory = next(item for item in closure["dimensions"]
+                  if item["dimension"] == "memory_effects")
+    assert "L2_MEMORY_ALIGNMENT_UNPROVED" in memory["reasonCodes"]
+    assert "L2_MEMORY_OBSERVATION_AUTHORITY_MISSING" in memory["reasonCodes"]
     assert "l2AuthoritySidecar" not in finding["approvalArtifact"]
