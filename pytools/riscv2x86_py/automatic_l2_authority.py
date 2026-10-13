@@ -27,6 +27,7 @@ from .l2_control_flow import (
 )
 from .l2_memory_object import (
     assess_memory_authority_materializability,
+    assess_memory_l2_dimension_closure,
     bind_memory_object_authority,
     memory_proof_facts_from_dict,
 )
@@ -785,6 +786,11 @@ def materialize_automatic_l2_authority(
                     if len(matches) == 1 else None,
                     raw_fragment if isinstance(raw_fragment, Mapping) else {})
                 approval["l2MemoryAuthorityDecision"] = decision.to_dict()
+                approval["l2MemoryDimensionClosure"] = \
+                    assess_memory_l2_dimension_closure(
+                        decision, approval.get("l2EffectProofFacts")
+                        if isinstance(approval.get("l2EffectProofFacts"), Mapping) else None,
+                    ).to_dict()
             continue
         assert isinstance(approval, dict)
         proof_payload = {
@@ -813,6 +819,11 @@ def materialize_automatic_l2_authority(
                 if len(matches) == 1 else None,
                 raw_fragment if isinstance(raw_fragment, Mapping) else {})
             approval["l2MemoryAuthorityDecision"] = decision.to_dict()
+            approval["l2MemoryDimensionClosure"] = \
+                assess_memory_l2_dimension_closure(
+                    decision, approval.get("l2EffectProofFacts")
+                    if isinstance(approval.get("l2EffectProofFacts"), Mapping) else None,
+                ).to_dict()
             approval["l2AuthorityMaterializationReasonCode"] = \
                 "L2_MEMORY_AUTHORITY_MATERIALIZED"
             approval["l2AuthorityMaterialization"] = \
