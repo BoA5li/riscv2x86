@@ -673,10 +673,16 @@ def boundary_as_legacy(value: Mapping[str, object],
             "complete": value.get("complete") is True,
             "parameterDeclarationIds": list(function_boundary.get("parameterDeclarationIds", [])),
             "asmOperandDeclarationIds": [item.get("declarationIdentity") for item in combined],
+            "asmOperandValueNodeIdentities": [item.get("valueNodeIdentity") for item in combined],
             "returnDeclarationId": function_boundary.get("returnDeclarationId", ""),
             "declarations": dict(function_boundary.get("declarations", {})),
             "declarationReferenceCounts": dict(function_boundary.get("declarationReferenceCounts", {})),
-            "asmStatementEndOffset": function_boundary.get("asmStatementEndOffset", -1)}
+            "asmStatementEndOffset": function_boundary.get("asmStatementEndOffset", -1),
+            # Object contracts remain function/harness-owned, while the value
+            # nodes above are fragment-owned.  Keeping both in this adapter
+            # lets typed consumers prove the join instead of falling back to
+            # declaration names.
+            "memoryObjectBindings": dict(function_boundary.get("memoryObjectBindings", {}))}
 
 
 def fragment_boundary_from_dict(

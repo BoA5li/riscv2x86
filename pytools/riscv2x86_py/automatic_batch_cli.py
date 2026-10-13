@@ -282,15 +282,21 @@ def _l2_operand_boundary_facts(
             pointee = pointee.replace("*", "").strip()
             fixed = re.fullmatch(r"u?int(8|16|32|64)_t", pointee)
             alignment = int(fixed.group(1)) // 8 if fixed else 8
-            memory_bindings[declaration_id] = {
+            object_binding = {
+                "schemaVersion": "riscv2x86.memory-object-binding.v1",
                 "objectIdentity": "parameter-object:" + declaration_id,
+                "baseDeclarationIdentity": declaration_id,
                 "objectSizeBytes": 32,
                 "provenAlignmentBytes": alignment,
                 "aliasDomainIdentity": "parameter-alias-domain:" + declaration_id,
                 "addressSpaceIdentity": "c.default",
                 "volatile": "volatile" in type_name.split(),
                 "bindingOrigin": "automatic-aligned-memory-object-harness-v1",
+                "producerIdentity": "automatic-l1-memory-harness.v1",
+                "sourceDigest": source_digest,
             }
+            object_binding["bindingIdentity"] = value_flow_identity(object_binding)
+            memory_bindings[declaration_id] = object_binding
     asm_ids: list[str] = []
     asm_statement_end = -1
     fragment_candidates: list[dict[str, object]] = []
@@ -547,6 +553,10 @@ def _l2_operand_boundary_facts(
         "complete": complete,
         "parameterDeclarationIds": parameter_ids,
         "asmOperandDeclarationIds": asm_ids,
+        "asmOperandValueNodeIdentities": (
+            [str(item.get("valueNodeIdentity") or "")
+             for item in fragment_candidates[0].get("operandCarriers", [])]
+            if len(fragment_candidates) == 1 else []),
         "returnDeclarationId": return_id,
         "declarations": declarations,
         "declarationReferenceCounts": reference_counts,

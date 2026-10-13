@@ -285,6 +285,27 @@ def _scalar_authority(
     )
 
 
+def _memory_operand_boundary(
+    approval: Mapping[str, object], function: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    """Join fragment value nodes with function/harness object contracts.
+
+    Memory authority needs both granularities.  Returning either side alone
+    would lose the compiler value-node identity or the bounded object fact.
+    """
+    function_boundary = function.get("l2OperandBoundary")
+    raw_fragment_boundary = approval.get("l2FragmentOperandBoundary")
+    if (isinstance(raw_fragment_boundary, Mapping)
+            and isinstance(function_boundary, Mapping)):
+        result = boundary_as_legacy(raw_fragment_boundary, function_boundary)
+    elif isinstance(function_boundary, Mapping):
+        result = dict(function_boundary)
+    else:
+        return None
+    result["sourceDigest"] = function.get("sourceDigest", result.get("sourceDigest", ""))
+    return result
+
+
 def _memory_authority(
     finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     producer_digest: str,
@@ -304,7 +325,7 @@ def _memory_authority(
             or not isinstance(raw_facts, Mapping)):
         return None
     function = matches[0]
-    boundary = function.get("l2OperandBoundary")
+    boundary = _memory_operand_boundary(approval, function)
     try:
         profile = l2_fragment_semantic_profile_from_dict(
             raw_profile, expected_fragment_id=fragment_id)
@@ -536,7 +557,7 @@ def _memory_authority_failure_reason(
         facts = memory_proof_facts_from_dict(raw_facts)
     except ValueError:
         return "L2_MEMORY_PROOF_FACTS_INVALID"
-    boundary = matches[0].get("l2OperandBoundary")
+    boundary = _memory_operand_boundary(approval, matches[0])
     decision = assess_memory_authority_materializability(
         approval, facts, boundary if isinstance(boundary, Mapping) else None,
         fragment)
@@ -760,7 +781,8 @@ def materialize_automatic_l2_authority(
                 raw_facts = approval.get("l2MemoryProofFacts")
                 decision = assess_memory_authority_materializability(
                     approval, raw_facts if isinstance(raw_facts, Mapping) else None,
-                    matches[0].get("l2OperandBoundary") if len(matches) == 1 else None,
+                    _memory_operand_boundary(approval, matches[0])
+                    if len(matches) == 1 else None,
                     raw_fragment if isinstance(raw_fragment, Mapping) else {})
                 approval["l2MemoryAuthorityDecision"] = decision.to_dict()
             continue
@@ -787,7 +809,8 @@ def materialize_automatic_l2_authority(
             decision = assess_memory_authority_materializability(
                 approval, approval.get("l2MemoryProofFacts")
                 if isinstance(approval.get("l2MemoryProofFacts"), Mapping) else None,
-                matches[0].get("l2OperandBoundary") if len(matches) == 1 else None,
+                _memory_operand_boundary(approval, matches[0])
+                if len(matches) == 1 else None,
                 raw_fragment if isinstance(raw_fragment, Mapping) else {})
             approval["l2MemoryAuthorityDecision"] = decision.to_dict()
             approval["l2AuthorityMaterializationReasonCode"] = \

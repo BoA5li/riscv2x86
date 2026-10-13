@@ -1,4 +1,6 @@
 from copy import deepcopy
+from hashlib import sha256
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +30,8 @@ def _facts(**changes):
                   object_lifetime_scope="function_call", alias_class="object:0",
                   unique_object=True, bounds_proven=True, alignment_proven=True,
                   alias_complete=True, non_atomic=True, memory_order="relaxed",
-                  complete=True)
+                  complete=True,
+                  decoder_address_node_identity="decoder-address:operand:1")
     values.update(changes)
     return L2MemoryProofFacts(**values)
 
@@ -59,6 +62,23 @@ def _relation():
         (), "", True)
 
 
+def _object_binding(declaration="base", *, origin="parameter-object-contract-v1"):
+    value = {
+        "schemaVersion": "riscv2x86.memory-object-binding.v1",
+        "objectIdentity": "parameter-object:" + declaration,
+        "baseDeclarationIdentity": declaration,
+        "objectSizeBytes": 32, "provenAlignmentBytes": 8,
+        "aliasDomainIdentity": "alias:" + declaration,
+        "addressSpaceIdentity": "c.default", "volatile": False,
+        "bindingOrigin": origin, "producerIdentity": "test.compiler-object.v1",
+        "sourceDigest": "sha256:" + "f" * 64,
+    }
+    value["bindingIdentity"] = "sha256:" + sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode()).hexdigest()
+    return value
+
+
 def test_proof_facts_identity_changes_and_parser_rejects_stale_content():
     original = _facts().to_dict()
     stale = deepcopy(original); stale["byteOffset"] = 16
@@ -68,7 +88,8 @@ def test_proof_facts_identity_changes_and_parser_rejects_stale_content():
 
 
 def test_source_model_requires_one_proven_object_and_natural_alignment():
-    address = SimpleNamespace(byte_offset=8, alignment_bytes=8, provenance_known=True)
+    address = SimpleNamespace(byte_offset=8, alignment_bytes=8, provenance_known=True,
+                              address_id="decoder-address:operand:1")
     operands = SimpleNamespace(complete=True, operands=(
         SimpleNamespace(source_operand_index=0, kind=SimpleNamespace(value="register"),
                         access=SimpleNamespace(value="output"), width_bits=64),
@@ -87,9 +108,10 @@ def test_source_model_requires_one_proven_object_and_natural_alignment():
 
 def test_authority_binds_object_relative_bounds_without_raw_address():
     authority = MemoryAccessAuthority(
-        "fragment:any", "load", "parameter-object:decl:1", "decl:1", "decl:1",
+        "fragment:any", "load", "parameter-object:decl:1", "sha256:" + "1" * 64, "decl:1",
         8, 8, 8, 8, 32, "0<=8 && 16<=32", "alias:decl:1", "c.default",
-        "decl:0", False, True)
+        "sha256:" + "0" * 64, False, True, "decoder-address:operand:1",
+        "sha256:" + "2" * 64)
     obj, object_id = bind_memory_object_authority(
         _facts(), (_operand(0), _operand(1, pointer=True, parameter=0)), authority)
     assert object_id == "parameter-object:decl:1"
@@ -125,17 +147,17 @@ def test_authority_materialization_is_not_round2_name_based(tmp_path, directory,
               "targetEnvironmentId":"environment", "targetCatalogVersion":"catalog",
               "l2MemoryProofFacts":facts.to_dict()}}
     attach_effect_proof(finding["approvalArtifact"], fragment_id, "memory")
-    boundary = {"complete":True, "parameterDeclarationIds":["base"],
+    boundary = {"complete":True, "sourceDigest":"sha256:" + "f" * 64,
+      "parameterDeclarationIds":["base"],
       "asmOperandDeclarationIds":["result", "base"], "returnDeclarationId":"result",
+      "asmOperandValueNodeIdentities":["sha256:" + "0" * 64, "sha256:" + "1" * 64],
       "declarationReferenceCounts":{"result":2, "base":1},
       "declarations":{"result":{"name":"result", "type":"uint64_t"},
                       "base":{"name":"base", "type":"const uint64_t *"}},
-      "memoryObjectBindings":{"base":{
-          "objectIdentity":"parameter-object:base", "objectSizeBytes":32,
-          "provenAlignmentBytes":8, "aliasDomainIdentity":"alias:base",
-          "addressSpaceIdentity":"c.default", "volatile":False,
-          "bindingOrigin":"automatic-aligned-memory-object-harness-v1"}}}
+      "memoryObjectBindings":{"base":_object_binding(
+          origin="automatic-aligned-memory-object-harness-v1")}}
     function = {"name":function_name, "arity":1, "returnType":"uint64_t",
+                "sourceDigest":"sha256:" + "f" * 64,
                 "parameterTypes":["const uint64_t *"], "pointerParameters":[0],
                 "l2OperandBoundary":boundary}
     frontend = tmp_path / directory / "frontend"
@@ -177,14 +199,13 @@ def test_raw_address_and_unproved_alignment_are_rejected():
 
 
 def _materialization_boundary():
-    return {"complete": True, "asmOperandDeclarationIds": ["value", "base"],
+    return {"complete": True, "sourceDigest": "sha256:" + "f" * 64,
+            "asmOperandDeclarationIds": ["value", "base"],
+            "asmOperandValueNodeIdentities": ["sha256:" + "0" * 64,
+                                                "sha256:" + "1" * 64],
             "declarations": {"value": {"type": "uint64_t"},
                              "base": {"type": "uint64_t *"}},
-            "memoryObjectBindings": {"base": {
-                "objectIdentity": "parameter-object:base", "objectSizeBytes": 32,
-                "provenAlignmentBytes": 8, "aliasDomainIdentity": "alias:base",
-                "addressSpaceIdentity": "c.default", "volatile": False,
-                "bindingOrigin": "parameter-object-contract-v1"}}}
+            "memoryObjectBindings": {"base": _object_binding()}}
 
 
 @pytest.mark.parametrize(("mutation", "reason"), [
@@ -217,6 +238,10 @@ def test_materializability_decision_is_content_bound_and_reusable():
         {"id": "fragment:any"})
     assert decision.materializable
     assert decision.authority.object_identity == "parameter-object:base"
+    assert decision.authority.address_value_node == "sha256:" + "1" * 64
+    assert decision.authority.value_operand_identity == "sha256:" + "0" * 64
+    assert decision.authority.decoder_address_node == "decoder-address:operand:1"
+    assert decision.authority.address_binding_identity.startswith("sha256:")
     parsed = assess_memory_authority_materializability(
         {}, decision.to_dict(), None, {"id": "fragment:any"})
     assert parsed == decision
@@ -224,6 +249,21 @@ def test_materializability_decision_is_content_bound_and_reusable():
     rejected = assess_memory_authority_materializability(
         {}, stale, None, {"id": "fragment:any"})
     assert rejected.reason_codes == ("L2_MEMORY_AUTHORITY_DECISION_INVALID",)
+
+
+def test_old_memory_schema_and_stale_object_contract_fail_closed():
+    old = _facts().to_dict()
+    old["schemaVersion"] = "riscv2x86.l2-memory-proof-facts.v1"
+    with pytest.raises(ValueError, match="schema"):
+        memory_proof_facts_from_dict(old)
+    boundary = _materialization_boundary()
+    boundary["memoryObjectBindings"]["base"]["addressSpaceIdentity"] = "other.space"
+    decision = assess_memory_authority_materializability(
+        {"proofStatus": "approved", "architectureSemanticsPreserved": True,
+         "shellSemanticsPreserved": True}, _facts(), boundary,
+        {"id": "fragment:any"})
+    assert not decision.materializable
+    assert "L2_MEMORY_OBJECT_IDENTITY_MISSING" in decision.reason_codes
 
 
 def test_materializability_rejects_cross_fragment_memory_facts():

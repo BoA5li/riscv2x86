@@ -37,7 +37,7 @@ def _ast_ref(identity, offset):
             "referencedDecl": {"id": identity}}
 
 
-def test_frontend_exports_content_bound_fragment_value_flow_v2():
+def test_frontend_exports_content_bound_fragment_value_flow_v4():
     function = {
         "id": "ast:function", "kind": "FunctionDecl", "name": "f",
         "range": _ast_range(0, 100), "type": {"qualType": "uint64_t (uint64_t)"},
@@ -57,15 +57,46 @@ def test_frontend_exports_content_bound_fragment_value_flow_v2():
     }
     facts = auto._l2_operand_boundary_facts(
         function, source_digest="sha256:" + "1" * 64,
-        function_identity="sha256:" + "2" * 64)
+        function_identity="sha256:" + "2" * 64,
+        source_file="/src/f.c", source_bytes=b" " * 101)
     candidate = facts["fragmentCandidates"][0]
     assert candidate["schemaVersion"] == \
-        "riscv2x86.compiler-fragment-boundary-candidate.v2"
+        "riscv2x86.compiler-fragment-boundary-candidate.v4"
     assert candidate["complete"] is True
     assert all(item["valueNodeIdentity"].startswith("sha256:")
                for item in candidate["operandBindings"])
     assert candidate["downstreamUses"][0]["useKind"] == "function_return"
     assert candidate["downstreamUses"][0]["relationKind"] == "function_return"
+
+
+def test_frontend_binds_pointer_object_to_fragment_compiler_value_node():
+    function = {
+        "id": "ast:function", "kind": "FunctionDecl", "name": "store",
+        "range": _ast_range(0, 100), "type": {"qualType": "void (uint64_t *, uint64_t)"},
+        "inner": [
+            {"id": "base", "kind": "ParmVarDecl", "name": "base",
+             "range": _ast_range(2, 6), "type": {"qualType": "uint64_t *"}},
+            {"id": "value", "kind": "ParmVarDecl", "name": "value",
+             "range": _ast_range(8, 13), "type": {"qualType": "uint64_t"}},
+            {"id": "asm:0", "kind": "GCCAsmStmt", "range": _ast_range(20, 50),
+             "outputConstraints": [], "inputConstraints": ["r", "r"],
+             "inner": [_ast_ref("base", 35), _ast_ref("value", 40)]},
+        ],
+    }
+    facts = auto._l2_operand_boundary_facts(
+        function, source_digest="sha256:" + "1" * 64,
+        function_identity="sha256:" + "2" * 64,
+        source_file="/src/store.c", source_bytes=b" " * 101)
+    candidate = facts["fragmentCandidates"][0]
+    binding = facts["memoryObjectBindings"][
+        candidate["operandBindings"][0]["declarationIdentity"]]
+    assert facts["asmOperandValueNodeIdentities"] == [
+        item["valueNodeIdentity"] for item in candidate["operandCarriers"]]
+    assert binding["baseDeclarationIdentity"] == \
+        candidate["operandBindings"][0]["declarationIdentity"]
+    assert binding["sourceDigest"] == "sha256:" + "1" * 64
+    payload = dict(binding); claimed = payload.pop("bindingIdentity")
+    assert claimed == auto.value_flow_identity(payload)
 
 
 def test_frontend_marks_uncontracted_call_escape_incomplete():

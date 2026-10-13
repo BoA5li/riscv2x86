@@ -1,4 +1,6 @@
 from pathlib import Path
+from hashlib import sha256
+import json
 
 from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
@@ -214,26 +216,37 @@ def _memory_finding(fragment_id="memory-fragment"):
 
 
 def _memory_function():
+    object_binding = {
+        "schemaVersion": "riscv2x86.memory-object-binding.v1",
+        "objectIdentity": "parameter-object:address",
+        "baseDeclarationIdentity": "address",
+        "objectSizeBytes": 32, "provenAlignmentBytes": 8,
+        "aliasDomainIdentity": "parameter-alias-domain:address",
+        "addressSpaceIdentity": "c.default", "volatile": False,
+        "bindingOrigin": "automatic-aligned-memory-object-harness-v1",
+        "producerIdentity": "automatic-l1-memory-harness.v1",
+        "sourceDigest": "sha256:" + "f" * 64,
+    }
+    object_binding["bindingIdentity"] = "sha256:" + sha256(json.dumps(
+        object_binding, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False).encode()).hexdigest()
     return {
         "name": "store", "arity": 2, "returnType": "void",
+        "sourceDigest": "sha256:" + "f" * 64,
         "parameterTypes": ["uint64_t *", "uint64_t"],
         "l2OperandBoundary": {
             "complete": True,
             "parameterDeclarationIds": ["address", "value"],
             "asmOperandDeclarationIds": ["address", "value"],
+            "asmOperandValueNodeIdentities": ["sha256:" + "a" * 64,
+                                                "sha256:" + "b" * 64],
             "returnDeclarationId": "",
             "declarationReferenceCounts": {"address": 1, "value": 1},
             "declarations": {
                 "address": {"name": "address", "type": "uint64_t *"},
                 "value": {"name": "value", "type": "uint64_t"},
             },
-            "memoryObjectBindings": {"address": {
-                "objectIdentity": "parameter-object:address",
-                "objectSizeBytes": 32, "provenAlignmentBytes": 8,
-                "aliasDomainIdentity": "parameter-alias-domain:address",
-                "addressSpaceIdentity": "c.default", "volatile": False,
-                "bindingOrigin": "automatic-aligned-memory-object-harness-v1",
-            }},
+            "memoryObjectBindings": {"address": object_binding},
         },
     }
 
@@ -246,7 +259,8 @@ def _memory_facts(fragment_id="memory-fragment", *, complete=True):
     return L2MemoryProofFacts(
         fragment_id, "store", 0, 1, 8, 8, 8,
         "function_argument", "function_call", "object:0",
-        memory_order="relaxed", complete=complete, **flags,
+        memory_order="relaxed", complete=complete,
+        decoder_address_node_identity="decoder-address:operand:0", **flags,
     ).to_dict()
 
 
