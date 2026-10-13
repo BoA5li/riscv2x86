@@ -275,13 +275,15 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
                                   "rendererContractIdentity": renderer_identity})
                         if runtime_contract_id else "")
     relation_kind = "runtime_mediated" if runtime_contract_id else "exact"
+    operation_kind = str(getattr(getattr(source.operation, "kind", None), "value", ""))
+    is_barrier_operation = operation_kind in {"compiler_barrier", "hardware_barrier"}
     # One relation describes a semantic effect family; observations carry a
     # separate sample identity and all reference this stable relation.
     if source.operation.has_control_flow:
         effects = [("control:continuation", "ControlTransfer", "continuation:proved",
                     ("branch_condition", "branch_continuation", "branch_outcome",
                      "kind", "target", "value"))]
-    elif source.barrier.present:
+    elif is_barrier_operation and source.barrier.present:
         effects = [
             ("before:read", "ReadMemory", "ordering:before", ("kind", "subject", "value")),
             ("fence:0", "Fence", "ordering:fence",
@@ -308,7 +310,7 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
                    and request.preservation_decision.level.value != "architecture_equivalent" else ())
     relations = tuple(EffectRelationFact(
         "relation:" + effect_id, effect_id, ("target:" + effect_id,),
-        ("strengthened" if source.barrier.present and effect_id == "fence:0"
+        ("strengthened" if is_barrier_operation and effect_id == "fence:0"
          and "microarchitecture_strengthened" in evidence.dimensions else relation_kind),
         tuple(sorted(properties)), tuple(sorted(not_claimed)), runtime_contract_id,
         runtime_identity, True,

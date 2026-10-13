@@ -3864,6 +3864,20 @@ def _translate_phase6_proof_pipeline(
         "requiredHeaders": list(rendered.required_headers),
         "requiredLibraries": list(rendered.required_libraries),
     }
+    # Preservation conclusions are Phase-6D proof outputs and apply to every
+    # approved lowering, not only privileged runtime adapters.  L2 authority
+    # must consume these explicit facts rather than infer approval from a
+    # rendered replacement or from the absence of a negative flag.
+    conclusion_values = frozenset(item.value for item in proof.conclusions)
+    artifact.update({
+        "architectureSemanticsPreserved": (
+            "architecture_equivalent" in conclusion_values
+        ),
+        "shellSemanticsPreserved": "shell_preserved" in conclusion_values,
+        "microarchitectureSemanticsPreserved": (
+            "microarchitecture_intent_preserved" in conclusion_values
+        ),
+    })
     if proof.l2_effect_proof_facts is not None:
         artifact["proofIdentity"] = proof.l2_effect_proof_facts.proof_identity
         artifact["rendererContractIdentity"] = \
@@ -3887,7 +3901,6 @@ def _translate_phase6_proof_pipeline(
         is_fallback = (
             rendered.kind is RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK
         )
-        conclusion_values = frozenset(item.value for item in proof.conclusions)
         architecture_preserved = (
             not is_fallback and "architecture_equivalent" in conclusion_values
         )

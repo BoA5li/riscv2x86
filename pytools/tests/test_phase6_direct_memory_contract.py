@@ -70,8 +70,18 @@ def test_direct_u64_load_preserves_memory_shell_and_compiles() -> None:
         target_environment=environment,
         target_semantic_catalog=TargetSemanticCatalog(frozenset({plan.kind}), frozenset({semantic_id}), "direct-memory-test-v1"),
         compiler_capabilities=CompilerCapabilityModel(True, False),
+        fragment_id="fragment:load",
     )
     assert proof.approved and proof.evidence is not None
+    assert proof.l2_effect_proof_facts is not None
+    effect_facts = proof.l2_effect_proof_facts
+    assert [(item.effect_id, item.effect_kind) for item in effect_facts.source_effects] == [
+        ("memory:access", "ReadMemory")
+    ]
+    assert effect_facts.relations[0].relation_kind == "exact"
+    assert effect_facts.relations[0].target_effect_ids == ("target:memory:access",)
+    assert "memory_coordinates" in effect_facts.relations[0].preserved_properties
+    assert effect_facts.shell_relation.memory_clobber_preserved
     approved = ApprovedTargetLoweringPlan(
         plan, derived.constraints, proof, proof.evidence.source_model_id,
         proof.evidence.preservation_decision_id, proof.evidence.target_environment_id,
@@ -90,6 +100,72 @@ def test_direct_u64_load_preserves_memory_shell_and_compiles() -> None:
             source.write_text("#include <stdint.h>\nvoid f(const uint64_t *addr) { uint64_t out; " + rendered.emitted_text + " }\n")
             completed = subprocess.run([compiler, "-c", "-std=gnu11", str(source), "-o", str(Path(directory) / "load.o")], capture_output=True, text=True, check=False)
             assert completed.returncode == 0, completed.stderr
+
+
+def test_direct_u64_store_produces_phase6d_write_effect_relation() -> None:
+    class StoreInsn:
+        addr = 0
+        size = 4
+        asm_mnem = "sd"
+        asm_body = "a0, 0(a1)"
+        terminator_kind = None
+
+    class StoreOp:
+        opcode = "STORE"
+        output = None
+        inputs = [
+            SimpleNamespace(space="const", offset=0, size=8, name=""),
+            SimpleNamespace(space="register", offset=11, size=8, name="a1"),
+            SimpleNamespace(space="register", offset=10, size=8, name="a0"),
+        ]
+
+    StoreInsn.raw_ops = [StoreOp()]
+    blocks, summary = from_lifted([StoreInsn()])
+    fragment = AsmFragment(
+        rawAsmText="sd %[value], 0(%[base])", isVolatile=True,
+        clobbers=["memory"],
+        inputs=[
+            AsmOperand(constraint="r", exprText="value", isOutput=False),
+            AsmOperand(constraint="r", exprText="base", isOutput=False),
+        ],
+    )
+    model = build_source_semantic_model(
+        fragment=fragment, blocks=blocks, cfg=CFGResult(ok=True), summary=summary,
+        xlen=64,
+        runtime_facts=TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0, "a1": 1},
+            operand_width_bits={0: 64, 1: 64},
+        ),
+    )
+    assert model.operation.kind is SourceOperationKind.STORE
+    plan = generate_candidate_plans(model)[0]
+    semantic_id = "x86.gnu-att.memory.store.gpr-address.u64.v1"
+    assert plan.metadata["renderer_semantic_contract_id"] == semantic_id
+    environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
+        available_features={"x86:gpr_inline_asm"},
+    )
+    derived = derive_target_constraints(
+        source_model=model, candidate_plan=plan, target_environment=environment,
+    )
+    assert derived.success and derived.constraints is not None
+    proof = run_semantic_proof_gate(
+        source_model=model, preservation_decision=model.preservation,
+        candidate_plan=plan, constraints=derived.constraints,
+        target_environment=environment,
+        target_semantic_catalog=TargetSemanticCatalog(
+            frozenset({plan.kind}), frozenset({semantic_id}),
+            "direct-memory-store-test-v1"),
+        compiler_capabilities=CompilerCapabilityModel(True, False),
+        fragment_id="fragment:store",
+    )
+    assert proof.approved and proof.l2_effect_proof_facts is not None
+    effects = proof.l2_effect_proof_facts
+    assert [(item.effect_id, item.effect_kind) for item in effects.source_effects] == [
+        ("memory:access", "WriteMemory")
+    ]
+    assert effects.relations[0].relation_kind == "exact"
+    assert effects.relations[0].target_effect_ids == ("target:memory:access",)
+    assert effects.shell_relation.memory_clobber_preserved
 
 
 def test_direct_u64_load_accepts_transparent_copy_and_add_zero_address_chain() -> None:
@@ -205,6 +281,7 @@ def test_direct_u64_load_binds_proven_signed_disp32_and_compiles() -> None:
         target_semantic_catalog=TargetSemanticCatalog(
             frozenset({plan.kind}), frozenset({semantic_id}), "direct-memory-disp32-test-v1"),
         compiler_capabilities=CompilerCapabilityModel(True, False),
+        fragment_id="fragment:load-disp32",
     )
     assert proof.approved and proof.evidence is not None
     approved = ApprovedTargetLoweringPlan(

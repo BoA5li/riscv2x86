@@ -3,6 +3,7 @@ from copy import deepcopy
 import pytest
 
 from riscv2x86_py.l2_effect_proof import effect_proof_facts_from_dict, identity
+from riscv2x86_py.automatic_l2_authority import _proof_effect_authority
 from tests.l2_effect_proof_fixtures import attach_effect_proof
 
 
@@ -48,3 +49,14 @@ def test_semantic_relation_identity_is_independent_of_sample_domain():
         for index in range(1, 64)]
     assert {x["effectRelationIdentity"] for x in samples_a} == \
         {x["effectRelationIdentity"] for x in samples_b} == {relation.approval_identity}
+
+
+def test_authority_materializer_only_accepts_phase6d_identity_closed_facts():
+    approval = _approval()
+    assert _proof_effect_authority(approval, "fragment:one") is not None
+    for field in ("proofIdentity", "planId", "constraintsId",
+                  "rendererContractIdentity"):
+        stale = deepcopy(approval)
+        stale[field] = "sha256:" + "0" * 64
+        assert _proof_effect_authority(stale, "fragment:one") is None
+    assert _proof_effect_authority(approval, "fragment:other") is None
