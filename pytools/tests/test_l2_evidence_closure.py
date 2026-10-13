@@ -38,6 +38,19 @@ def test_complete_provider_evidence_closes_all_required_identities():
         "sourceObservationIdentity", "targetObservationIdentity"))
 
 
+def test_program_authority_can_bind_multiple_fragment_plans_to_one_execution():
+    authorized = "sha256:" + "9" * 64
+    values = [provider_evidence_fields(
+        artifact(fragment), provider_id="provider", harness_identity=H,
+        source_observation_identity=O, target_observation_identity=O,
+        execution_nonce={"attempt": fragment}, dimensions=("logical_operands",),
+        authorized_execution_identity=authorized,
+    ) for fragment in ("fragment:a", "fragment:b")]
+    assert {item["executionIdentity"] for item in values} == {authorized}
+    assert (values[0]["executionPlanIdentity"]
+            != values[1]["executionPlanIdentity"])
+
+
 @pytest.mark.parametrize("name", [
     "authorityIdentity", "effectRelationIdentity", "executionPlanIdentity",
     "environmentAuthorityIdentity", "runtimeAdapterIdentity", "harnessIdentity",
