@@ -10,6 +10,9 @@ from .semantic_authority import (
     AtomicOperationFacts, AuthorityProducerRegistry, RegisteredAuthorityProducer,
     SemanticAuthorityError, semantic_authority_bundle_from_dict,
 )
+from .compiler_fragment_closure import (
+    validate_closed_compiler_fragment_candidate,
+)
 
 
 ATOMIC_AUTHORITY_PRODUCER_REGISTRY = AuthorityProducerRegistry((
@@ -71,6 +74,10 @@ def atomic_runtime_object_from_compiler_authority(
             or candidate.get("compilerStructureComplete") is not True
             or candidate.get("operandClassificationComplete") is not True):
         raise SemanticAuthorityError("compiler fragment binding does not match frontend fragment")
+    try:
+        validate_closed_compiler_fragment_candidate(candidate)
+    except ValueError as exc:
+        raise SemanticAuthorityError(str(exc)) from exc
     register_map = getattr(runtime_facts, "rv_to_operand_index", {})
     width_map = getattr(runtime_facts, "operand_width_bits", {})
     address_register = getattr(atomic_operation, "address_binding", "")
@@ -88,10 +95,11 @@ def atomic_runtime_object_from_compiler_authority(
                        if isinstance(item, Mapping)}
     carrier_by_index = {item.get("operandIndex"): item for item in carriers
                         if isinstance(item, Mapping)}
+    binding_by_index = {item.get("operandIndex"): item for item in bindings
+                        if isinstance(item, Mapping)}
     if binding_indexes != expected_indexes or set(carrier_by_index) != expected_indexes:
         raise SemanticAuthorityError("compiler/assembler operand authority mismatch")
-    binding = next((item for item in bindings if isinstance(item, Mapping)
-                    and item.get("operandIndex") == address_index), None)
+    binding = binding_by_index.get(address_index)
     carrier = carrier_by_index.get(address_index)
     if (not isinstance(binding, Mapping) or not isinstance(carrier, Mapping)
             or carrier.get("carrierKind") != "pointer"
@@ -100,6 +108,33 @@ def atomic_runtime_object_from_compiler_authority(
             or binding.get("valueNodeIdentity") != carrier.get("valueNodeIdentity")
             or binding.get("complete") is not True or carrier.get("complete") is not True):
         raise SemanticAuthorityError("atomic address is not a complete compiler pointer binding")
+    value_index = register_map.get(getattr(
+        atomic_operation, "input_value_binding", ""))
+    result_name = getattr(atomic_operation, "result_binding", None)
+    result_index = None if result_name is None else register_map.get(result_name)
+    result_semantics = getattr(atomic_operation, "result_semantics", None)
+    value_binding = binding_by_index.get(value_index)
+    value_carrier = carrier_by_index.get(value_index)
+    if (not isinstance(value_index, int)
+            or not isinstance(value_binding, Mapping)
+            or not isinstance(value_carrier, Mapping)
+            or value_binding.get("access") not in {"input", "read_write"}
+            or value_carrier.get("carrierKind") != "integer"
+            or value_binding.get("widthBits") != width_bits
+            or value_binding.get("valueNodeIdentity") !=
+                value_carrier.get("valueNodeIdentity")):
+        raise SemanticAuthorityError("atomic input value binding is incomplete")
+    if result_semantics == "none":
+        if result_name is not None:
+            raise SemanticAuthorityError("discarded atomic result has a result binding")
+    elif result_semantics in {"old_value", "new_value", "success_flag"}:
+        result_binding = binding_by_index.get(result_index)
+        if (not isinstance(result_index, int)
+                or not isinstance(result_binding, Mapping)
+                or result_binding.get("access") not in {"output", "read_write"}):
+            raise SemanticAuthorityError("atomic result binding is incomplete")
+    else:
+        raise SemanticAuthorityError("atomic result semantics is unsupported")
     declaration = str(binding.get("declarationIdentity") or "")
     memory_object = objects.get(declaration)
     if not isinstance(memory_object, Mapping):

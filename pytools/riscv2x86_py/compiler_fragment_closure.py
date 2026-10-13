@@ -135,3 +135,30 @@ def close_compiler_fragment_candidate(
     unsigned.pop("closureIdentity", None)
     result["closureIdentity"] = _identity(unsigned)
     return result
+
+
+def validate_closed_compiler_fragment_candidate(
+    candidate: Mapping[str, object],
+) -> None:
+    """Validate the closed payload before a typed semantic consumer uses it."""
+    if candidate.get("schemaVersion") != CLOSED_COMPILER_FRAGMENT_SCHEMA:
+        raise ValueError("closed compiler fragment schema is unsupported")
+    declared = candidate.get("closureIdentity")
+    unsigned = dict(candidate)
+    unsigned.pop("closureIdentity", None)
+    if not isinstance(declared, str) or declared != _identity(unsigned):
+        raise ValueError("closed compiler fragment identity is invalid")
+    provenance = candidate.get("closureProvenance")
+    if (not isinstance(provenance, Mapping)
+            or not provenance.get("compilerCandidateIdentity")
+            or not provenance.get("frontendFragmentIdentity")
+            or provenance.get("producerIdentities") != [
+                "clang-json-ast.compiler-value-flow.v2",
+                "clang-tooling.gnu-inline-asm-fragment.v1",
+            ]):
+        raise ValueError("closed compiler fragment provenance is incomplete")
+    if (candidate.get("complete") is not True
+            or candidate.get("compilerStructureComplete") is not True
+            or candidate.get("operandClassificationComplete") is not True
+            or candidate.get("downstreamUseEnumerationComplete") is not True):
+        raise ValueError("closed compiler fragment is incomplete")

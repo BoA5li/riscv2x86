@@ -288,3 +288,40 @@ def test_cycle_or_unbound_predicate_fails_closed():
         memory=SimpleNamespace(reads_memory=False, writes_memory=False),
     )
     assert rejected is None
+
+
+def test_region_wide_def_use_normalizes_predicate_without_address_identity_join():
+    register = Var(VarKind.REG, "register", 10, 8, "a0")
+    copied = Var(VarKind.UNIQUE, "unique", 7, 8)
+    predicate = Var(VarKind.UNIQUE, "unique", 8, 1)
+    zero = Var(VarKind.CONST, "const", 0, 8)
+    target = Var(VarKind.CONST, "const", 0x9000, 8)
+    copy = Op(0x1000, "COPY", copied, [register])
+    compare = Op(0x1004, "INT_NOTEQUAL", predicate, [copied, zero])
+    branch = Op(0x1004, "CBRANCH", None, [target, predicate])
+    first = CanonicalInsn(addr=0x1000, size=4, ops=[copy])
+    second = CanonicalInsn(
+        addr=0x1004, size=4, ops=[compare, branch],
+        terminator_kind="CBRANCH", direct_target=0x9000,
+        has_branch_op=True)
+    fragment = _fragment()
+    authority = _build_asm_goto_control_flow_authority(
+        fragment=fragment, shell=SourceShellModel.from_fragment(fragment),
+        blocks=[Block(0x1000, ops=[copy, compare, branch],
+                      instructions=[first, second],
+                      terminator_kind="cbranch", has_branch=True)],
+        cfg=CFGResult(ok=True),
+        runtime_status=_runtime_fact_status(TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64},
+            provenance="test")),
+        operands=SourceOperandModel((SourceOperandBinding(
+            0, SourceOperandKind.REGISTER, SourceOperandAccess.INPUT, 64,
+            SourceSignedness.SIGNLESS, True, False, False, None, False,
+            None, None, None, None),), True),
+        memory=SimpleNamespace(reads_memory=False, writes_memory=False),
+    )
+    assert authority is not None
+    assert authority.condition_kind == "nonzero"
+    # Compiler continuation identities deliberately do not equal decoder PCs.
+    assert authority.taken_successor_block.endswith(":label:taken")
+    assert authority.fallthrough_successor_block.endswith(":fallthrough")

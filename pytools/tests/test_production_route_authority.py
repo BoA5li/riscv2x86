@@ -11,6 +11,9 @@ from riscv2x86_py.atomic_authority import (
 from riscv2x86_py.automatic_translation_command import (
     _inject_compiler_fragment_authority,
 )
+from riscv2x86_py.compiler_fragment_closure import (
+    close_compiler_fragment_candidate,
+)
 from riscv2x86_py.runtime_facts import TranslationRuntimeFacts
 from riscv2x86_py.semantic_authority import SemanticAuthorityError
 
@@ -55,7 +58,9 @@ def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer"):
            "producerIdentity": "automatic-l1-memory-harness.v1",
            "sourceDigest": digest}
     obj["bindingIdentity"] = _identity(obj)
-    candidate = {"fragmentBindingKey": key, "complete": True,
+    candidate = {"schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v2",
+                 "candidateIdentity": _identity({"bindingKey": key}),
+                 "fragmentBindingKey": key, "complete": True,
                  "compilerStructureComplete": True,
                  "operandClassificationComplete": True,
                  "operandBindings": [value_binding, binding],
@@ -66,6 +71,13 @@ def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer"):
                  ],
                  "downstreamUses": [],
                  "downstreamUseEnumerationComplete": True}
+    candidate = close_compiler_fragment_candidate(
+        candidate,
+        {"fragmentId": fragment_id,
+         "outputs": [{"constraint": "+r"}],
+         "inputs": [{"constraint": "r"}]},
+        source_digest=digest, function_identity=key["functionIdentity"],
+    )
     authority = {"schemaVersion": COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
                  "sourceDigest": digest, "fragmentId": fragment_id,
                  "targetTriple": "riscv64-linux-gnu",
@@ -167,3 +179,21 @@ def test_automatic_wrapper_rejects_frontend_compiler_operand_disagreement(tmp_pa
                     "memoryObjectBindings": authority["memoryObjectBindings"]}}
     with pytest.raises(ValueError, match="arity mismatch"):
         _inject_compiler_fragment_authority(raw, source, (function,))
+
+
+def test_atomic_join_rejects_tampered_closed_candidate():
+    authority = _compiler_authority()
+    authority["candidate"]["operandBindings"][0]["access"] = "output"
+    unsigned = {key: value for key, value in authority.items()
+                if key != "authorityIdentity"}
+    authority["authorityIdentity"] = _identity(unsigned)
+    with pytest.raises(SemanticAuthorityError,
+                       match="closed compiler fragment identity"):
+        atomic_runtime_object_from_compiler_authority(
+            authority, fragment_id="source.c:7:3",
+            source_digest=authority["sourceDigest"], begin_offset=100,
+            end_offset=140,
+            runtime_facts=TranslationRuntimeFacts(
+                rv_to_operand_index={"a0": 0, "a1": 1},
+                operand_width_bits={0: 64, 1: 64}),
+            atomic_operation=_atomic())
