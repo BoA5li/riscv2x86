@@ -13,7 +13,7 @@ from typing import Mapping, Sequence
 from .l2_dimensions import L2Dimension, parse_l2_dimensions
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .l2_evidence_closure import (
-    L2ProviderExecutionDisposition, provider_evidence_fields,
+    L2DimensionEvidence, L2ProviderExecutionDisposition, provider_evidence_fields,
 )
 from .validation_status import ValidationStatus
 
@@ -262,11 +262,20 @@ def run_explicit_l2_harness(config: ExplicitL2HarnessRunnerConfig, **kwargs: obj
                 "sourceHarnessDigest": manifest.source_harness_digest,
                 "targetHarnessDigest": manifest.target_harness_digest,
             }),
-            source_observation_identity=source_identity,
-            target_observation_identity=target_identity,
             execution_nonce={"request": request,
                              "executionProfile": manifest.execution_profile},
-            dimensions=tuple(item.value for item in manifest.provided_dimensions),
+            dimensions=manifest.provided_dimensions,
+            dimension_evidence={
+                item: L2DimensionEvidence(
+                    _identity({"harnessDigest": manifest.source_harness_digest,
+                               "dimension": item.value,
+                               "observation": source["dimensionObservations"][item.value]}),
+                    _identity({"harnessDigest": manifest.target_harness_digest,
+                               "dimension": item.value,
+                               "observation": target["dimensionObservations"][item.value]}),
+                    ("explicit_harness_observation", item.value),
+                ) for item in manifest.provided_dimensions
+            },
             execution_disposition=(
                 L2ProviderExecutionDisposition.EXECUTED_VERIFIED if matched else
                 L2ProviderExecutionDisposition.EXECUTED_FAILED)))
