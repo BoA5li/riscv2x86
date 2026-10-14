@@ -841,6 +841,9 @@ def materialize_automatic_l2_authority(
                                  for item in sidecar.operands},
                     proof_identity=str(approval["proofIdentity"]),
                     dependency_graph_identity=graph.graph_identity,
+                    parameter_indices={item.operand_index: item.parameter_index
+                                       for item in sidecar.operands},
+                    dependency_edges=graph.edges,
                     instrumentation_plan_identity=plan_identity,
                 )
                 approval["l2OperandObservationAuthority"] = \
