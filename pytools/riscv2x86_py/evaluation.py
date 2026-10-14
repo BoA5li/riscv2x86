@@ -16,7 +16,10 @@ from .candidate_materialization import (
     verify_candidate_artifact_manifest,
 )
 from .schema import PublicationOutcome, TranslationOutcome
-from .translation_attempt import TranslationAttemptArchive, load_translation_attempt_archive
+from .translation_attempt import (
+    AttemptStagingDisposition, TranslationAttemptArchive,
+    load_translation_attempt_archive,
+)
 from .l2_dimensions import L2ClaimScope, L2DimensionStatus, parse_l2_dimensions
 from .l2_results import L2FragmentResult
 from .l2_program_results import (
@@ -366,13 +369,15 @@ def _translation_command_failure_result(
     record: CommandRecord, plan: ValidationPlan, environment: object,
     archive_path: Path,
 ) -> dict[str, object] | None:
-    """Return a fail-closed result, or allow an admitted archive onward.
+    """Return a fail-closed result, or allow an evaluable archive onward.
 
     A valid archive may authoritatively report ``needs_route``, ``unsupported``,
     a source/frontend failure, or an emitted-but-withheld candidate even when
     the command exits non-zero. Missing or malformed evidence remains a real
-    command failure. Only emitted attempts explicitly admitted for publication
-    are allowed to continue to materialization and L0.
+    command failure. An emitted attempt may continue only when it is already
+    admitted or is explicitly staged for this external validation pipeline.
+    The latter is not publication: final writeback remains guarded by the
+    completed-evaluation promotion contract.
     """
     if record.timed_out:
         return _result(
@@ -404,16 +409,19 @@ def _translation_command_failure_result(
             ("evaluation.translation-attempt-archive-empty",), None,
             plan=plan, environment=environment,
         )
-    admitted = all(
+    evaluable = all(
         item.translation_outcome not in _EMITTED
         or item.publication_outcome is PublicationOutcome.ADMITTED
+        or item.staging_disposition is
+            AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
         for item in attributable
     )
     terminal_non_emitted = all(item.translation_outcome not in _EMITTED
                                for item in attributable)
-    if admitted and not terminal_non_emitted:
+    if evaluable and not terminal_non_emitted:
         # The failed process status remains in the audit log; the authenticated
-        # admitted artifact controls whether evaluation may proceed.
+        # staging disposition controls whether evaluation may proceed. It does
+        # not make a publication claim.
         return None
     attempts = tuple(
         _translation_terminal_result(item)
