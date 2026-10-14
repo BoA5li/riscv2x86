@@ -4,6 +4,9 @@ from dataclasses import replace
 
 import pytest
 
+from riscv2x86_py.automatic_l2_operand import (
+    L2OperandObservationError, _sample_observations,
+)
 from riscv2x86_py.l2_fragment_execution import (
     FragmentOperandBoundary,
     FragmentValueFlowEdge,
@@ -108,3 +111,68 @@ def test_missing_output_route_fails_closed():
             boundary, operand_ids={0: "operand:out"},
             proof_identity=_sha("5"), dependency_graph_identity=_sha("6"),
         )
+
+
+def _materializer_authority(*, access: str = "input", parameter_index=0):
+    node = _sha("1")
+    binding = OperandBinding(0, "decl:value", node, access, 64, True)
+    boundary = FragmentOperandBoundary(
+        "program", "function", "fragment", (binding,) if access == "input" else (),
+        (binding,) if access != "input" else (), (),
+        (node,) if access != "input" else (), True,
+        observation_sinks=((ObservationSinkBinding(
+            _sha("2"), node, "function_return", True),)
+            if access != "input" else ()),
+    )
+    typed = materialize_operand_observation_authority(
+        boundary, operand_ids={0: "operand:value"}, proof_identity=_sha("5"),
+        dependency_graph_identity=_sha("6"),
+        parameter_indices={0: parameter_index},
+    )
+    return {
+        "fragmentId": "fragment",
+        "fragmentBoundaryIdentity": boundary.boundary_identity,
+        "operands": [{
+            "operandIndex": 0, "operandId": "operand:value",
+            "declarationId": "decl:value", "valueNodeIdentity": node,
+            "accessMode": access, "parameterIndex": parameter_index,
+            "widthBits": 64, "signedness": "unsigned",
+        }],
+        "operandObservationAuthority": typed.to_dict(),
+        "instrumentationPlan": None,
+    }
+
+
+def test_input_observation_consumes_typed_parameter_binding():
+    samples = _sample_observations(
+        ((7, 9),), _materializer_authority(), trace_arity=1)
+    operand = samples[0]["logicalOperands"][0]
+    assert operand["valueBefore"] == "0x0000000000000007"
+    assert operand["valueAfter"] is None
+    assert operand["observationKind"] == "function_parameter"
+    assert operand["bindingIdentity"].startswith("sha256:")
+
+
+def test_read_write_observation_materializes_before_and_after():
+    samples = _sample_observations(
+        ((7, 9),), _materializer_authority(access="read_write"),
+        trace_arity=1)
+    operand = samples[0]["logicalOperands"][0]
+    assert operand["valueBefore"] == "0x0000000000000007"
+    assert operand["valueAfter"] == "0x0000000000000009"
+    assert operand["observationKind"] == "function_parameter+function_return"
+
+
+def test_trace_arity_mismatch_has_precise_reason():
+    with pytest.raises(L2OperandObservationError) as caught:
+        _sample_observations(
+            ((7,),), _materializer_authority(), trace_arity=1)
+    assert caught.value.reason_code == "L2_OPERAND_TRACE_ARITY_MISMATCH"
+
+
+def test_parameter_index_range_has_precise_reason():
+    with pytest.raises(L2OperandObservationError) as caught:
+        _sample_observations(
+            ((7, 9),), _materializer_authority(parameter_index=1),
+            trace_arity=1)
+    assert caught.value.reason_code == "L2_OPERAND_PARAMETER_INDEX_OUT_OF_RANGE"
