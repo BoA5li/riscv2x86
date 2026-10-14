@@ -15,7 +15,8 @@ from .l2_dimensions import (
 )
 from .l2_results import L2DimensionResult, L2FragmentResult
 from .l2_evidence_closure import (
-    L2ProviderExecutionDisposition, partial_provider_evidence,
+    L2EvidenceProductionDisposition, L2ProviderExecutionDisposition,
+    partial_provider_evidence, provider_evidence_production_disposition,
     provider_execution_disposition, validated_provider_evidence,
     validate_provider_dimension_contract,
 )
@@ -433,28 +434,33 @@ def _requirement_driven_l2_validator(
                               if isinstance(provider_detail, Mapping) else {})
             disposition, disposition_reasons = provider_execution_disposition(
                 detail_mapping, result.status.value)
+            production, production_reasons = \
+                provider_evidence_production_disposition(
+                    detail_mapping, disposition)
+            evidence_validation_enabled = production in {
+                L2EvidenceProductionDisposition.PARTIAL,
+                L2EvidenceProductionDisposition.COMPLETE,
+            }
             dimension_contract_reasons = (
                 validate_provider_dimension_contract(
                     detail_mapping,
                     bound_dimensions_by_provider.get(binding.provider_id, ()),
                 )
-                if disposition in {
-                    L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
-                    L2ProviderExecutionDisposition.EXECUTED_FAILED,
-                    L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
-                }
+                if evidence_validation_enabled
                 else ()
             )
-            total_evidence_required = disposition in {
-                L2ProviderExecutionDisposition.EXECUTED_FAILED,
-                L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
-            }
+            total_evidence_required = (
+                production is L2EvidenceProductionDisposition.COMPLETE
+                and disposition in {
+                    L2ProviderExecutionDisposition.EXECUTED_FAILED,
+                    L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+                })
             if total_evidence_required:
                 total_evidence, closure_reasons = validated_provider_evidence(
                     detail_mapping, artifact, dimension=binding.dimension.value,
                     provider_id=binding.provider_id)
                 evidence = {} if total_evidence is None else total_evidence
-            elif disposition is L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE:
+            elif evidence_validation_enabled:
                 evidence, closure_reasons = partial_provider_evidence(
                     detail_mapping, artifact, dimension=binding.dimension.value,
                     provider_id=binding.provider_id)
@@ -483,7 +489,7 @@ def _requirement_driven_l2_validator(
             ) if total_evidence_required else ()
             reasons = tuple(sorted(set(
                 _result_reason_codes(result) + closure_reasons + disposition_reasons
-                + dimension_contract_reasons)))
+                + production_reasons + dimension_contract_reasons)))
             scope_missing = claim_scope is L2ClaimScope.NONE
             authority_incomplete = not bool(
                 getattr(artifact, "l2_authority_complete", False)
@@ -497,6 +503,9 @@ def _requirement_driven_l2_validator(
             elif disposition is L2ProviderExecutionDisposition.NOT_EXECUTED:
                 dimension_status = (L2DimensionStatus.NOT_RUN if not reasons else
                                     L2DimensionStatus.INCONCLUSIVE)
+                claim_scope = L2ClaimScope.NONE
+            elif production_reasons:
+                dimension_status = L2DimensionStatus.INCONCLUSIVE
                 claim_scope = L2ClaimScope.NONE
             elif total_evidence_required and (missing or closure_reasons
                                                or dimension_contract_reasons
