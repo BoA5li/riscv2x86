@@ -18,6 +18,9 @@ from .l2_internal_value import internal_value_proof_facts_from_dict
 FRAGMENT_OPERAND_BOUNDARY_SCHEMA = "riscv2x86.fragment-operand-boundary.v2"
 FRAGMENT_DEPENDENCY_GRAPH_SCHEMA = "riscv2x86.fragment-dependency-graph.v2"
 PROGRAM_EXECUTION_AUTHORITY_SCHEMA = "riscv2x86.fragment-program-execution-authority.v1"
+OPERAND_OBSERVATION_AUTHORITY_SCHEMA = (
+    "riscv2x86.l2-operand-observation-authority.v1"
+)
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -109,6 +112,261 @@ class ObservationSinkBinding:
         return {"sinkIdentity": self.sink_identity,
                 "valueNodeIdentity": self.value_node_identity,
                 "sinkKind": self.sink_kind, "complete": self.complete}
+
+
+@dataclass(frozen=True)
+class L2OperandObservationBinding:
+    """Proof-bound route from one scalar output to exactly one observer."""
+
+    fragment_id: str
+    operand_id: str
+    operand_index: int
+    declaration_identity: str
+    value_node_identity: str
+    access: str
+    closure_kind: str
+    observation_kind: str = ""
+    observation_sink_identity: str = ""
+    consumer_fragment_id: str = ""
+    consumer_value_node_identity: str = ""
+    value_flow_edge_identity: str = ""
+    instrumentation_plan_identity: str = ""
+    complete: bool = True
+
+    def __post_init__(self) -> None:
+        if (not self.fragment_id or not self.operand_id
+                or isinstance(self.operand_index, bool)
+                or not isinstance(self.operand_index, int)
+                or self.operand_index < 0 or not self.declaration_identity
+                or _SHA.fullmatch(self.value_node_identity) is None
+                or self.access not in {"output", "read_write"}
+                or self.closure_kind not in {
+                    "sink", "consumer", "discard", "instrumentation"}
+                or self.complete is not True):
+            raise ValueError("operand observation binding header is invalid")
+        sink = self.closure_kind == "sink"
+        consumer = self.closure_kind == "consumer"
+        instrumentation = self.closure_kind == "instrumentation"
+        if sink and (_SHA.fullmatch(self.observation_sink_identity) is None
+                     or self.observation_kind not in {
+                         "function_return", "c_expression", "memory_store",
+                         "branch_condition"}):
+            raise ValueError("operand observation sink authority is invalid")
+        if consumer != bool(self.consumer_fragment_id):
+            raise ValueError("operand observation consumer authority is inconsistent")
+        if consumer and (_SHA.fullmatch(self.consumer_value_node_identity) is None
+                         or _SHA.fullmatch(self.observation_sink_identity) is None
+                         or _SHA.fullmatch(self.value_flow_edge_identity) is None
+                         or self.observation_kind != "subsequent_asm_input"):
+            raise ValueError("operand observation consumer authority is invalid")
+        if instrumentation != bool(self.instrumentation_plan_identity):
+            raise ValueError("operand instrumentation authority is inconsistent")
+        if (instrumentation
+                and _SHA.fullmatch(self.instrumentation_plan_identity) is None):
+            raise ValueError("operand instrumentation plan identity is invalid")
+        if instrumentation and self.observation_kind != "instrumentation":
+            raise ValueError("operand instrumentation observation kind is invalid")
+        if self.closure_kind == "discard" and self.observation_kind != "discarded":
+            raise ValueError("discarded operand authority is invalid")
+        if (not consumer and (self.consumer_fragment_id
+                              or self.consumer_value_node_identity
+                              or self.value_flow_edge_identity)
+                or not (sink or consumer) and self.observation_sink_identity
+                or not instrumentation and self.instrumentation_plan_identity):
+            raise ValueError("operand observation authority has foreign fields")
+
+    @property
+    def binding_identity(self) -> str:
+        return identity(self.to_dict(include_identity=False))
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, object]:
+        value = {
+            "fragmentId": self.fragment_id, "operandId": self.operand_id,
+            "operandIndex": self.operand_index,
+            "declarationIdentity": self.declaration_identity,
+            "valueNodeIdentity": self.value_node_identity,
+            "access": self.access, "closureKind": self.closure_kind,
+            "observationKind": self.observation_kind,
+            "observationSinkIdentity": self.observation_sink_identity,
+            "consumerFragmentId": self.consumer_fragment_id,
+            "consumerValueNodeIdentity": self.consumer_value_node_identity,
+            "valueFlowEdgeIdentity": self.value_flow_edge_identity,
+            "instrumentationPlanIdentity": self.instrumentation_plan_identity,
+            "complete": self.complete,
+        }
+        if include_identity:
+            value["bindingIdentity"] = self.binding_identity
+        return value
+
+
+@dataclass(frozen=True)
+class L2OperandObservationAuthority:
+    fragment_id: str
+    boundary_identity: str
+    proof_identity: str
+    dependency_graph_identity: str
+    bindings: tuple[L2OperandObservationBinding, ...]
+    complete: bool
+    schema_version: str = OPERAND_OBSERVATION_AUTHORITY_SCHEMA
+
+    def __post_init__(self) -> None:
+        if (self.schema_version != OPERAND_OBSERVATION_AUTHORITY_SCHEMA
+                or not self.fragment_id
+                or _SHA.fullmatch(self.boundary_identity) is None
+                or _SHA.fullmatch(self.proof_identity) is None
+                or _SHA.fullmatch(self.dependency_graph_identity) is None):
+            raise ValueError("operand observation authority header is invalid")
+        indices = tuple(item.operand_index for item in self.bindings)
+        if (not self.bindings or indices != tuple(sorted(set(indices)))
+                or any(item.fragment_id != self.fragment_id
+                       for item in self.bindings)
+                or self.complete is not True):
+            raise ValueError("operand observation authority is incomplete")
+
+    @property
+    def authority_identity(self) -> str:
+        return identity(self.to_dict(include_identity=False))
+
+    def to_dict(self, *, include_identity: bool = True) -> dict[str, object]:
+        value = {
+            "schemaVersion": self.schema_version,
+            "fragmentId": self.fragment_id,
+            "boundaryIdentity": self.boundary_identity,
+            "proofIdentity": self.proof_identity,
+            "dependencyGraphIdentity": self.dependency_graph_identity,
+            "bindings": [item.to_dict() for item in self.bindings],
+            "complete": self.complete,
+        }
+        if include_identity:
+            value["authorityIdentity"] = self.authority_identity
+        return value
+
+
+def materialize_operand_observation_authority(
+    boundary: "FragmentOperandBoundary", *, operand_ids: Mapping[int, str],
+    proof_identity: str, dependency_graph_identity: str,
+    instrumentation_plan_identity: str = "",
+) -> L2OperandObservationAuthority:
+    """Close every scalar output through one and only one authoritative route."""
+    if not boundary.complete:
+        raise ValueError("operand observation boundary is incomplete")
+    bindings: list[L2OperandObservationBinding] = []
+    for output in boundary.output_bindings:
+        routes: list[dict[str, str]] = []
+        sinks = [item for item in boundary.observation_sinks
+                 if item.value_node_identity == output.value_node_identity
+                 and item.sink_kind != "subsequent_asm_input"]
+        consumers = [item for item in boundary.value_flow_edges
+                     if item.producer_value_node == output.value_node_identity
+                     and item.consumer_fragment_id]
+        if len(sinks) == 1:
+            routes.append({
+                "closure_kind": "sink",
+                "observation_kind": sinks[0].sink_kind,
+                "observation_sink_identity": sinks[0].sink_identity,
+            })
+        elif len(sinks) > 1:
+            raise ValueError("scalar output has ambiguous observation sinks")
+        if len(consumers) == 1:
+            if consumers[0].relation_kind != "fragment_operand":
+                raise ValueError("scalar output consumer relation is unsupported")
+            routes.append({
+                "closure_kind": "consumer",
+                "observation_kind": "subsequent_asm_input",
+                "observation_sink_identity":
+                    consumers[0].observation_sink_identity,
+                "consumer_fragment_id": consumers[0].consumer_fragment_id,
+                "consumer_value_node_identity": consumers[0].consumer_value_node,
+                "value_flow_edge_identity": identity(consumers[0].to_dict()),
+            })
+        elif len(consumers) > 1:
+            raise ValueError("scalar output has ambiguous fragment consumers")
+        if output.value_node_identity in boundary.discarded_output_nodes:
+            routes.append({"closure_kind": "discard",
+                           "observation_kind": "discarded"})
+        if output.value_node_identity in boundary.instrumentation_observed_nodes:
+            if not instrumentation_plan_identity:
+                raise ValueError("instrumented scalar output lacks plan identity")
+            routes.append({
+                "closure_kind": "instrumentation",
+                "observation_kind": "instrumentation",
+                "instrumentation_plan_identity": instrumentation_plan_identity,
+            })
+        if len(routes) != 1:
+            raise ValueError("scalar output does not have one observation route")
+        operand_id = operand_ids.get(output.operand_index, "")
+        if not operand_id:
+            raise ValueError("scalar output operand identity is missing")
+        bindings.append(L2OperandObservationBinding(
+            boundary.fragment_id, operand_id, output.operand_index,
+            output.declaration_identity, output.value_node_identity,
+            output.access, **routes[0]))
+    if not bindings:
+        raise ValueError("scalar observation authority has no outputs")
+    return L2OperandObservationAuthority(
+        boundary.fragment_id, boundary.boundary_identity, proof_identity,
+        dependency_graph_identity,
+        tuple(sorted(bindings, key=lambda item: item.operand_index)), True)
+
+
+def operand_observation_authority_from_dict(
+    value: Mapping[str, object], *, expected_fragment_id: str = "",
+    expected_boundary_identity: str = "",
+) -> L2OperandObservationAuthority:
+    fields = {
+        "schemaVersion", "fragmentId", "boundaryIdentity", "proofIdentity",
+        "dependencyGraphIdentity", "bindings", "complete", "authorityIdentity",
+    }
+    if set(value) != fields or not isinstance(value.get("bindings"), list):
+        raise ValueError("operand observation authority fields are invalid")
+    binding_fields = {
+        "fragmentId", "operandId", "operandIndex", "declarationIdentity",
+        "valueNodeIdentity", "access", "closureKind", "observationKind",
+        "observationSinkIdentity", "consumerFragmentId",
+        "consumerValueNodeIdentity", "valueFlowEdgeIdentity",
+        "instrumentationPlanIdentity", "complete", "bindingIdentity",
+    }
+    bindings = []
+    for raw in value["bindings"]:
+        if (not isinstance(raw, Mapping) or set(raw) != binding_fields
+                or not isinstance(raw.get("complete"), bool)):
+            raise ValueError("operand observation binding fields are invalid")
+        index = raw.get("operandIndex")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise ValueError("operand observation binding index is invalid")
+        binding = L2OperandObservationBinding(
+            str(raw.get("fragmentId", "")), str(raw.get("operandId", "")), index,
+            str(raw.get("declarationIdentity", "")),
+            str(raw.get("valueNodeIdentity", "")), str(raw.get("access", "")),
+            str(raw.get("closureKind", "")),
+            str(raw.get("observationKind", "")),
+            str(raw.get("observationSinkIdentity", "")),
+            str(raw.get("consumerFragmentId", "")),
+            str(raw.get("consumerValueNodeIdentity", "")),
+            str(raw.get("valueFlowEdgeIdentity", "")),
+            str(raw.get("instrumentationPlanIdentity", "")),
+            bool(raw.get("complete")),
+        )
+        if raw.get("bindingIdentity") != binding.binding_identity:
+            raise ValueError("operand observation binding identity is stale")
+        bindings.append(binding)
+    if not isinstance(value.get("complete"), bool):
+        raise ValueError("operand observation authority completeness is invalid")
+    authority = L2OperandObservationAuthority(
+        str(value.get("fragmentId", "")),
+        str(value.get("boundaryIdentity", "")),
+        str(value.get("proofIdentity", "")),
+        str(value.get("dependencyGraphIdentity", "")), tuple(bindings),
+        bool(value.get("complete")), str(value.get("schemaVersion", "")),
+    )
+    if value.get("authorityIdentity") != authority.authority_identity:
+        raise ValueError("operand observation authority identity is stale")
+    if expected_fragment_id and authority.fragment_id != expected_fragment_id:
+        raise ValueError("operand observation authority fragment mismatch")
+    if (expected_boundary_identity
+            and authority.boundary_identity != expected_boundary_identity):
+        raise ValueError("operand observation authority boundary mismatch")
+    return authority
 
 
 @dataclass(frozen=True)
