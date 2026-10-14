@@ -6,7 +6,8 @@ from riscv2x86_py.l2_evidence_closure import (
     L2_PROVIDER_EVIDENCE_SCHEMA, L2ProviderExecutionDisposition,
     execution_plan_for_provider, partial_provider_evidence,
     provider_evidence_fields, provider_execution_disposition,
-    provider_precondition_detail, validated_provider_evidence,
+    provider_precondition_detail, validate_provider_dimension_contract,
+    validated_provider_evidence,
 )
 
 
@@ -140,6 +141,33 @@ def test_dimensions_share_execution_but_not_observation_identity():
     assert reasons == shell_reasons == ()
     assert logical["executionIdentity"] == shell["executionIdentity"]
     assert logical["sourceObservationIdentity"] != shell["sourceObservationIdentity"]
+
+
+def test_dimension_specific_evidence_must_cover_exact_declared_set():
+    with pytest.raises(ValueError, match="does not match declared dimensions"):
+        provider_evidence_fields(
+            artifact(), provider_id="provider", harness_identity=H,
+            execution_nonce={"attempt": 1},
+            dimensions=("logical_operands", "shell_semantics"),
+            dimension_evidence={
+                "logical_operands": {
+                    "sourceEvidenceIdentity": O,
+                    "targetEvidenceIdentity": O,
+                },
+            },
+        )
+
+
+def test_executed_provider_result_dimension_contract_is_exact():
+    value = provider_evidence_fields(
+        artifact(), provider_id="provider", harness_identity=H,
+        source_observation_identity=O, target_observation_identity=O,
+        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
+    assert validate_provider_dimension_contract(
+        value, ("logical_operands",)) == ()
+    assert validate_provider_dimension_contract(
+        value, ("logical_operands", "shell_semantics")) == (
+            "l2.provider-evidence.dimension-contract-mismatch",)
 
 
 def test_execution_plan_payload_tampering_fails_closed():
