@@ -176,3 +176,155 @@ def test_parameter_index_range_has_precise_reason():
             ((7, 9),), _materializer_authority(parameter_index=1),
             trace_arity=1)
     assert caught.value.reason_code == "L2_OPERAND_PARAMETER_INDEX_OUT_OF_RANGE"
+
+
+def _matrix_boundary(
+    *, inputs=(), outputs=(), sink_kind="function_return", route="sink",
+):
+    input_bindings = tuple(
+        OperandBinding(index, f"decl:in:{index}", _sha(str(index + 1)),
+                       access, 64, True)
+        for index, access in inputs
+    )
+    output_bindings = tuple(
+        OperandBinding(index, f"decl:out:{index}", _sha(str(index + 1)),
+                       access, 64, True)
+        for index, access in outputs
+    )
+    sinks = ()
+    edges = ()
+    discarded = ()
+    instrumented = ()
+    if output_bindings and route == "sink":
+        sinks = tuple(ObservationSinkBinding(
+            _sha(str(8 - position)), item.value_node_identity,
+            sink_kind, True,
+        ) for position, item in enumerate(output_bindings))
+    elif output_bindings and route == "consumer":
+        item = output_bindings[0]
+        edges = (FragmentValueFlowEdge(
+            item.value_node_identity, _sha("7"), "fragment:matrix",
+            "fragment:consumer", "fragment_operand", _sha("8"), True),)
+    elif output_bindings and route == "discard":
+        discarded = tuple(item.value_node_identity for item in output_bindings)
+    elif output_bindings and route == "instrumentation":
+        instrumented = tuple(item.value_node_identity for item in output_bindings)
+    live = tuple(item.value_node_identity for item in output_bindings
+                 if route in {"sink", "consumer"})
+    return FragmentOperandBoundary(
+        "program", "function", "fragment:matrix", input_bindings,
+        output_bindings, tuple(item.value_node_identity
+                               for item in input_bindings), live, True,
+        value_flow_edges=edges, observation_sinks=sinks,
+        discarded_output_nodes=discarded,
+        instrumentation_observed_nodes=instrumented,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "inputs", "outputs", "parameters", "expected_access"),
+    (
+        ("input-only", ((0, "input"),), (), {0: 0}, ("input",)),
+        ("output-only", (), ((0, "output"),), {}, ("output",)),
+        ("input-output", ((0, "input"),), ((1, "output"),),
+         {0: 0}, ("input", "output")),
+        ("read-write", (), ((0, "read_write"),), {0: 0},
+         ("read_write",)),
+    ),
+)
+def test_operand_mode_matrix_closes_without_shape_guessing(
+    name, inputs, outputs, parameters, expected_access,
+):
+    del name
+    boundary = _matrix_boundary(inputs=inputs, outputs=outputs)
+    operand_ids = {index: f"operand:{index}"
+                   for index, _access in inputs + outputs}
+    authority = materialize_operand_observation_authority(
+        boundary, operand_ids=operand_ids, proof_identity=_sha("9"),
+        dependency_graph_identity=_sha("8"), parameter_indices=parameters,
+    )
+    assert tuple(item.access for item in authority.bindings) == expected_access
+    assert authority.complete
+
+
+@pytest.mark.parametrize(
+    ("sink_kind", "relation_kind"),
+    (
+        ("function_return", "direct-return"),
+        ("c_expression", "expression-return"),
+        ("memory_store", "memory-sink"),
+        ("branch_condition", "control-predicate"),
+    ),
+)
+def test_typed_output_sink_matrix_is_content_addressed(sink_kind, relation_kind):
+    boundary = _matrix_boundary(
+        outputs=((0, "output"),), sink_kind=sink_kind)
+    authority = materialize_operand_observation_authority(
+        boundary, operand_ids={0: "operand:0"}, proof_identity=_sha("9"),
+        dependency_graph_identity=_sha("8"),
+    )
+    binding = authority.bindings[0]
+    assert binding.closure_kind == "sink"
+    assert binding.observation_kind == sink_kind
+    assert binding.observation_sink_identity.startswith("sha256:")
+    assert relation_kind
+
+
+@pytest.mark.parametrize(
+    ("route", "expected"),
+    (("consumer", "consumer"), ("discard", "discard"),
+     ("instrumentation", "instrumentation")),
+)
+def test_non_return_output_closure_matrix(route, expected):
+    boundary = _matrix_boundary(outputs=((0, "output"),), route=route)
+    authority = materialize_operand_observation_authority(
+        boundary, operand_ids={0: "operand:0"}, proof_identity=_sha("9"),
+        dependency_graph_identity=_sha("8"),
+        instrumentation_plan_identity=(
+            _sha("7") if route == "instrumentation" else ""),
+    )
+    assert authority.bindings[0].closure_kind == expected
+
+
+def test_malformed_binding_is_rejected_before_observation():
+    boundary = _matrix_boundary(inputs=((0, "input"),))
+    with pytest.raises(ValueError, match="one observation source"):
+        materialize_operand_observation_authority(
+            boundary, operand_ids={0: "operand:0"},
+            proof_identity=_sha("9"), dependency_graph_identity=_sha("8"),
+        )
+
+
+def test_typed_binding_identity_mismatch_has_precise_reason():
+    authority = _materializer_authority()
+    authority["operands"][0]["valueNodeIdentity"] = _sha("7")
+    with pytest.raises(L2OperandObservationError) as caught:
+        _sample_observations(((7, 9),), authority, trace_arity=1)
+    assert caught.value.reason_code == "L2_OPERAND_OBSERVATION_BINDING_MISMATCH"
+
+
+@pytest.mark.parametrize("sink_kind", ("c_expression", "memory_store",
+                                        "branch_condition"))
+def test_non_runtime_sink_requires_registered_observer(sink_kind):
+    boundary = _matrix_boundary(
+        outputs=((0, "output"),), sink_kind=sink_kind)
+    typed = materialize_operand_observation_authority(
+        boundary, operand_ids={0: "operand:0"}, proof_identity=_sha("9"),
+        dependency_graph_identity=_sha("8"),
+    )
+    authority = {
+        "fragmentId": boundary.fragment_id,
+        "fragmentBoundaryIdentity": boundary.boundary_identity,
+        "operands": [{
+            "operandIndex": 0, "operandId": "operand:0",
+            "declarationId": "decl:out:0",
+            "valueNodeIdentity": _sha("1"), "accessMode": "output",
+            "widthBits": 64, "signedness": "unsigned",
+        }],
+        "operandObservationAuthority": typed.to_dict(),
+        "instrumentationPlan": None,
+    }
+    with pytest.raises(L2OperandObservationError) as caught:
+        _sample_observations(((9,),), authority, trace_arity=0)
+    assert caught.value.reason_code == \
+        "L2_OPERAND_OUTPUT_SINK_NOT_RUNTIME_OBSERVABLE"
