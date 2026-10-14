@@ -19,6 +19,8 @@ from .l2_internal_value import instrumentation_plan_from_dict
 from .l2_fragment_execution import (
     boundary_as_legacy, fragment_boundary_from_dict,
     fragment_dependency_graph_from_dict,
+    materialize_operand_observation_authority,
+    operand_observation_authority_from_dict,
     program_execution_authority_from_dict,
 )
 from .l2_evidence_closure import (
@@ -297,6 +299,17 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     sidecar_operands = [item.to_dict() for item in sidecar.operands]
     if len(sidecar_operands) != len(facts):
         return None, "L2_OPERAND_AUTHORITY_FACT_MISSING"
+    compiler_facts = {item["operandIndex"]: item for item in facts}
+    if len(compiler_facts) != len(facts):
+        return None, "L2_OPERAND_AUTHORITY_FACT_MISSING"
+    for item in sidecar_operands:
+        compiler = compiler_facts.get(item.get("operandIndex"))
+        if (not isinstance(compiler, Mapping)
+                or item.get("declarationId") != compiler.get("declarationId")
+                or item.get("accessMode") != compiler.get("accessMode")
+                or item.get("widthBits") != compiler.get("widthBits")
+                or item.get("signedness") != compiler.get("signedness")):
+            return None, "L2_OPERAND_AUTHORITY_BOUNDARY_MISMATCH"
     payload = {
         "schemaVersion": AUTO_L2_AUTHORITY_SCHEMA,
         "producer": "clang-ast-plus-frontend-gnu-shell-v1",
@@ -327,6 +340,35 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
                 or execution.dependency_graph_identity != graph.graph_identity
                 or execution.execution_mode != graph.execution_mode):
             return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INCOMPLETE"
+        raw_observation_authority = approval.get(
+            "l2OperandObservationAuthority")
+        if not isinstance(raw_observation_authority, Mapping):
+            return None, "L2_OPERAND_OBSERVATION_AUTHORITY_MISSING"
+        try:
+            observation_authority = operand_observation_authority_from_dict(
+                raw_observation_authority,
+                expected_fragment_id=parsed_boundary.fragment_id,
+                expected_boundary_identity=parsed_boundary.boundary_identity,
+            )
+            recomputed_observation_authority = materialize_operand_observation_authority(
+                parsed_boundary,
+                operand_ids={int(item["operandIndex"]): str(item["operandId"])
+                             for item in sidecar_operands},
+                proof_identity=str(getattr(artifact, "proof_identity", "")),
+                dependency_graph_identity=graph.graph_identity,
+                instrumentation_plan_identity=(
+                    instrumentation.plan_identity
+                    if instrumentation is not None else ""),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None, "L2_OPERAND_OBSERVATION_AUTHORITY_INCOMPLETE"
+        if (observation_authority.authority_identity
+                != recomputed_observation_authority.authority_identity
+                or observation_authority.proof_identity
+                != str(getattr(artifact, "proof_identity", ""))
+                or observation_authority.dependency_graph_identity
+                != graph.graph_identity):
+            return None, "L2_OPERAND_OBSERVATION_AUTHORITY_STALE"
         payload.update({
             "fragmentBoundaryIdentity": parsed_boundary.boundary_identity,
             "programExecutionAuthorityIdentity": execution.authority_identity,
@@ -335,6 +377,7 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "fragmentDependencyEdges": [item.to_dict() for item in graph.edges],
             "observationSinks": [item.to_dict()
                                  for item in parsed_boundary.observation_sinks],
+            "operandObservationAuthority": observation_authority.to_dict(),
             "sourceFragmentObservationIdentity": execution.observation_identity(
                 parsed_boundary.fragment_id, "logical_operands", "source"),
             "targetFragmentObservationIdentity": execution.observation_identity(
@@ -487,6 +530,28 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
     assert isinstance(facts, list)
     input_facts = [item for item in facts if item["accessMode"] == "input"]
     output_facts = [item for item in facts if item["accessMode"] in {"output", "read_write"}]
+    raw_observation_bindings: list[dict[str, object]] = []
+    if output_facts:
+        observation_authority = authority.get("operandObservationAuthority")
+        if not isinstance(observation_authority, Mapping):
+            raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_MISSING")
+        try:
+            parsed_observation_authority = operand_observation_authority_from_dict(
+                observation_authority,
+                expected_fragment_id=str(authority.get("fragmentId", "")),
+                expected_boundary_identity=str(
+                    authority.get("fragmentBoundaryIdentity", "")),
+            )
+        except ValueError as exc:
+            raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_INVALID") from exc
+        raw_observation_bindings = [item.to_dict()
+                                    for item in parsed_observation_authority.bindings]
+    observation_bindings = {
+        item.get("operandId"): item for item in raw_observation_bindings
+        if isinstance(item, Mapping) and isinstance(item.get("operandId"), str)
+    }
+    if len(observation_bindings) != len(raw_observation_bindings):
+        raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_AMBIGUOUS")
     plan = authority.get("instrumentationPlan")
     point_positions = {}
     if isinstance(plan, Mapping) and isinstance(plan.get("points"), list):
@@ -529,14 +594,26 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
         for fact in output_facts:
             parameter_index = fact["parameterIndex"]
             internal_position = point_positions.get(fact["operandIndex"])
-            node = fact.get("valueNodeIdentity")
+            binding = observation_bindings.get(fact["operandId"])
+            if (not isinstance(binding, Mapping)
+                    or binding.get("operandIndex") != fact["operandIndex"]
+                    or binding.get("declarationIdentity") != fact["declarationId"]
+                    or binding.get("access") != fact["accessMode"]
+                    or binding.get("complete") is not True):
+                raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_MISMATCH")
+            closure_kind = binding.get("closureKind")
+            observation_kind = binding.get("observationKind")
             if (internal_rows is not None and isinstance(internal_position, int)
-                    and sample_index < len(internal_rows)):
+                    and sample_index < len(internal_rows)
+                    and closure_kind == "instrumentation"):
                 after, observation_kind = internal_rows[sample_index][internal_position], "instrumentation"
-            elif node in returned:
+            elif (closure_kind == "sink"
+                  and observation_kind == "function_return"):
                 after, observation_kind = row[-1], "function_return"
-            elif node in outgoing:
+            elif closure_kind == "consumer":
                 after, observation_kind = None, "composite_dependency"
+            elif closure_kind == "discard":
+                after, observation_kind = None, "discarded"
             else:
                 raise ValueError("L2_OPERAND_OUTPUT_OBSERVATION_AUTHORITY_MISSING")
             operands.append({"operandId": fact["operandId"], "access": fact["accessMode"],
