@@ -69,7 +69,8 @@ def test_shared_program_execution_record_is_content_bound(tmp_path):
     forged = json.loads(path.read_text())
     forged["source"]["stdout"] = "forged\n"
     path.write_text(json.dumps(forged))
-    assert _load_shared_execution(path, binding) is None
+    with pytest.raises(ValueError, match="identity does not match content"):
+        _load_shared_execution(path, binding)
 
 
 def _function(*, cycle=False, same_name=False):
