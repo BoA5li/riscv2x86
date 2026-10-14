@@ -324,3 +324,9 @@ def test_inventory_registers_only_normal_fence_pattern(tmp_path, monkeypatch):
                  if item["providerId"] == "automatic-l2-fence-ordering-v1")
     assert fence["supportedPatterns"] == ["fence"]
     assert "instruction_visibility_fence" not in fence["supportedPatterns"]
+    # An operandless fence is owned exclusively by the ordering/effect route.
+    # Registering the scalar provider here would defer a known applicability
+    # error until execution and historically obscured the real fence failure.
+    assert all(item["providerId"] != "automatic-l2-operand-v2"
+               for item in providers)
+    assert fence["supportedDimensions"] == ["memory_effects", "shell_semantics"]
