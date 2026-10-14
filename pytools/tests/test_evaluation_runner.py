@@ -432,6 +432,42 @@ def test_nonzero_translation_command_allows_authenticated_admitted_candidate(tmp
     assert "evaluation.translation-command-not-verified" not in result["reasonCodes"]
 
 
+def test_nonzero_translation_command_allows_external_validation_pending_candidate(
+    tmp_path,
+):
+    request, _source, attempt = _setup(tmp_path)
+    pending = replace(
+        attempt,
+        validation_outcome=ValidationOutcome.NOT_VERIFIED,
+        publication_outcome=PublicationOutcome.WITHHELD,
+        reason_codes=("validation.external-evaluation-pending",),
+        artifact_id="",
+    )
+    save_translation_attempt_archive((pending,), request.attempt_archive)
+    report_seed = tmp_path / "report-seed.json"
+    archive_seed = tmp_path / "archive-seed.json"
+    Path(request.translated_report).replace(report_seed)
+    Path(request.attempt_archive).replace(archive_seed)
+    script = (
+        "from pathlib import Path;"
+        f"Path(r'${{TRANSLATED_REPORT}}').write_bytes(Path(r'{report_seed}').read_bytes());"
+        f"Path(r'${{ATTEMPT_ARCHIVE}}').write_bytes(Path(r'{archive_seed}').read_bytes());"
+        "raise SystemExit(1)"
+    )
+    request = replace(
+        request, translated_report="translated-report.json",
+        attempt_archive="attempts.json",
+        translation_command=(sys.executable, "-c", script),
+    )
+
+    result = run_evaluation(request, work_directory=tmp_path / "evaluation")
+
+    assert result["commands"][0]["status"] == "failed"
+    assert result["attempts"][0]["attemptArtifactId"] == pending.artifact_id
+    assert (tmp_path / "evaluation" / "candidate-staging" / "case.c").is_file()
+    assert "evaluation.translation-publication-withheld" not in result["reasonCodes"]
+
+
 def test_nonzero_translation_command_without_archive_is_process_failure(tmp_path):
     request, _source, _attempt = _setup(tmp_path)
     Path(request.translated_report).unlink()
