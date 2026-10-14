@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 from riscv2x86_py.automatic_l2_effect import (
     _branch_events, _build_failure_detail, _memory_events,
-    _object_relative_memory_wrapper, _scalar_events, _shell_relation,
+    _effect_dimension_evidence, _object_relative_memory_wrapper,
+    _scalar_events, _shell_relation,
 )
 from riscv2x86_py.effect_relation import ApprovedEffectRelation
 from riscv2x86_py.l2_authority import (
@@ -91,6 +92,28 @@ def test_effect_build_failure_preserves_side_and_compiler_diagnostics():
     assert detail["source"] == {
         "returnCode": 1, "stderr": "source-error", "stdout": "source-out"}
     assert detail["target"]["returnCode"] == 0
+
+
+def test_memory_execution_projects_distinct_required_dimension_evidence():
+    observation = {
+        "fragmentId": "fragment", "mode": "memory-object-functions",
+        "approvedRelationAuthority": {
+            "operands": [{"operandId": "operand:address"}],
+            "memoryObjects": [{"objectId": "object:parameter"}],
+            "relations": [{"relationId": "relation:memory"}],
+            "sourceShell": {"memoryClobber": True},
+            "targetShell": {"memoryClobber": True},
+        },
+        "source": {"exitCode": 0, "stderr": "", "events": [{"sample": 0}]},
+        "target": {"exitCode": 0, "stderr": "", "events": [{"sample": 0}]},
+    }
+    dimensions = ("logical_operands", "memory_effects", "shell_semantics")
+    evidence = _effect_dimension_evidence(observation, dimensions)
+    assert set(evidence) == set(dimensions)
+    assert len({value["sourceEvidenceIdentity"]
+                for value in evidence.values()}) == len(dimensions)
+    assert len({value["targetEvidenceIdentity"]
+                for value in evidence.values()}) == len(dimensions)
 
 
 def test_branch_trace_records_continuation_class():
