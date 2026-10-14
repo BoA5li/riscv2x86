@@ -16,7 +16,7 @@ from riscv2x86_py.l2_memory_object import (
     AuthorityMaterializationDecision, MemoryAccessAuthority,
 )
 from riscv2x86_py.l2_evidence_closure import (
-    L2ProviderExecutionDisposition, provider_evidence_fields,
+    L2DimensionEvidence, L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
 from riscv2x86_py.translation_validation import ValidationLayerResult, ValidationLevel
@@ -171,10 +171,11 @@ def _factory(_config):
             kwargs["translation_artifact"],
             provider_id=kwargs["l2_provider_id"],
             harness_identity="sha256:" + "d" * 64,
-            source_observation_identity=identity,
-            target_observation_identity=identity,
             execution_nonce={"test": "registered-provider"},
-            dimensions=("logical_operands", "shell_semantics"),
+            dimensions=(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+            dimension_evidence={name: L2DimensionEvidence(
+                identity, identity, ("property:" + name.value,))
+                for name in (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS)},
         )
         return ValidationLayerResult(
             kwargs["level"], ValidationStatus.VERIFIED,
@@ -188,10 +189,10 @@ def _logical_only_factory(_config):
         detail = provider_evidence_fields(
             kwargs["translation_artifact"], provider_id=kwargs["l2_provider_id"],
             harness_identity="sha256:" + "d" * 64,
-            source_observation_identity=identity,
-            target_observation_identity=identity,
             execution_nonce={"test": "logical-only"},
-            dimensions=("logical_operands",),
+            dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+            dimension_evidence={L2Dimension.LOGICAL_OPERANDS: L2DimensionEvidence(
+                identity, identity, ("operand_value",))},
         )
         return ValidationLayerResult(
             kwargs["level"], ValidationStatus.VERIFIED,
@@ -247,10 +248,12 @@ def _failed_factory(*, complete):
                     kwargs["translation_artifact"],
                     provider_id=kwargs["l2_provider_id"],
                     harness_identity="sha256:" + "d" * 64,
-                    source_observation_identity="sha256:" + "c" * 64,
-                    target_observation_identity="sha256:" + "e" * 64,
                     execution_nonce={"test": "mismatch"},
-                    dimensions=("logical_operands", "shell_semantics"),
+                    dimensions=(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+                    dimension_evidence={name: L2DimensionEvidence(
+                        "sha256:" + "c" * 64, "sha256:" + "e" * 64,
+                        ("property:" + name.value,))
+                        for name in (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS)},
                     execution_disposition=
                         L2ProviderExecutionDisposition.EXECUTED_FAILED))
             return ValidationLayerResult(
