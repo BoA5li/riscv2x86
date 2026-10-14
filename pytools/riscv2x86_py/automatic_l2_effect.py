@@ -310,6 +310,48 @@ def _object_relative_memory_events(
     return result if result else None
 
 
+def _effect_dimension_evidence(
+    observation: Mapping[str, object], dimensions: tuple[str, ...],
+) -> dict[str, dict[str, str]]:
+    """Project one execution into typed, dimension-specific evidence.
+
+    The projections deliberately retain the executed event stream while
+    binding it to the proof-owned authority relevant to the dimension.  This
+    prevents a memory trace from being relabelled as an operand or shell trace
+    merely by wrapping the same digest with a different dimension name.
+    """
+    authority = observation.get("approvedRelationAuthority")
+    authority = authority if isinstance(authority, Mapping) else {}
+    projection_keys = {
+        "logical_operands": ("operands", "memoryObjects"),
+        "memory_effects": ("memoryObjects", "ordering", "relations"),
+        "control_flow": ("controlFlow", "operands", "relations"),
+        "shell_semantics": ("shell", "sourceShell", "targetShell"),
+    }
+    result: dict[str, dict[str, str]] = {}
+    for dimension in dimensions:
+        selected_authority = {
+            key: authority[key] for key in projection_keys.get(dimension, ("relations",))
+            if key in authority
+        }
+        per_side = {}
+        for side in ("source", "target"):
+            side_observation = observation.get(side)
+            if not isinstance(side_observation, Mapping):
+                raise ValueError("effect dimension observation is malformed")
+            per_side[side + "EvidenceIdentity"] = _identity({
+                "schemaVersion": "riscv2x86.l2-effect-dimension-evidence.v1",
+                "fragmentId": str(observation.get("fragmentId") or ""),
+                "mode": str(observation.get("mode") or ""),
+                "dimension": dimension,
+                "side": side,
+                "authority": selected_authority,
+                "executionObservation": side_observation,
+            })
+        result[dimension] = per_side
+    return result
+
+
 def _object_relative_memory_wrapper(
     function: Mapping[str, object], authority: Mapping[str, object], facts: object,
 ) -> str:
@@ -810,22 +852,23 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 status=ValidationStatus.VERIFIED; reason=""
             observation["reasonCode"] = reason
             evidence = _identity(observation)
-            source_observation_identity = _identity(observation["source"])
-            target_observation_identity = _identity(observation["target"])
+            dimensions = {
+                "control-flow-functions": ("control_flow", "shell_semantics"),
+                "memory-object-functions": (
+                    "logical_operands", "memory_effects", "shell_semantics"),
+                "fence-functions": ("memory_effects", "shell_semantics"),
+            }.get(mode, ("shell_semantics",))
+            dimension_evidence = _effect_dimension_evidence(
+                observation, dimensions)
             replay.mkdir(parents=True,exist_ok=True)
             (replay/"effect-harness.c").write_text(wrapper,encoding="utf-8")
             (replay/"effect-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
             closure = provider_evidence_fields(
                 artifact, provider_id=str(kwargs.get("l2_provider_id", "")),
                 harness_identity=str(observation["harnessDigest"]),
-                source_observation_identity=source_observation_identity,
-                target_observation_identity=target_observation_identity,
                 execution_nonce={"attemptId": observation["attemptId"], "mode": mode},
-                dimensions={
-                    "control-flow-functions": ("control_flow", "shell_semantics"),
-                    "memory-object-functions": ("memory_effects", "shell_semantics"),
-                    "fence-functions": ("memory_effects", "shell_semantics"),
-                }.get(mode, ("shell_semantics",)),
+                dimensions=dimensions,
+                dimension_evidence=dimension_evidence,
                 execution_disposition={
                     ValidationStatus.VERIFIED:
                         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
