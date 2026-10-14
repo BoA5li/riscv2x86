@@ -5,9 +5,11 @@ import pytest
 from riscv2x86_py.l2_dimensions import L2Dimension
 from riscv2x86_py.l2_evidence_closure import (
     L2_DIMENSION_EVIDENCE_SCHEMA, L2_PROVIDER_EVIDENCE_SCHEMA,
-    L2DimensionEvidence, L2ProviderExecutionDisposition,
+    L2DimensionEvidence, L2EvidenceProductionDisposition,
+    L2ProviderExecutionDisposition,
     execution_plan_for_provider, partial_provider_evidence,
-    provider_evidence_fields, provider_execution_disposition,
+    provider_evidence_fields, provider_evidence_production_disposition,
+    provider_execution_disposition,
     provider_precondition_detail, validate_provider_dimension_contract,
     validated_provider_evidence,
 )
@@ -115,13 +117,19 @@ def test_precondition_detail_has_typed_non_execution_disposition():
     disposition, reasons = provider_execution_disposition(detail, "inconclusive")
     assert disposition is L2ProviderExecutionDisposition.PRECONDITION_REJECTED
     assert reasons == ()
-    assert set(detail) == {"executionDisposition", "reasonCode"}
+    assert set(detail) == {
+        "executionDisposition", "evidenceProductionDisposition", "reasonCode"}
+    production, production_reasons = provider_evidence_production_disposition(
+        detail, disposition)
+    assert production is L2EvidenceProductionDisposition.NOT_PRODUCED
+    assert production_reasons == ()
 
 
 def test_executed_inconclusive_retains_partial_evidence_only():
     detail = {
         "evidenceSchemaVersion": L2_PROVIDER_EVIDENCE_SCHEMA,
         "executionDisposition": "executed_inconclusive",
+        "evidenceProductionDisposition": "partial",
         "authorityIdentity": H,
     }
     evidence, reasons = partial_provider_evidence(
@@ -233,3 +241,33 @@ def test_disposition_cannot_claim_verified_for_failed_result():
     disposition, reasons = provider_execution_disposition(detail, "failed")
     assert disposition is L2ProviderExecutionDisposition.EXECUTED_VERIFIED
     assert reasons == ("l2.provider-execution-disposition.status-mismatch",)
+
+
+def test_not_produced_evidence_is_not_schema_validated():
+    detail = {
+        "executionDisposition": "executed_inconclusive",
+        "evidenceProductionDisposition": "not_produced",
+        "reasonCode": "L2_OPERAND_OBSERVATION_MATERIALIZATION_FAILED",
+    }
+    execution, execution_reasons = provider_execution_disposition(
+        detail, "inconclusive")
+    production, production_reasons = provider_evidence_production_disposition(
+        detail, execution)
+    assert execution_reasons == production_reasons == ()
+    assert production is L2EvidenceProductionDisposition.NOT_PRODUCED
+
+
+@pytest.mark.parametrize("raw", ["partial", "complete"])
+def test_produced_evidence_enters_schema_validation(raw):
+    detail = {
+        "executionDisposition": "executed_inconclusive",
+        "evidenceProductionDisposition": raw,
+    }
+    execution, _ = provider_execution_disposition(detail, "inconclusive")
+    production, reasons = provider_evidence_production_disposition(
+        detail, execution)
+    assert production.value == raw and reasons == ()
+    _, closure_reasons = partial_provider_evidence(
+        detail, artifact(), dimension="logical_operands",
+        provider_id="provider")
+    assert "l2.provider-evidence.schema-missing-or-unsupported" in closure_reasons
