@@ -11,6 +11,7 @@ from riscv2x86_py.automatic_l2_operand import (
 )
 from riscv2x86_py.l2_fragment_execution import (
     fragment_boundary_from_dict, materialize_fragment_execution_authority,
+    operand_observation_authority_from_dict,
     program_execution_authority_from_dict,
 )
 from tests.l2_profile_fixtures import profile_dict
@@ -234,6 +235,13 @@ def test_two_fragments_get_independent_boundaries_and_shared_execution(tmp_path:
         assert execution.execution_mode == "composite"
         assert approval["l2AuthoritySidecar"]["authorityIdentity"]
         assert approval["l2AuthoritySidecar"]["approvedEffectRelations"]
+        observation_authority = operand_observation_authority_from_dict(
+            approval["l2OperandObservationAuthority"],
+            expected_fragment_id=boundary.fragment_id,
+            expected_boundary_identity=boundary.boundary_identity,
+        )
+        assert observation_authority.complete
+        assert len(observation_authority.bindings) == 1
         assert approval["shellFactsIdentity"]
         executions.add(execution.execution_identity)
         observations.add(execution.observation_identity(
