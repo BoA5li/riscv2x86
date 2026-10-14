@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from enum import Enum
 from pathlib import Path
 import re
 import subprocess
@@ -34,10 +35,69 @@ from .l2_scalar_authority import (
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
 AUTO_L2_AUTHORITY_SCHEMA = "riscv2x86.auto-logical-operand-authority.v1"
 AUTO_L2_OBSERVATION_SCHEMA = "riscv2x86.auto-logical-operand-observation.v1"
+AUTO_L2_FAILURE_SCHEMA = "riscv2x86.auto-l2-operand-failure.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _VALUES = (0, 1, 0xFFFFFFFFFFFFFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF,
            0x5A17D3E4C29B806F, 0xC4CEB9FE1A85EC53)
+
+
+class L2OperandFailureStage(Enum):
+    INPUT_ARTIFACT = "input_artifact"
+    REPORT_LOAD = "report_load"
+    AUTHORITY_JOIN = "authority_join"
+    WRAPPER_MATERIALIZATION = "wrapper_materialization"
+    INSTRUMENTATION = "instrumentation"
+    RUNTIME_CONTRACT = "runtime_contract"
+    SHARED_EXECUTION_LOAD = "shared_execution_load"
+    HARNESS_BUILD = "harness_build"
+    EXECUTION = "execution"
+    TRACE_PARSE = "trace_parse"
+    OBSERVATION_MATERIALIZATION = "observation_materialization"
+    EVIDENCE_CLOSURE = "evidence_closure"
+
+
+_FAILURE_REASON_BY_STAGE = {
+    L2OperandFailureStage.INPUT_ARTIFACT: "L2_OPERAND_INPUT_ARTIFACT_INVALID",
+    L2OperandFailureStage.REPORT_LOAD: "L2_OPERAND_REPORT_INVALID",
+    L2OperandFailureStage.AUTHORITY_JOIN: "L2_OPERAND_AUTHORITY_JOIN_INVALID",
+    L2OperandFailureStage.WRAPPER_MATERIALIZATION:
+        "L2_OPERAND_WRAPPER_MATERIALIZATION_FAILED",
+    L2OperandFailureStage.INSTRUMENTATION:
+        "L2_OPERAND_INSTRUMENTATION_MATERIALIZATION_FAILED",
+    L2OperandFailureStage.RUNTIME_CONTRACT:
+        "L2_OPERAND_RUNTIME_CONTRACT_RESOLUTION_FAILED",
+    L2OperandFailureStage.SHARED_EXECUTION_LOAD:
+        "L2_OPERAND_SHARED_EXECUTION_RECORD_INVALID",
+    L2OperandFailureStage.HARNESS_BUILD: "L2_OPERAND_HARNESS_BUILD_UNAVAILABLE",
+    L2OperandFailureStage.EXECUTION: "L2_OPERAND_EXECUTION_LAUNCH_FAILED",
+    L2OperandFailureStage.TRACE_PARSE: "L2_OPERAND_TRACE_PARSE_FAILED",
+    L2OperandFailureStage.OBSERVATION_MATERIALIZATION:
+        "L2_OPERAND_OBSERVATION_MATERIALIZATION_FAILED",
+    L2OperandFailureStage.EVIDENCE_CLOSURE:
+        "L2_OPERAND_EVIDENCE_CLOSURE_FAILED",
+}
+
+
+def _failure_result(
+    stage: L2OperandFailureStage, exc: BaseException, *, artifact_path: Path,
+    disposition: L2ProviderExecutionDisposition,
+    reason_code: str = "",
+) -> ValidationLayerResult:
+    """Return a fail-closed, stage-addressable provider failure."""
+    detail = {
+        "schemaVersion": AUTO_L2_FAILURE_SCHEMA,
+        "executionDisposition": disposition.value,
+        "reasonCode": reason_code or _FAILURE_REASON_BY_STAGE[stage],
+        "failureStage": stage.value,
+        "exceptionType": type(exc).__name__,
+        "detail": str(exc),
+        "artifactPath": str(artifact_path),
+    }
+    return ValidationLayerResult(
+        ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+        _identity(detail), json.dumps(detail, sort_keys=True),
+    )
 
 
 def _digest_bytes(value: bytes) -> str:
@@ -288,12 +348,23 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
 
 
 def _wrapper(function: Mapping[str, object]) -> str:
-    name, ret = str(function["name"]), str(function["returnType"])
+    name = str(function["name"])
+    ret = " ".join(str(function["returnType"]).split())
     types = function["parameterTypes"]
-    if not _IDENT.fullmatch(name) or not isinstance(types, list) or not types or len(types) > 4:
+    arity = function.get("arity")
+    if (not _IDENT.fullmatch(name) or not isinstance(types, list)
+            or isinstance(arity, bool) or not isinstance(arity, int)
+            or arity != len(types) or arity > 4):
         raise ValueError("automatic L2 scalar function shape is unsupported")
-    declarations = ", ".join(str(item) for item in types)
-    args = ",".join(f"({types[i]})v[i{i}]" for i in range(len(types)))
+    normalized_types = [" ".join(str(item).split()) for item in types]
+    if (_width(ret) <= 0 or _signedness(ret) == "not_applicable"
+            or any(token in ret for token in ("*", "[", "]", "(", ")"))
+            or any(_width(item) <= 0 or _signedness(item) == "not_applicable"
+                   or any(token in item for token in ("*", "[", "]", "(", ")"))
+                   for item in normalized_types)):
+        raise ValueError("automatic L2 scalar function type is unsupported")
+    declarations = ", ".join(normalized_types) if normalized_types else "void"
+    args = ",".join(f"({normalized_types[i]})v[i{i}]" for i in range(len(types)))
     loops = "".join(f"for(unsigned i{i}=0;i{i}<8;++i{i}){{" for i in range(len(types)))
     print_args = "".join(f'printf(";%016llx",(unsigned long long)v[i{i}]);' for i in range(len(types)))
     return "\n".join([
@@ -481,16 +552,13 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
 def _load_shared_execution(path: Path, binding: Mapping[str, object]) -> dict[str, object] | None:
     if not path.is_file():
         return None
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
     if (not isinstance(value, dict)
             or set(value) != {"schemaVersion", "binding", "source", "target",
                               "evidenceIdentity"}
             or value.get("schemaVersion") != "riscv2x86.l2-shared-program-execution.v1"
-            or value.get("binding") != dict(binding)):
-        return None
+            or not isinstance(value.get("binding"), dict)):
+        raise ValueError("shared program execution schema is invalid")
     for side in ("source", "target"):
         run = value.get(side)
         if (not isinstance(run, dict)
@@ -499,10 +567,14 @@ def _load_shared_execution(path: Path, binding: Mapping[str, object]) -> dict[st
                 or not isinstance(run.get("returnCode"), int)
                 or not isinstance(run.get("stdout"), str)
                 or not isinstance(run.get("stderr"), str)):
-            return None
+            raise ValueError(f"shared program execution {side} result is invalid")
     claimed = value.get("evidenceIdentity")
     payload = {key: item for key, item in value.items() if key != "evidenceIdentity"}
-    return value if claimed == _identity(payload) else None
+    if claimed != _identity(payload):
+        raise ValueError("shared program execution identity does not match content")
+    if value.get("binding") != dict(binding):
+        return None
+    return value
 
 
 def _save_shared_execution(path: Path, binding: Mapping[str, object], *,
@@ -559,21 +631,29 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
         if getattr(artifact, "preservation_mode", None) is not PreservationMode.ARCHITECTURE_EQUIVALENT:
             return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                          detail=json.dumps(provider_precondition_detail("L2_OPERAND_FUNCTIONAL_FALLBACK_NOT_ARCHITECTURAL")))
+        stage = L2OperandFailureStage.INPUT_ARTIFACT
+        artifact_path = Path(str(config["sourcePath"]))
+        executed = False
         try:
             source, target = Path(str(config["sourcePath"])), Path(str(config["targetPath"]))
             if _digest_bytes(source.read_bytes()) != config["sourceDigest"] or _digest_bytes(target.read_bytes()) != config["targetDigest"]:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="automatic L2-A source/target digest mismatch")
-            report = json.loads(Path(str(config["translatedReport"])).read_text(encoding="utf-8"))
+            stage = L2OperandFailureStage.REPORT_LOAD
+            artifact_path = Path(str(config["translatedReport"]))
+            report = json.loads(artifact_path.read_text(encoding="utf-8"))
             finding = _finding(report, str(getattr(artifact, "fragment_id", ""))) if isinstance(report, Mapping) else None
             if finding is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail("L2_OPERAND_FINDING_MISSING")))
+            stage = L2OperandFailureStage.AUTHORITY_JOIN
             authority, reason = _authority(finding, functions, artifact)
             if authority is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail(reason)))
             function_name = authority["function"]
             function = next(item for item in functions if isinstance(item, Mapping) and item.get("name") == function_name)
+            stage = L2OperandFailureStage.WRAPPER_MATERIALIZATION
             wrapper = _wrapper(function)
             work, replay = Path(str(config["workDirectory"])), Path(str(config["replayDirectory"]))
+            artifact_path = work / "operand-harness.c"
             work.mkdir(parents=True, exist_ok=True); replay.mkdir(parents=True, exist_ok=True)
             harness = work / "operand-harness.c"; harness.write_text(wrapper, encoding="utf-8")
             (replay / "operand-harness.c").write_text(wrapper, encoding="utf-8")
@@ -581,6 +661,8 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             plan = authority.get("instrumentationPlan")
             build_source, build_target = source, target
             if isinstance(plan, Mapping):
+                stage = L2OperandFailureStage.INSTRUMENTATION
+                artifact_path = replay / "instrumentation-plan.json"
                 build_source, build_target = _instrumented_pair(
                     source, target, report, finding, plan, work,
                 )
@@ -588,9 +670,16 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
                 (replay / "source-instrumented.c").write_bytes(build_source.read_bytes())
                 (replay / "target-instrumented.c").write_bytes(build_target.read_bytes())
+            stage = L2OperandFailureStage.RUNTIME_CONTRACT
+            artifact_path = replay / "operand-authority.json"
             dependencies = resolve_runtime_contracts((getattr(artifact, "runtime_contract_id"),))
+            provider_id = str(kwargs.get("l2_provider_id", ""))
+            if not provider_id:
+                stage = L2OperandFailureStage.EVIDENCE_CLOSURE
+                raise ValueError("resolved L2 operand provider identity is empty")
             authorized_execution = str(authority.get("programExecutionIdentity", ""))
             shared_binding = {
+                "providerId": provider_id,
                 "authorizedExecutionIdentity": authorized_execution,
                 "sourceDigest": config["sourceDigest"], "targetDigest": config["targetDigest"],
                 "harnessDigest": _digest_bytes(wrapper.encode()),
@@ -599,17 +688,24 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             }
             shared_path = work.parent / ".program-executions" / (
                 _identity(shared_binding).removeprefix("sha256:") + ".json")
+            stage = L2OperandFailureStage.SHARED_EXECUTION_LOAD
+            artifact_path = shared_path
             shared = (_load_shared_execution(shared_path, shared_binding)
                       if authorized_execution and not isinstance(plan, Mapping) else None)
             if shared is None:
                 source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
+                stage = L2OperandFailureStage.HARNESS_BUILD
+                artifact_path = harness
                 left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
                 right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
                 if left_build.returncode or right_build.returncode:
-                    detail={"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","source":left_build.stderr,"target":right_build.stderr}
+                    detail={"schemaVersion":AUTO_L2_FAILURE_SCHEMA,"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","failureStage":stage.value,"exceptionType":"CompilerExit","detail":"source or target harness compilation failed","artifactPath":str(harness),"source":left_build.stderr,"target":right_build.stderr}
                     return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
+                stage = L2OperandFailureStage.EXECUTION
+                artifact_path = source_exe
                 left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
                 right=_run((str(target_exe),),work,timeout)
+                executed = True
                 if authorized_execution and not isinstance(plan, Mapping):
                     _save_shared_execution(shared_path, shared_binding, source=left, target=right)
                 shared_reused = False
@@ -624,11 +720,15 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     (), int(target_run["returnCode"]), str(target_run["stdout"]),
                     str(target_run["stderr"]))
                 shared_reused = True
+                executed = True
+            stage = L2OperandFailureStage.TRACE_PARSE
+            artifact_path = replay / "operand-observation.json"
             arity=int(function["arity"]); source_rows=_traces(left.stdout,str(function_name),arity); target_rows=_traces(right.stdout,str(function_name),arity)
             point_count = len(plan.get("points", [])) if isinstance(plan, Mapping) else 0
             source_internal = _internal_traces(left.stdout, point_count) if point_count else ()
             target_internal = _internal_traces(right.stdout, point_count) if point_count else ()
-            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":str(config["workDirectory"]).rsplit("/",1)[-1],"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,authority,source_internal or None),"targetSamples":_sample_observations(target_rows,authority,target_internal or None)}
+            stage = L2OperandFailureStage.OBSERVATION_MATERIALIZATION
+            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":Path(str(config["workDirectory"])).name,"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,authority,source_internal or None),"targetSamples":_sample_observations(target_rows,authority,target_internal or None)}
             if (source_rows is None or target_rows is None
                     or (point_count and (source_internal is None or target_internal is None
                         or len(source_internal) != len(source_rows)
@@ -657,8 +757,9 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 "logical_operands", "source", observation["sourceTraceDigest"])
             target_observation_identity = observation_identity(
                 "logical_operands", "target", observation["targetTraceDigest"])
+            stage = L2OperandFailureStage.EVIDENCE_CLOSURE
             closure = provider_evidence_fields(
-                artifact, provider_id=str(kwargs.get("l2_provider_id", "")),
+                artifact, provider_id=provider_id,
                 harness_identity=str(observation["harnessDigest"]),
                 source_observation_identity=source_observation_identity,
                 target_observation_identity=target_observation_identity,
@@ -678,7 +779,17 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"sharedProgramExecutionReused":shared_reused,**closure,"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
-            return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))
-        except (OSError,ValueError,KeyError,json.JSONDecodeError) as exc:
-            return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
+            return _failure_result(
+                stage, exc, artifact_path=artifact_path,
+                disposition=(L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE
+                             if executed else L2ProviderExecutionDisposition.NOT_EXECUTED),
+                reason_code="L2_OPERAND_RUNNER_TIMEOUT",
+            )
+        except (OSError, ValueError, KeyError, TypeError, StopIteration,
+                json.JSONDecodeError) as exc:
+            return _failure_result(
+                stage, exc, artifact_path=artifact_path,
+                disposition=(L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE
+                             if executed else L2ProviderExecutionDisposition.NOT_EXECUTED),
+            )
     return validate
