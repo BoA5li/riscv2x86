@@ -24,7 +24,8 @@ from .l2_fragment_execution import (
     program_execution_authority_from_dict,
 )
 from .l2_evidence_closure import (
-    L2DimensionEvidence, L2ProviderExecutionDisposition, provider_evidence_fields,
+    L2DimensionEvidence, L2EvidenceProductionDisposition,
+    L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
 from .l2_dimensions import L2Dimension
@@ -99,6 +100,8 @@ def _failure_result(
     detail = {
         "schemaVersion": AUTO_L2_FAILURE_SCHEMA,
         "executionDisposition": disposition.value,
+        "evidenceProductionDisposition":
+            L2EvidenceProductionDisposition.NOT_PRODUCED.value,
         "reasonCode": reason_code or _FAILURE_REASON_BY_STAGE[stage],
         "failureStage": stage.value,
         "exceptionType": type(exc).__name__,
@@ -826,7 +829,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
                 right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
                 if left_build.returncode or right_build.returncode:
-                    detail={"schemaVersion":AUTO_L2_FAILURE_SCHEMA,"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","failureStage":stage.value,"exceptionType":"CompilerExit","detail":"source or target harness compilation failed","artifactPath":str(harness),"source":left_build.stderr,"target":right_build.stderr}
+                    detail={"schemaVersion":AUTO_L2_FAILURE_SCHEMA,"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","failureStage":stage.value,"exceptionType":"CompilerExit","detail":"source or target harness compilation failed","artifactPath":str(harness),"source":left_build.stderr,"target":right_build.stderr}
                     return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
                 stage = L2OperandFailureStage.EXECUTION
                 artifact_path = source_exe
