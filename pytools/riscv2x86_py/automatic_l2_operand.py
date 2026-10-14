@@ -22,9 +22,10 @@ from .l2_fragment_execution import (
     program_execution_authority_from_dict,
 )
 from .l2_evidence_closure import (
-    L2ProviderExecutionDisposition, provider_evidence_fields,
+    L2DimensionEvidence, L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
+from .l2_dimensions import L2Dimension
 from .l2_scalar_authority import (
     assess_scalar_authority_materializability,
     scalar_authority_decision_matches_assessment,
@@ -742,31 +743,19 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 status=ValidationStatus.VERIFIED; observation["reasonCode"]=""
             evidence=_identity(observation)
             (replay / "operand-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-            fragment_id = str(observation["fragmentId"])
-            def observation_identity(dimension: str, side: str, fallback: object) -> str:
-                if not authorized_execution:
-                    return str(fallback)
-                return _identity({
-                    "schemaVersion": "riscv2x86.l2-fragment-observation-evidence.v1",
-                    "authorizedExecutionIdentity": authorized_execution,
-                    "fragmentId": fragment_id,
-                    "dimension": dimension,
-                    "side": side,
-                })
-            source_observation_identity = observation_identity(
-                "logical_operands", "source", observation["sourceTraceDigest"])
-            target_observation_identity = observation_identity(
-                "logical_operands", "target", observation["targetTraceDigest"])
             stage = L2OperandFailureStage.EVIDENCE_CLOSURE
             closure = provider_evidence_fields(
                 artifact, provider_id=provider_id,
                 harness_identity=str(observation["harnessDigest"]),
-                source_observation_identity=source_observation_identity,
-                target_observation_identity=target_observation_identity,
                 execution_nonce={"authorizedExecutionIdentity": authorized_execution,
                                  "seed": seed, "inputDomain": observation["inputDomain"],
                                  "sharedExecutionBinding": _identity(shared_binding)},
-                dimensions=("logical_operands",),
+                dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+                dimension_evidence={L2Dimension.LOGICAL_OPERANDS: L2DimensionEvidence(
+                    str(observation["sourceTraceDigest"]),
+                    str(observation["targetTraceDigest"]),
+                    ("operand_binding", "value_bit_pattern", "width", "signedness"),
+                )},
                 authorized_execution_identity=authorized_execution,
                 execution_disposition={
                     ValidationStatus.VERIFIED:
