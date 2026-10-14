@@ -84,12 +84,23 @@ def test_skip_verify_attempt_is_explicitly_staged_for_external_validation():
     finding.validationOutcome = ValidationOutcome.NOT_VERIFIED.value
     finding.publicationOutcome = PublicationOutcome.WITHHELD.value
     finding.translationAttemptArtifact["reasonCodes"] = [
-        "validation.explicitly-disabled"]
+        "validation.external-evaluation-pending"]
     attempt = terminal_attempt_from_finding(finding, 0)
     assert attempt.staging_disposition is \
         AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
     assert attempt.to_dict()["stagingDisposition"] == \
         "external_validation_pending"
+
+
+def test_legacy_explicitly_disabled_reason_is_compatibility_only():
+    finding = _finding(TranslationOutcome.EMITTED)
+    finding.validationOutcome = ValidationOutcome.NOT_VERIFIED.value
+    finding.publicationOutcome = PublicationOutcome.WITHHELD.value
+    finding.translationAttemptArtifact["reasonCodes"] = [
+        "validation.explicitly-disabled"]
+    attempt = terminal_attempt_from_finding(finding, 0)
+    assert attempt.staging_disposition is \
+        AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
 
 
 def test_failed_validation_is_not_confused_with_external_staging():
