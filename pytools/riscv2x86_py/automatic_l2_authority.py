@@ -36,16 +36,21 @@ from .l2_fence_ordering import (
 )
 from .l2_internal_value import (
     bind_instrumentation_plan,
+    instrumentation_plan_from_dict,
     internal_value_proof_facts_from_dict,
 )
 from .l2_fragment_execution import (
-    boundary_as_legacy, materialize_fragment_execution_authority,
+    boundary_as_legacy, fragment_boundary_from_dict,
+    fragment_dependency_graph_from_dict,
+    materialize_fragment_execution_authority,
+    materialize_operand_observation_authority,
 )
 from .l2_semantic_profile import L2PatternKind, l2_fragment_semantic_profile_from_dict
 from .l2_scalar_authority import assess_scalar_authority_materializability
 from .l2_effect_proof import effect_proof_facts_from_dict
 from .l2_materialization import (
-    assess_fragment_l2_materializability, required_dimensions_for_finding,
+    FragmentL2MaterializationDecision, assess_fragment_l2_materializability,
+    required_dimensions_for_finding,
 )
 
 
@@ -807,6 +812,55 @@ def materialize_automatic_l2_authority(
             approval["proofIdentity"] = _identity(proof_payload)
         approval["shellFactsIdentity"] = sidecar.shell_fact_identity
         approval["l2AuthoritySidecar"] = sidecar.to_dict()
+        fragment_outputs = (raw_fragment.get("outputs")
+                            if isinstance(raw_fragment, Mapping) else None)
+        if (is_scalar and isinstance(fragment_outputs, list) and fragment_outputs
+                and isinstance(approval.get("l2FragmentOperandBoundary"), Mapping)):
+            try:
+                fragment_id = str(raw_fragment.get("id") or raw_fragment.get(
+                    "fragmentId") or "") if isinstance(raw_fragment, Mapping) else ""
+                boundary = fragment_boundary_from_dict(
+                    approval["l2FragmentOperandBoundary"],
+                    expected_fragment_id=fragment_id)
+                raw_graph = approval.get("l2FragmentDependencyGraph")
+                if not isinstance(raw_graph, Mapping):
+                    raise ValueError("fragment dependency graph is missing")
+                graph = fragment_dependency_graph_from_dict(raw_graph)
+                raw_plan = approval.get("l2InstrumentationPlan")
+                plan_identity = ""
+                if raw_plan is not None:
+                    if not isinstance(raw_plan, Mapping):
+                        raise ValueError("instrumentation plan is invalid")
+                    plan = instrumentation_plan_from_dict(raw_plan)
+                    if plan.fragment_id != fragment_id or not plan.complete:
+                        raise ValueError("instrumentation plan is incomplete")
+                    plan_identity = plan.plan_identity
+                observation_authority = materialize_operand_observation_authority(
+                    boundary,
+                    operand_ids={item.operand_index: item.operand_id
+                                 for item in sidecar.operands},
+                    proof_identity=str(approval["proofIdentity"]),
+                    dependency_graph_identity=graph.graph_identity,
+                    instrumentation_plan_identity=plan_identity,
+                )
+                approval["l2OperandObservationAuthority"] = \
+                    observation_authority.to_dict()
+            except ValueError:
+                approval.pop("l2OperandObservationAuthority", None)
+                approval["l2AuthorityMaterializationReasonCode"] = \
+                    "L2_OPERAND_OBSERVATION_AUTHORITY_INCOMPLETE"
+                if scalar_decision is not None:
+                    scalar_decision = scalar_decision.with_reason(
+                        "L2_OPERAND_OBSERVATION_AUTHORITY_INCOMPLETE")
+                    approval["l2ScalarAuthorityDecision"] = \
+                        scalar_decision.to_dict()
+                dimensions = required_dimensions_for_finding(finding)
+                approval["l2MaterializationDecision"] = \
+                    FragmentL2MaterializationDecision(
+                        fragment_id, dimensions, False, True, True, False,
+                        ("L2_OPERAND_OBSERVATION_AUTHORITY_INCOMPLETE",),
+                        sidecar.authority_identity,
+                    ).to_dict()
         if is_memory:
             raw_fragment = finding.get("fragment")
             matches = [item for item in functions
