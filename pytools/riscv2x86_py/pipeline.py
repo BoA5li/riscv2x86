@@ -2069,7 +2069,9 @@ def run(
 
         # Phase 8: verify
         #
-        # verify_enabled=False 仅用于集成链路测试、调试或分阶段部署。
+        # verify_enabled=False means that this invocation is the translation
+        # stage of the external evaluation pipeline.  It produces an
+        # authenticated candidate, but neither validates nor publishes it.
         #
         # 此时已经完成：
         #   JSON -> assemble -> lift -> canonical IR -> CFG -> translate
@@ -2079,12 +2081,12 @@ def run(
         if not verify_enabled:
             f.verificationStatus = "not_verified"
             f.verificationDetail = (
-                "Phase 8 verification was explicitly disabled by caller; "
-                "translation was emitted but semantic/build verification "
-                "was not performed"
+                "Translation candidate is awaiting the registered external "
+                "validation pipeline; no semantic/build result or publication "
+                "claim has been made"
             )
             f.notes.append(
-                "phase8: verification skipped by explicit caller request"
+                "phase8: candidate staged for registered external validation"
             )
             f.category = "NeedsAsmTranslation"
             f.suggestedReplacement = ""
@@ -2093,7 +2095,7 @@ def run(
                 f,
                 validation_outcome=ValidationStatus.NOT_VERIFIED.value,
                 publication_outcome=PublicationOutcome.WITHHELD,
-                reason_codes=("validation.explicitly-disabled",),
+                reason_codes=("validation.external-evaluation-pending",),
             )
 
             _finalize_finding_privileged_manifest(
