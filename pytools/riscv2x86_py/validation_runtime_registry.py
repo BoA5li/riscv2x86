@@ -113,6 +113,18 @@ def _provider_claim_properties(
     return tuple(sorted(set(verified))), tuple(sorted(set(not_claimed)))
 
 
+def _provider_dimension_observed_properties(
+    detail: Mapping[str, object], dimension: str,
+) -> tuple[str, ...]:
+    observations = detail.get("dimensionObservations")
+    selected = observations.get(dimension) if isinstance(observations, Mapping) else None
+    properties = selected.get("observedProperties") if isinstance(selected, Mapping) else None
+    if (not isinstance(properties, list) or not properties
+            or not all(isinstance(item, str) and item for item in properties)):
+        return ()
+    return tuple(properties)
+
+
 def _l0_build_matrix_factory(config: Mapping[str, object]) -> LayerValidator:
     # Delayed import avoids a translation_validation -> registry -> L0 cycle.
     from .l0_build_matrix import build_l0_validator, load_l0_build_matrix
@@ -456,6 +468,8 @@ def _requirement_driven_l2_validator(
             source_identity = evidence.get("sourceObservationIdentity", "")
             target_identity = evidence.get("targetObservationIdentity", "")
             provider_verified, provider_not_claimed = _provider_claim_properties(result)
+            dimension_observed = _provider_dimension_observed_properties(
+                detail_mapping, binding.dimension.value)
             execution_identity = evidence.get("executionIdentity", "")
             identities = {
                 "authority": authority_identity, "source-observation": source_identity,
@@ -514,7 +528,7 @@ def _requirement_driven_l2_validator(
                     else "exact" if claim_scope is L2ClaimScope.ARCHITECTURAL else ""
                 ),
                 verified_properties=(
-                    provider_verified or
+                    dimension_observed or provider_verified or
                     tuple(getattr(artifact, "l2_verified_properties", ())) or
                     (("declared-return-relation",) if claim_scope is
                      L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ())
