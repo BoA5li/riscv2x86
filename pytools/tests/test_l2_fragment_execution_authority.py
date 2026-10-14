@@ -10,6 +10,7 @@ from riscv2x86_py.automatic_l2_operand import (
     _load_shared_execution, _sample_observations, _save_shared_execution,
 )
 from riscv2x86_py.l2_fragment_execution import (
+    L2OperandObservationAuthority, L2OperandObservationBinding,
     fragment_boundary_from_dict, materialize_fragment_execution_authority,
     operand_observation_authority_from_dict,
     program_execution_authority_from_dict,
@@ -23,9 +24,11 @@ def test_composite_fragment_operand_is_not_mistaken_for_function_parameter():
     consumer_node = "sha256:" + "2" * 64
     authority = {
         "fragmentId": "fragment:consumer",
+        "fragmentBoundaryIdentity": "sha256:" + "3" * 64,
         "operands": [{
             "operandIndex": 0, "operandId": "operand:0", "accessMode": "input",
             "parameterIndex": None, "widthBits": 64, "signedness": "unsigned",
+            "declarationId": "decl:input",
             "valueNodeIdentity": consumer_node,
         }],
         "fragmentDependencyEdges": [{
@@ -37,6 +40,15 @@ def test_composite_fragment_operand_is_not_mistaken_for_function_parameter():
         "observationSinks": [],
         "instrumentationPlan": None,
     }
+    authority["operandObservationAuthority"] = L2OperandObservationAuthority(
+        "fragment:consumer", authority["fragmentBoundaryIdentity"],
+        "sha256:" + "4" * 64, "sha256:" + "5" * 64,
+        (L2OperandObservationBinding(
+            "fragment:consumer", "operand:0", 0, "decl:input",
+            consumer_node, "input", "producer", 64, "unsigned", None,
+            "fragment:producer", producer_node, "composite_dependency", "",
+            "", "", "sha256:" + "6" * 64),), True,
+    ).to_dict()
     samples = _sample_observations(((7, 9),), authority)
     operand = samples[0]["logicalOperands"][0]
     assert operand["observationKind"] == "composite_dependency"
@@ -54,7 +66,7 @@ def test_unbound_internal_fragment_operand_fails_closed():
         "fragmentDependencyEdges": [], "observationSinks": [],
         "instrumentationPlan": None,
     }
-    with pytest.raises(ValueError, match="INPUT_OBSERVATION_AUTHORITY_MISSING"):
+    with pytest.raises(ValueError, match="typed operand observation authority is missing"):
         _sample_observations(((7, 9),), authority)
 
 
@@ -241,7 +253,8 @@ def test_two_fragments_get_independent_boundaries_and_shared_execution(tmp_path:
             expected_boundary_identity=boundary.boundary_identity,
         )
         assert observation_authority.complete
-        assert len(observation_authority.bindings) == 1
+        assert len(observation_authority.bindings) == (
+            len(boundary.input_bindings) + len(boundary.output_bindings))
         assert approval["shellFactsIdentity"]
         executions.add(execution.execution_identity)
         observations.add(execution.observation_identity(
