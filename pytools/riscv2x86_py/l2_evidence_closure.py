@@ -12,7 +12,7 @@ from .l2_dimensions import L2Dimension
 
 
 L2_EXECUTION_PLAN_SCHEMA = "riscv2x86.l2-execution-plan.v1"
-L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v3"
+L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v4"
 L2_DIMENSION_EVIDENCE_SCHEMA = "riscv2x86.l2-dimension-evidence.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -25,6 +25,14 @@ class L2ProviderExecutionDisposition(Enum):
     EXECUTED_INCONCLUSIVE = "executed_inconclusive"
     EXECUTED_FAILED = "executed_failed"
     EXECUTED_VERIFIED = "executed_verified"
+
+
+class L2EvidenceProductionDisposition(Enum):
+    """How much typed evidence exists independently of the execution verdict."""
+
+    NOT_PRODUCED = "not_produced"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
 
 
 @dataclass(frozen=True)
@@ -98,6 +106,8 @@ def provider_precondition_detail(
     return {
         "executionDisposition":
             L2ProviderExecutionDisposition.PRECONDITION_REJECTED.value,
+        "evidenceProductionDisposition":
+            L2EvidenceProductionDisposition.NOT_PRODUCED.value,
         "reasonCode": reason_code,
         **extra,
     }
@@ -248,6 +258,8 @@ def provider_evidence_fields(
         )
     return {
         "executionDisposition": execution_disposition.value,
+        "evidenceProductionDisposition":
+            L2EvidenceProductionDisposition.COMPLETE.value,
         "evidenceSchemaVersion": L2_PROVIDER_EVIDENCE_SCHEMA,
         "authorityIdentity": plan.semantic_authority_identity,
         "effectRelationIdentity": plan.effect_relation_identity,
@@ -304,6 +316,40 @@ def provider_execution_disposition(
         return disposition, ()
     return (L2ProviderExecutionDisposition.NOT_EXECUTED,
             ("l2.provider-execution-disposition.missing",))
+
+
+def provider_evidence_production_disposition(
+    detail: Mapping[str, object],
+    execution_disposition: L2ProviderExecutionDisposition,
+) -> tuple[L2EvidenceProductionDisposition, tuple[str, ...]]:
+    """Parse evidence production without inferring it from execution status."""
+    raw = detail.get("evidenceProductionDisposition")
+    if not isinstance(raw, str):
+        return (L2EvidenceProductionDisposition.NOT_PRODUCED,
+                ("l2.provider-evidence-production-disposition.missing",))
+    try:
+        disposition = L2EvidenceProductionDisposition(raw)
+    except ValueError:
+        return (L2EvidenceProductionDisposition.NOT_PRODUCED,
+                ("l2.provider-evidence-production-disposition.unsupported",))
+    allowed = {
+        L2ProviderExecutionDisposition.PRECONDITION_REJECTED: {
+            L2EvidenceProductionDisposition.NOT_PRODUCED},
+        L2ProviderExecutionDisposition.NOT_EXECUTED: {
+            L2EvidenceProductionDisposition.NOT_PRODUCED},
+        L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE: {
+            L2EvidenceProductionDisposition.NOT_PRODUCED,
+            L2EvidenceProductionDisposition.PARTIAL,
+            L2EvidenceProductionDisposition.COMPLETE},
+        L2ProviderExecutionDisposition.EXECUTED_FAILED: {
+            L2EvidenceProductionDisposition.COMPLETE},
+        L2ProviderExecutionDisposition.EXECUTED_VERIFIED: {
+            L2EvidenceProductionDisposition.COMPLETE},
+    }[execution_disposition]
+    if disposition not in allowed:
+        return disposition, (
+            "l2.provider-evidence-production-disposition.status-mismatch",)
+    return disposition, ()
 
 
 def partial_provider_evidence(
