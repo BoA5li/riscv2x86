@@ -343,6 +343,15 @@ def test_case_orchestration_failure_does_not_drop_other_results(tmp_path):
 
     assert set(by_id) == {"broken", "good"}
     assert by_id["broken"]["reasonCodes"] == ["batch.evaluation-orchestration-error"]
+    failure = by_id["broken"]["orchestrationFailure"]
+    assert failure == {
+        "schemaVersion": "riscv2x86.batch-orchestration-failure.v1",
+        "failureStage": "evaluation_orchestration",
+        "exceptionType": "FileNotFoundError",
+        "detail": failure["detail"],
+        "artifactPath": str((output / "cases/broken/work").resolve()),
+    }
+    assert "missing-report.json" in failure["detail"]
     assert (output / "cases/good/evaluation-result.json").is_file()
 
 
