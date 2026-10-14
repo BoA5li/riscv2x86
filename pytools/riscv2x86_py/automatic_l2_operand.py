@@ -82,6 +82,14 @@ _FAILURE_REASON_BY_STAGE = {
 }
 
 
+class L2OperandObservationError(ValueError):
+    """A stable semantic failure raised while materializing typed observations."""
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason_code = reason_code
+
+
 def _failure_result(
     stage: L2OperandFailureStage, exc: BaseException, *, artifact_path: Path,
     disposition: L2ProviderExecutionDisposition,
@@ -356,6 +364,10 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
                              for item in sidecar_operands},
                 proof_identity=str(getattr(artifact, "proof_identity", "")),
                 dependency_graph_identity=graph.graph_identity,
+                parameter_indices={int(item["operandIndex"]):
+                                   item.get("parameterIndex")
+                                   for item in sidecar_operands},
+                dependency_edges=graph.edges,
                 instrumentation_plan_identity=(
                     instrumentation.plan_identity
                     if instrumentation is not None else ""),
@@ -523,35 +535,46 @@ def _traces(text: str, name: str, arity: int) -> tuple[tuple[int, ...], ...] | N
 def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
                          authority: Mapping[str, object],
                          internal_rows: tuple[tuple[int, ...], ...] | None = None,
+                         *, trace_arity: int | None = None,
                          ) -> list[dict[str, object]]:
     if rows is None:
         return []
-    facts = authority["operands"]
-    assert isinstance(facts, list)
-    input_facts = [item for item in facts if item["accessMode"] == "input"]
-    output_facts = [item for item in facts if item["accessMode"] in {"output", "read_write"}]
-    raw_observation_bindings: list[dict[str, object]] = []
-    if output_facts:
-        observation_authority = authority.get("operandObservationAuthority")
-        if not isinstance(observation_authority, Mapping):
-            raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_MISSING")
-        try:
-            parsed_observation_authority = operand_observation_authority_from_dict(
-                observation_authority,
-                expected_fragment_id=str(authority.get("fragmentId", "")),
-                expected_boundary_identity=str(
-                    authority.get("fragmentBoundaryIdentity", "")),
-            )
-        except ValueError as exc:
-            raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_INVALID") from exc
-        raw_observation_bindings = [item.to_dict()
-                                    for item in parsed_observation_authority.bindings]
-    observation_bindings = {
-        item.get("operandId"): item for item in raw_observation_bindings
-        if isinstance(item, Mapping) and isinstance(item.get("operandId"), str)
-    }
-    if len(observation_bindings) != len(raw_observation_bindings):
-        raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_AMBIGUOUS")
+    facts = authority.get("operands")
+    if not isinstance(facts, list) or not facts:
+        raise L2OperandObservationError(
+            "L2_OPERAND_OBSERVATION_FACTS_INVALID",
+            "logical operand authority is absent or empty")
+    observation_authority = authority.get("operandObservationAuthority")
+    if not isinstance(observation_authority, Mapping):
+        raise L2OperandObservationError(
+            "L2_OPERAND_OBSERVATION_AUTHORITY_MISSING",
+            "typed operand observation authority is missing")
+    try:
+        parsed = operand_observation_authority_from_dict(
+            observation_authority,
+            expected_fragment_id=str(authority.get("fragmentId", "")),
+            expected_boundary_identity=str(
+                authority.get("fragmentBoundaryIdentity", "")),
+        )
+    except ValueError as exc:
+        raise L2OperandObservationError(
+            "L2_OPERAND_OBSERVATION_AUTHORITY_INVALID", str(exc)) from exc
+    bindings = {item.operand_id: item for item in parsed.bindings}
+    if len(bindings) != len(parsed.bindings) or len(bindings) != len(facts):
+        raise L2OperandObservationError(
+            "L2_OPERAND_OBSERVATION_BINDING_SET_MISMATCH",
+            "typed bindings do not bijectively cover logical operands")
+    arity = trace_arity
+    if arity is None:
+        arity = len(rows[0]) - 1 if rows else 0
+    if isinstance(arity, bool) or not isinstance(arity, int) or arity < 0:
+        raise L2OperandObservationError(
+            "L2_OPERAND_TRACE_ARITY_INVALID", "trace arity is invalid")
+    for row in rows:
+        if len(row) != arity + 1:
+            raise L2OperandObservationError(
+                "L2_OPERAND_TRACE_ARITY_MISMATCH",
+                f"trace row has {len(row)} fields; expected {arity + 1}")
     plan = authority.get("instrumentationPlan")
     point_positions = {}
     if isinstance(plan, Mapping) and isinstance(plan.get("points"), list):
@@ -559,70 +582,96 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
                            for index, item in enumerate(plan["points"])
                            if isinstance(item, Mapping)}
     result = []
-    dependency_edges = authority.get("fragmentDependencyEdges", [])
-    observation_sinks = authority.get("observationSinks", [])
-    incoming = {
-        item.get("consumerValueNodeIdentity")
-        for item in dependency_edges if isinstance(item, Mapping)
-        and item.get("consumerFragmentId") == authority.get("fragmentId")
-    }
-    outgoing = {
-        item.get("valueNodeIdentity")
-        for item in dependency_edges if isinstance(item, Mapping)
-        and item.get("producerFragmentId") == authority.get("fragmentId")
-    }
-    returned = {
-        item.get("valueNodeIdentity")
-        for item in observation_sinks if isinstance(item, Mapping)
-        and item.get("sinkKind") == "function_return"
-    }
+    if internal_rows is not None and len(internal_rows) != len(rows):
+        raise L2OperandObservationError(
+            "L2_OPERAND_INSTRUMENTATION_SAMPLE_COUNT_MISMATCH",
+            "internal trace sample count differs from boundary trace")
+
+    def checked_binding(fact: Mapping[str, object]):
+        binding = bindings.get(str(fact.get("operandId", "")))
+        if (binding is None
+                or binding.operand_index != fact.get("operandIndex")
+                or binding.declaration_identity != fact.get("declarationId")
+                or binding.value_node_identity != fact.get("valueNodeIdentity")
+                or binding.access != fact.get("accessMode")
+                or binding.width_bits != fact.get("widthBits")
+                or binding.signedness != fact.get("signedness")):
+            raise L2OperandObservationError(
+                "L2_OPERAND_OBSERVATION_BINDING_MISMATCH",
+                f"typed binding does not match operand {fact.get('operandId', '')}")
+        return binding
+
+    def before_value(binding, row: tuple[int, ...]):
+        if binding.closure_kind == "parameter" or binding.access == "read_write":
+            index = binding.parameter_index
+            if index is None:
+                raise L2OperandObservationError(
+                    "L2_OPERAND_READ_WRITE_BEFORE_AUTHORITY_MISSING",
+                    f"operand {binding.operand_id} has no before-value source")
+            if index >= arity:
+                raise L2OperandObservationError(
+                    "L2_OPERAND_PARAMETER_INDEX_OUT_OF_RANGE",
+                    f"parameter index {index} is outside trace arity {arity}")
+            return f"0x{row[index]:016x}", "function_parameter"
+        if binding.closure_kind == "producer":
+            return None, "composite_dependency"
+        raise L2OperandObservationError(
+            "L2_OPERAND_INPUT_SOURCE_INVALID",
+            f"operand {binding.operand_id} has no typed input source")
+
+    def after_value(binding, sample_index: int, row: tuple[int, ...]):
+        if binding.closure_kind == "instrumentation":
+            position = point_positions.get(binding.operand_index)
+            if not isinstance(position, int) or internal_rows is None:
+                raise L2OperandObservationError(
+                    "L2_OPERAND_INSTRUMENTATION_TRACE_MISSING",
+                    f"operand {binding.operand_id} lacks instrumentation trace")
+            if position >= len(internal_rows[sample_index]):
+                raise L2OperandObservationError(
+                    "L2_OPERAND_INSTRUMENTATION_TRACE_ARITY_MISMATCH",
+                    f"instrumentation position {position} is outside trace row")
+            return internal_rows[sample_index][position], "instrumentation"
+        if binding.closure_kind == "sink":
+            if binding.observation_kind != "function_return":
+                raise L2OperandObservationError(
+                    "L2_OPERAND_OUTPUT_SINK_NOT_RUNTIME_OBSERVABLE",
+                    f"sink {binding.observation_kind} needs a registered observer")
+            return row[arity], "function_return"
+        if binding.closure_kind == "consumer":
+            return None, "composite_dependency"
+        if binding.closure_kind == "discard":
+            return None, "discarded"
+        raise L2OperandObservationError(
+            "L2_OPERAND_OUTPUT_SINK_INVALID",
+            f"operand {binding.operand_id} has no typed output sink")
+
     for sample_index, row in enumerate(rows):
         operands = []
-        for fact in input_facts:
-            parameter_index = fact["parameterIndex"]
-            node = fact.get("valueNodeIdentity")
-            if isinstance(parameter_index, int):
-                before, observation_kind = f"0x{row[parameter_index]:016x}", "function_parameter"
-            elif node in incoming:
-                before, observation_kind = None, "composite_dependency"
-            else:
-                raise ValueError("L2_OPERAND_INPUT_OBSERVATION_AUTHORITY_MISSING")
-            operands.append({"operandId": fact["operandId"], "access": "input",
-                             "valueBefore": before, "valueAfter": None,
-                             "observationKind": observation_kind,
-                             "widthBits": fact["widthBits"], "signedness": fact["signedness"]})
-        for fact in output_facts:
-            parameter_index = fact["parameterIndex"]
-            internal_position = point_positions.get(fact["operandIndex"])
-            binding = observation_bindings.get(fact["operandId"])
-            if (not isinstance(binding, Mapping)
-                    or binding.get("operandIndex") != fact["operandIndex"]
-                    or binding.get("declarationIdentity") != fact["declarationId"]
-                    or binding.get("access") != fact["accessMode"]
-                    or binding.get("complete") is not True):
-                raise ValueError("L2_OPERAND_OBSERVATION_AUTHORITY_MISMATCH")
-            closure_kind = binding.get("closureKind")
-            observation_kind = binding.get("observationKind")
-            if (internal_rows is not None and isinstance(internal_position, int)
-                    and sample_index < len(internal_rows)
-                    and closure_kind == "instrumentation"):
-                after, observation_kind = internal_rows[sample_index][internal_position], "instrumentation"
-            elif (closure_kind == "sink"
-                  and observation_kind == "function_return"):
-                after, observation_kind = row[-1], "function_return"
-            elif closure_kind == "consumer":
-                after, observation_kind = None, "composite_dependency"
-            elif closure_kind == "discard":
-                after, observation_kind = None, "discarded"
-            else:
-                raise ValueError("L2_OPERAND_OUTPUT_OBSERVATION_AUTHORITY_MISSING")
-            operands.append({"operandId": fact["operandId"], "access": fact["accessMode"],
-                             "valueBefore": (f"0x{row[parameter_index]:016x}"
-                                             if isinstance(parameter_index, int) else None),
-                             "valueAfter": (f"0x{after:016x}"
-                                            if isinstance(after, int) else None),
-                             "observationKind": observation_kind,
-                             "widthBits": fact["widthBits"], "signedness": fact["signedness"]})
+        for fact in facts:
+            if not isinstance(fact, Mapping):
+                raise L2OperandObservationError(
+                    "L2_OPERAND_OBSERVATION_FACTS_INVALID",
+                    "operand fact is not an object")
+            binding = checked_binding(fact)
+            before = after = None
+            kinds: list[str] = []
+            if binding.access in {"input", "read_write"}:
+                before, kind = before_value(binding, row)
+                kinds.append(kind)
+            if binding.access in {"output", "read_write"}:
+                raw_after, kind = after_value(binding, sample_index, row)
+                after = (f"0x{raw_after:016x}"
+                         if isinstance(raw_after, int) else None)
+                kinds.append(kind)
+            operands.append({
+                "operandId": binding.operand_id, "access": binding.access,
+                "valueBefore": before, "valueAfter": after,
+                "observationKind": "+".join(kinds),
+                "widthBits": binding.width_bits,
+                "signedness": binding.signedness,
+                "bindingIdentity": binding.binding_identity,
+                "valueNodeIdentity": binding.value_node_identity,
+            })
         result.append({"sampleIndex": sample_index, "logicalOperands": operands})
     return result
 
@@ -806,7 +855,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             source_internal = _internal_traces(left.stdout, point_count) if point_count else ()
             target_internal = _internal_traces(right.stdout, point_count) if point_count else ()
             stage = L2OperandFailureStage.OBSERVATION_MATERIALIZATION
-            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":Path(str(config["workDirectory"])).name,"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,authority,source_internal or None),"targetSamples":_sample_observations(target_rows,authority,target_internal or None)}
+            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":Path(str(config["workDirectory"])).name,"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,authority,source_internal or None,trace_arity=arity),"targetSamples":_sample_observations(target_rows,authority,target_internal or None,trace_arity=arity)}
             if (source_rows is None or target_rows is None
                     or (point_count and (source_internal is None or target_internal is None
                         or len(source_internal) != len(source_rows)
@@ -857,5 +906,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 stage, exc, artifact_path=artifact_path,
                 disposition=(L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE
                              if executed else L2ProviderExecutionDisposition.NOT_EXECUTED),
+                reason_code=(exc.reason_code
+                             if isinstance(exc, L2OperandObservationError) else ""),
             )
     return validate
