@@ -177,6 +177,7 @@ def test_infrastructure_failure_preserves_stage_exception_and_artifact_path(tmp_
     assert detail == {
         "schemaVersion": AUTO_L2_FAILURE_SCHEMA,
         "executionDisposition": "executed_inconclusive",
+        "evidenceProductionDisposition": "not_produced",
         "reasonCode": "L2_OPERAND_TRACE_PARSE_FAILED",
         "failureStage": "trace_parse",
         "exceptionType": "ValueError",
