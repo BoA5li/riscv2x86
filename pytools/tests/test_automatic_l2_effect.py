@@ -11,6 +11,7 @@ from riscv2x86_py.effect_relation import ApprovedEffectRelation
 from riscv2x86_py.l2_authority import (
     L2AuthorityProducer, L2AuthoritySidecar, L2SourceEffectAuthority,
 )
+from riscv2x86_py.l2_dimensions import L2Dimension
 from hashlib import sha256
 import subprocess
 
@@ -107,13 +108,15 @@ def test_memory_execution_projects_distinct_required_dimension_evidence():
         "source": {"exitCode": 0, "stderr": "", "events": [{"sample": 0}]},
         "target": {"exitCode": 0, "stderr": "", "events": [{"sample": 0}]},
     }
-    dimensions = ("logical_operands", "memory_effects", "shell_semantics")
+    dimensions = (L2Dimension.LOGICAL_OPERANDS, L2Dimension.MEMORY_EFFECTS,
+                  L2Dimension.SHELL_SEMANTICS)
     evidence = _effect_dimension_evidence(observation, dimensions)
     assert set(evidence) == set(dimensions)
-    assert len({value["sourceEvidenceIdentity"]
+    assert len({value.source_evidence_identity
                 for value in evidence.values()}) == len(dimensions)
-    assert len({value["targetEvidenceIdentity"]
+    assert len({value.target_evidence_identity
                 for value in evidence.values()}) == len(dimensions)
+    assert all(value.observed_properties for value in evidence.values())
 
 
 def test_branch_trace_records_continuation_class():
