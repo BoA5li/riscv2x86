@@ -16,9 +16,10 @@ from typing import Mapping
 from .automatic_validation import build_auto_l1_validator
 from .l2_authority import l2_authority_sidecar_from_dict
 from .l2_evidence_closure import (
-    L2ProviderExecutionDisposition, identity as closure_identity,
+    L2DimensionEvidence, L2ProviderExecutionDisposition, identity as closure_identity,
     provider_evidence_fields,
 )
+from .l2_dimensions import L2Dimension
 from .translation_validation import ValidationLayerResult, ValidationLevel
 from .validation_status import PreservationMode, ValidationStatus
 
@@ -193,11 +194,22 @@ def build_auto_l2_functional_relation_validator(config: Mapping[str, object]):
                 artifact, provider_id=provider_id,
                 harness_identity=closure_identity({"schemaVersion": SCHEMA,
                                                    "l1Config": config.get("l1Config")}),
-                source_observation_identity=source_identity,
-                target_observation_identity=target_identity,
                 execution_nonce={"underlyingL1EvidenceIdentity": l1_result.evidence_identity,
                                  "observationContract": observation_contract},
-                dimensions=("privileged_state", "shell_semantics"),
+                dimensions=(L2Dimension.PRIVILEGED_STATE,
+                            L2Dimension.SHELL_SEMANTICS),
+                dimension_evidence={
+                    L2Dimension.PRIVILEGED_STATE: L2DimensionEvidence(
+                        source_identity, target_identity,
+                        tuple(str(item) for item in contract["verifiedProperties"])),
+                    L2Dimension.SHELL_SEMANTICS: L2DimensionEvidence(
+                        _identity({"side": "source", "shell": source,
+                                   "contract": observation_contract}),
+                        _identity({"side": "target", "shell": target,
+                                   "contract": observation_contract}),
+                        ("runtime_adapter", "compiler_visibility", "continuation"),
+                    ),
+                },
                 execution_disposition=
                     L2ProviderExecutionDisposition.EXECUTED_VERIFIED))
         evidence = _identity(payload)
