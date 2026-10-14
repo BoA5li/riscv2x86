@@ -343,10 +343,40 @@ def test_provider_cannot_reuse_logical_observation_for_shell_dimension(tmp_path)
     result = registry.validator_for(ValidationLevel.L2)(
         level=ValidationLevel.L2, translation_artifact=_artifact())
     dimensions = json.loads(result.detail)["dimensionResults"]
-    assert dimensions["logical_operands"]["status"] == "verified"
+    assert dimensions["logical_operands"]["status"] == "inconclusive"
+    assert "l2.provider-evidence.dimension-contract-mismatch" \
+        in dimensions["logical_operands"]["reasonCodes"]
     assert dimensions["shell_semantics"]["status"] == "inconclusive"
     assert "l2.provider-evidence.dimension-observation-missing:shell_semantics" \
         in dimensions["shell_semantics"]["reasonCodes"]
+    assert "l2.provider-evidence.dimension-contract-mismatch" \
+        in dimensions["shell_semantics"]["reasonCodes"]
+
+
+def test_resolved_provider_dimensions_must_equal_provider_declaration(tmp_path):
+    providers = [{
+        "providerId": "broad", "supportedDimensions": [
+            "logical_operands", "shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": [
+            "logical_operand_observation", "shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "automatic", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }, {
+        "providerId": "shell-explicit", "supportedDimensions": ["shell_semantics"],
+        "supportedPatterns": ["scalar"],
+        "requiredCapabilities": ["shell_observation"],
+        "executionProfiles": ["rv64gc-user-to-x86_64-user"],
+        "bindingKind": "explicit", "validatorType": "test-provider",
+        "configSchemaVersion": "test-provider.v1",
+        "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
+    }]
+    with pytest.raises(
+            ValueError,
+            match="resolved L2 provider dimensions do not match provider declaration"):
+        _registry(tmp_path, providers)
 
 
 def test_precondition_rejection_preserves_only_primary_reason(tmp_path):
@@ -407,7 +437,8 @@ def test_registry_missing_required_provider_cannot_verify(tmp_path):
         "configSchemaVersion": "test-provider.v1",
         "config": {"schemaVersion": "test-provider.v1"}, "fragmentIds": [],
     }]
-    registry, _plan_path = _registry(tmp_path, providers)
+    registry, _plan_path = _registry(
+        tmp_path, providers, _logical_only_factory)
     result = registry.validator_for(ValidationLevel.L2)(
         level=ValidationLevel.L2,
         translation_artifact=_artifact(),
