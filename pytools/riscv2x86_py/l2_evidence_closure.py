@@ -157,9 +157,10 @@ def execution_plan_for_provider(
 
 def provider_evidence_fields(
     artifact: object, *, provider_id: str, harness_identity: str,
-    source_observation_identity: str, target_observation_identity: str,
+    source_observation_identity: str = "", target_observation_identity: str = "",
     execution_nonce: object,
     dimensions: Sequence[str],
+    dimension_evidence: Mapping[str, Mapping[str, str]] | None = None,
     authorized_execution_identity: str = "",
     execution_disposition: L2ProviderExecutionDisposition =
         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -170,9 +171,6 @@ def provider_evidence_fields(
         raise ValueError("provider evidence disposition did not execute")
     plan = execution_plan_for_provider(
         artifact, provider_id=provider_id, harness_identity=harness_identity)
-    for value in (source_observation_identity, target_observation_identity):
-        if _SHA.fullmatch(value) is None:
-            raise ValueError("provider observations are incomplete")
     if authorized_execution_identity:
         if _SHA.fullmatch(authorized_execution_identity) is None:
             raise ValueError("authorized provider execution identity is invalid")
@@ -186,22 +184,43 @@ def provider_evidence_fields(
     canonical_dimensions = tuple(sorted(set(dimensions)))
     if not canonical_dimensions or any(not item for item in canonical_dimensions):
         raise ValueError("provider evidence dimensions are incomplete")
+    if dimension_evidence is None:
+        for value in (source_observation_identity, target_observation_identity):
+            if _SHA.fullmatch(value) is None:
+                raise ValueError("provider observations are incomplete")
+        dimension_evidence = {
+            dimension: {
+                "sourceEvidenceIdentity": source_observation_identity,
+                "targetEvidenceIdentity": target_observation_identity,
+            }
+            for dimension in canonical_dimensions
+        }
+    if set(dimension_evidence) != set(canonical_dimensions):
+        raise ValueError("provider dimension evidence does not match declared dimensions")
     observations = {}
     for dimension in canonical_dimensions:
+        raw_evidence = dimension_evidence.get(dimension)
+        if not isinstance(raw_evidence, Mapping):
+            raise ValueError("provider dimension evidence is malformed")
+        source_evidence = raw_evidence.get("sourceEvidenceIdentity")
+        target_evidence = raw_evidence.get("targetEvidenceIdentity")
+        if (_SHA.fullmatch(str(source_evidence or "")) is None
+                or _SHA.fullmatch(str(target_evidence or "")) is None):
+            raise ValueError("provider dimension observations are incomplete")
         observations[dimension] = {
-            "sourceEvidenceIdentity": source_observation_identity,
-            "targetEvidenceIdentity": target_observation_identity,
+            "sourceEvidenceIdentity": source_evidence,
+            "targetEvidenceIdentity": target_evidence,
             "sourceObservationIdentity": identity({
                 "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
                 "executionIdentity": execution_identity,
                 "fragmentId": plan.fragment_id, "dimension": dimension,
-                "side": "source", "evidenceIdentity": source_observation_identity,
+                "side": "source", "evidenceIdentity": source_evidence,
             }),
             "targetObservationIdentity": identity({
                 "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
                 "executionIdentity": execution_identity,
                 "fragmentId": plan.fragment_id, "dimension": dimension,
-                "side": "target", "evidenceIdentity": target_observation_identity,
+                "side": "target", "evidenceIdentity": target_evidence,
             }),
         }
     return {
@@ -217,6 +236,24 @@ def provider_evidence_fields(
         "dimensionObservations": observations,
         "executionIdentity": execution_identity,
     }
+
+
+def validate_provider_dimension_contract(
+    detail: Mapping[str, object], expected_dimensions: Sequence[str],
+) -> tuple[str, ...]:
+    """Validate the executed provider's declared/result dimension boundary.
+
+    Provider applicability is resolved before execution.  An executed provider
+    must therefore return exactly the dimensions bound to it: neither a missing
+    observation nor an undeclared extra observation may be accepted later by a
+    per-dimension closer.
+    """
+    expected = tuple(sorted(set(expected_dimensions)))
+    observations = detail.get("dimensionObservations")
+    if (not expected or not isinstance(observations, Mapping)
+            or tuple(sorted(observations)) != expected):
+        return ("l2.provider-evidence.dimension-contract-mismatch",)
+    return ()
 
 
 def provider_execution_disposition(
