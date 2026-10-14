@@ -1,11 +1,27 @@
 from __future__ import annotations
 
-from riscv2x86_py.automatic_l2_operand import _authority, _traces, _wrapper
+from riscv2x86_py.automatic_l2_operand import (
+    AUTO_L2_FAILURE_SCHEMA,
+    L2OperandFailureStage,
+    _authority,
+    build_auto_l2_operand_validator,
+    _digest_bytes,
+    _failure_result,
+    _load_shared_execution,
+    _save_shared_execution,
+    _traces,
+    _wrapper,
+)
+from riscv2x86_py.l2_evidence_closure import L2ProviderExecutionDisposition
+from riscv2x86_py.l1_differential import ARCHITECTURAL_COMPARISON_POLICY
+from riscv2x86_py.translation_validation import ValidationLevel
 from riscv2x86_py.translation_validation import TranslationArtifact
 from riscv2x86_py.validation_status import PreservationMode
 from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
 from types import SimpleNamespace
 import tempfile
+import json
+import subprocess
 from pathlib import Path
 from tests.l2_profile_fixtures import profile_dict
 from tests.l2_effect_proof_fixtures import attach_effect_proof
@@ -111,3 +127,88 @@ def test_trace_parser_requires_complete_cartesian_domain():
     assert _traces(line, "add", 2) is None
     complete = line * 64
     assert len(_traces(complete, "add", 2)) == 64
+
+
+def test_wrapper_accepts_a_zero_argument_scalar_function():
+    wrapper = _wrapper({
+        "name": "read_counter", "arity": 0, "returnType": "uint64_t",
+        "parameterTypes": [],
+    })
+    assert "uint64_t read_counter(void);" in wrapper
+    assert "read_counter()" in wrapper
+
+
+def test_wrapper_rejects_non_scalar_signature_instead_of_casting_pointer_values():
+    function = _function()
+    function["parameterTypes"] = ["uint64_t *", "uint64_t"]
+    try:
+        _wrapper(function)
+    except ValueError as exc:
+        assert str(exc) == "automatic L2 scalar function type is unsupported"
+    else:
+        raise AssertionError("pointer signature was accepted by scalar provider")
+
+
+def test_shared_execution_record_is_content_addressed_and_schema_strict(tmp_path):
+    path = tmp_path / "shared.json"
+    binding = {"providerId": "operand", "authorizedExecutionIdentity": "sha256:" + "1" * 64}
+    run = subprocess.CompletedProcess((), 0, "trace\n", "")
+    _save_shared_execution(path, binding, source=run, target=run)
+    assert _load_shared_execution(path, binding)["binding"] == binding
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["schemaVersion"] = "unknown"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    try:
+        _load_shared_execution(path, binding)
+    except ValueError as exc:
+        assert "schema" in str(exc)
+    else:
+        raise AssertionError("foreign provider execution record was reused")
+
+
+def test_infrastructure_failure_preserves_stage_exception_and_artifact_path(tmp_path):
+    artifact = tmp_path / "operand-observation.json"
+    result = _failure_result(
+        L2OperandFailureStage.TRACE_PARSE, ValueError("bad trace"),
+        artifact_path=artifact,
+        disposition=L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+    )
+    detail = json.loads(result.detail)
+    assert detail == {
+        "schemaVersion": AUTO_L2_FAILURE_SCHEMA,
+        "executionDisposition": "executed_inconclusive",
+        "reasonCode": "L2_OPERAND_TRACE_PARSE_FAILED",
+        "failureStage": "trace_parse",
+        "exceptionType": "ValueError",
+        "detail": "bad trace",
+        "artifactPath": str(artifact),
+    }
+
+
+def test_validator_reports_the_exact_artifact_and_stage_for_invalid_report(tmp_path):
+    source, target = tmp_path / "source.c", tmp_path / "target.c"
+    report = tmp_path / "translated-report.json"
+    source.write_text("int f(void){return 0;}\n", encoding="utf-8")
+    target.write_text("int f(void){return 0;}\n", encoding="utf-8")
+    report.write_text("{invalid", encoding="utf-8")
+    validator = build_auto_l2_operand_validator({
+        "schemaVersion": "riscv2x86.auto-l2-operand-runner.v1",
+        "sourcePath": str(source), "sourceDigest": _digest_bytes(source.read_bytes()),
+        "targetPath": str(target), "targetDigest": _digest_bytes(target.read_bytes()),
+        "translatedReport": str(report), "functions": [],
+        "workDirectory": str(tmp_path / "work"),
+        "replayDirectory": str(tmp_path / "replay"),
+        "timeoutSeconds": 1, "seed": 0, "qemuBinary": "/missing/qemu",
+    })
+    result = validator(
+        level=ValidationLevel.L2,
+        comparison_policy=ARCHITECTURAL_COMPARISON_POLICY,
+        translation_artifact=SimpleNamespace(
+            preservation_mode=PreservationMode.ARCHITECTURE_EQUIVALENT),
+    )
+    detail = json.loads(result.detail)
+    assert detail["reasonCode"] == "L2_OPERAND_REPORT_INVALID"
+    assert detail["executionDisposition"] == "not_executed"
+    assert detail["failureStage"] == "report_load"
+    assert detail["exceptionType"] == "JSONDecodeError"
+    assert detail["artifactPath"] == str(report)
