@@ -23,7 +23,8 @@ from .l2_memory_object import (
     memory_proof_facts_from_dict,
 )
 from .l2_evidence_closure import (
-    L2DimensionEvidence, L2ProviderExecutionDisposition, provider_evidence_fields,
+    L2DimensionEvidence, L2EvidenceProductionDisposition,
+    L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
 from .l2_dimensions import L2Dimension
@@ -792,6 +793,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                 detail = _build_failure_detail(left_build, right_build)
                 detail["executionDisposition"] = \
                     L2ProviderExecutionDisposition.NOT_EXECUTED.value
+                detail["evidenceProductionDisposition"] = \
+                    L2EvidenceProductionDisposition.NOT_PRODUCED.value
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
             right=_run((str(target_exe),),work,timeout)
@@ -901,8 +904,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"reasonCode":"L2_EFFECT_RUNNER_TIMEOUT","detail":str(exc)}))
+                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode":"L2_EFFECT_RUNNER_TIMEOUT","detail":str(exc)}))
         except (OSError,ValueError,KeyError,json.JSONDecodeError) as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"reasonCode":"L2_EFFECT_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
+                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode":"L2_EFFECT_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
     return validate
