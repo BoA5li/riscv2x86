@@ -8,9 +8,12 @@ import json
 import re
 from typing import Mapping, Sequence
 
+from .l2_dimensions import L2Dimension
+
 
 L2_EXECUTION_PLAN_SCHEMA = "riscv2x86.l2-execution-plan.v1"
-L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v2"
+L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v3"
+L2_DIMENSION_EVIDENCE_SCHEMA = "riscv2x86.l2-dimension-evidence.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -22,6 +25,51 @@ class L2ProviderExecutionDisposition(Enum):
     EXECUTED_INCONCLUSIVE = "executed_inconclusive"
     EXECUTED_FAILED = "executed_failed"
     EXECUTED_VERIFIED = "executed_verified"
+
+
+@dataclass(frozen=True)
+class L2DimensionEvidence:
+    """Provider observation material owned by exactly one L2 dimension."""
+
+    source_evidence_identity: str
+    target_evidence_identity: str
+    observed_properties: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (_SHA.fullmatch(self.source_evidence_identity) is None
+                or _SHA.fullmatch(self.target_evidence_identity) is None):
+            raise ValueError("L2 dimension observation evidence is incomplete")
+        if (not self.observed_properties
+                or any(not item for item in self.observed_properties)
+                or len(set(self.observed_properties)) != len(self.observed_properties)):
+            raise ValueError("L2 dimension observed properties are incomplete")
+
+    def bind(
+        self, *, dimension: str, fragment_id: str, authority_identity: str,
+        effect_relation_identity: str, execution_identity: str,
+    ) -> dict[str, object]:
+        result = {
+            "schemaVersion": L2_DIMENSION_EVIDENCE_SCHEMA,
+            "dimension": dimension,
+            "authorityIdentity": authority_identity,
+            "effectRelationIdentity": effect_relation_identity,
+            "executionIdentity": execution_identity,
+            "sourceEvidenceIdentity": self.source_evidence_identity,
+            "targetEvidenceIdentity": self.target_evidence_identity,
+            "observedProperties": list(self.observed_properties),
+        }
+        for side in ("source", "target"):
+            evidence = str(result[side + "EvidenceIdentity"])
+            result[side + "ObservationIdentity"] = identity({
+                "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
+                "executionIdentity": execution_identity,
+                "fragmentId": fragment_id, "dimension": dimension,
+                "side": side, "evidenceIdentity": evidence,
+                "authorityIdentity": authority_identity,
+                "effectRelationIdentity": effect_relation_identity,
+                "observedProperties": list(self.observed_properties),
+            })
+        return result
 
 
 _TOTAL_EVIDENCE_DISPOSITIONS = {
@@ -157,10 +205,9 @@ def execution_plan_for_provider(
 
 def provider_evidence_fields(
     artifact: object, *, provider_id: str, harness_identity: str,
-    source_observation_identity: str = "", target_observation_identity: str = "",
     execution_nonce: object,
-    dimensions: Sequence[str],
-    dimension_evidence: Mapping[str, Mapping[str, str]] | None = None,
+    dimensions: Sequence[L2Dimension],
+    dimension_evidence: Mapping[L2Dimension, L2DimensionEvidence],
     authorized_execution_identity: str = "",
     execution_disposition: L2ProviderExecutionDisposition =
         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -181,48 +228,24 @@ def provider_evidence_fields(
             "executionPlanIdentity": plan.plan_identity,
             "executionNonce": execution_nonce,
         })
-    canonical_dimensions = tuple(sorted(set(dimensions)))
-    if not canonical_dimensions or any(not item for item in canonical_dimensions):
+    if (not dimensions or any(not isinstance(item, L2Dimension) for item in dimensions)
+            or len(set(dimensions)) != len(dimensions)):
         raise ValueError("provider evidence dimensions are incomplete")
-    if dimension_evidence is None:
-        for value in (source_observation_identity, target_observation_identity):
-            if _SHA.fullmatch(value) is None:
-                raise ValueError("provider observations are incomplete")
-        dimension_evidence = {
-            dimension: {
-                "sourceEvidenceIdentity": source_observation_identity,
-                "targetEvidenceIdentity": target_observation_identity,
-            }
-            for dimension in canonical_dimensions
-        }
-    if set(dimension_evidence) != set(canonical_dimensions):
+    canonical_dimensions = tuple(sorted(set(dimensions), key=lambda item: item.value))
+    if (not all(isinstance(item, L2Dimension) for item in dimension_evidence)
+            or set(dimension_evidence) != set(canonical_dimensions)):
         raise ValueError("provider dimension evidence does not match declared dimensions")
     observations = {}
     for dimension in canonical_dimensions:
         raw_evidence = dimension_evidence.get(dimension)
-        if not isinstance(raw_evidence, Mapping):
-            raise ValueError("provider dimension evidence is malformed")
-        source_evidence = raw_evidence.get("sourceEvidenceIdentity")
-        target_evidence = raw_evidence.get("targetEvidenceIdentity")
-        if (_SHA.fullmatch(str(source_evidence or "")) is None
-                or _SHA.fullmatch(str(target_evidence or "")) is None):
-            raise ValueError("provider dimension observations are incomplete")
-        observations[dimension] = {
-            "sourceEvidenceIdentity": source_evidence,
-            "targetEvidenceIdentity": target_evidence,
-            "sourceObservationIdentity": identity({
-                "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
-                "executionIdentity": execution_identity,
-                "fragmentId": plan.fragment_id, "dimension": dimension,
-                "side": "source", "evidenceIdentity": source_evidence,
-            }),
-            "targetObservationIdentity": identity({
-                "schemaVersion": "riscv2x86.l2-dimension-observation.v1",
-                "executionIdentity": execution_identity,
-                "fragmentId": plan.fragment_id, "dimension": dimension,
-                "side": "target", "evidenceIdentity": target_evidence,
-            }),
-        }
+        if not isinstance(raw_evidence, L2DimensionEvidence):
+            raise ValueError("provider dimension evidence is not typed")
+        observations[dimension.value] = raw_evidence.bind(
+            dimension=dimension.value, fragment_id=plan.fragment_id,
+            authority_identity=plan.semantic_authority_identity,
+            effect_relation_identity=plan.effect_relation_identity,
+            execution_identity=execution_identity,
+        )
     return {
         "executionDisposition": execution_disposition.value,
         "evidenceSchemaVersion": L2_PROVIDER_EVIDENCE_SCHEMA,
@@ -380,12 +403,35 @@ def _validate_dimension_observation(
     selected: object, values: dict[str, str], dimension: str,
     fragment_id: str, reasons: set[str],
 ) -> None:
-    fields = {"sourceEvidenceIdentity", "targetEvidenceIdentity",
-              "sourceObservationIdentity", "targetObservationIdentity"}
+    fields = {
+        "schemaVersion", "dimension", "authorityIdentity",
+        "effectRelationIdentity", "executionIdentity", "observedProperties",
+        "sourceEvidenceIdentity", "targetEvidenceIdentity",
+        "sourceObservationIdentity", "targetObservationIdentity",
+    }
     if not isinstance(selected, Mapping) or set(selected) != fields:
         reasons.add("l2.provider-evidence.dimension-observation-missing:" + dimension)
         return
-    execution = values.get("executionIdentity", "")
+    if (selected.get("schemaVersion") != L2_DIMENSION_EVIDENCE_SCHEMA
+            or selected.get("dimension") != dimension):
+        reasons.add("l2.provider-evidence.dimension-binding-invalid:" + dimension)
+    for field in ("authorityIdentity", "effectRelationIdentity", "executionIdentity"):
+        selected_value = str(selected.get(field) or "")
+        if (_SHA.fullmatch(selected_value) is None
+                or selected_value != values.get(field, "")):
+            reasons.add("l2.provider-evidence.dimension-identity-invalid:"
+                        + dimension + ":" + field)
+        else:
+            values[field] = selected_value
+    properties = selected.get("observedProperties")
+    if (not isinstance(properties, list) or not properties
+            or any(not isinstance(item, str) or not item for item in properties)
+            or len(set(properties)) != len(properties)):
+        reasons.add("l2.provider-evidence.observed-properties-incomplete:" + dimension)
+        properties = []
+    execution = str(selected.get("executionIdentity") or "")
+    authority = str(selected.get("authorityIdentity") or "")
+    relation = str(selected.get("effectRelationIdentity") or "")
     for side in ("source", "target"):
         evidence_name = side + "EvidenceIdentity"
         observation_name = side + "ObservationIdentity"
@@ -396,7 +442,11 @@ def _validate_dimension_observation(
             "executionIdentity": execution, "fragmentId": fragment_id,
             "dimension": dimension, "side": side,
             "evidenceIdentity": evidence,
-        }) if _SHA.fullmatch(execution) and _SHA.fullmatch(evidence) else ""
+            "authorityIdentity": authority,
+            "effectRelationIdentity": relation,
+            "observedProperties": properties,
+        }) if (all(_SHA.fullmatch(item) for item in
+                   (execution, evidence, authority, relation)) and properties) else ""
         if _SHA.fullmatch(observation) is None or observation != expected:
             reasons.add("l2.provider-evidence.dimension-observation-invalid:"
                         + dimension + ":" + observation_name)
