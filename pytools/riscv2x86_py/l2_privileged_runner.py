@@ -25,9 +25,10 @@ from .l2_privileged_routes import (
     select_privileged_route,
 )
 from .l2_evidence_closure import (
-    L2ProviderExecutionDisposition, identity as closure_identity,
+    L2DimensionEvidence, L2ProviderExecutionDisposition, identity as closure_identity,
     provider_evidence_fields,
 )
+from .l2_dimensions import L2Dimension
 
 
 LEGACY_PRIVILEGED_RUNNER_SCHEMA = "riscv2x86.l2-privileged-runner.v1"
@@ -665,11 +666,28 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
                 "sourceRunner": config.source_runner.__dict__,
                 "targetRunner": config.target_runner.__dict__,
             }),
-            source_observation_identity=str(detail["sourceObservationIdentity"]),
-            target_observation_identity=str(detail["targetObservationIdentity"]),
             execution_nonce={"initialStateIdentity": initial_identity,
                              "routeContractIdentity": routes.identity},
-            dimensions=("privileged_state", "shell_semantics", "trap_semantics"),
+            dimensions=(L2Dimension.PRIVILEGED_STATE,
+                        L2Dimension.SHELL_SEMANTICS,
+                        L2Dimension.TRAP_SEMANTICS),
+            dimension_evidence={
+                L2Dimension.PRIVILEGED_STATE: L2DimensionEvidence(
+                    _digest({"dimension": "privileged_state", "observation": source.__dict__}),
+                    _digest({"dimension": "privileged_state", "observation": target.__dict__}),
+                    ("privilege_mode", "architectural_state", "runtime_relation"),
+                ),
+                L2Dimension.SHELL_SEMANTICS: L2DimensionEvidence(
+                    _digest({"dimension": "shell_semantics", "observation": source.__dict__}),
+                    _digest({"dimension": "shell_semantics", "observation": target.__dict__}),
+                    ("clobbers", "compiler_visibility", "continuation"),
+                ),
+                L2Dimension.TRAP_SEMANTICS: L2DimensionEvidence(
+                    _digest({"dimension": "trap_semantics", "observation": source.__dict__}),
+                    _digest({"dimension": "trap_semantics", "observation": target.__dict__}),
+                    ("trap_availability", "trap_target", "error_representation"),
+                ),
+            },
             execution_disposition=(
                 L2ProviderExecutionDisposition.EXECUTED_VERIFIED
                 if result.approved else
