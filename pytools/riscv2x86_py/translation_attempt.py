@@ -43,7 +43,10 @@ def _staging_disposition(translation: TranslationOutcome,
         return AttemptStagingDisposition.PUBLISHED
     if (publication is PublicationOutcome.WITHHELD
             and validation is ValidationOutcome.NOT_VERIFIED
-            and "validation.explicitly-disabled" in reasons):
+            and ("validation.external-evaluation-pending" in reasons
+                 # Explicit compatibility adapter for v1/v2 archives. New
+                 # producers must use the external-evaluation reason above.
+                 or "validation.explicitly-disabled" in reasons)):
         return AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
     return AttemptStagingDisposition.VALIDATION_REJECTED
 
