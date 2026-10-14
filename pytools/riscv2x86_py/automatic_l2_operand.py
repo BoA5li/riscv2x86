@@ -665,7 +665,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 execution_nonce={"authorizedExecutionIdentity": authorized_execution,
                                  "seed": seed, "inputDomain": observation["inputDomain"],
                                  "sharedExecutionBinding": _identity(shared_binding)},
-                dimensions=("logical_operands", "shell_semantics"),
+                dimensions=("logical_operands",),
                 authorized_execution_identity=authorized_execution,
                 execution_disposition={
                     ValidationStatus.VERIFIED:
@@ -675,7 +675,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     ValidationStatus.INCONCLUSIVE:
                         L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
                 }[status])
-            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"sharedProgramExecutionReused":shared_reused,**closure,"sourceShellObservationIdentity":observation_identity("shell_semantics", "source", observation["sourceTraceDigest"]),"targetShellObservationIdentity":observation_identity("shell_semantics", "target", observation["targetTraceDigest"]),"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
+            summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"sharedProgramExecutionReused":shared_reused,**closure,"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"reasonCode":"L2_OPERAND_RUNNER_TIMEOUT","detail":str(exc)}))
