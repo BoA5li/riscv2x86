@@ -17,6 +17,7 @@ from .l2_results import L2DimensionResult, L2FragmentResult
 from .l2_evidence_closure import (
     L2ProviderExecutionDisposition, partial_provider_evidence,
     provider_execution_disposition, validated_provider_evidence,
+    validate_provider_dimension_contract,
 )
 from .l2_validator_resolution import (
     ExplicitL2Bindings, L2BindingKind, L2BindingStatus, L2RuntimeCapabilities,
@@ -322,6 +323,21 @@ def _requirement_driven_l2_validator(
         binding.provider_id for binding in (plan.bindings if plan is not None else ())
         if binding.binding_status is L2BindingStatus.RESOLVED
     }
+    providers_by_id = {item.provider_id: item for item in providers}
+    bound_dimensions_by_provider = {
+        provider_id: tuple(sorted(
+            binding.dimension.value for binding in plan.bindings
+            if binding.binding_status is L2BindingStatus.RESOLVED
+            and binding.provider_id == provider_id
+        ))
+        for provider_id in selected_provider_ids
+    } if plan is not None else {}
+    for provider_id, dimensions in bound_dimensions_by_provider.items():
+        declared = tuple(item.value for item in
+                         providers_by_id[provider_id].supported_dimensions)
+        if dimensions != declared:
+            raise ValueError(
+                "resolved L2 provider dimensions do not match provider declaration")
     validators = {
         item.provider_id: factories[item.validator_type](item.config)
         for item in providers if item.provider_id in selected_provider_ids
@@ -405,6 +421,18 @@ def _requirement_driven_l2_validator(
                               if isinstance(provider_detail, Mapping) else {})
             disposition, disposition_reasons = provider_execution_disposition(
                 detail_mapping, result.status.value)
+            dimension_contract_reasons = (
+                validate_provider_dimension_contract(
+                    detail_mapping,
+                    bound_dimensions_by_provider.get(binding.provider_id, ()),
+                )
+                if disposition in {
+                    L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
+                    L2ProviderExecutionDisposition.EXECUTED_FAILED,
+                    L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
+                }
+                else ()
+            )
             total_evidence_required = disposition in {
                 L2ProviderExecutionDisposition.EXECUTED_FAILED,
                 L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -440,7 +468,8 @@ def _requirement_driven_l2_validator(
                 for name, value in identities.items() if _SHA256.fullmatch(value) is None
             ) if total_evidence_required else ()
             reasons = tuple(sorted(set(
-                _result_reason_codes(result) + closure_reasons + disposition_reasons)))
+                _result_reason_codes(result) + closure_reasons + disposition_reasons
+                + dimension_contract_reasons)))
             scope_missing = claim_scope is L2ClaimScope.NONE
             authority_incomplete = not bool(
                 getattr(artifact, "l2_authority_complete", False)
@@ -456,6 +485,7 @@ def _requirement_driven_l2_validator(
                                     L2DimensionStatus.INCONCLUSIVE)
                 claim_scope = L2ClaimScope.NONE
             elif total_evidence_required and (missing or closure_reasons
+                                               or dimension_contract_reasons
                                                or disposition_reasons):
                 dimension_status = L2DimensionStatus.INCONCLUSIVE
                 claim_scope = L2ClaimScope.NONE
