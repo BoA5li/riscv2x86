@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from riscv2x86_py.l2_dimensions import L2Dimension
 from riscv2x86_py.l2_evidence_closure import (
-    L2_PROVIDER_EVIDENCE_SCHEMA, L2ProviderExecutionDisposition,
+    L2_DIMENSION_EVIDENCE_SCHEMA, L2_PROVIDER_EVIDENCE_SCHEMA,
+    L2DimensionEvidence, L2ProviderExecutionDisposition,
     execution_plan_for_provider, partial_provider_evidence,
     provider_evidence_fields, provider_execution_disposition,
     provider_precondition_detail, validate_provider_dimension_contract,
@@ -13,6 +15,11 @@ from riscv2x86_py.l2_evidence_closure import (
 
 H = "sha256:" + "1" * 64
 O = "sha256:" + "2" * 64
+
+
+def dimensions(*names: L2Dimension):
+    return {name: L2DimensionEvidence(
+        O, O, ("property:" + name.value,)) for name in names}
 
 
 def artifact(fragment="fragment:a"):
@@ -27,8 +34,8 @@ def artifact(fragment="fragment:a"):
 def test_complete_provider_evidence_closes_all_required_identities():
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1}, dimensions=("logical_operands", "shell_semantics"))
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS))
     assert value["evidenceSchemaVersion"] == L2_PROVIDER_EVIDENCE_SCHEMA
     closed, reasons = validated_provider_evidence(
         value, artifact(), dimension="logical_operands", provider_id="provider")
@@ -43,8 +50,8 @@ def test_program_authority_can_bind_multiple_fragment_plans_to_one_execution():
     authorized = "sha256:" + "9" * 64
     values = [provider_evidence_fields(
         artifact(fragment), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": fragment}, dimensions=("logical_operands",),
+        execution_nonce={"attempt": fragment}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS),
         authorized_execution_identity=authorized,
     ) for fragment in ("fragment:a", "fragment:b")]
     assert {item["executionIdentity"] for item in values} == {authorized}
@@ -60,8 +67,8 @@ def test_program_authority_can_bind_multiple_fragment_plans_to_one_execution():
 def test_each_missing_identity_fails_closed(name):
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
     value[name] = ""
     closed, reasons = validated_provider_evidence(
         value, artifact(), dimension="logical_operands", provider_id="provider")
@@ -72,8 +79,8 @@ def test_each_missing_identity_fails_closed(name):
 def test_cross_fragment_authority_and_relation_are_rejected():
     value = provider_evidence_fields(
         artifact("fragment:a"), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
     other = artifact("fragment:b")
     other.l2_authority_identity = "sha256:" + "3" * 64
     other.effect_relation_set_identity = "sha256:" + "4" * 64
@@ -129,9 +136,9 @@ def test_executed_inconclusive_retains_partial_evidence_only():
 def test_dimensions_share_execution_but_not_observation_identity():
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
         execution_nonce={"attempt": 1},
-        dimensions=("logical_operands", "shell_semantics"))
+        dimensions=(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS))
     observations = value["dimensionObservations"]
     assert observations["logical_operands"] != observations["shell_semantics"]
     logical, reasons = validated_provider_evidence(
@@ -141,6 +148,48 @@ def test_dimensions_share_execution_but_not_observation_identity():
     assert reasons == shell_reasons == ()
     assert logical["executionIdentity"] == shell["executionIdentity"]
     assert logical["sourceObservationIdentity"] != shell["sourceObservationIdentity"]
+    assert observations["logical_operands"]["schemaVersion"] == \
+        L2_DIMENSION_EVIDENCE_SCHEMA
+    assert observations["logical_operands"]["observedProperties"] == [
+        "property:logical_operands"]
+
+
+@pytest.mark.parametrize("field", [
+    "authorityIdentity", "effectRelationIdentity", "executionIdentity",
+])
+def test_dimension_identity_cannot_diverge_from_execution_plan(field):
+    value = provider_evidence_fields(
+        artifact(), provider_id="provider", harness_identity=H,
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
+    value["dimensionObservations"]["logical_operands"][field] = O
+    closed, reasons = validated_provider_evidence(
+        value, artifact(), dimension="logical_operands", provider_id="provider")
+    assert closed is None
+    assert ("l2.provider-evidence.dimension-identity-invalid:logical_operands:"
+            + field) in reasons
+
+
+def test_dimension_without_observed_properties_fails_closed():
+    value = provider_evidence_fields(
+        artifact(), provider_id="provider", harness_identity=H,
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
+    value["dimensionObservations"]["logical_operands"]["observedProperties"] = []
+    closed, reasons = validated_provider_evidence(
+        value, artifact(), dimension="logical_operands", provider_id="provider")
+    assert closed is None
+    assert "l2.provider-evidence.observed-properties-incomplete:logical_operands" in reasons
+
+
+def test_untyped_dimension_evidence_is_rejected_at_provider_boundary():
+    with pytest.raises(ValueError, match="not typed"):
+        provider_evidence_fields(
+            artifact(), provider_id="provider", harness_identity=H,
+            execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+            dimension_evidence={L2Dimension.LOGICAL_OPERANDS: {  # type: ignore[dict-item]
+                "sourceEvidenceIdentity": O, "targetEvidenceIdentity": O,
+            }})
 
 
 def test_dimension_specific_evidence_must_cover_exact_declared_set():
@@ -148,12 +197,9 @@ def test_dimension_specific_evidence_must_cover_exact_declared_set():
         provider_evidence_fields(
             artifact(), provider_id="provider", harness_identity=H,
             execution_nonce={"attempt": 1},
-            dimensions=("logical_operands", "shell_semantics"),
+            dimensions=(L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
             dimension_evidence={
-                "logical_operands": {
-                    "sourceEvidenceIdentity": O,
-                    "targetEvidenceIdentity": O,
-                },
+                L2Dimension.LOGICAL_OPERANDS: L2DimensionEvidence(O, O, ("operand_value",)),
             },
         )
 
@@ -161,8 +207,8 @@ def test_dimension_specific_evidence_must_cover_exact_declared_set():
 def test_executed_provider_result_dimension_contract_is_exact():
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
     assert validate_provider_dimension_contract(
         value, ("logical_operands",)) == ()
     assert validate_provider_dimension_contract(
@@ -173,8 +219,8 @@ def test_executed_provider_result_dimension_contract_is_exact():
 def test_execution_plan_payload_tampering_fails_closed():
     value = provider_evidence_fields(
         artifact(), provider_id="provider", harness_identity=H,
-        source_observation_identity=O, target_observation_identity=O,
-        execution_nonce={"attempt": 1}, dimensions=("logical_operands",))
+        execution_nonce={"attempt": 1}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
     value["executionPlan"]["providerId"] = "other-provider"
     closed, reasons = validated_provider_evidence(
         value, artifact(), dimension="logical_operands", provider_id="provider")
