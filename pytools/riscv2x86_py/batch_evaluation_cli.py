@@ -161,7 +161,24 @@ def discover_batch_cases(
     return tuple(sorted(cases, key=lambda item: str(item["caseId"])))
 
 
-def _orchestration_failure(case: Mapping[str, object], exc: Exception) -> dict[str, object]:
+def _orchestration_failure(
+    case: Mapping[str, object], exc: Exception, *, artifact_path: Path,
+) -> dict[str, object]:
+    """Preserve the exact orchestration boundary without reclassifying it.
+
+    Provider and semantic failures are represented by their own typed results.
+    Reaching this function therefore means that evaluation orchestration itself
+    raised.  Keep the historic top-level reason code, but retain structured
+    stage/type/path data so a fence or another non-scalar route cannot be
+    mistaken for an operand-authority failure.
+    """
+    failure = {
+        "schemaVersion": "riscv2x86.batch-orchestration-failure.v1",
+        "failureStage": "evaluation_orchestration",
+        "exceptionType": type(exc).__name__,
+        "detail": str(exc),
+        "artifactPath": str(artifact_path.resolve()),
+    }
     payload = {
         "schemaVersion": EVALUATION_RESULT_SCHEMA,
         "evaluationIdentity": "", "requestIdentity": "",
@@ -169,6 +186,7 @@ def _orchestration_failure(case: Mapping[str, object], exc: Exception) -> dict[s
         "reasonCodes": ["batch.evaluation-orchestration-error"],
         "candidateManifestId": "", "attempts": [], "commands": [],
         "replayArtifact": "", "detail": f"{type(exc).__name__}: {exc}",
+        "orchestrationFailure": failure,
         "caseId": case["caseId"],
     }
     return payload
@@ -187,7 +205,9 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         request = evaluation_request_from_dict(request_value)  # type: ignore[arg-type]
         result = run_evaluation(request, work_directory=case_root / "work")
     except Exception as exc:
-        result = _orchestration_failure(case, exc)
+        result = _orchestration_failure(
+            case, exc, artifact_path=case_root / "work",
+        )
     result_path = case_root / "evaluation-result.json"
     persist_evaluation_result(result, result_path)
     level_statuses: dict[str, list[str]] = {}
@@ -217,7 +237,9 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         str(item.get("phase")): str(item.get("status"))
         for item in result.get("commands", []) if isinstance(item, Mapping)
     }
-    if command_status.get("source-build") == "failed":
+    if "batch.evaluation-orchestration-error" in result.get("reasonCodes", []):
+        disposition = "evaluation_orchestration_error"
+    elif command_status.get("source-build") == "failed":
         disposition = "source_build_failed"
     elif command_status.get("source-build") == "inconclusive":
         disposition = "source_build_inconclusive"
@@ -342,6 +364,8 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "descriptorIdentity": case["descriptorIdentity"],
         "status": result["status"], "reasonCodes": result.get("reasonCodes", []),
         "evaluationIdentity": result.get("evaluationIdentity", ""),
+        **({"orchestrationFailure": result["orchestrationFailure"]}
+           if isinstance(result.get("orchestrationFailure"), Mapping) else {}),
         "resultPath": result_path.relative_to(output).as_posix(),
         "attempts": result.get("attempts", []),
         "translationOutcomes": outcomes,
