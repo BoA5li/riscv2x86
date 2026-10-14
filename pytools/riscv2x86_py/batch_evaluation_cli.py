@@ -371,19 +371,42 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
 
 
 def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> dict[str, object]:
-    """Explain L2 coverage at the fragment-dimension unit.
+    """Explain L2 coverage without mixing statistical units.
 
-    Resolved plans establish provider selection; closed dimension results establish
-    whether authority, observations, relations, and comparison evidence formed.
+    The requirement manifest is the authority for required fragments and
+    dimensions.  Resolved plans describe provider bindings, while closed
+    dimension results describe evidence.  A provider execution is counted once
+    per provider/execution identity, even when it serves several dimensions.
     """
-    provider_counts = {kind: Counter() for kind in
-                       ("automatic", "explicit", "runtime_adapter")}
+    linkage = result.get("translationEvaluationLink")
+    manifest = linkage.get("l2Requirements") if isinstance(linkage, Mapping) else None
+    requirements = manifest.get("requirements") if isinstance(manifest, Mapping) else None
+    required_pairs: set[tuple[str, str]] = set()
+    required_fragments: set[str] = set()
+    if isinstance(requirements, list):
+        for requirement in requirements:
+            if (not isinstance(requirement, Mapping)
+                    or requirement.get("eligibilityStatus") != "eligible"):
+                continue
+            fragment_id = requirement.get("fragmentId")
+            dimensions = requirement.get("requiredDimensions")
+            if not isinstance(fragment_id, str) or not fragment_id or not isinstance(dimensions, list):
+                continue
+            valid_dimensions = {
+                item for item in dimensions if isinstance(item, str) and item
+            }
+            if valid_dimensions:
+                required_fragments.add(fragment_id)
+                required_pairs.update((fragment_id, item) for item in valid_dimensions)
+
+    provider_executions = {kind: Counter() for kind in
+                           ("automatic", "explicit", "runtime_adapter")}
     missing_capabilities: Counter[str] = Counter()
     authority: Counter[str] = Counter()
     observations: Counter[str] = Counter()
     relations: Counter[str] = Counter()
     dimension_results: dict[tuple[str, str], Mapping[str, object]] = {}
-    seen_bindings: dict[tuple[str, str], tuple[str, str, tuple[str, ...]]] = {}
+    seen_bindings: dict[tuple[str, str], tuple[str, str, str, tuple[str, ...]]] = {}
     for attempt in result.get("attempts", []):
         validation = attempt.get("validation") if isinstance(attempt, Mapping) else None
         for layer in validation.get("layers", []) if isinstance(validation, Mapping) else []:
@@ -399,18 +422,21 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
                 for dimension, value in raw.items():
                     if isinstance(dimension, str) and isinstance(value, Mapping):
                         dimension_results[(fragment_id, dimension)] = value
-    plan_count = 0
+    planned_fragments: set[str] = set()
     for path in sorted(case_root.rglob("*-l2-resolved-plan.json")):
         try:
             plan = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            missing_capabilities["invalid_execution_plan"] += 1
+            if required_fragments:
+                missing_capabilities["invalid_execution_plan"] += 1
             continue
         if not isinstance(plan, Mapping) or not isinstance(plan.get("bindings"), list):
-            missing_capabilities["invalid_execution_plan"] += 1
+            if required_fragments:
+                missing_capabilities["invalid_execution_plan"] += 1
             continue
-        plan_count += 1
         fragment_id = str(plan.get("fragmentId", ""))
+        if fragment_id:
+            planned_fragments.add(fragment_id)
         for binding in plan["bindings"]:
             if not isinstance(binding, Mapping):
                 missing_capabilities["invalid_binding"] += 1
@@ -418,55 +444,118 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
             dimension = str(binding.get("dimension", ""))
             status = str(binding.get("bindingStatus", "inconclusive"))
             kind = str(binding.get("bindingKind", ""))
+            provider_id = str(binding.get("providerId", ""))
             raw_missing = binding.get("missingCapabilities")
             missing_tuple = tuple(sorted(item for item in raw_missing
                                          if isinstance(item, str) and item)) \
                 if isinstance(raw_missing, list) else ()
             binding_key = (fragment_id, dimension)
-            signature = (status, kind, missing_tuple)
+            signature = (status, kind, provider_id, missing_tuple)
             previous = seen_bindings.get(binding_key)
             if previous is not None:
                 if previous != signature:
                     missing_capabilities["ambiguous_binding_plan"] += 1
                 continue
             seen_bindings[binding_key] = signature
-            result_item = dimension_results.get((fragment_id, dimension))
-            outcome = (str(result_item.get("status", "inconclusive"))
-                       if isinstance(result_item, Mapping) else status)
-            if kind in provider_counts:
-                provider_counts[kind][outcome] += 1
-            else:
+            if binding_key not in required_pairs:
+                continue
+            if kind not in provider_executions or not provider_id:
                 missing_capabilities["provider_unbound"] += 1
             for capability in missing_tuple:
                 missing_capabilities[capability] += 1
-            if result_item is None:
-                authority["not_materialized"] += 1
-                observations["not_produced"] += 1
-                relations["not_approved"] += 1
-                continue
-            authority_id = result_item.get("authorityIdentity")
-            authority["complete" if isinstance(authority_id, str) and
-                      re.fullmatch(r"sha256:[0-9a-f]{64}", authority_id)
-                      else "incomplete"] += 1
-            source_id, target_id = (result_item.get("sourceObservationIdentity"),
-                                    result_item.get("targetObservationIdentity"))
-            source_ok = isinstance(source_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", source_id)
-            target_ok = isinstance(target_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", target_id)
-            observations["complete" if source_ok and target_ok else
-                         "missing_source" if not source_ok and target_ok else
-                         "missing_target" if source_ok and not target_ok else
-                         "not_produced"] += 1
-            relation_id = result_item.get("effectRelationIdentity")
-            relations["approved" if isinstance(relation_id, str) and
-                      re.fullmatch(r"sha256:[0-9a-f]{64}", relation_id)
-                      else "not_approved"] += 1
-    if plan_count == 0:
+    # A missing plan is meaningful only for an eligible requirement that has
+    # required dimensions.  Count missing required fragments, never cases.
+    for _fragment_id in sorted(required_fragments - planned_fragments):
         missing_capabilities["resolved_plan_missing"] += 1
+
+    planned_required_pairs = set(seen_bindings) & required_pairs
+    result_required_pairs = set(dimension_results) & required_pairs
+    for pair in sorted(required_pairs):
+        result_item = dimension_results.get(pair)
+        if pair not in seen_bindings or result_item is None:
+            authority["not_materialized"] += 1
+            observations["not_produced"] += 1
+            relations["not_approved"] += 1
+            continue
+        authority_id = result_item.get("authorityIdentity")
+        authority["complete" if isinstance(authority_id, str) and
+                  re.fullmatch(r"sha256:[0-9a-f]{64}", authority_id)
+                  else "incomplete"] += 1
+        source_id, target_id = (result_item.get("sourceObservationIdentity"),
+                                result_item.get("targetObservationIdentity"))
+        source_ok = isinstance(source_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", source_id)
+        target_ok = isinstance(target_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", target_id)
+        observations["complete" if source_ok and target_ok else
+                     "missing_source" if not source_ok and target_ok else
+                     "missing_target" if source_ok and not target_ok else
+                     "not_produced"] += 1
+        relation_id = result_item.get("effectRelationIdentity")
+        relations["approved" if isinstance(relation_id, str) and
+                  re.fullmatch(r"sha256:[0-9a-f]{64}", relation_id)
+                  else "not_approved"] += 1
+
+    # Group bindings by provider.  Non-empty execution identities are the
+    # execution authority and may intentionally be shared by fragments.  When
+    # no execution exists, the planned fragment/provider pair is one attempted
+    # provider invocation, not one invocation per dimension.
+    provider_groups: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+    for pair, (_status, kind, provider_id, _missing) in seen_bindings.items():
+        if pair not in required_pairs or kind not in provider_executions or not provider_id:
+            continue
+        provider_groups.setdefault((pair[0], kind, provider_id), []).append(pair)
+    executed_groups: dict[tuple[str, str], tuple[str, set[str]]] = {}
+    for (_fragment_id, kind, provider_id), pairs in sorted(provider_groups.items()):
+        results = [dimension_results[pair] for pair in pairs if pair in dimension_results]
+        execution_ids = sorted({
+            str(item.get("executionIdentity")) for item in results
+            if isinstance(item.get("executionIdentity"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", str(item.get("executionIdentity")))
+        })
+        if not execution_ids:
+            provider_executions[kind]["not_executed"] += 1
+            continue
+        statuses = {str(item.get("status", "inconclusive")) for item in results}
+        for execution_id in execution_ids:
+            execution_key = (provider_id, execution_id)
+            previous = executed_groups.get(execution_key)
+            if previous is None:
+                executed_groups[execution_key] = (kind, set(statuses))
+            else:
+                previous_kind, previous_statuses = previous
+                if previous_kind != kind:
+                    missing_capabilities["provider_execution_kind_conflict"] += 1
+                previous_statuses.update(statuses)
+    for kind, statuses in executed_groups.values():
+        outcome = ("failed" if "failed" in statuses else
+                   "inconclusive" if "inconclusive" in statuses else
+                   "not_run" if "not_run" in statuses else "verified")
+        provider_executions[kind]["executed_" + outcome] += 1
+
+    case_counts = Counter({"total": 1})
+    case_counts["l2_required" if required_pairs else "l2_not_required"] += 1
     return {
-        "unit": "fragment-dimension",
-        "automaticProviderCoverage": dict(sorted(provider_counts["automatic"].items())),
-        "explicitHarnessCoverage": dict(sorted(provider_counts["explicit"].items())),
-        "runtimeAdapterCoverage": dict(sorted(provider_counts["runtime_adapter"].items())),
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v2",
+        "statisticalUnits": {
+            "caseCounts": "case",
+            "fragmentCounts": "eligible required fragment",
+            "requiredDimensionCounts": "eligible required fragment-dimension",
+            "providerExecutionCounts": "unique providerId + executionIdentity; planned fragment/provider when not executed",
+        },
+        "caseCounts": dict(sorted(case_counts.items())),
+        "fragmentCounts": {
+            "planned": len(required_fragments & planned_fragments),
+            "required": len(required_fragments),
+            "with_dimension_result": len(required_fragments & {pair[0] for pair in result_required_pairs}),
+        },
+        "requiredDimensionCounts": {
+            "planned": len(planned_required_pairs),
+            "required": len(required_pairs),
+            "with_result": len(result_required_pairs),
+        },
+        "providerExecutionCounts": {
+            kind: dict(sorted(provider_executions[kind].items()))
+            for kind in provider_executions
+        },
         "missingCapabilityCounts": dict(sorted(missing_capabilities.items())),
         "authorityMaterializationCounts": dict(sorted(authority.items())),
         "observationProductionCounts": dict(sorted(observations.items())),
@@ -475,11 +564,13 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
 
 
 def _merge_l2_coverage(items: object) -> dict[str, object]:
-    fields = ("automaticProviderCoverage", "explicitHarnessCoverage",
-              "runtimeAdapterCoverage", "missingCapabilityCounts",
+    fields = ("caseCounts", "fragmentCounts", "requiredDimensionCounts",
+              "missingCapabilityCounts",
               "authorityMaterializationCounts", "observationProductionCounts",
               "relationApprovalCounts")
     totals = {field: Counter() for field in fields}
+    provider_totals = {kind: Counter() for kind in
+                       ("automatic", "explicit", "runtime_adapter")}
     for item in items if isinstance(items, list) else []:
         coverage = item.get("l2CoverageDiagnostics") if isinstance(item, Mapping) else None
         if not isinstance(coverage, Mapping):
@@ -489,7 +580,28 @@ def _merge_l2_coverage(items: object) -> dict[str, object]:
             if isinstance(raw, Mapping):
                 totals[field].update({str(key): int(value) for key, value in raw.items()
                                       if isinstance(value, int) and not isinstance(value, bool)})
-    return {field: dict(sorted(totals[field].items())) for field in fields}
+        raw_providers = coverage.get("providerExecutionCounts")
+        if isinstance(raw_providers, Mapping):
+            for kind, counts in raw_providers.items():
+                if kind in provider_totals and isinstance(counts, Mapping):
+                    provider_totals[kind].update({
+                        str(key): int(value) for key, value in counts.items()
+                        if isinstance(value, int) and not isinstance(value, bool)
+                    })
+    merged = {
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v2",
+        "statisticalUnits": {
+            "caseCounts": "case",
+            "fragmentCounts": "eligible required fragment",
+            "requiredDimensionCounts": "eligible required fragment-dimension",
+            "providerExecutionCounts": "unique providerId + executionIdentity; planned fragment/provider when not executed",
+        },
+        **{field: dict(sorted(totals[field].items())) for field in fields},
+        "providerExecutionCounts": {
+            kind: dict(sorted(provider_totals[kind].items())) for kind in provider_totals
+        },
+    }
+    return merged
 
 
 def _l2_disposition_counts(
@@ -686,11 +798,16 @@ def run_batch_evaluation(
             "l2RequirementDenominator": sum(l2_requirement_dispositions.values()),
             "l2CoverageDiagnostics": _merge_l2_coverage(completed),
             "l2CoverageMetricDefinitions": {
-                "providerCoverageUnit": "required fragment-dimension binding",
-                "authorityMaterializationUnit": "required fragment-dimension",
-                "observationProductionUnit": "required fragment-dimension",
-                "relationApprovalUnit": "required fragment-dimension",
-                "missingCapabilityUnit": "unresolved fragment-dimension capability",
+                "caseCountUnit": "case",
+                "fragmentCountUnit": "eligible required fragment",
+                "requiredDimensionCountUnit": "eligible required fragment-dimension",
+                "providerExecutionCountUnit": (
+                    "unique providerId + executionIdentity; planned fragment/provider when not executed"
+                ),
+                "authorityMaterializationUnit": "eligible required fragment-dimension",
+                "observationProductionUnit": "eligible required fragment-dimension",
+                "relationApprovalUnit": "eligible required fragment-dimension",
+                "missingCapabilityUnit": "eligible unresolved fragment-dimension capability",
             },
             "statisticalUnits": {"translationCoverage": "fragment",
                                  "l2RequirementCoverage": "fragment",

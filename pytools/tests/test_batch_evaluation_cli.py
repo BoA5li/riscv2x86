@@ -97,14 +97,27 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     assert result["l2RequiredDimensionCounts"] == {}
     assert result["l2RequirementDenominator"] == 0
     assert result["l2CoverageDiagnostics"] == {
-        "automaticProviderCoverage": {}, "explicitHarnessCoverage": {},
-        "runtimeAdapterCoverage": {},
-        "missingCapabilityCounts": {"resolved_plan_missing": 2},
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v2",
+        "statisticalUnits": {
+            "caseCounts": "case",
+            "fragmentCounts": "eligible required fragment",
+            "requiredDimensionCounts": "eligible required fragment-dimension",
+            "providerExecutionCounts": (
+                "unique providerId + executionIdentity; planned fragment/provider when not executed"
+            ),
+        },
+        "caseCounts": {"l2_not_required": 2, "total": 2},
+        "fragmentCounts": {"planned": 0, "required": 0, "with_dimension_result": 0},
+        "requiredDimensionCounts": {"planned": 0, "required": 0, "with_result": 0},
+        "providerExecutionCounts": {
+            "automatic": {}, "explicit": {}, "runtime_adapter": {},
+        },
+        "missingCapabilityCounts": {},
         "authorityMaterializationCounts": {},
         "observationProductionCounts": {}, "relationApprovalCounts": {},
     }
-    assert result["l2CoverageMetricDefinitions"]["providerCoverageUnit"] == (
-        "required fragment-dimension binding")
+    assert result["l2CoverageMetricDefinitions"]["providerExecutionCountUnit"] == (
+        "unique providerId + executionIdentity; planned fragment/provider when not executed")
     assert [item["caseId"] for item in result["cases"]] == ["add-001", "shift-001"]
     assert (output / "cases/add-001/evaluation-result.json").is_file()
     assert (output / "cases/shift-001/evaluation-result.json").is_file()
@@ -135,11 +148,14 @@ def test_l2_coverage_diagnostics_separate_provider_and_evidence_failures(tmp_pat
         "fragmentId": "fragment:renamed:0",
         "bindings": [
             {"dimension": "logical_operands", "bindingStatus": "resolved",
-             "bindingKind": "automatic", "missingCapabilities": []},
+             "bindingKind": "automatic", "providerId": "provider:operand",
+             "missingCapabilities": []},
             {"dimension": "control_flow", "bindingStatus": "resolved",
-             "bindingKind": "explicit", "missingCapabilities": []},
+             "bindingKind": "explicit", "providerId": "provider:control",
+             "missingCapabilities": []},
             {"dimension": "memory_effects", "bindingStatus": "not_run",
-             "bindingKind": "", "missingCapabilities": ["object_relative_memory_observation"]},
+             "bindingKind": "", "providerId": "",
+             "missingCapabilities": ["object_relative_memory_observation"]},
         ],
     }
     (replay / "one-l2-resolved-plan.json").write_text(json.dumps(plan))
@@ -151,22 +167,35 @@ def test_l2_coverage_diagnostics_separate_provider_and_evidence_failures(tmp_pat
             "logical_operands": {"status": "verified", "authorityIdentity": identity("a"),
                 "sourceObservationIdentity": identity("b"),
                 "targetObservationIdentity": identity("c"),
-                "effectRelationIdentity": identity("d")},
+                "effectRelationIdentity": identity("d"), "executionIdentity": identity("1")},
             "control_flow": {"status": "failed", "authorityIdentity": identity("a"),
                 "sourceObservationIdentity": identity("e"),
                 "targetObservationIdentity": identity("f"),
-                "effectRelationIdentity": identity("d")},
+                "effectRelationIdentity": identity("d"), "executionIdentity": identity("2")},
             "memory_effects": {"status": "not_run", "authorityIdentity": "",
                 "sourceObservationIdentity": "", "targetObservationIdentity": "",
-                "effectRelationIdentity": ""},
+                "effectRelationIdentity": "", "executionIdentity": ""},
         },
     }
-    result = {"attempts": [{"validation": {"layers": [
-        {"level": "L2", "detail": json.dumps(detail)}]}}]}
+    result = {
+        "translationEvaluationLink": {"l2Requirements": {"requirements": [{
+            "fragmentId": "fragment:renamed:0", "eligibilityStatus": "eligible",
+            "requiredDimensions": ["logical_operands", "control_flow", "memory_effects"],
+        }]}},
+        "attempts": [{"validation": {"layers": [
+            {"level": "L2", "detail": json.dumps(detail)}]}}],
+    }
     coverage = _l2_coverage_diagnostics(result, case_root)
-    assert coverage["automaticProviderCoverage"] == {"verified": 1}
-    assert coverage["explicitHarnessCoverage"] == {"failed": 1}
-    assert coverage["runtimeAdapterCoverage"] == {}
+    assert coverage["caseCounts"] == {"l2_required": 1, "total": 1}
+    assert coverage["fragmentCounts"] == {
+        "planned": 1, "required": 1, "with_dimension_result": 1}
+    assert coverage["requiredDimensionCounts"] == {
+        "planned": 3, "required": 3, "with_result": 3}
+    assert coverage["providerExecutionCounts"] == {
+        "automatic": {"executed_verified": 1},
+        "explicit": {"executed_failed": 1},
+        "runtime_adapter": {},
+    }
     assert coverage["missingCapabilityCounts"] == {
         "object_relative_memory_observation": 1, "provider_unbound": 1}
     assert coverage["authorityMaterializationCounts"] == {
@@ -178,9 +207,14 @@ def test_l2_coverage_diagnostics_separate_provider_and_evidence_failures(tmp_pat
 
 def test_l2_coverage_aggregation_preserves_nonverified_round2_categories():
     fields = {
-        "automaticProviderCoverage": {"verified": 9, "inconclusive": 1},
-        "explicitHarnessCoverage": {"verified": 2},
-        "runtimeAdapterCoverage": {"verified": 1, "not_run": 1},
+        "caseCounts": {"total": 1, "l2_required": 1},
+        "fragmentCounts": {"required": 2, "planned": 2, "with_dimension_result": 2},
+        "requiredDimensionCounts": {"required": 14, "planned": 14, "with_result": 14},
+        "providerExecutionCounts": {
+            "automatic": {"executed_verified": 9, "executed_inconclusive": 1},
+            "explicit": {"executed_verified": 2},
+            "runtime_adapter": {"executed_verified": 1, "not_executed": 1},
+        },
         "missingCapabilityCounts": {"instruction_visibility": 1},
         "authorityMaterializationCounts": {"complete": 12, "incomplete": 2},
         "observationProductionCounts": {"complete": 12, "not_produced": 2},
@@ -191,10 +225,83 @@ def test_l2_coverage_aggregation_preserves_nonverified_round2_categories():
         {"l2CoverageDiagnostics": {
             **fields, "missingCapabilityCounts": {"privileged_state_observation": 1}}},
     ])
-    assert merged["automaticProviderCoverage"] == {"inconclusive": 2, "verified": 18}
+    assert merged["providerExecutionCounts"]["automatic"] == {
+        "executed_inconclusive": 2, "executed_verified": 18}
+    assert merged["caseCounts"] == {"l2_required": 2, "total": 2}
     assert merged["missingCapabilityCounts"] == {
         "instruction_visibility": 1, "privileged_state_observation": 1}
     assert merged["relationApprovalCounts"] == {"approved": 24, "not_approved": 4}
+
+
+def test_resolved_plan_missing_is_scoped_to_required_fragments(tmp_path):
+    no_requirement = {"translationEvaluationLink": {"l2Requirements": {
+        "requirements": [{
+            "fragmentId": "fragment:not-eligible", "eligibilityStatus": "ineligible",
+            "requiredDimensions": ["logical_operands"],
+        }],
+    }}, "attempts": []}
+    coverage = _l2_coverage_diagnostics(no_requirement, tmp_path / "absent")
+    assert coverage["caseCounts"] == {"l2_not_required": 1, "total": 1}
+    assert coverage["missingCapabilityCounts"] == {}
+
+    required = {"translationEvaluationLink": {"l2Requirements": {
+        "requirements": [{
+            "fragmentId": "fragment:required", "eligibilityStatus": "eligible",
+            "requiredDimensions": ["logical_operands", "shell_semantics"],
+        }],
+    }}, "attempts": []}
+    coverage = _l2_coverage_diagnostics(required, tmp_path / "absent")
+    assert coverage["caseCounts"] == {"l2_required": 1, "total": 1}
+    assert coverage["fragmentCounts"] == {
+        "planned": 0, "required": 1, "with_dimension_result": 0}
+    assert coverage["requiredDimensionCounts"] == {
+        "planned": 0, "required": 2, "with_result": 0}
+    # Missing-plan count is per required fragment, not per case or dimension.
+    assert coverage["missingCapabilityCounts"] == {"resolved_plan_missing": 1}
+
+
+def test_provider_execution_is_not_recounted_for_each_dimension(tmp_path):
+    identity = lambda char: "sha256:" + char * 64
+    case_root = tmp_path / "case"
+    replay = case_root / "work/replay"
+    replay.mkdir(parents=True)
+    plan = {
+        "fragmentId": "fragment:0",
+        "bindings": [
+            {"dimension": dimension, "bindingStatus": "resolved",
+             "bindingKind": "automatic", "providerId": "provider:shared",
+             "missingCapabilities": []}
+            for dimension in ("logical_operands", "shell_semantics")
+        ],
+    }
+    (replay / "plan-l2-resolved-plan.json").write_text(json.dumps(plan))
+    shared_execution = identity("9")
+    detail = {
+        "fragmentId": "fragment:0",
+        "dimensionResults": {
+            dimension: {
+                "status": "verified", "authorityIdentity": identity("a"),
+                "sourceObservationIdentity": identity("b"),
+                "targetObservationIdentity": identity("c"),
+                "effectRelationIdentity": identity("d"),
+                "executionIdentity": shared_execution,
+            }
+            for dimension in ("logical_operands", "shell_semantics")
+        },
+    }
+    result = {
+        "translationEvaluationLink": {"l2Requirements": {"requirements": [{
+            "fragmentId": "fragment:0", "eligibilityStatus": "eligible",
+            "requiredDimensions": ["logical_operands", "shell_semantics"],
+        }]}},
+        "attempts": [{"validation": {"layers": [
+            {"level": "L2", "detail": json.dumps(detail)}]}}],
+    }
+
+    coverage = _l2_coverage_diagnostics(result, case_root)
+    assert coverage["requiredDimensionCounts"]["with_result"] == 2
+    assert coverage["providerExecutionCounts"]["automatic"] == {
+        "executed_verified": 1}
 
 
 def test_batch_separates_no_candidate_from_target_build_failure(tmp_path):
