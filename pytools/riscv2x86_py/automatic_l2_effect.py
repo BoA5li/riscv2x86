@@ -23,9 +23,10 @@ from .l2_memory_object import (
     memory_proof_facts_from_dict,
 )
 from .l2_evidence_closure import (
-    L2ProviderExecutionDisposition, provider_evidence_fields,
+    L2DimensionEvidence, L2ProviderExecutionDisposition, provider_evidence_fields,
     provider_precondition_detail,
 )
+from .l2_dimensions import L2Dimension
 from .l2_scalar_authority import (
     assess_scalar_authority_materializability,
     scalar_authority_decision_matches_assessment,
@@ -311,8 +312,8 @@ def _object_relative_memory_events(
 
 
 def _effect_dimension_evidence(
-    observation: Mapping[str, object], dimensions: tuple[str, ...],
-) -> dict[str, dict[str, str]]:
+    observation: Mapping[str, object], dimensions: tuple[L2Dimension, ...],
+) -> dict[L2Dimension, L2DimensionEvidence]:
     """Project one execution into typed, dimension-specific evidence.
 
     The projections deliberately retain the executed event stream while
@@ -328,10 +329,17 @@ def _effect_dimension_evidence(
         "control_flow": ("controlFlow", "operands", "relations"),
         "shell_semantics": ("shell", "sourceShell", "targetShell"),
     }
-    result: dict[str, dict[str, str]] = {}
+    observed_properties = {
+        "logical_operands": ("operand_binding", "operand_value", "operand_width"),
+        "memory_effects": ("memory_object", "offset", "width", "value", "ordering"),
+        "control_flow": ("condition", "taken_successor", "fallthrough_successor"),
+        "shell_semantics": ("constraints", "clobbers", "compiler_visibility", "continuation"),
+    }
+    result: dict[L2Dimension, L2DimensionEvidence] = {}
     for dimension in dimensions:
+        dimension_name = dimension.value
         selected_authority = {
-            key: authority[key] for key in projection_keys.get(dimension, ("relations",))
+            key: authority[key] for key in projection_keys.get(dimension_name, ("relations",))
             if key in authority
         }
         per_side = {}
@@ -343,12 +351,16 @@ def _effect_dimension_evidence(
                 "schemaVersion": "riscv2x86.l2-effect-dimension-evidence.v1",
                 "fragmentId": str(observation.get("fragmentId") or ""),
                 "mode": str(observation.get("mode") or ""),
-                "dimension": dimension,
+                "dimension": dimension_name,
                 "side": side,
                 "authority": selected_authority,
                 "executionObservation": side_observation,
             })
-        result[dimension] = per_side
+        result[dimension] = L2DimensionEvidence(
+            str(per_side["sourceEvidenceIdentity"]),
+            str(per_side["targetEvidenceIdentity"]),
+            observed_properties.get(dimension_name, ("approved_effect",)),
+        )
     return result
 
 
@@ -853,11 +865,14 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             observation["reasonCode"] = reason
             evidence = _identity(observation)
             dimensions = {
-                "control-flow-functions": ("control_flow", "shell_semantics"),
+                "control-flow-functions": (
+                    L2Dimension.CONTROL_FLOW, L2Dimension.SHELL_SEMANTICS),
                 "memory-object-functions": (
-                    "logical_operands", "memory_effects", "shell_semantics"),
-                "fence-functions": ("memory_effects", "shell_semantics"),
-            }.get(mode, ("shell_semantics",))
+                    L2Dimension.LOGICAL_OPERANDS, L2Dimension.MEMORY_EFFECTS,
+                    L2Dimension.SHELL_SEMANTICS),
+                "fence-functions": (
+                    L2Dimension.MEMORY_EFFECTS, L2Dimension.SHELL_SEMANTICS),
+            }.get(mode, (L2Dimension.SHELL_SEMANTICS,))
             dimension_evidence = _effect_dimension_evidence(
                 observation, dimensions)
             replay.mkdir(parents=True,exist_ok=True)
