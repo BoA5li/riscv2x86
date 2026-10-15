@@ -12,7 +12,7 @@ from .l2_dimensions import L2Dimension
 
 
 L2_EXECUTION_PLAN_SCHEMA = "riscv2x86.l2-execution-plan.v1"
-L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v4"
+L2_PROVIDER_EVIDENCE_SCHEMA = "riscv2x86.l2-provider-evidence.v5"
 L2_DIMENSION_EVIDENCE_SCHEMA = "riscv2x86.l2-dimension-evidence.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -219,6 +219,7 @@ def provider_evidence_fields(
     dimensions: Sequence[L2Dimension],
     dimension_evidence: Mapping[L2Dimension, L2DimensionEvidence],
     authorized_execution_identity: str = "",
+    execution_payload: Mapping[str, object] | None = None,
     execution_disposition: L2ProviderExecutionDisposition =
         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
 ) -> dict[str, object]:
@@ -232,12 +233,18 @@ def provider_evidence_fields(
         if _SHA.fullmatch(authorized_execution_identity) is None:
             raise ValueError("authorized provider execution identity is invalid")
         execution_identity = authorized_execution_identity
+        if (not isinstance(execution_payload, Mapping)
+                or identity(execution_payload) != execution_identity
+                or execution_payload.get("schemaVersion") != "riscv2x86.l2-program-execution.v2"
+                or plan.fragment_id not in execution_payload.get("fragmentIds", ())):
+            raise ValueError("authorized execution payload is missing or mismatched")
     else:
-        execution_identity = identity({
+        execution_payload = {
             "schemaVersion": "riscv2x86.l2-authorized-execution.v1",
             "executionPlanIdentity": plan.plan_identity,
             "executionNonce": execution_nonce,
-        })
+        }
+        execution_identity = identity(execution_payload)
     if (not dimensions or any(not isinstance(item, L2Dimension) for item in dimensions)
             or len(set(dimensions)) != len(dimensions)):
         raise ValueError("provider evidence dimensions are incomplete")
@@ -270,6 +277,7 @@ def provider_evidence_fields(
         "harnessIdentity": plan.harness_identity,
         "dimensionObservations": observations,
         "executionIdentity": execution_identity,
+        "executionPayload": dict(execution_payload),
     }
 
 
@@ -366,20 +374,50 @@ def partial_provider_evidence(
               if isinstance(detail.get(name), str)
               and _SHA.fullmatch(str(detail.get(name)))}
     reasons: set[str] = set()
-    if detail.get("evidenceSchemaVersion") != L2_PROVIDER_EVIDENCE_SCHEMA:
+    for name in names:
+        if name in detail and name not in values:
+            reasons.add("l2.provider-evidence.partial-identity-invalid:" + name)
+    if ("evidenceSchemaVersion" in detail
+            and detail.get("evidenceSchemaVersion") != L2_PROVIDER_EVIDENCE_SCHEMA):
         reasons.add("l2.provider-evidence.schema-missing-or-unsupported")
     observations = detail.get("dimensionObservations")
     selected = observations.get(dimension) if isinstance(observations, Mapping) else None
-    _validate_dimension_observation(selected, values, dimension, str(
-        getattr(artifact, "fragment_id", "")), reasons)
+    # Missing links are expected for partial production. Validate only a
+    # formed dimension record; do not run the total validator on its fragments.
+    if selected is not None:
+        if isinstance(selected, Mapping) and set(selected) == {
+                "schemaVersion", "dimension", "authorityIdentity", "effectRelationIdentity",
+                "executionIdentity", "observedProperties", "sourceEvidenceIdentity",
+                "targetEvidenceIdentity", "sourceObservationIdentity", "targetObservationIdentity"}:
+            local_values = dict(values)
+            for key in ("authorityIdentity", "effectRelationIdentity", "executionIdentity"):
+                if key not in local_values and isinstance(selected.get(key), str):
+                    local_values[key] = selected[key]
+            _validate_dimension_observation(selected, local_values, dimension, str(
+                getattr(artifact, "fragment_id", "")), reasons)
+            values.update(local_values)
+        elif not isinstance(selected, Mapping):
+            reasons.add("l2.provider-evidence.partial-dimension-invalid:" + dimension)
+        else:
+            if ("schemaVersion" in selected and selected["schemaVersion"] != L2_DIMENSION_EVIDENCE_SCHEMA
+                    or "dimension" in selected and selected["dimension"] != dimension):
+                reasons.add("l2.provider-evidence.dimension-binding-invalid:" + dimension)
+            for key, value in selected.items():
+                if key.endswith("Identity") and (not isinstance(value, str)
+                                                 or _SHA.fullmatch(value) is None):
+                    reasons.add("l2.provider-evidence.partial-identity-invalid:" + key)
+                if key in values and value != values[key]:
+                    reasons.add("l2.provider-evidence.dimension-identity-invalid:" + dimension + ":" + key)
     authority = values.get("authorityIdentity")
     if authority and authority != str(getattr(artifact, "l2_authority_identity", "")):
         reasons.add("l2.provider-evidence.authority-mismatch")
     relation = values.get("effectRelationIdentity")
     if relation and relation != str(getattr(artifact, "effect_relation_set_identity", "")):
         reasons.add("l2.provider-evidence.effect-relation-mismatch")
-    if not _execution_plan_is_valid(detail, artifact, provider_id, values):
+    if "executionPlan" in detail and not _execution_plan_is_valid(detail, artifact, provider_id, values):
         reasons.add("l2.provider-evidence.execution-plan-invalid")
+    if not reasons:
+        reasons.add("l2.provider-evidence.partial-incomplete:" + dimension)
     return values, tuple(sorted(reasons))
 
 
@@ -408,6 +446,20 @@ def validated_provider_evidence(
         reasons.add("l2.provider-evidence.effect-relation-mismatch")
     if not _execution_plan_is_valid(detail, artifact, provider_id, values):
         reasons.add("l2.provider-evidence.execution-plan-invalid")
+    execution_payload = detail.get("executionPayload")
+    if (not isinstance(execution_payload, Mapping)
+            or identity(execution_payload) != values.get("executionIdentity")):
+        reasons.add("l2.provider-evidence.execution-identity-invalid")
+    elif execution_payload.get("schemaVersion") == "riscv2x86.l2-authorized-execution.v1":
+        if (set(execution_payload) != {"schemaVersion", "executionPlanIdentity", "executionNonce"}
+                or execution_payload.get("executionPlanIdentity") != values.get("executionPlanIdentity")):
+            reasons.add("l2.provider-evidence.execution-identity-invalid")
+    elif (execution_payload.get("schemaVersion") != "riscv2x86.l2-program-execution.v2"
+          or set(execution_payload) != {"schemaVersion", "programId", "functionId", "fragmentIds",
+                                        "dependencyGraphIdentity", "executionMode"}
+          or not isinstance(execution_payload.get("fragmentIds"), list)
+          or getattr(artifact, "fragment_id", "") not in execution_payload.get("fragmentIds", ())):
+        reasons.add("l2.provider-evidence.execution-identity-invalid")
     observations = detail.get("dimensionObservations")
     selected = observations.get(dimension) if isinstance(observations, Mapping) else None
     _validate_dimension_observation(selected, values, dimension, str(

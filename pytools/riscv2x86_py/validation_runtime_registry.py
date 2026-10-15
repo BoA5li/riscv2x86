@@ -441,20 +441,20 @@ def _requirement_driven_l2_validator(
                 L2EvidenceProductionDisposition.PARTIAL,
                 L2EvidenceProductionDisposition.COMPLETE,
             }
+            if (disposition is L2ProviderExecutionDisposition.PRECONDITION_REJECTED
+                    or not bool(getattr(artifact, "l2_authority_complete", False))):
+                evidence_validation_enabled = False
             dimension_contract_reasons = (
                 validate_provider_dimension_contract(
                     detail_mapping,
                     bound_dimensions_by_provider.get(binding.provider_id, ()),
                 )
-                if evidence_validation_enabled
+                if evidence_validation_enabled and production is L2EvidenceProductionDisposition.COMPLETE
                 else ()
             )
             total_evidence_required = (
                 production is L2EvidenceProductionDisposition.COMPLETE
-                and disposition in {
-                    L2ProviderExecutionDisposition.EXECUTED_FAILED,
-                    L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
-                })
+                and evidence_validation_enabled)
             if total_evidence_required:
                 total_evidence, closure_reasons = validated_provider_evidence(
                     detail_mapping, artifact, dimension=binding.dimension.value,
@@ -518,6 +518,15 @@ def _requirement_driven_l2_validator(
                 claim_scope = L2ClaimScope.NONE
                 reasons = tuple(sorted(set(reasons + (
                     "l2.dimension-claim-scope-missing",))))
+            # Keep one root cause per dimension. Missing downstream links are
+            # consequences of the first failed gate, not independent failures.
+            if reasons:
+                provider_roots = _result_reason_codes(result)
+                preferred = (provider_roots if disposition is
+                             L2ProviderExecutionDisposition.PRECONDITION_REJECTED
+                             else disposition_reasons or production_reasons
+                             or closure_reasons or dimension_contract_reasons or provider_roots)
+                reasons = (preferred[0] if preferred else reasons[0],)
             dimension_results.append(L2DimensionResult.create(
                 dimension=binding.dimension, status=dimension_status,
                 claim_scope=claim_scope, authority_identity=(authority_identity

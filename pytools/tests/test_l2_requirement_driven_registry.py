@@ -392,8 +392,7 @@ def test_provider_cannot_reuse_logical_observation_for_shell_dimension(tmp_path)
     assert dimensions["shell_semantics"]["status"] == "inconclusive"
     assert "l2.provider-evidence.dimension-observation-missing:shell_semantics" \
         in dimensions["shell_semantics"]["reasonCodes"]
-    assert "l2.provider-evidence.dimension-contract-mismatch" \
-        in dimensions["shell_semantics"]["reasonCodes"]
+    assert len(dimensions["shell_semantics"]["reasonCodes"]) == 1
 
 
 def test_resolved_provider_dimensions_must_equal_provider_declaration(tmp_path):

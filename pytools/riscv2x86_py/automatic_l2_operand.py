@@ -499,6 +499,13 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "fragmentBoundaryIdentity": parsed_boundary.boundary_identity,
             "programExecutionAuthorityIdentity": execution.authority_identity,
             "programExecutionIdentity": execution.execution_identity,
+            "executionPayload": {
+                "schemaVersion": "riscv2x86.l2-program-execution.v2",
+                "programId": execution.program_id, "functionId": execution.function_id,
+                "fragmentIds": list(execution.fragment_ids),
+                "dependencyGraphIdentity": execution.dependency_graph_identity,
+                "executionMode": execution.execution_mode,
+            },
             "executionMode": execution.execution_mode,
             "fragmentDependencyEdges": [item.to_dict() for item in graph.edges],
             "observationSinks": [item.to_dict()
@@ -997,6 +1004,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     ("operand_binding", "value_bit_pattern", "width", "signedness"),
                 )},
                 authorized_execution_identity=authorized_execution,
+                execution_payload=authority.get("executionPayload"),
                 execution_disposition={
                     ValidationStatus.VERIFIED:
                         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,

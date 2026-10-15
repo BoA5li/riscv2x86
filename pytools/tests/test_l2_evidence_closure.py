@@ -49,16 +49,41 @@ def test_complete_provider_evidence_closes_all_required_identities():
 
 
 def test_program_authority_can_bind_multiple_fragment_plans_to_one_execution():
-    authorized = "sha256:" + "9" * 64
+    from riscv2x86_py.l2_evidence_closure import identity
+    payload = {"schemaVersion": "riscv2x86.l2-program-execution.v2",
+               "programId": H, "functionId": H,
+               "fragmentIds": ["fragment:a", "fragment:b"],
+               "dependencyGraphIdentity": H, "executionMode": "composite"}
+    authorized = identity(payload)
     values = [provider_evidence_fields(
         artifact(fragment), provider_id="provider", harness_identity=H,
         execution_nonce={"attempt": fragment}, dimensions=(L2Dimension.LOGICAL_OPERANDS,),
         dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS),
         authorized_execution_identity=authorized,
+        execution_payload=payload,
     ) for fragment in ("fragment:a", "fragment:b")]
     assert {item["executionIdentity"] for item in values} == {authorized}
     assert (values[0]["executionPlanIdentity"]
             != values[1]["executionPlanIdentity"])
+
+
+def test_complete_execution_identity_must_recompute_from_payload():
+    value = provider_evidence_fields(
+        artifact(), provider_id="provider", harness_identity=H, execution_nonce={"sample": 1},
+        dimensions=(L2Dimension.LOGICAL_OPERANDS,),
+        dimension_evidence=dimensions(L2Dimension.LOGICAL_OPERANDS))
+    value["executionPayload"]["executionNonce"] = {"sample": 2}
+    evidence, reasons = validated_provider_evidence(value, artifact(),
+        dimension="logical_operands", provider_id="provider")
+    assert evidence is None
+    assert "l2.provider-evidence.execution-identity-invalid" in reasons
+
+
+def test_partial_checks_present_identity_without_reporting_absent_chain():
+    evidence, reasons = partial_provider_evidence({"authorityIdentity": "bad"}, artifact(),
+        dimension="logical_operands", provider_id="provider")
+    assert reasons == ("l2.provider-evidence.partial-identity-invalid:authorityIdentity",)
+    assert evidence == {}
 
 
 @pytest.mark.parametrize("name", [
@@ -136,8 +161,7 @@ def test_executed_inconclusive_retains_partial_evidence_only():
         detail, artifact(), dimension="logical_operands", provider_id="provider")
     assert evidence == {"authorityIdentity": H}
     assert reasons == (
-        "l2.provider-evidence.dimension-observation-missing:logical_operands",
-        "l2.provider-evidence.execution-plan-invalid",
+        "l2.provider-evidence.partial-incomplete:logical_operands",
     )
 
 
@@ -267,7 +291,9 @@ def test_produced_evidence_enters_schema_validation(raw):
     production, reasons = provider_evidence_production_disposition(
         detail, execution)
     assert production.value == raw and reasons == ()
-    _, closure_reasons = partial_provider_evidence(
+    checker = partial_provider_evidence if raw == "partial" else validated_provider_evidence
+    _, closure_reasons = checker(
         detail, artifact(), dimension="logical_operands",
         provider_id="provider")
-    assert "l2.provider-evidence.schema-missing-or-unsupported" in closure_reasons
+    assert ("l2.provider-evidence.partial-incomplete:logical_operands" if raw == "partial"
+            else "l2.provider-evidence.schema-missing-or-unsupported") in closure_reasons
