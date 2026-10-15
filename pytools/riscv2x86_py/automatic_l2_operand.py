@@ -320,6 +320,8 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     raw_canonical = approval.get("l2CanonicalOperandBindings")
     if not isinstance(raw_canonical, Mapping):
         return None, "L2_OPERAND_CANONICAL_BINDING_MISSING"
+    if raw_canonical.get("proofIdentity") != str(getattr(artifact, "proof_identity", "")):
+        return None, "L2_OPERAND_PROOF_IDENTITY_MISMATCH"
     try:
         canonical = canonical_l2_operand_bindings_from_dict(
             raw_canonical,
@@ -434,10 +436,13 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         try:
             execution = program_execution_authority_from_dict(
                 raw_execution, expected_fragment_id=str(getattr(artifact, "fragment_id", "")))
+        except ValueError:
+            return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INVALID"
+        try:
             graph = fragment_dependency_graph_from_dict(
                 raw_graph, expected_fragment_id=str(getattr(artifact, "fragment_id", "")))
         except ValueError:
-            return None, "L2_PROGRAM_EXECUTION_AUTHORITY_INVALID"
+            return None, "L2_OPERAND_DEPENDENCY_IDENTITY_MISMATCH"
         if (not execution.complete or not graph.complete
                 or execution.dependency_graph_identity != graph.graph_identity
                 or execution.execution_mode != graph.execution_mode):

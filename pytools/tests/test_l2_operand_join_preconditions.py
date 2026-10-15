@@ -88,3 +88,26 @@ def test_observation_route_has_precise_preexecution_reason(tmp_path, field, reas
         effect_relation_set_identity=sidecar.effect_relation_set_identity))
     assert authority is None
     assert actual == reason
+
+
+@pytest.mark.parametrize("mutation,expected", [
+    ("proof", "L2_OPERAND_PROOF_IDENTITY_MISMATCH"),
+    ("graph", "L2_OPERAND_DEPENDENCY_IDENTITY_MISMATCH"),
+])
+def test_proof_and_graph_mutations_have_distinct_roots(tmp_path, mutation, expected):
+    findings = _findings()
+    frontend = tmp_path / "frontend"; frontend.write_bytes(b"frontend")
+    materialize_automatic_l2_authority({"findings": findings}, [_function()], frontend)
+    finding = findings[0]; approval = finding["approvalArtifact"]
+    sidecar = l2_authority_sidecar_from_dict(approval["l2AuthoritySidecar"])
+    artifact = SimpleNamespace(fragment_id=finding["fragment"]["id"],
+        proof_identity=approval["proofIdentity"], shell_facts_identity=sidecar.shell_fact_identity,
+        l2_authority_identity=sidecar.authority_identity,
+        effect_relation_set_identity=sidecar.effect_relation_set_identity)
+    if mutation == "proof":
+        approval["l2CanonicalOperandBindings"]["proofIdentity"] = "sha256:" + "f" * 64
+    else:
+        approval["l2FragmentDependencyGraph"]["edges"][0]["consumerValueNodeIdentity"] = "sha256:" + "f" * 64
+    value, reason = provider._authority(finding, [_function()], artifact)
+    assert value is None
+    assert reason == expected
