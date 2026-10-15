@@ -35,6 +35,22 @@ def read_staged_requirements(report):
     marker = Path(str(report) + ".requirement-staging.json")
     staging = {}
     path, level, expected, actual, schema, actual_schema = marker, "l2", "", "", SCHEMA, ""
+    failure_path = Path(str(report) + ".requirement-failure.json")
+    if not marker.exists() and failure_path.is_file():
+        try:
+            failure = json.loads(failure_path.read_text())
+            unsigned = {k: v for k, v in failure.items() if k != "failureIdentity"}
+            if (failure.get("schemaVersion") != "riscv2x86.requirement-production-failure.v1"
+                    or failure.get("failureIdentity") != content_identity(unsigned)
+                    or failure.get("translationReportIdentity") != content_identity(
+                        json.loads(report.read_text()))):
+                raise ValueError("requirement production failure identity is stale")
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            raise RequirementArtifactError("l2", failure_path, exc) from exc
+        error = RequirementArtifactError("l2", failure_path, ValueError(failure["detail"]))
+        error.detail.update({key: failure[key] for key in (
+            "failureStage", "exceptionType", "detail", "artifactPath", "schema", "jsonPath")})
+        raise error
     try:
         staging = json.loads(marker.read_text(encoding="utf-8"))
         if not isinstance(staging, dict):
@@ -171,3 +187,17 @@ def verify_requirement_staging(report):
             Path(value["validationPlanArtifact"]).read_text(encoding="utf-8"))) != value["validationPlanIdentity"]:
         raise ValueError("staged validation plan identity mismatch")
     return value
+
+
+def write_requirement_failure(report, exc, stage):
+    """Preserve the producer exception without publishing an available marker."""
+    report = Path(report)
+    payload = {
+        "schemaVersion": "riscv2x86.requirement-production-failure.v1",
+        "translationReportIdentity": content_identity(json.loads(report.read_text())),
+        "failureStage": stage, "exceptionType": type(exc).__name__,
+        "detail": str(exc), "artifactPath": str(report),
+        "schema": "translated-report", "jsonPath": "$",
+    }
+    atomic_json(str(report) + ".requirement-failure.json",
+                {**payload, "failureIdentity": content_identity(payload)})

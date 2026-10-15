@@ -548,7 +548,13 @@ def _l2_operand_boundary_facts(
         and all(parameter_ids) and all(item in declarations for item in asm_ids)
         and (returns_void or return_id in declarations)
     )
+    from .l2_dependency_observer import compiler_observer_boundary
+    observer_boundary = compiler_observer_boundary(
+        function, asm_nodes, source=source_bytes, source_digest=source_digest,
+        function_identity=function_identity, candidate_ids=candidate_by_asm_id,
+        source_range=_source_range, walk=_walk_ast)
     return {
+        "scalarObserverBoundary": observer_boundary,
         "schemaVersion": "riscv2x86.compiler-operand-boundary.v2",
         "complete": complete,
         "parameterDeclarationIds": parameter_ids,

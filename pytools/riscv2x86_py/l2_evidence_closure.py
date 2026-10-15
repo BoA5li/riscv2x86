@@ -235,7 +235,7 @@ def provider_evidence_fields(
         execution_identity = authorized_execution_identity
         if (not isinstance(execution_payload, Mapping)
                 or identity(execution_payload) != execution_identity
-                or execution_payload.get("schemaVersion") != "riscv2x86.l2-program-execution.v2"
+                or not _valid_program_execution_payload(execution_payload)
                 or plan.fragment_id not in execution_payload.get("fragmentIds", ())):
             raise ValueError("authorized execution payload is missing or mismatched")
     else:
@@ -454,12 +454,20 @@ def validated_provider_evidence(
         if (set(execution_payload) != {"schemaVersion", "executionPlanIdentity", "executionNonce"}
                 or execution_payload.get("executionPlanIdentity") != values.get("executionPlanIdentity")):
             reasons.add("l2.provider-evidence.execution-identity-invalid")
-    elif (execution_payload.get("schemaVersion") != "riscv2x86.l2-program-execution.v2"
-          or set(execution_payload) != {"schemaVersion", "programId", "functionId", "fragmentIds",
-                                        "dependencyGraphIdentity", "executionMode"}
-          or not isinstance(execution_payload.get("fragmentIds"), list)
+    elif (not _valid_program_execution_payload(execution_payload)
           or getattr(artifact, "fragment_id", "") not in execution_payload.get("fragmentIds", ())):
         reasons.add("l2.provider-evidence.execution-identity-invalid")
+    if isinstance(execution_payload, Mapping) and execution_payload.get("schemaVersion") == "riscv2x86.l2-program-execution.v3":
+        record = detail.get("executionRecord")
+        observer_plan = detail.get("dependencyObservationPlan")
+        if (not isinstance(record, Mapping)
+                or identity(record) != execution_payload.get("executionRecordIdentity")):
+            reasons.add("l2.provider-evidence.execution-record-identity-invalid")
+        if (not isinstance(observer_plan, Mapping)
+                or observer_plan.get("planIdentity") != execution_payload.get("observationPlanIdentity")
+                or identity({k: v for k, v in observer_plan.items() if k != "planIdentity"})
+                != execution_payload.get("observationPlanIdentity")):
+            reasons.add("l2.provider-evidence.observation-plan-identity-invalid")
     observations = detail.get("dimensionObservations")
     selected = observations.get(dimension) if isinstance(observations, Mapping) else None
     _validate_dimension_observation(selected, values, dimension, str(
@@ -550,3 +558,17 @@ def _validate_dimension_observation(
                         + dimension + ":" + observation_name)
         else:
             values[observation_name] = observation
+
+
+def _valid_program_execution_payload(payload):
+    base = {"schemaVersion", "programId", "functionId", "fragmentIds",
+            "dependencyGraphIdentity", "executionMode"}
+    schema = payload.get("schemaVersion")
+    if schema == "riscv2x86.l2-program-execution.v3":
+        base |= {"observationPlanIdentity", "executionRecordIdentity", "executionAuthorityIdentity"}
+        if any(_SHA.fullmatch(str(payload.get(key, ""))) is None for key in
+               ("observationPlanIdentity", "executionRecordIdentity", "executionAuthorityIdentity")):
+            return False
+    elif schema != "riscv2x86.l2-program-execution.v2":
+        return False
+    return set(payload) == base and isinstance(payload.get("fragmentIds"), list)

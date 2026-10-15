@@ -72,10 +72,10 @@ def main():
                 and re.search(r'clang version 10\.', version) is not None)
     run('static', [sys.executable, '-m', 'py_compile'] +
         [f'pytools/riscv2x86_py/{name}.py' for name in MODULES])
+    run('frontend-build', ['cmake', '--build', 'build', '-j2'])
     run('targeted', [sys.executable, '-m', 'pytest', '-q'] +
         [f'pytools/tests/test_{name}.py' for name in TARGETS])
     run('full-python', [sys.executable, '-m', 'pytest', '-q', 'pytools/tests'])
-    run('frontend-build', ['cmake', '--build', 'build', '-j2'])
     frontend = args.frontend.resolve()
     provenance = {'python': sys.executable, 'clang': str(clang),
                   'suite': str(args.suite.resolve()), 'frontend': str(frontend)}

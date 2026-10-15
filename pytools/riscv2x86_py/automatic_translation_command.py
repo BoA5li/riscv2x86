@@ -15,7 +15,7 @@ from .automatic_l2_authority import materialize_automatic_l2_authority
 from .schema import load_report
 from .translation_attempt import terminal_attempt_from_finding, save_translation_attempt_archive
 from .translation_attempt import load_translation_attempt_archive
-from .requirement_staging import atomic_json, write_requirement_staging
+from .requirement_staging import atomic_json, write_requirement_staging, write_requirement_failure
 from .privileged_environment import (
     EnvironmentRelationKind,
     PrivilegedEnvironmentError,
@@ -182,7 +182,7 @@ def main() -> int:
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
     if any(Path(str(report) + suffix).exists() for suffix in (
-            "", ".attempts.json", ".requirement-staging.json",
+            "", ".attempts.json", ".requirement-staging.json", ".requirement-failure.json",
             ".l2-requirements.json", ".l3-requirements.json")):
         print("Translation output already exists; use a fresh work directory", file=sys.stderr)
         return 2
@@ -310,6 +310,7 @@ def main() -> int:
     # Positive backend exit codes include semantic terminal/withheld outcomes.
     # Classify authenticated artifacts before deciding the command exit code.
     if back.returncode >= 0 and report.is_file():
+        failure_stage = "authority_materialization"
         try:
             load_translation_attempt_archive(str(report) + ".attempts.json")
             translated = json.loads(report.read_text(encoding="utf-8"))
@@ -329,13 +330,20 @@ def main() -> int:
                       for index, item in enumerate(findings)),
                 str(report) + ".attempts.json",
             )
+            failure_stage = "requirement_classification"
             manifest = classify_l2_requirements(translated)
             atomic_json(str(report) + ".l2-requirements.json", manifest)
             l3 = classify_l3_requirements(translated)
             atomic_json(str(report) + ".l3-requirements.json", l3.to_dict())
+            failure_stage = "requirement_staging"
             write_requirement_staging(report, returncode=back.returncode,
                                       validation_plan=args.validation_plan)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
+            try:
+                write_requirement_failure(report, exc, failure_stage)
+            except (OSError, ValueError) as diagnostic_error:
+                print("Requirement failure diagnostic could not be saved: " +
+                      str(diagnostic_error), file=sys.stderr)
             print("Requirement classification failed: " + str(exc), file=sys.stderr)
             return 2
     elif back.returncode == 0:

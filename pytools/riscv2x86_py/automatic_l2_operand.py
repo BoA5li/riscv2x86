@@ -29,6 +29,10 @@ from .l2_evidence_closure import (
     provider_precondition_detail,
 )
 from .l2_dimensions import L2Dimension
+from .l2_dependency_observer import (
+    DependencyObserverError, build_dependency_plan, materialize_pair,
+    parse_dependency_trace,
+)
 from .l2_scalar_authority import (
     assess_scalar_authority_materializability,
     scalar_authority_decision_matches_assessment,
@@ -912,7 +916,24 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             (replay / "operand-harness.c").write_text(wrapper, encoding="utf-8")
             (replay / "operand-authority.json").write_text(json.dumps(authority, indent=2, sort_keys=True)+"\n", encoding="utf-8")
             plan = authority.get("instrumentationPlan")
+            dependency_plan = None
+            if authority.get("executionMode") == "composite":
+                stage = L2OperandFailureStage.AUTHORITY_JOIN
+                dependency_plan = build_dependency_plan(report, function)
+                if isinstance(plan, Mapping):
+                    raise DependencyObserverError(
+                        "L2_DEPENDENCY_OBSERVER_MIXED_PLAN_UNSUPPORTED",
+                        "internal operation and boundary observers require one approved merged plan")
+                stage = L2OperandFailureStage.INSTRUMENTATION
+                (replay / "dependency-observation-plan.json").write_text(
+                    json.dumps(dependency_plan, indent=2, sort_keys=True) + "\n")
             build_source, build_target = source, target
+            if dependency_plan is not None:
+                build_source, build_target = materialize_pair(
+                    source, target, report, dependency_plan, work)
+                wrapper += '\nvoid __r2x_l2_dependency(const char* p,unsigned long long v){printf("dependency_trace;%s;%016llx\\n",p,v); }\n'
+                harness.write_text(wrapper, encoding="utf-8")
+                (replay / "operand-harness.c").write_text(wrapper, encoding="utf-8")
             if isinstance(plan, Mapping):
                 stage = L2OperandFailureStage.INSTRUMENTATION
                 artifact_path = replay / "instrumentation-plan.json"
@@ -936,7 +957,11 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 "authorizedExecutionIdentity": authorized_execution,
                 "sourceDigest": config["sourceDigest"], "targetDigest": config["targetDigest"],
                 "harnessDigest": _digest_bytes(wrapper.encode()),
+                "observerSourceDigest": _digest_bytes(build_source.read_bytes()),
+                "observerTargetDigest": _digest_bytes(build_target.read_bytes()),
+                "runner": str(config["qemuBinary"]),
                 "instrumentationPlanIdentity": (
+                    dependency_plan["planIdentity"] if dependency_plan is not None else
                     plan.get("planIdentity", "") if isinstance(plan, Mapping) else ""),
             }
             shared_path = work.parent / ".program-executions" / (
@@ -974,14 +999,31 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     str(target_run["stderr"]))
                 shared_reused = True
                 executed = True
+            execution_record = {
+                "binding": shared_binding,
+                "source": {"returnCode": left.returncode, "stdout": left.stdout, "stderr": left.stderr},
+                "target": {"returnCode": right.returncode, "stdout": right.stdout, "stderr": right.stderr},
+            }
+            execution_record_identity = _identity(execution_record)
             stage = L2OperandFailureStage.TRACE_PARSE
             artifact_path = replay / "operand-observation.json"
             arity=int(function["arity"]); source_rows=_traces(left.stdout,str(function_name),arity); target_rows=_traces(right.stdout,str(function_name),arity)
             point_count = len(plan.get("points", [])) if isinstance(plan, Mapping) else 0
             source_internal = _internal_traces(left.stdout, point_count) if point_count else ()
             target_internal = _internal_traces(right.stdout, point_count) if point_count else ()
+            source_dependencies = target_dependencies = None
+            source_dependency_events = target_dependency_events = None
+            if dependency_plan is not None:
+                source_dependencies, source_dependency_events = parse_dependency_trace(
+                    left.stdout, dependency_plan, 8 ** arity)
+                target_dependencies, target_dependency_events = parse_dependency_trace(
+                    right.stdout, dependency_plan, 8 ** arity)
             stage = L2OperandFailureStage.OBSERVATION_MATERIALIZATION
-            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":Path(str(config["workDirectory"])).name,"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,sample_plan,source_internal or None,trace_arity=arity,expected_sample_count=8 ** arity),"targetSamples":_sample_observations(target_rows,sample_plan,target_internal or None,trace_arity=arity,expected_sample_count=8 ** arity)}
+            observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":Path(str(config["workDirectory"])).name,"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal,"dependencies":source_dependency_events}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal,"dependencies":target_dependency_events}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,sample_plan,source_internal or None,trace_arity=arity,expected_sample_count=8 ** arity,dependency_values=source_dependencies),"targetSamples":_sample_observations(target_rows,sample_plan,target_internal or None,trace_arity=arity,expected_sample_count=8 ** arity,dependency_values=target_dependencies)}
+            observation["sourceDependencyEvents"] = source_dependency_events
+            observation["targetDependencyEvents"] = target_dependency_events
+            observation["dependencyPlanIdentity"] = (dependency_plan["planIdentity"]
+                                                      if dependency_plan else "")
             if (source_rows is None or target_rows is None
                     or (point_count and (source_internal is None or target_internal is None
                         or len(source_internal) != len(source_rows)
@@ -989,27 +1031,41 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 status=ValidationStatus.INCONCLUSIVE; observation["reasonCode"]="L2_OPERAND_TRACE_INCOMPLETE"
             elif left.returncode or right.returncode or left.stderr or right.stderr:
                 status=ValidationStatus.FAILED; observation["reasonCode"]="L2_OPERAND_EXECUTION_FAILED"
-            elif source_rows != target_rows or source_internal != target_internal:
+            elif (source_rows != target_rows or source_internal != target_internal
+                  or source_dependency_events != target_dependency_events):
                 status=ValidationStatus.FAILED; observation["reasonCode"]="L2_OPERAND_VALUE_MISMATCH"
             else:
                 status=ValidationStatus.VERIFIED; observation["reasonCode"]=""
             evidence=_identity(observation)
             (replay / "operand-observation.json").write_text(json.dumps(observation,indent=2,sort_keys=True)+"\n",encoding="utf-8")
             stage = L2OperandFailureStage.EVIDENCE_CLOSURE
+            evidence_execution_payload = authority.get("executionPayload")
+            evidence_execution_identity = authorized_execution
+            if dependency_plan is not None:
+                evidence_execution_payload = {
+                    **dict(evidence_execution_payload),
+                    "schemaVersion": "riscv2x86.l2-program-execution.v3",
+                    "executionAuthorityIdentity": authority["programExecutionAuthorityIdentity"],
+                    "observationPlanIdentity": dependency_plan["planIdentity"],
+                    "executionRecordIdentity": execution_record_identity,
+                }
+                evidence_execution_identity = _identity(evidence_execution_payload)
             closure = provider_evidence_fields(
                 artifact, provider_id=provider_id,
                 harness_identity=str(observation["harnessDigest"]),
                 execution_nonce={"authorizedExecutionIdentity": authorized_execution,
                                  "seed": seed, "inputDomain": observation["inputDomain"],
-                                 "sharedExecutionBinding": _identity(shared_binding)},
+                                 "sharedExecutionBinding": _identity(shared_binding),
+                                 "executionRecordIdentity": execution_record_identity},
                 dimensions=(L2Dimension.LOGICAL_OPERANDS,),
                 dimension_evidence={L2Dimension.LOGICAL_OPERANDS: L2DimensionEvidence(
                     str(observation["sourceTraceDigest"]),
                     str(observation["targetTraceDigest"]),
-                    ("operand_binding", "value_bit_pattern", "width", "signedness"),
+                    ("operand_binding", "value_bit_pattern", "width", "signedness") +
+                    (("dependency_value_flow", "boundary_events") if dependency_plan else ()),
                 )},
-                authorized_execution_identity=authorized_execution,
-                execution_payload=authority.get("executionPayload"),
+                authorized_execution_identity=evidence_execution_identity,
+                execution_payload=evidence_execution_payload,
                 execution_disposition={
                     ValidationStatus.VERIFIED:
                         L2ProviderExecutionDisposition.EXECUTED_VERIFIED,
@@ -1019,6 +1075,9 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                         L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE,
                 }[status])
             summary={"schemaVersion":"riscv2x86.auto-l2-operand-result.v2","status":status.value,"reasonCode":observation["reasonCode"],"fragmentId":observation["fragmentId"],"attemptId":observation["attemptId"],"sampleCount":observation["sampleCount"],"sharedProgramExecutionReused":shared_reused,**closure,"executionAuthorityIdentity":str(authority.get("programExecutionAuthorityIdentity", "")),"observationEvidenceIdentity":evidence,"replayArtifact":"operand-observation.json"}
+            if dependency_plan is not None:
+                summary["executionRecord"] = execution_record
+                summary["dependencyObservationPlan"] = dependency_plan
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return _failure_result(
@@ -1036,6 +1095,6 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                              L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE
                              if executed else L2ProviderExecutionDisposition.NOT_EXECUTED),
                 reason_code=(exc.reason_code
-                             if isinstance(exc, L2OperandObservationError) else ""),
+                             if isinstance(exc, (L2OperandObservationError, DependencyObserverError)) else ""),
             )
     return validate

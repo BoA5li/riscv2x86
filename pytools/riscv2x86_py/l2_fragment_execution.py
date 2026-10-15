@@ -365,7 +365,11 @@ def materialize_operand_observation_authority(
                     consumers[0].observation_sink_identity,
                 "consumer_fragment_id": consumers[0].consumer_fragment_id,
                 "consumer_value_node_identity": consumers[0].consumer_value_node,
-                "value_flow_edge_identity": identity(consumers[0].to_dict()),
+                "value_flow_edge_identity": identity(FragmentDependencyEdge(
+                    consumers[0].producer_fragment_id,
+                    consumers[0].consumer_fragment_id,
+                    consumers[0].producer_value_node,
+                    consumers[0].consumer_value_node).to_dict()),
             })
         elif len(consumers) > 1:
             raise ValueError("scalar output has ambiguous fragment consumers")
@@ -500,6 +504,11 @@ class FragmentOperandBoundary:
         indices = tuple(item.operand_index for item in bindings)
         if len(indices) != len(set(indices)):
             raise ValueError("fragment operand boundary indices are duplicated")
+        if not bindings and (self.live_in_nodes or self.live_out_nodes
+                             or self.value_flow_edges or self.observation_sinks
+                             or self.discarded_output_nodes
+                             or self.instrumentation_observed_nodes):
+            raise ValueError("zero-operand boundary contains unbound value facts")
         observed = {item.value_node_identity for item in self.observation_sinks}
         consumed = {item.producer_value_node for item in self.value_flow_edges
                     if item.consumer_fragment_id}
@@ -511,7 +520,10 @@ class FragmentOperandBoundary:
         # discarded, or covered by an approved instrumentation point.  The
         # vacuous all() for an empty output set is intentional and does not
         # fabricate a source result.
-        closed = bool(bindings and not self.reason_codes
+        # Explicit, identity-bound empty arrays are a valid zero-operand
+        # boundary. Missing enumeration is rejected by the producer/parser;
+        # effect and shell completeness remain separate proof obligations.
+        closed = bool(not self.reason_codes
                       and all(item.complete for item in bindings)
                       and all(item.value_node_identity in accounted
                               for item in self.output_bindings))
