@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "riscv2x86.l2-repair-baseline.v1",
+  "baselineId": "phase43-generated-suite-before-operand-authority-v3",
+  "source": {
+    "branch": "phase43-l2-generality-and-fence-diagnostics",
+    "commit": "93958711992e85ffa316fd1a4341b5c0eecf3107",
+    "suiteRelativePath": "experiment/generated-suite",
+    "caseCount": 32,
+    "requiredClang": {
+      "majorVersion": 10,
+      "target": "riscv64-linux-gnu",
+      "march": "rv64gc",
+      "mabi": "lp64d"
+    }
+  },
+  "expected": {
+    "l2RequiredCaseCount": 23,
+    "l2VerifiedCaseCount": 4,
+    "l2InconclusiveCaseCount": 19,
+    "scalarMismatchCount": 19,
+    "scalarMismatchReason": "L2_OPERAND_OBSERVATION_BINDING_MISMATCH",
+    "scalarMismatchCases": [
+      "case_002_7c7787fb86",
+      "case_003_7cede65fe5",
+      "case_005_2027cacd9d",
+      "case_007_fdc9d4907c",
+      "case_008_32f7668f07",
+      "case_010_1ced78e8c3",
+      "case_011_fc74246d79",
+      "case_012_efaeea331c",
+      "case_013_38ec42fe98",
+      "case_014_80101f75eb",
+      "case_015_93c2e55705",
+      "case_017_38a3ab1995",
+      "case_018_e8928cf372",
+      "case_019_7b7817de8d",
+      "case_021_871969d90f",
+      "case_025_36302b339e",
+      "case_027_fce54b4f4a",
+      "case_028_87fae2a26d",
+      "case_031_89af9d9dbd"
+    ],
+    "representativeOperandAuthorityCase": "case_002_7c7787fb86",
+    "fenceCase": "case_006_61dfdddddc",
+    "fenceProgramStatus": "inconclusive",
+    "fenceOrchestrationReason": "batch.evaluation-orchestration-error",
+    "fenceExceptionType": "FileNotFoundError",
+    "fenceMissingArtifactSuffix": "translated_report.json.l2-requirements.json"
+  },
+  "independentFailureClasses": [
+    {
+      "id": "scalar-operand-authority-join",
+      "scope": "19 scalar logical_operands dimensions",
+      "rootCause": "L2AuthoritySidecar operand omits compiler valueNodeIdentity",
+      "mustNotBeFixedBy": [
+        "skipping identity comparison",
+        "synthesizing identity from declaration name",
+        "making logical_operands optional"
+      ]
+    },
+    {
+      "id": "fence-requirement-staging",
+      "scope": "case_006 fence evaluation orchestration",
+      "rootCause": "evaluator reads a requirement artifact not produced for withheld translation staging",
+      "mustNotBeFixedBy": [
+        "treating a missing artifact as verified",
+        "routing a no-operand fence through the scalar provider",
+        "publishing before ordering validation"
+      ]
+    }
+  ],
+  "archiveContract": {
+    "requiredArtifacts": [
+      "provenance.json",
+      "batch-evaluation.json",
+      "scalar-dimension-results.json",
+      "representative-operand-authority.json",
+      "case_006/evaluation-result.json",
+      "case_006/translated_report.json",
+      "case_006/translated_report.json.attempts.json",
+      "case_006/frontend.stderr",
+      "case_006/backend.stderr",
+      "baseline-verification.json"
+    ]
+  }
+}
