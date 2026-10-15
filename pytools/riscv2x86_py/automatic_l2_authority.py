@@ -20,6 +20,7 @@ from .l2_authority import (
     L2InternalValueAuthority,
     L2IgnoredStateAuthority,
     L2RuntimeContractBinding,
+    L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA,
 )
 from .l2_control_flow import (
     bind_control_flow_authority,
@@ -157,6 +158,13 @@ def _scalar_authority(
     function_boundary = function.get("l2OperandBoundary")
     raw_fragment_boundary = approval.get("l2FragmentOperandBoundary")
     per_fragment = isinstance(raw_fragment_boundary, Mapping)
+    parsed_boundary = None
+    if per_fragment:
+        try:
+            parsed_boundary = fragment_boundary_from_dict(
+                raw_fragment_boundary, expected_fragment_id=fragment_id)
+        except (TypeError, ValueError):
+            return None
     boundary = (boundary_as_legacy(raw_fragment_boundary, function_boundary)
                 if per_fragment and isinstance(function_boundary, Mapping)
                 else function_boundary)
@@ -263,12 +271,34 @@ def _scalar_authority(
     if proof_authority is None:
         return None
     source_effects, relations, shell_identity = proof_authority
+    observation_authority = None
+    if parsed_boundary is not None:
+        try:
+            graph = fragment_dependency_graph_from_dict(
+                approval["l2FragmentDependencyGraph"],
+                expected_fragment_id=fragment_id)
+            observation_authority = materialize_operand_observation_authority(
+                parsed_boundary,
+                operand_ids={item.operand_index: item.operand_id for item in canonical},
+                parameter_indices={item.operand_index: item.parameter_index for item in canonical},
+                proof_identity=str(approval["proofIdentity"]),
+                dependency_graph_identity=graph.graph_identity,
+                dependency_edges=graph.edges,
+                instrumentation_plan_identity=instrumentation_plan_identity,
+                canonical_bindings=canonical,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
                             "v6", producer_digest),
         shell_identity, tuple(operands), (), source_effects, relations,
         (), (), True, control_flow=control_flow, internal_values=internal_values,
+        schema_version=(L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA
+                        if observation_authority is not None
+                        else "riscv2x86.l2-authority-sidecar.v3"),
+        operand_observation_authority=observation_authority,
     )
 
 
@@ -790,7 +820,7 @@ def materialize_automatic_l2_authority(
         approval["l2AuthoritySidecar"] = sidecar.to_dict()
         fragment_outputs = (raw_fragment.get("outputs")
                             if isinstance(raw_fragment, Mapping) else None)
-        if (is_scalar and isinstance(fragment_outputs, list) and fragment_outputs
+        if (is_scalar and isinstance(fragment_outputs, list)
                 and isinstance(approval.get("l2FragmentOperandBoundary"), Mapping)):
             try:
                 fragment_id = str(raw_fragment.get("id") or raw_fragment.get(
@@ -811,17 +841,9 @@ def materialize_automatic_l2_authority(
                     if plan.fragment_id != fragment_id or not plan.complete:
                         raise ValueError("instrumentation plan is incomplete")
                     plan_identity = plan.plan_identity
-                observation_authority = materialize_operand_observation_authority(
-                    boundary,
-                    operand_ids={item.operand_index: item.operand_id
-                                 for item in sidecar.operands},
-                    proof_identity=str(approval["proofIdentity"]),
-                    dependency_graph_identity=graph.graph_identity,
-                    parameter_indices={item.operand_index: item.parameter_index
-                                       for item in sidecar.operands},
-                    dependency_edges=graph.edges,
-                    instrumentation_plan_identity=plan_identity,
-                )
+                observation_authority = sidecar.operand_observation_authority
+                if observation_authority is None:
+                    raise ValueError("sidecar observation authority is missing")
                 approval["l2OperandObservationAuthority"] = \
                     observation_authority.to_dict()
             except ValueError:

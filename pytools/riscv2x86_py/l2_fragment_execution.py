@@ -283,10 +283,29 @@ def materialize_operand_observation_authority(
     parameter_indices: Mapping[int, int | None] | None = None,
     dependency_edges: Sequence["FragmentDependencyEdge"] = (),
     instrumentation_plan_identity: str = "",
+    canonical_bindings: Sequence[object] | None = None,
 ) -> L2OperandObservationAuthority:
     """Close every scalar operand through exactly one typed source/sink route."""
     if not boundary.complete:
         raise ValueError("operand observation boundary is incomplete")
+    if canonical_bindings is not None:
+        canonical = {item.operand_index: item for item in canonical_bindings}
+        compiler = boundary.input_bindings + boundary.output_bindings
+        if (len(canonical) != len(canonical_bindings)
+                or set(canonical) != {item.operand_index for item in compiler}):
+            raise ValueError("canonical observation operand coverage mismatch")
+        for item in compiler:
+            bound = canonical[item.operand_index]
+            if ((bound.fragment_id, bound.declaration_identity,
+                 bound.value_node_identity, bound.access_mode,
+                 bound.width_bits, bound.signedness)
+                    != (boundary.fragment_id, item.declaration_identity,
+                        item.value_node_identity, item.access,
+                        item.width_bits, item.signedness)
+                    or operand_ids.get(item.operand_index) != bound.operand_id
+                    or (parameter_indices or {}).get(item.operand_index)
+                    != bound.parameter_index):
+                raise ValueError("canonical observation operand binding mismatch")
     bindings: list[L2OperandObservationBinding] = []
     parameters = parameter_indices or {}
     for input_binding in boundary.input_bindings:

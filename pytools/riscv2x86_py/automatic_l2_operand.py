@@ -353,6 +353,10 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "l2OperandObservationAuthority")
         if not isinstance(raw_observation_authority, Mapping):
             return None, "L2_OPERAND_OBSERVATION_AUTHORITY_MISSING"
+        if (sidecar.operand_observation_authority is None
+                or sidecar.operand_observation_authority.to_dict()
+                != dict(raw_observation_authority)):
+            return None, "L2_OPERAND_OBSERVATION_SIDECAR_MISMATCH"
         try:
             observation_authority = operand_observation_authority_from_dict(
                 raw_observation_authority,
@@ -372,6 +376,7 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
                 instrumentation_plan_identity=(
                     instrumentation.plan_identity
                     if instrumentation is not None else ""),
+                canonical_bindings=canonical,
             )
         except (KeyError, TypeError, ValueError):
             return None, "L2_OPERAND_OBSERVATION_AUTHORITY_INCOMPLETE"

@@ -9,10 +9,14 @@ import re
 from typing import Callable, Mapping, Sequence, TypeVar
 
 from .effect_relation import ApprovedEffectRelation, approved_effect_relation_from_dict
+from .l2_fragment_execution import (
+    L2OperandObservationAuthority, operand_observation_authority_from_dict,
+)
 
 LEGACY_L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v1"
 PREVIOUS_L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v2"
 L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v3"
+L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v4"
 L2_AUTHORITY_MIGRATION_VERSION = "l2-authority-v1-to-v2-migration-v1"
 L2_AUTHORITY_V2_TO_V3_MIGRATION_VERSION = "l2-authority-v2-to-v3-migration-v1"
 L2_EFFECT_RELATION_SET_SCHEMA = "riscv2x86.l2-effect-relation-set.v1"
@@ -437,10 +441,15 @@ class L2AuthoritySidecar:
     internal_values: tuple[L2InternalValueAuthority, ...] = ()
     authority_identity: str = ""
     schema_version: str = L2_AUTHORITY_SIDECAR_SCHEMA
+    operand_observation_authority: L2OperandObservationAuthority | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version != L2_AUTHORITY_SIDECAR_SCHEMA:
+        if self.schema_version not in {L2_AUTHORITY_SIDECAR_SCHEMA,
+                                      L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA}:
             raise ValueError("L2 authority sidecar schema is unsupported")
+        if ((self.schema_version == L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA)
+                != (self.operand_observation_authority is not None)):
+            raise ValueError("closed sidecar requires operand observation authority")
         if not self.fragment_id or _SHA256.fullmatch(self.shell_fact_identity) is None:
             raise ValueError("L2 authority fragment/shell identity is invalid")
         groups = (self.operands, self.memory_objects, self.source_effects,
@@ -457,6 +466,23 @@ class L2AuthoritySidecar:
         if tuple(x.operand_index for x in self.operands) != tuple(range(len(ids))):
             raise ValueError("operand indices must be contiguous")
         known_operands = set(ids)
+        observation = self.operand_observation_authority
+        if observation is not None:
+            if (not isinstance(observation, L2OperandObservationAuthority)
+                    or observation.fragment_id != self.fragment_id):
+                raise ValueError("sidecar observation fragment mismatch")
+            facts = {item.operand_index: item for item in self.operands}
+            if set(facts) != {item.operand_index for item in observation.bindings}:
+                raise ValueError("sidecar observation operand coverage mismatch")
+            for binding in observation.bindings:
+                operand = facts[binding.operand_index]
+                if ((operand.operand_id, operand.declaration_id,
+                     operand.value_node_identity, operand.access_mode,
+                     operand.width_bits, operand.signedness)
+                        != (binding.operand_id, binding.declaration_identity,
+                            binding.value_node_identity, binding.access,
+                            binding.width_bits, binding.signedness)):
+                    raise ValueError("sidecar observation operand binding mismatch")
         if any(x.tied_to_operand_id and x.tied_to_operand_id not in known_operands
                for x in self.operands):
             raise ValueError("operand tie names an unknown operand")
@@ -516,6 +542,8 @@ class L2AuthoritySidecar:
           "approvedEffectRelations": [x.to_dict() for x in self.approved_effect_relations],
           "runtimeContracts": [x.to_dict() for x in self.runtime_contracts],
           "ignoredState": [x.to_dict() for x in self.ignored_state], "complete": self.complete}
+        if self.operand_observation_authority is not None:
+            result["operandObservationAuthority"] = self.operand_observation_authority.to_dict()
         if include_identity:
             result["authorityIdentity"] = self.authority_identity
         return result
@@ -532,11 +560,19 @@ def _array(value: object, label: str, parser: Callable[[Mapping[str, object]], T
 
 def l2_authority_sidecar_from_dict(value: Mapping[str, object], *, expected_fragment_id: str = "",
                                    expected_shell_fact_identity: str = "") -> L2AuthoritySidecar:
-    if value.get("schemaVersion") != L2_AUTHORITY_SIDECAR_SCHEMA:
+    if value.get("schemaVersion") not in {L2_AUTHORITY_SIDECAR_SCHEMA,
+                                          L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA}:
         raise ValueError("L2 authority schema is unsupported; migrate older schemas explicitly")
     fields = {"schemaVersion", "fragmentId", "producer", "shellFactIdentity", "operands",
       "memoryObjects", "sourceEffects", "controlFlow", "ordering", "internalValues",
       "approvedEffectRelations", "runtimeContracts", "ignoredState", "complete", "authorityIdentity"}
+    observation = None
+    if value.get("schemaVersion") == L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA:
+        fields.add("operandObservationAuthority")
+        raw_observation = value.get("operandObservationAuthority")
+        if not isinstance(raw_observation, Mapping):
+            raise ValueError("closed sidecar observation authority is missing")
+        observation = operand_observation_authority_from_dict(raw_observation)
     _fields(value, fields, "L2 authority sidecar")
     producer = value.get("producer")
     if not isinstance(producer, Mapping):
@@ -561,7 +597,9 @@ def l2_authority_sidecar_from_dict(value: Mapping[str, object], *, expected_frag
       _array(value.get("controlFlow"), "controlFlow", l2_control_flow_authority_from_dict),
       _array(value.get("ordering"), "ordering", l2_ordering_authority_from_dict),
       _array(value.get("internalValues"), "internalValues", l2_internal_value_authority_from_dict),
-      _str(value, "authorityIdentity", "sidecar"))
+      _str(value, "authorityIdentity", "sidecar"),
+      schema_version=str(value["schemaVersion"]),
+      operand_observation_authority=observation)
 
 
 def migrate_l2_authority_v1_to_v2(value: Mapping[str, object]) -> dict[str, object]:
