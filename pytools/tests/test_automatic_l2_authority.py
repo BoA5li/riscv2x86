@@ -70,6 +70,11 @@ def test_scalar_authority_is_bound_before_candidate_staging(tmp_path: Path):
             "complete": True,
             "parameterDeclarationIds": ["lhs", "rhs"],
             "asmOperandDeclarationIds": ["out", "lhs", "rhs"],
+            "asmOperandValueNodeIdentities": [
+                "sha256:" + "1" * 64,
+                "sha256:" + "2" * 64,
+                "sha256:" + "3" * 64,
+            ],
             "returnDeclarationId": "out",
             "declarationReferenceCounts": {"out": 2, "lhs": 1, "rhs": 1},
             "declarations": {
@@ -121,6 +126,7 @@ def test_scalar_authority_rejection_records_precise_auditable_decision(tmp_path:
         "l2OperandBoundary": {
             "complete": True, "parameterDeclarationIds": ["lhs"],
             "asmOperandDeclarationIds": ["lhs"], "returnDeclarationId": "",
+            "asmOperandValueNodeIdentities": ["sha256:" + "1" * 64],
             "declarationReferenceCounts": {"lhs": 1},
             "declarations": {"lhs": {"name": "lhs", "type": "uint64_t"}},
         },

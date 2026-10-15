@@ -11,8 +11,10 @@ from typing import Callable, Mapping, Sequence, TypeVar
 from .effect_relation import ApprovedEffectRelation, approved_effect_relation_from_dict
 
 LEGACY_L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v1"
-L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v2"
+PREVIOUS_L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v2"
+L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v3"
 L2_AUTHORITY_MIGRATION_VERSION = "l2-authority-v1-to-v2-migration-v1"
+L2_AUTHORITY_V2_TO_V3_MIGRATION_VERSION = "l2-authority-v2-to-v3-migration-v1"
 L2_EFFECT_RELATION_SET_SCHEMA = "riscv2x86.l2-effect-relation-set.v1"
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -71,6 +73,7 @@ class L2OperandAuthority:
     early_clobber: bool
     fixed_register_contract: str
     escape_kind: str
+    value_node_identity: str
     declaration_id: str = ""
     parameter_index: int | None = None
     source_constraint: str = ""
@@ -79,6 +82,10 @@ class L2OperandAuthority:
     def __post_init__(self) -> None:
         if not self.operand_id or not self.logical_name or self.operand_index < 0:
             raise ValueError("operand authority identity/index is invalid")
+        if not self.declaration_id:
+            raise ValueError("operand authority declaration identity is invalid")
+        if _SHA256.fullmatch(self.value_node_identity) is None:
+            raise ValueError("operand authority value-node identity is invalid")
         if self.access_mode not in {"input", "output", "read_write", "address", "control_target"}:
             raise ValueError("operand authority access mode is unsupported")
         if self.type_kind not in {"integer", "pointer", "floating", "aggregate"}:
@@ -102,6 +109,7 @@ class L2OperandAuthority:
                 "earlyClobber": self.early_clobber,
                 "fixedRegisterContract": self.fixed_register_contract,
                 "escapeKind": self.escape_kind, "declarationId": self.declaration_id,
+                "valueNodeIdentity": self.value_node_identity,
                 "parameterIndex": self.parameter_index,
                 "sourceConstraint": self.source_constraint,
                 "targetContractCarriedByProof": self.target_contract_carried_by_proof}
@@ -110,7 +118,7 @@ class L2OperandAuthority:
 _OPERAND_FIELDS = {"operandId", "operandIndex", "logicalName", "accessMode", "typeKind",
                    "widthBits", "signedness", "tiedToOperandId", "earlyClobber",
                    "fixedRegisterContract", "escapeKind", "declarationId", "parameterIndex",
-                   "sourceConstraint", "targetContractCarriedByProof"}
+                   "valueNodeIdentity", "sourceConstraint", "targetContractCarriedByProof"}
 
 
 def l2_operand_authority_from_dict(v: Mapping[str, object]) -> L2OperandAuthority:
@@ -126,7 +134,8 @@ def l2_operand_authority_from_dict(v: Mapping[str, object]) -> L2OperandAuthorit
         _bool(v, "earlyClobber", "operand authority"),
         _str(v, "fixedRegisterContract", "operand authority", True),
         _str(v, "escapeKind", "operand authority"),
-        _str(v, "declarationId", "operand authority", True), parameter,
+        _str(v, "valueNodeIdentity", "operand authority"),
+        _str(v, "declarationId", "operand authority"), parameter,
         _str(v, "sourceConstraint", "operand authority", True),
         _bool(v, "targetContractCarriedByProof", "operand authority"))
 
@@ -524,7 +533,7 @@ def _array(value: object, label: str, parser: Callable[[Mapping[str, object]], T
 def l2_authority_sidecar_from_dict(value: Mapping[str, object], *, expected_fragment_id: str = "",
                                    expected_shell_fact_identity: str = "") -> L2AuthoritySidecar:
     if value.get("schemaVersion") != L2_AUTHORITY_SIDECAR_SCHEMA:
-        raise ValueError("L2 authority schema is unsupported; migrate v1 explicitly")
+        raise ValueError("L2 authority schema is unsupported; migrate older schemas explicitly")
     fields = {"schemaVersion", "fragmentId", "producer", "shellFactIdentity", "operands",
       "memoryObjects", "sourceEffects", "controlFlow", "ordering", "internalValues",
       "approvedEffectRelations", "runtimeContracts", "ignoredState", "complete", "authorityIdentity"}
@@ -578,11 +587,22 @@ def migrate_l2_authority_v1_to_v2(value: Mapping[str, object]) -> dict[str, obje
         tie = x.get("tiedToOperandIndex")
         if tie is not None and tie not in ids:
             raise ValueError("legacy operand tie cannot be resolved")
-        operands.append(L2OperandAuthority(str(x["operandId"]), int(x["operandIndex"]),
-          str(x["operandName"]), str(x["accessMode"]), "integer", int(x["widthBits"]),
-          str(x["signedness"]), str(ids[tie]) if tie is not None else "", bool(x["earlyClobber"]),
-          "", str(x["escapeKind"]), str(x["declarationId"]), x["parameterIndex"],
-          str(x["sourceConstraint"]), bool(x["targetContractCarriedByProof"])).to_dict())
+        # v1 has no compiler value-node identity.  Preserve that limitation in
+        # the explicit v2 result; only the separate v2 -> v3 migration may add
+        # the fact, and only from an exact fragment boundary.
+        operands.append({
+          "operandId": str(x["operandId"]), "operandIndex": int(x["operandIndex"]),
+          "logicalName": str(x["operandName"]), "accessMode": str(x["accessMode"]),
+          "typeKind": "integer", "widthBits": int(x["widthBits"]),
+          "signedness": str(x["signedness"]),
+          "tiedToOperandId": str(ids[tie]) if tie is not None else "",
+          "earlyClobber": bool(x["earlyClobber"]), "fixedRegisterContract": "",
+          "escapeKind": str(x["escapeKind"]),
+          "declarationId": str(x["declarationId"]),
+          "parameterIndex": x["parameterIndex"],
+          "sourceConstraint": str(x["sourceConstraint"]),
+          "targetContractCarriedByProof": bool(x["targetContractCarriedByProof"]),
+        })
     raw_effects = value.get("sourceEffects")
     if not isinstance(raw_effects, list) or not all(isinstance(x, Mapping) for x in raw_effects):
         raise ValueError("legacy source effects are invalid")
@@ -591,7 +611,8 @@ def migrate_l2_authority_v1_to_v2(value: Mapping[str, object]) -> dict[str, obje
         _fields(x, {"eventId", "eventKind"}, "legacy source effect")
         effects.append(L2SourceEffectAuthority(str(x["eventId"]), str(x["eventKind"]),
                                                "", False).to_dict())
-    strict = {"schemaVersion": L2_AUTHORITY_SIDECAR_SCHEMA, "fragmentId": value["fragmentId"],
+    strict = {"schemaVersion": PREVIOUS_L2_AUTHORITY_SIDECAR_SCHEMA,
+      "fragmentId": value["fragmentId"],
       "producer": value["producer"], "shellFactIdentity": value["shellFactIdentity"],
       "operands": operands, "memoryObjects": [], "sourceEffects": effects, "controlFlow": [],
       "ordering": [], "internalValues": [], "approvedEffectRelations": value["approvedEffectRelations"],
@@ -601,6 +622,81 @@ def migrate_l2_authority_v1_to_v2(value: Mapping[str, object]) -> dict[str, obje
             "sourceSchemaVersion": LEGACY_L2_AUTHORITY_SIDECAR_SCHEMA,
             "canonicalizationVersion": L2_AUTHORITY_MIGRATION_VERSION,
             "sidecar": strict}
+
+
+def migrate_l2_authority_v2_to_v3(
+    value: Mapping[str, object], fragment_boundary: Mapping[str, object],
+) -> dict[str, object]:
+    """Bind v2 operands to exact compiler value nodes and re-address v3.
+
+    No declaration-name or runtime-value fallback is permitted.  Each v2
+    operand must match exactly one boundary binding by index, declaration,
+    access, width and signedness.  The boundary itself must be content
+    addressed and name the same fragment.
+    """
+    fields = {"schemaVersion", "fragmentId", "producer", "shellFactIdentity", "operands",
+      "memoryObjects", "sourceEffects", "controlFlow", "ordering", "internalValues",
+      "approvedEffectRelations", "runtimeContracts", "ignoredState", "complete",
+      "authorityIdentity"}
+    _fields(value, fields, "v2 sidecar")
+    if value.get("schemaVersion") != PREVIOUS_L2_AUTHORITY_SIDECAR_SCHEMA:
+        raise ValueError("only L2 authority v2 can be migrated to v3")
+    boundary_payload = dict(fragment_boundary)
+    boundary_identity = boundary_payload.pop("boundaryIdentity", None)
+    if boundary_identity != _identity(boundary_payload):
+        raise ValueError("fragment boundary identity does not match content")
+    if fragment_boundary.get("fragmentId") != value.get("fragmentId"):
+        raise ValueError("fragment boundary does not match v2 sidecar")
+    if fragment_boundary.get("complete") is not True:
+        raise ValueError("incomplete fragment boundary cannot migrate authority")
+    raw_bindings = []
+    for name in ("outputBindings", "inputBindings"):
+        group = fragment_boundary.get(name)
+        if not isinstance(group, list) or not all(isinstance(x, Mapping) for x in group):
+            raise ValueError("fragment boundary operand bindings are invalid")
+        raw_bindings.extend(group)
+    by_index: dict[int, list[Mapping[str, object]]] = {}
+    for binding in raw_bindings:
+        index = binding.get("operandIndex")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError("fragment boundary operand index is invalid")
+        by_index.setdefault(index, []).append(binding)
+    raw_operands = value.get("operands")
+    if not isinstance(raw_operands, list) or not all(isinstance(x, Mapping) for x in raw_operands):
+        raise ValueError("v2 operands are invalid")
+    migrated_operands = []
+    for operand in raw_operands:
+        _fields(operand, _OPERAND_FIELDS - {"valueNodeIdentity"}, "v2 operand authority")
+        matches = by_index.get(operand.get("operandIndex"), [])
+        matches = [binding for binding in matches
+                   if binding.get("declarationIdentity") == operand.get("declarationId")
+                   and binding.get("access") == operand.get("accessMode")
+                   and binding.get("widthBits") == operand.get("widthBits")
+                   and binding.get("signedness") == operand.get("signedness")]
+        if len(matches) != 1:
+            raise ValueError("v2 operand has no unique compiler value-node binding")
+        value_node = matches[0].get("valueNodeIdentity")
+        if not isinstance(value_node, str) or _SHA256.fullmatch(value_node) is None:
+            raise ValueError("compiler value-node identity is missing or invalid")
+        migrated = dict(operand)
+        migrated["valueNodeIdentity"] = value_node
+        # Parse immediately so v3 field and type rules are applied before the
+        # sidecar is assigned a new content identity.
+        migrated_operands.append(l2_operand_authority_from_dict(migrated).to_dict())
+    strict = dict(value)
+    strict["schemaVersion"] = L2_AUTHORITY_SIDECAR_SCHEMA
+    strict["operands"] = migrated_operands
+    strict.pop("authorityIdentity", None)
+    strict["authorityIdentity"] = _identity(strict)
+    # Full parsing also validates ties, effects and all cross references.
+    l2_authority_sidecar_from_dict(strict)
+    return {
+        "schemaVersion": "riscv2x86.l2-authority-migration-result.v1",
+        "sourceSchemaVersion": PREVIOUS_L2_AUTHORITY_SIDECAR_SCHEMA,
+        "canonicalizationVersion": L2_AUTHORITY_V2_TO_V3_MIGRATION_VERSION,
+        "boundaryIdentity": boundary_identity,
+        "sidecar": strict,
+    }
 
 
 def load_l2_authority_sidecar(path: str | Path, *, expected_fragment_id: str = "",

@@ -43,6 +43,11 @@ def _function():
             "schemaVersion": "riscv2x86.compiler-operand-boundary.v1", "complete": True,
             "parameterDeclarationIds": ["lhs-id", "rhs-id"],
             "asmOperandDeclarationIds": ["out-id", "lhs-id", "rhs-id"],
+            "asmOperandValueNodeIdentities": [
+                "sha256:" + "1" * 64,
+                "sha256:" + "2" * 64,
+                "sha256:" + "3" * 64,
+            ],
             "returnDeclarationId": "out-id",
             "declarationReferenceCounts": {"out-id": 2, "lhs-id": 1, "rhs-id": 1},
             "declarations": {

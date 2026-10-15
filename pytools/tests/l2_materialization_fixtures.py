@@ -32,9 +32,11 @@ def attach_complete_scalar_authority(finding):
     attach_effect_proof(approval, fragment_id)
     operands = (
         L2OperandAuthority("operand:0", 0, "out", "output", "integer", 64,
-                           "unsigned", "", False, "", "function_return"),
+                           "unsigned", "", False, "", "function_return",
+                           "sha256:" + "1" * 64, "decl:out"),
         L2OperandAuthority("operand:1", 1, "lhs", "input", "integer", 64,
-                           "unsigned", "", False, "", "function_argument"),
+                           "unsigned", "", False, "", "function_argument",
+                           "sha256:" + "2" * 64, "decl:lhs"),
     )
     source = L2SourceEffectAuthority(
         "scalar:continuation", "ScalarResult", "subject", True)

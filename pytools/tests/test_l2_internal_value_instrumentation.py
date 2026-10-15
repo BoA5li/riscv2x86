@@ -51,6 +51,11 @@ def _facts(proof: L2NonInterferenceProof | None = None) -> L2InternalValueProofF
 def _boundary() -> dict[str, object]:
     return {"complete": True, "asmStatementEndOffset": 20,
             "asmOperandDeclarationIds": ["tmp-id", "out-id", "lhs-id"],
+            "asmOperandValueNodeIdentities": [
+                "sha256:" + "1" * 64,
+                "sha256:" + "2" * 64,
+                "sha256:" + "3" * 64,
+            ],
             "declarations": {
                 "tmp-id": {"name": "tmp", "type": "uint64_t"},
                 "out-id": {"name": "out", "type": "uint64_t"},

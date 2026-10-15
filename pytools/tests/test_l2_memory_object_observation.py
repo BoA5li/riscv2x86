@@ -41,7 +41,8 @@ def _operand(index, *, pointer=False, parameter=None):
         f"operand:{index}", index, f"logical:{index}",
         "address" if pointer else "output", "pointer" if pointer else "integer",
         64, "not_applicable" if pointer else "unsigned", "", False, "",
-        "function_argument" if pointer else "function_return", f"decl:{index}",
+        "function_argument" if pointer else "function_return",
+        "sha256:" + sha256(f"value:{index}".encode()).hexdigest(), f"decl:{index}",
         parameter, "r", True,
     )
 

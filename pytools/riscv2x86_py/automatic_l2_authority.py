@@ -170,12 +170,18 @@ def _scalar_authority(
         return None
     declarations = boundary.get("declarations")
     asm_ids = boundary.get("asmOperandDeclarationIds")
+    value_node_ids = boundary.get("asmOperandValueNodeIdentities")
     params = boundary.get("parameterDeclarationIds")
     returned = boundary.get("returnDeclarationId")
     counts = boundary.get("declarationReferenceCounts")
     if (not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
+            or not isinstance(value_node_ids, list)
             or not isinstance(params, list) or not isinstance(counts, Mapping)
-            or len(asm_ids) != len(outputs) + len(inputs)):
+            or len(asm_ids) != len(outputs) + len(inputs)
+            or len(value_node_ids) != len(asm_ids)
+            or any(not isinstance(item, str)
+                   or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
+                   for item in value_node_ids)):
         return None
     output_ids, input_ids = asm_ids[:len(outputs)], asm_ids[len(outputs):]
     read_write_ids = [output_ids[index] for index, item in enumerate(outputs)
@@ -215,6 +221,7 @@ def _scalar_authority(
             fixed_register_contract="",
             escape_kind=("function_return" if declaration_id == returned else
                          "function_argument" if declaration_id in params else "non_escaping"),
+            value_node_identity=value_node_ids[index],
             declaration_id=str(declaration_id),
             parameter_index=params.index(declaration_id) if declaration_id in params else None,
             source_constraint=constraint,
@@ -285,7 +292,7 @@ def _scalar_authority(
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
-                            "v4", producer_digest),
+                            "v5", producer_digest),
         shell_identity, tuple(operands), (), source_effects, relations,
         (), (), True, control_flow=control_flow, internal_values=internal_values,
     )
@@ -347,10 +354,16 @@ def _memory_authority(
         return None
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     declarations, asm_ids = boundary.get("declarations"), boundary.get("asmOperandDeclarationIds")
+    value_node_ids = boundary.get("asmOperandValueNodeIdentities")
     params = boundary.get("parameterDeclarationIds")
     if (not isinstance(outputs, list) or not isinstance(inputs, list)
             or not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
-            or not isinstance(params, list) or len(asm_ids) != len(outputs) + len(inputs)):
+            or not isinstance(value_node_ids, list)
+            or not isinstance(params, list) or len(asm_ids) != len(outputs) + len(inputs)
+            or len(value_node_ids) != len(asm_ids)
+            or any(not isinstance(item, str)
+                   or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
+                   for item in value_node_ids)):
         return None
     raw_operands = [(item, "output") for item in outputs] + [(item, "input") for item in inputs]
     operands = []
@@ -372,7 +385,8 @@ def _memory_authority(
             bool(raw.get("isEarlyClobber")) or "&" in str(raw.get("constraint", "")), "",
             "function_argument" if declaration_id in params else
             "function_return" if default_access == "output" else "non_escaping",
-            str(declaration_id), params.index(declaration_id) if declaration_id in params else None,
+            value_node_ids[index], str(declaration_id),
+            params.index(declaration_id) if declaration_id in params else None,
             str(raw.get("constraint", "")), True,
         ))
     expected_access = {
@@ -399,7 +413,7 @@ def _memory_authority(
     effects, relations, shell_identity = proof_authority
     return L2AuthoritySidecar(
         fragment_id, L2AuthorityProducer("frontend-compiler-sidecar",
-          "automatic-memory-authority", "v1", producer_digest),
+          "automatic-memory-authority", "v2", producer_digest),
         shell_identity, tuple(operands), (memory_object,),
         effects, relations, (), (), True,
     )

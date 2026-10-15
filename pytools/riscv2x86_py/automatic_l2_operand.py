@@ -258,6 +258,14 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     binding_by_index = ({item.operand_index: item for item in
                          parsed_boundary.output_bindings + parsed_boundary.input_bindings}
                         if per_fragment else {})
+    legacy_value_nodes = boundary.get("asmOperandValueNodeIdentities")
+    if (not per_fragment
+            and (not isinstance(legacy_value_nodes, list)
+                 or len(legacy_value_nodes) != len(asm_ids)
+                 or any(not isinstance(item, str)
+                        or _SHA.fullmatch(item) is None
+                        for item in legacy_value_nodes))):
+        return None, "L2_OPERAND_VALUE_NODE_IDENTITY_MISSING"
     combined = [(item, output_ids[index], "output") for index, item in enumerate(outputs)]
     combined += [(item, input_ids[index], "input") for index, item in enumerate(inputs)]
     for index, (raw, declaration_id, role) in enumerate(combined):
@@ -285,7 +293,7 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "escaped": False,
             "valueNodeIdentity": (
                 binding_by_index[index].value_node_identity
-                if index in binding_by_index else ""),
+                if index in binding_by_index else legacy_value_nodes[index]),
         })
     raw_sidecar = approval.get("l2AuthoritySidecar")
     if not isinstance(raw_sidecar, Mapping):
@@ -317,6 +325,7 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         compiler = compiler_facts.get(item.get("operandIndex"))
         if (not isinstance(compiler, Mapping)
                 or item.get("declarationId") != compiler.get("declarationId")
+                or item.get("valueNodeIdentity") != compiler.get("valueNodeIdentity")
                 or item.get("accessMode") != compiler.get("accessMode")
                 or item.get("widthBits") != compiler.get("widthBits")
                 or item.get("signedness") != compiler.get("signedness")):

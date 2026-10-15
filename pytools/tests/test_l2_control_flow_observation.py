@@ -49,6 +49,10 @@ def _boundary(names):
     output, *inputs = names
     return {"complete": True, "parameterDeclarationIds": inputs,
             "asmOperandDeclarationIds": names, "returnDeclarationId": output,
+            "asmOperandValueNodeIdentities": [
+                "sha256:" + format(index + 1, "064x")
+                for index, _name in enumerate(names)
+            ],
             "declarationReferenceCounts": {
                 name: names.count(name) + int(name == output) for name in set(names)},
             "declarations": {name: {"name": name, "type": "uint64_t"} for name in names}}
