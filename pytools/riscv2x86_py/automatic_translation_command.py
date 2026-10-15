@@ -14,6 +14,8 @@ from .automatic_batch_cli import inspect_entry_points
 from .automatic_l2_authority import materialize_automatic_l2_authority
 from .schema import load_report
 from .translation_attempt import terminal_attempt_from_finding, save_translation_attempt_archive
+from .translation_attempt import load_translation_attempt_archive
+from .requirement_staging import atomic_json, write_requirement_staging
 from .privileged_environment import (
     EnvironmentRelationKind,
     PrivilegedEnvironmentError,
@@ -170,6 +172,7 @@ def main() -> int:
     parser.add_argument("--source", required=True)
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--report", required=True)
+    parser.add_argument("--validation-plan")
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
@@ -178,6 +181,11 @@ def main() -> int:
     parser.add_argument("--instruction-stream-sync-registry")
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
+    if any(Path(str(report) + suffix).exists() for suffix in (
+            "", ".attempts.json", ".requirement-staging.json",
+            ".l2-requirements.json", ".l3-requirements.json")):
+        print("Translation output already exists; use a fresh work directory", file=sys.stderr)
+        return 2
     raw = report.with_name("raw_report.json")
     sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
                                     text=True, capture_output=True, check=False)
@@ -299,8 +307,11 @@ def main() -> int:
     (report.parent / "backend.stderr").write_text(back.stderr, encoding="utf-8")
     if back.returncode:
         print(back.stderr, file=sys.stderr)
-    elif report.is_file():
+    # Positive backend exit codes include semantic terminal/withheld outcomes.
+    # Classify authenticated artifacts before deciding the command exit code.
+    if back.returncode >= 0 and report.is_file():
         try:
+            load_translation_attempt_archive(str(report) + ".attempts.json")
             translated = json.loads(report.read_text(encoding="utf-8"))
             if not isinstance(translated, dict):
                 raise ValueError("translated report root must be an object")
@@ -309,10 +320,7 @@ def main() -> int:
                                   if isinstance(item, dict)),
                 args.frontend,
             )
-            report.write_text(
-                json.dumps(translated, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+            atomic_json(report, translated)
             # Authority changes attempt and candidate identities, so the
             # archive must be regenerated before candidate staging.
             findings = load_report(str(report))
@@ -322,16 +330,17 @@ def main() -> int:
                 str(report) + ".attempts.json",
             )
             manifest = classify_l2_requirements(translated)
-            report.with_name(report.name + ".l2-requirements.json").write_text(
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",
-            )
+            atomic_json(str(report) + ".l2-requirements.json", manifest)
             l3 = classify_l3_requirements(translated)
-            report.with_name(report.name + ".l3-requirements.json").write_text(
-                json.dumps(l3.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8",
-            )
+            atomic_json(str(report) + ".l3-requirements.json", l3.to_dict())
+            write_requirement_staging(report, returncode=back.returncode,
+                                      validation_plan=args.validation_plan)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print("Requirement classification failed: " + str(exc), file=sys.stderr)
             return 2
+    elif back.returncode == 0:
+        print("Translation completed without a translated report", file=sys.stderr)
+        return 2
     return back.returncode
 
 

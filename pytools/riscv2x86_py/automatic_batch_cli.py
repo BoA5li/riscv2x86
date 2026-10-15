@@ -976,7 +976,8 @@ def prepare_automatic_inventory(
                        "--frontend", str(frontend_path),
                        "--source", "${SOURCE_ROOT}/" + relative,
                        "--source-root", "${SOURCE_ROOT}",
-                       "--report", "${TRANSLATED_REPORT}"]
+                       "--report", "${TRANSLATED_REPORT}",
+                       "--validation-plan", str((case_dir / "validation-plan.json").resolve())]
         if allow_functional_fallbacks:
             translation.append("--allow-functional-fallbacks")
         if atomic_root is not None:

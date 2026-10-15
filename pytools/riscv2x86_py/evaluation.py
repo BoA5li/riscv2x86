@@ -385,6 +385,10 @@ def _translation_command_failure_result(
             ("evaluation.translation-command-timeout",), None,
             plan=plan, environment=environment,
         )
+    if record.returncode < 0:
+        return _result(request, work, commands, (), ValidationStatus.FAILED,
+                       ("evaluation.translation-command-crashed",), None,
+                       plan=plan, environment=environment)
     if not archive_path.is_file():
         return _result(
             request, work, commands, (), ValidationStatus.FAILED,
@@ -576,6 +580,12 @@ def run_evaluation(
         command = tuple(str(item) for item in _replace(list(request.translation_command), variables))
         record = command_executor(command, work, plan.timeout_seconds, "translation")
         commands.append(record)
+        if ("riscv2x86_py.automatic_translation_command" in command
+                and not record.timed_out and record.returncode >= 0
+                and not Path(str(report) + ".requirement-staging.json").is_file()):
+            return _result(request, work, commands, (), ValidationStatus.FAILED,
+                           ("evaluation.requirement-staging-missing",), None,
+                           plan=plan, environment=environment)
         if record.status is not ValidationStatus.VERIFIED:
             terminal = _translation_command_failure_result(
                 request, work, commands, record, plan, environment, archive_path,
@@ -583,6 +593,15 @@ def run_evaluation(
             if terminal is not None:
                 return terminal
 
+    staging_marker = Path(str(report) + ".requirement-staging.json")
+    if staging_marker.is_file():
+        from .requirement_staging import verify_requirement_staging
+        try:
+            verify_requirement_staging(report)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return _result(request, work, commands, (), ValidationStatus.FAILED,
+                           ("evaluation.requirement-staging-invalid",), None,
+                           plan=plan, environment=environment)
     archive = load_translation_attempt_archive(archive_path)
     _materialize_l2_resolution_plans(request, report, archive, replay)
     staging = work / "candidate-staging"

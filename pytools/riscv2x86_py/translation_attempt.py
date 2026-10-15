@@ -456,6 +456,11 @@ def save_translation_attempt_archive(attempts: Sequence[TranslationAttempt], pat
         json.dumps(archive.to_dict(), indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    reread = translation_attempt_archive_from_dict(
+        json.loads(temporary.read_text(encoding="utf-8")))
+    if reread.archive_id != archive.archive_id:
+        temporary.unlink(missing_ok=True)
+        raise ValueError("attempt archive readback identity mismatch")
     temporary.replace(destination)
     return archive
 
