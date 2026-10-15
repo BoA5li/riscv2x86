@@ -468,6 +468,20 @@ def validated_provider_evidence(
                 or identity({k: v for k, v in observer_plan.items() if k != "planIdentity"})
                 != execution_payload.get("observationPlanIdentity")):
             reasons.add("l2.provider-evidence.observation-plan-identity-invalid")
+        if (isinstance(observer_plan, Mapping)
+                and observer_plan.get("schemaVersion") == "riscv2x86.scalar-program-observation-plan.v2"):
+            try:
+                from .l2_dependency_observer import validate_plan_compatibility
+                validate_plan_compatibility(observer_plan)
+                matches = [x for x in observer_plan["shellCompatibilityDecisions"]
+                           if x["fragmentId"] == getattr(artifact, "fragment_id", "")]
+                if len(matches) != 1 or any(matches[0][key] != expected for key, expected in (
+                        ("proofIdentity", getattr(artifact, "proof_identity", "")),
+                        ("authorityIdentity", values.get("authorityIdentity", "")),
+                        ("effectRelationSetIdentity", values.get("effectRelationIdentity", "")))):
+                    raise ValueError("observer compatibility evidence/fragment mismatch")
+            except (ValueError, KeyError, TypeError):
+                reasons.add("l2.provider-evidence.observer-shell-compatibility-invalid")
     observations = detail.get("dimensionObservations")
     selected = observations.get(dimension) if isinstance(observations, Mapping) else None
     _validate_dimension_observation(selected, values, dimension, str(

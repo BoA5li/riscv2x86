@@ -40,7 +40,8 @@ def prepared(tmp_path):
     statements = []
     for index, finding in enumerate(findings):
         begin, end = (10, 20) if index == 0 else (30, 40)
-        finding.update(rewriteBeginOffset=begin, rewriteEndOffset=end + 1)
+        finding.update(rewriteBeginOffset=begin, rewriteEndOffset=end + 1,
+                       suggestedReplacement="/* approved scalar target statement */")
         statements.append({'candidateIdentity': function['l2OperandBoundary']['fragmentCandidates'][index]['candidateIdentity'],
                            'beforeOffset': begin, 'afterOffset': end + 1})
     payload = {'schemaVersion': 'riscv2x86.compiler-scalar-observer-boundary.v1',
@@ -139,7 +140,7 @@ def test_compiler_boundary_program_plan_reaches_real_host_execution(tmp_path):
 @pytest.mark.parametrize('mutation,reason', [
     ('boundary', 'L2_DEPENDENCY_OBSERVER_BOUNDARY_STALE'),
     ('placement', 'L2_DEPENDENCY_OBSERVER_RANGE_MISMATCH'),
-    ('shell', 'L2_DEPENDENCY_OBSERVER_SHELL_UNSUPPORTED'),
+    ('shell', 'L2_OBSERVER_MEMORY_CLOBBER_UNSUPPORTED'),
     ('constraint', 'L2_DEPENDENCY_OBSERVER_CONSTRAINT_UNSUPPORTED'),
     ('proof', 'L2_DEPENDENCY_OBSERVER_PROOF_UNAPPROVED'),
 ])

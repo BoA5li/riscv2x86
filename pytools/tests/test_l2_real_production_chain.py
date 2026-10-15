@@ -103,14 +103,16 @@ def test_real_production_chain_closes_required_dimensions(tmp_path, route):
     assert any("executionPlan" in item and "executionPayload" in item for item in providers)
 
 
-def test_real_downstream_fragment_program_observation(tmp_path):
+@pytest.mark.parametrize("cc_members", [(), (0,), (1,), (0, 1)])
+def test_real_downstream_fragment_program_observation(tmp_path, cc_members):
     frontend = _tools()
     source = tmp_path / 'inputs'; source.mkdir()
+    clobbers = [' : "cc"' if index in cc_members else '' for index in (0, 1)]
     (source / 'sequence.c').write_text(
-        '#include <stdint.h>\nuint64_t sequence(uint64_t x){\n'
+        '#include <stdint.h>\nuint64_t sequence(uint64_t lhs,uint64_t rhs,uint64_t mask){\n'
         'uint64_t middle,result;\n'
-        '__asm__ volatile("addi %0,%1,1" : "=r"(middle) : "r"(x));\n'
-        '__asm__ volatile("xori %0,%1,7" : "=r"(result) : "r"(middle));\n'
+        '__asm__ volatile("add %0,%1,%2" : "=r"(middle) : "r"(lhs),"r"(rhs)' + clobbers[0] + ');\n'
+        '__asm__ volatile("xor %0,%1,%2" : "=r"(result) : "r"(middle),"r"(mask)' + clobbers[1] + ');\n'
         'return result; }\n')
     output = tmp_path / 'results'
     completed = subprocess.run([

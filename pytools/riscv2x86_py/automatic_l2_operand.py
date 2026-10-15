@@ -117,6 +117,8 @@ def _failure_result(
         "detail": str(exc),
         "artifactPath": str(artifact_path),
     }
+    if hasattr(exc, "compatibility_decision"):
+        detail["observerShellCompatibility"] = exc.compatibility_decision
     return ValidationLayerResult(
         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
         _identity(detail), json.dumps(detail, sort_keys=True),
@@ -1062,7 +1064,7 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     str(observation["sourceTraceDigest"]),
                     str(observation["targetTraceDigest"]),
                     ("operand_binding", "value_bit_pattern", "width", "signedness") +
-                    (("dependency_value_flow", "boundary_events") if dependency_plan else ()),
+                    (("dependency_value_flow", "boundary_events", "observer_shell_compatibility") if dependency_plan else ()),
                 )},
                 authorized_execution_identity=evidence_execution_identity,
                 execution_payload=evidence_execution_payload,

@@ -13,7 +13,11 @@ from .l2_fragment_execution import (
     identity, fragment_boundary_from_dict, fragment_dependency_graph_from_dict,
 )
 
-SCHEMA = 'riscv2x86.scalar-program-observation-plan.v1'
+SCHEMA = 'riscv2x86.scalar-program-observation-plan.v2'
+
+from .l2_observer_shell import (
+    assess_observer_shell, validate_observer_shell_decision,
+)
 
 
 class DependencyObserverError(ValueError):
@@ -86,6 +90,7 @@ def build_dependency_plan(report, function):
         if isinstance(boundary, Mapping) and boundary.get('functionId') == raw.get('functionIdentity'):
             findings.append(finding)
     points, graph_ids, edges = [], set(), {}
+    compatibility = []
     statements = {x['candidateIdentity']: x for x in raw['statements']}
     for finding in findings:
         approval = finding['approvalArtifact']
@@ -99,8 +104,6 @@ def build_dependency_plan(report, function):
         for edge in graph.edges:
             edges[identity(edge.to_dict())] = edge.to_dict()
         fragment = finding.get('fragment', {})
-        if fragment.get('clobbers'):
-            raise DependencyObserverError('L2_DEPENDENCY_OBSERVER_SHELL_UNSUPPORTED', 'scalar observer cannot instrument clobber/effect routes')
         operands = fragment.get('outputs', []) + fragment.get('inputs', [])
         if any(x.get('constraint') not in {'=r', '+r', 'r', '=&r', '+&r'} for x in operands):
             raise DependencyObserverError('L2_DEPENDENCY_OBSERVER_CONSTRAINT_UNSUPPORTED', 'observer requires unconstrained scalar register carriers')
@@ -111,6 +114,20 @@ def build_dependency_plan(report, function):
         statement = statements[candidates[0]['candidateIdentity']]
         if finding.get('rewriteEndOffset') != statement['afterOffset']:
             raise DependencyObserverError('L2_DEPENDENCY_OBSERVER_RANGE_MISMATCH', 'rewrite extent differs from compiler statement')
+        decision = assess_observer_shell(finding, raw, boundary, graph, statement)
+        decision_payload = decision.to_dict()
+        if not decision.supported:
+            error = DependencyObserverError(decision.reason_codes[0],
+                'observer shell obligations are not closed: ' + ','.join(decision.reason_codes))
+            error.compatibility_decision = decision_payload
+            raise error
+        try:
+            validate_observer_shell_decision(decision_payload)
+        except ValueError as exc:
+            error = DependencyObserverError('L2_OBSERVER_SHELL_COMPATIBILITY_INVALID', str(exc))
+            error.compatibility_decision = decision_payload
+            raise error from exc
+        compatibility.append(decision_payload)
         for binding in boundary.output_bindings + boundary.input_bindings:
             declaration = facts.get('declarations', {}).get(binding.declaration_identity, {})
             name = declaration.get('name', '')
@@ -133,11 +150,19 @@ def build_dependency_plan(report, function):
     result = {'schemaVersion': SCHEMA, 'compilerBoundaryIdentity': raw['boundaryIdentity'],
               'sourceDigest': raw['sourceDigest'], 'graphIdentity': next(iter(graph_ids)),
               'points': sorted(points, key=lambda x: (x['offset'], x['pointIdentity'])),
-              'edges': [edges[k] for k in sorted(edges)]}
-    return {**result, 'planIdentity': identity(result)}
+              'edges': [edges[k] for k in sorted(edges)],
+              'shellCompatibilityDecisions': sorted(compatibility, key=lambda x: x['fragmentId'])}
+    plan = {**result, 'planIdentity': identity(result)}
+    validate_plan_compatibility(plan, report)
+    return plan
 
 
 def materialize_pair(source: Path, target: Path, report, plan, work):
+    if plan.get('schemaVersion') == SCHEMA:
+        validate_plan_compatibility(plan, report)
+    elif any(x.get('fragment', {}).get('clobbers') for x in report.get('findings', [])):
+        raise DependencyObserverError('L2_OBSERVER_LEGACY_PLAN_CLOBBER_UNSUPPORTED',
+                                      'legacy observer plans cannot authorize clobbers')
     original, translated = source.read_bytes(), target.read_bytes()
     from hashlib import sha256
     if plan['sourceDigest'] != 'sha256:' + sha256(original).hexdigest():
@@ -181,6 +206,8 @@ def materialize_pair(source: Path, target: Path, report, plan, work):
 
 
 def parse_dependency_trace(stdout, plan, expected_samples):
+    if plan.get('schemaVersion') == SCHEMA:
+        validate_plan_compatibility(plan)
     points = {x['pointIdentity']: x for x in plan['points']}
     samples, current = [], {}
     for line in stdout.splitlines():
@@ -210,3 +237,48 @@ def parse_dependency_trace(stdout, plan, expected_samples):
             raise DependencyObserverError('L2_DEPENDENCY_TRACE_RELATION_VIOLATED', 'observed source/target edge does not satisfy direct value flow')
         values[identity(edge)] = endpoints[0]
     return values, samples
+
+
+def validate_plan_compatibility(plan, report=None):
+    """Readback/replay cannot silently detach shell authorization from points."""
+    try:
+        if (plan.get('schemaVersion') != SCHEMA
+                or plan.get('planIdentity') != identity({k: v for k, v in plan.items() if k != 'planIdentity'})):
+            raise ValueError('program observation plan schema/identity mismatch')
+        decisions = plan.get('shellCompatibilityDecisions')
+        if not isinstance(decisions, list):
+            raise ValueError('observer compatibility decisions missing')
+        ids = [x['fragmentId'] for x in decisions]
+        if len(ids) != len(set(ids)) or set(ids) != {x['fragmentId'] for x in plan['points']}:
+            raise ValueError('observer compatibility fragment coverage mismatch')
+        for decision in decisions:
+            validate_observer_shell_decision(decision)
+            if (decision['sourceDigest'] != plan['sourceDigest']
+                    or decision['compilerBoundaryIdentity'] != plan['compilerBoundaryIdentity']
+                    or decision['graphIdentity'] != plan['graphIdentity']):
+                raise ValueError('observer compatibility program binding mismatch')
+            for point in plan['points']:
+                if point['fragmentId'] != decision['fragmentId']:
+                    continue
+                offset = decision['sourceRange'][0 if point['phase'] == 'pre' else 1]
+                if (point['offset'] != offset or point['proofIdentity'] != decision['proofIdentity']
+                        or point['boundaryIdentity'] != decision['boundaryIdentity']
+                        or point['pointIdentity'] != identity({k: v for k, v in point.items() if k != 'pointIdentity'})):
+                    raise ValueError('observer compatibility point binding mismatch')
+            if report is not None:
+                matches = [x for x in report['findings'] if
+                           (x.get('fragment', {}).get('id') or x.get('fragment', {}).get('fragmentId')) == decision['fragmentId']]
+                if len(matches) != 1:
+                    raise ValueError('observer compatibility finding join is ambiguous')
+                finding = matches[0]
+                approval = finding['approvalArtifact']
+                boundary = fragment_boundary_from_dict(approval['l2FragmentOperandBoundary'])
+                graph = fragment_dependency_graph_from_dict(approval['l2FragmentDependencyGraph'])
+                recomputed = assess_observer_shell(finding,
+                    {'sourceDigest': plan['sourceDigest'], 'boundaryIdentity': plan['compilerBoundaryIdentity']},
+                    boundary, graph, {'beforeOffset': decision['sourceRange'][0],
+                                      'afterOffset': decision['sourceRange'][1]}).to_dict()
+                if recomputed != decision:
+                    raise ValueError('observer compatibility differs from current report/proof')
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise DependencyObserverError('L2_OBSERVER_SHELL_COMPATIBILITY_INVALID', str(exc)) from exc
