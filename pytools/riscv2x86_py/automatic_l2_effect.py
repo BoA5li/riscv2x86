@@ -34,6 +34,7 @@ from .l2_scalar_authority import (
     scalar_authority_decision_from_dict,
 )
 from .l2_fence_ordering import (
+    validate_fence_effect_closure, fence_execution_observations,
     fence_ordering_events,
     fence_ordering_observations_match,
     fence_proof_facts_from_dict,
@@ -121,7 +122,11 @@ def _fence_wrapper(function: Mapping[str, object]) -> str:
         "#include <stdio.h>",
         f"void {name}(void);",
         "int main(void){",
+        "  volatile unsigned long long before = 0x1122334455667788ULL;",
+        "  unsigned long long observed_before = before;",
         f"  {name}();",
+        "  volatile unsigned long long after = 0x8877665544332211ULL;",
+        '  printf("fence_trace;%016llx;%016llx\\n", observed_before, after);',
         f'  printf("{name}=completed\\n");',
         "  return 0;",
         "}",
@@ -219,6 +224,13 @@ def _approved_relations(
         "memoryObjects": [item.to_dict() for item in authority.memory_objects],
         "sourceEffects": [item.to_dict() for item in authority.source_effects],
         "ordering": [item.to_dict() for item in authority.ordering],
+        "shell": {
+            "shellFactIdentity": authority.shell_fact_identity,
+            "proofIdentity": approval.get("proofIdentity", ""),
+            "rendererContractIdentity": approval.get("rendererContractIdentity", ""),
+            "relation": (approval.get("l2EffectProofFacts", {}).get("shellRelation", {})
+                         if isinstance(approval.get("l2EffectProofFacts"), Mapping) else {}),
+        },
     }, ""
 
 
@@ -339,6 +351,10 @@ def _effect_dimension_evidence(
     result: dict[L2Dimension, L2DimensionEvidence] = {}
     for dimension in dimensions:
         dimension_name = dimension.value
+        if observation.get("mode") == "fence-functions" and dimension is L2Dimension.MEMORY_EFFECTS:
+            observed_properties[dimension_name] = (
+                "ordering", "scope", "compiler_ordering", "hardware_ordering",
+                "before_after_execution_witness")
         selected_authority = {
             key: authority[key] for key in projection_keys.get(dimension_name, ("relations",))
             if key in authority
@@ -699,6 +715,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
         if getattr(artifact, "preservation_mode", None) is not PreservationMode.ARCHITECTURE_EQUIVALENT:
             return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                                          detail=json.dumps(provider_precondition_detail("L2_EFFECT_FUNCTIONAL_FALLBACK_NOT_ARCHITECTURAL")))
+        executed = False
         try:
             source, target = Path(str(config["sourcePath"])), Path(str(config["targetPath"]))
             if _digest(source) != config["sourceDigest"] or _digest(target) != config["targetDigest"]:
@@ -755,6 +772,13 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                         ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                         detail=json.dumps(provider_precondition_detail("L2_FENCE_PROOF_FACTS_MISSING")))
                 fence_facts = fence_proof_facts_from_dict(raw_fence)
+                from .l2_effect_proof import effect_proof_facts_from_dict
+                try:
+                    validate_fence_effect_closure(fence_facts,
+                        effect_proof_facts_from_dict(approval["l2EffectProofFacts"]))
+                except (KeyError, ValueError) as exc:
+                    return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps(provider_precondition_detail(str(exc), failureStage="authority_join")))
                 if (approval.get("rendererSemanticContractId")
                         != fence_facts.target_semantic_contract_id
                         or getattr(artifact, "renderer_semantic_contract_id", "")
@@ -797,17 +821,22 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                     L2EvidenceProductionDisposition.NOT_PRODUCED.value
                 return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))
             left=_run((str(config["qemuBinary"]),str(source_exe)),work,timeout)
+            executed = True
             right=_run((str(target_exe),),work,timeout)
             parser = (_branch_events if mode == "branch-domain-functions" else
                       _scalar_events if mode == "scalar-effect-functions" else None)
             if mode == "fence-functions":
-                marker = str(function["name"]) + "=completed"
-                if left.stdout.splitlines().count(marker) != 1 or right.stdout.splitlines().count(marker) != 1:
+                fence_reason = ""
+                try:
+                    source_fence = fence_execution_observations(left.stdout, str(function["name"]),
+                        fence_facts, approved, side="source")
+                    target_fence = fence_execution_observations(right.stdout, str(function["name"]),
+                        fence_facts, approved, side="target")
+                except ValueError as exc:
+                    fence_reason = str(exc)
                     source_fence = target_fence = None
                     source_events = target_events = None
                 else:
-                    source_fence = fence_ordering_events(fence_facts, approved, side="source")
-                    target_fence = fence_ordering_events(fence_facts, approved, side="target")
                     source_events = [item.to_dict() for item in source_fence]
                     target_events = [item.to_dict() for item in target_fence]
                 source_control = target_control = None
@@ -837,7 +866,8 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                          "source":{"exitCode":left.returncode,"stderr":left.stderr,"events":source_events},
                          "target":{"exitCode":right.returncode,"stderr":right.stderr,"events":target_events}}
             if source_events is None or target_events is None:
-                status=ValidationStatus.INCONCLUSIVE; reason="L2_EFFECT_TRACE_INCOMPLETE"
+                status=ValidationStatus.INCONCLUSIVE
+                reason = (fence_reason if mode == "fence-functions" else "L2_EFFECT_TRACE_INCOMPLETE")
             elif left.returncode or right.returncode or left.stderr or right.stderr:
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_EXECUTION_FAILED"
             elif mode == "control-flow-functions" and source_control is not None and target_control is not None:
@@ -901,11 +931,13 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                      "eventCount":len(source_events or []),
                      **closure,
                      "observationEvidenceIdentity":evidence,"replayArtifact":"effect-observation.json"}
+            if mode == "fence-functions":
+                summary["orderingEvidenceKind"] = "phase6d-proof-with-before-after-execution-witness"
             return ValidationLayerResult(ValidationLevel.L2,status,evidence,json.dumps(summary,sort_keys=True))
         except subprocess.TimeoutExpired as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,
                                          detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value,"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode":"L2_EFFECT_RUNNER_TIMEOUT","detail":str(exc)}))
         except (OSError,ValueError,KeyError,json.JSONDecodeError) as exc:
             return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,
-                                         detail=json.dumps({"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode":"L2_EFFECT_INFRASTRUCTURE_UNAVAILABLE","detail":f"{type(exc).__name__}: {exc}"}))
+                                         detail=json.dumps({"executionDisposition": (L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE.value if executed else L2ProviderExecutionDisposition.NOT_EXECUTED.value),"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode": "L2_FENCE_PROVIDER_INFRASTRUCTURE_UNAVAILABLE" if config["mode"] == "fence-functions" else "L2_EFFECT_INFRASTRUCTURE_UNAVAILABLE", "exceptionType": type(exc).__name__, "failureStage": "execution" if executed else "provider_preparation", "detail": str(exc)}))
     return validate

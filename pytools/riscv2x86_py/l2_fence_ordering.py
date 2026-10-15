@@ -1,7 +1,7 @@
 """Proof-owned fence ordering domains and strict L2 relation comparison."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import re
@@ -191,6 +191,53 @@ def approved_fence_relations(facts: L2FenceProofFacts) -> tuple[ApprovedEffectRe
             ("compiler_ordering", "hardware_ordering", "kind", "subject"),
             edge, "", True),
     ), key=lambda item: item.relation_id))
+
+
+def validate_fence_effect_closure(facts, proof):
+    """Require explicit Phase 6D anchors, ordering edges and compiler shell."""
+    if not facts.complete or not proof.complete or facts.fragment_id != proof.fragment_id:
+        raise ValueError("L2_FENCE_PHASE6D_PROOF_INCOMPLETE")
+    shell = proof.shell_relation
+    if not all((shell.complete, shell.memory_clobber_preserved,
+                shell.volatile_placement_preserved, shell.continuation_preserved,
+                shell.compiler_visibility_preserved)):
+        raise ValueError("L2_FENCE_COMPILER_SHELL_RELATION_INCOMPLETE")
+    if shell.operand_modes or shell.constraints or shell.early_clobbers or shell.tied_operands:
+        raise ValueError("L2_FENCE_UNEXPECTED_SCALAR_OPERAND_AUTHORITY")
+    effects = {item.effect_id: item for item in proof.source_effects}
+    relations = {item.source_effect_id: item for item in proof.relations}
+    for effect_id, kind in ((facts.before_effect_id, "ReadMemory"),
+                            (facts.fence_effect_id, "Fence"),
+                            (facts.after_effect_id, "WriteMemory")):
+        if effect_id not in effects or effects[effect_id].effect_kind != kind:
+            raise ValueError("L2_FENCE_ORDERING_ANCHOR_MISSING")
+        if effect_id not in relations or not relations[effect_id].complete:
+            raise ValueError("L2_FENCE_ORDERING_RELATION_UNAPPROVED")
+    relation = relations[facts.fence_effect_id]
+    if ((facts.before_effect_id, facts.after_effect_id) not in relation.ordering_requirements
+            or not {"compiler_ordering", "hardware_ordering"}.issubset(relation.preserved_properties)):
+        raise ValueError("L2_FENCE_ORDERING_EDGE_UNAPPROVED")
+    if relation.relation_kind != facts.relation_kind:
+        raise ValueError("L2_FENCE_RELATION_KIND_MISMATCH")
+
+
+def fence_execution_observations(stdout, function_name, facts, relations, *, side):
+    """Bind a real execution witness to proof-owned ordering properties.
+
+    The witness observes completion and values around the call. Hardware
+    ordering comes from Phase 6D; this is not a concurrency/litmus proof.
+    """
+    lines = stdout.splitlines()
+    if lines.count(function_name + "=completed") != 1:
+        raise ValueError("L2_FENCE_COMPLETION_WITNESS_MISSING")
+    traces = [line for line in lines if line.startswith("fence_trace;")]
+    if len(traces) != 1 or re.fullmatch(
+            r"fence_trace;[0-9a-f]{16};[0-9a-f]{16}", traces[0]) is None:
+        raise ValueError("L2_FENCE_ORDERING_TRACE_MISSING_OR_MALFORMED")
+    _, before, after = traces[0].split(";")
+    events = fence_ordering_events(facts, relations, side=side)
+    return (replace(events[0], payload={"value": "u64:0x" + before}),
+            events[1], replace(events[2], payload={"value": "u64:0x" + after}))
 
 
 @dataclass(frozen=True)

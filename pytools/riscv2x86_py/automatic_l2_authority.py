@@ -34,6 +34,7 @@ from .l2_memory_object import (
 )
 from .l2_fence_ordering import (
     fence_proof_facts_from_dict,
+    validate_fence_effect_closure,
 )
 from .l2_internal_value import (
     bind_instrumentation_plan,
@@ -445,6 +446,11 @@ def _fence_authority(
     if proof_authority is None:
         return None
     effects, relations, shell_identity = proof_authority
+    try:
+        validate_fence_effect_closure(facts, effect_proof_facts_from_dict(
+            approval["l2EffectProofFacts"]))
+    except (KeyError, ValueError):
+        return None
     ordering = (L2OrderingAuthority(
         "ordering:fence-domain", facts.before_effect_id, facts.after_effect_id, True),)
     return L2AuthoritySidecar(
@@ -675,6 +681,10 @@ def _fence_authority_failure_reason(
         return "L2_FENCE_EFFECT_PROOF_FACTS_INCOMPLETE"
     if not effect_facts.shell_relation.memory_clobber_preserved:
         return "L2_FENCE_MEMORY_CLOBBER_SHELL_RELATION_MISSING"
+    try:
+        validate_fence_effect_closure(facts, effect_facts)
+    except ValueError as exc:
+        return str(exc)
     return "L2_FENCE_AUTHORITY_MATERIALIZATION_REJECTED"
 
 
