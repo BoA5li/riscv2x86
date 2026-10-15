@@ -17,6 +17,9 @@ from riscv2x86_py.l2_fragment_execution import (
 )
 from tests.l2_profile_fixtures import profile_dict
 from tests.l2_effect_proof_fixtures import attach_effect_proof
+from riscv2x86_py.l2_operand_observation_plan import (
+    CanonicalOperandObservationPlan,
+)
 
 
 def test_composite_fragment_operand_is_not_mistaken_for_function_parameter():
@@ -49,10 +52,12 @@ def test_composite_fragment_operand_is_not_mistaken_for_function_parameter():
             "fragment:producer", producer_node, "composite_dependency", "",
             "", "", "sha256:" + "6" * 64),), True,
     ).to_dict()
-    samples = _sample_observations(((7, 9),), authority)
+    typed = operand_observation_authority_from_dict(authority["operandObservationAuthority"])
+    samples = _sample_observations(((7, 9),), CanonicalOperandObservationPlan(typed),
+        dependency_values={"sha256:" + "6" * 64: (7,)})
     operand = samples[0]["logicalOperands"][0]
     assert operand["observationKind"] == "composite_dependency"
-    assert operand["valueBefore"] is None
+    assert operand["valueBefore"] == "0x0000000000000007"
 
 
 def test_unbound_internal_fragment_operand_fails_closed():
@@ -66,7 +71,7 @@ def test_unbound_internal_fragment_operand_fails_closed():
         "fragmentDependencyEdges": [], "observationSinks": [],
         "instrumentationPlan": None,
     }
-    with pytest.raises(ValueError, match="typed operand observation authority is missing"):
+    with pytest.raises(ValueError, match="canonical observation plan fields are invalid"):
         _sample_observations(((7, 9),), authority)
 
 

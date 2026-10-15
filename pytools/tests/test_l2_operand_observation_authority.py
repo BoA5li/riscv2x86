@@ -7,6 +7,7 @@ import pytest
 from riscv2x86_py.automatic_l2_operand import (
     L2OperandObservationError, _sample_observations,
 )
+from riscv2x86_py.l2_operand_observation_plan import CanonicalOperandObservationPlan
 from riscv2x86_py.l2_fragment_execution import (
     FragmentOperandBoundary,
     FragmentValueFlowEdge,
@@ -129,18 +130,7 @@ def _materializer_authority(*, access: str = "input", parameter_index=0):
         dependency_graph_identity=_sha("6"),
         parameter_indices={0: parameter_index},
     )
-    return {
-        "fragmentId": "fragment",
-        "fragmentBoundaryIdentity": boundary.boundary_identity,
-        "operands": [{
-            "operandIndex": 0, "operandId": "operand:value",
-            "declarationId": "decl:value", "valueNodeIdentity": node,
-            "accessMode": access, "parameterIndex": parameter_index,
-            "widthBits": 64, "signedness": "unsigned",
-        }],
-        "operandObservationAuthority": typed.to_dict(),
-        "instrumentationPlan": None,
-    }
+    return CanonicalOperandObservationPlan(typed).to_dict()
 
 
 def test_input_observation_consumes_typed_parameter_binding():
@@ -297,10 +287,10 @@ def test_malformed_binding_is_rejected_before_observation():
 
 def test_typed_binding_identity_mismatch_has_precise_reason():
     authority = _materializer_authority()
-    authority["operands"][0]["valueNodeIdentity"] = _sha("7")
+    authority["operandObservationAuthority"]["bindings"][0]["valueNodeIdentity"] = _sha("7")
     with pytest.raises(L2OperandObservationError) as caught:
         _sample_observations(((7, 9),), authority, trace_arity=1)
-    assert caught.value.reason_code == "L2_OPERAND_VALUE_NODE_IDENTITY_MISMATCH"
+    assert caught.value.reason_code == "L2_OPERAND_OBSERVATION_PLAN_INVALID"
 
 
 @pytest.mark.parametrize("sink_kind", ("c_expression", "memory_store",
@@ -325,6 +315,6 @@ def test_non_runtime_sink_requires_registered_observer(sink_kind):
         "instrumentationPlan": None,
     }
     with pytest.raises(L2OperandObservationError) as caught:
-        _sample_observations(((9,),), authority, trace_arity=0)
+        _sample_observations(((9,),), CanonicalOperandObservationPlan(typed), trace_arity=0)
     assert caught.value.reason_code == \
         "L2_OPERAND_OUTPUT_SINK_NOT_RUNTIME_OBSERVABLE"
