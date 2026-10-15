@@ -441,7 +441,7 @@ def _translation_command_failure_result(
     reasons = tuple(sorted({reason for item in final for reason in item["reasonCodes"]}))
     return _result(
         request, work, commands, attempts, status, reasons, None,
-        plan=plan, environment=environment,
+        plan=plan, environment=environment, skip_requirement_linkage=True,
     )
 
 
@@ -519,7 +519,8 @@ def _materialize_l2_resolution_plans(
         raise ValueError("requirement-driven L2 provider is malformed")
     from .l2_eligibility import load_l2_requirement_manifest
     manifest_path = report_path.with_name(report_path.name + ".l2-requirements.json")
-    manifest = load_l2_requirement_manifest(manifest_path)
+    from .requirement_staging import read_staged_requirements
+    manifest = read_staged_requirements(report_path)["l2"]
     from .l2_semantic_profile import profile_from_finding
     report = json.loads(report_path.read_text(encoding="utf-8"))
     findings = report.get("findings") if isinstance(report, Mapping) else None
@@ -534,6 +535,8 @@ def _materialize_l2_resolution_plans(
             raise ValueError("translated report contains duplicate fragment profiles")
         profiles[profile.fragment_id] = profile
     for attempt in archive.attempts:
+        if attempt.translation_outcome not in _EMITTED:
+            continue
         profile = profiles.get(attempt.fragment_id)
         if profile is None:
             raise ValueError("L2 semantic profile is missing for translation attempt fragment")
@@ -580,12 +583,6 @@ def run_evaluation(
         command = tuple(str(item) for item in _replace(list(request.translation_command), variables))
         record = command_executor(command, work, plan.timeout_seconds, "translation")
         commands.append(record)
-        if ("riscv2x86_py.automatic_translation_command" in command
-                and not record.timed_out and record.returncode >= 0
-                and not Path(str(report) + ".requirement-staging.json").is_file()):
-            return _result(request, work, commands, (), ValidationStatus.FAILED,
-                           ("evaluation.requirement-staging-missing",), None,
-                           plan=plan, environment=environment)
         if record.status is not ValidationStatus.VERIFIED:
             terminal = _translation_command_failure_result(
                 request, work, commands, record, plan, environment, archive_path,
@@ -593,17 +590,38 @@ def run_evaluation(
             if terminal is not None:
                 return terminal
 
-    staging_marker = Path(str(report) + ".requirement-staging.json")
-    if staging_marker.is_file():
-        from .requirement_staging import verify_requirement_staging
-        try:
-            verify_requirement_staging(report)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            return _result(request, work, commands, (), ValidationStatus.FAILED,
-                           ("evaluation.requirement-staging-invalid",), None,
-                           plan=plan, environment=environment)
     archive = load_translation_attempt_archive(archive_path)
-    _materialize_l2_resolution_plans(request, report, archive, replay)
+    attributable = tuple(item for item in archive.attempts
+                         if not request.selected_attempt_ids
+                         or item.artifact_id in request.selected_attempt_ids)
+    if attributable and all(item.translation_outcome not in _EMITTED for item in attributable):
+        terminal = tuple(_translation_terminal_result(item) for item in attributable)
+        for item in terminal:
+            item["reasonCodes"] = [reason for reason in item["reasonCodes"]
+                                   if not reason.startswith("publication.")]
+        return _result(request, work, commands, terminal,
+                       _overall(tuple(ValidationStatus(str(item["status"])) for item in terminal)),
+                       tuple(sorted({reason for item in terminal for reason in item["reasonCodes"]})),
+                       None, plan=plan, environment=environment, skip_requirement_linkage=True)
+    from .requirement_staging import RequirementArtifactError
+    try:
+        _materialize_l2_resolution_plans(request, report, archive, replay)
+    except RequirementArtifactError as exc:
+        detail = dict(exc.detail)
+        detail["translationOutcome"] = detail["translationOutcome"] or "emitted"
+        if not detail["publicationOutcome"]:
+            detail["publicationOutcome"] = (
+                "withheld_pending_validation" if any(item.staging_disposition is
+                    AttemptStagingDisposition.EXTERNAL_VALIDATION_PENDING
+                    for item in attributable) else "withheld_validation_rejected")
+        return _result(request, work, commands, (), ValidationStatus.INCONCLUSIVE,
+                       (exc.reason_code,), None, plan=plan, environment=environment,
+                       requirement_failure=detail)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        detail = RequirementArtifactError("l2", report, exc).detail
+        return _result(request, work, commands, (), ValidationStatus.INCONCLUSIVE,
+                       ("evaluation.l2-requirement-classification-failed",), None,
+                       plan=plan, environment=environment, requirement_failure=detail)
     staging = work / "candidate-staging"
     candidate_manifest_path = work / "candidate-artifact-manifest.json"
     candidate_manifest = materialize_candidate_tree(
@@ -879,14 +897,26 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
             reasons: Sequence[str], manifest: CandidateArtifactManifest | None, *,
             plan: object | None = None, environment: object | None = None,
             source_program: ProgramArtifact | None = None,
-            target_program: ProgramArtifact | None = None) -> dict[str, object]:
+            target_program: ProgramArtifact | None = None,
+            requirement_failure: Mapping[str, object] | None = None,
+            skip_requirement_linkage: bool = False) -> dict[str, object]:
     def program(value: ProgramArtifact | None) -> object:
         return None if value is None else {
             "artifact_id": value.artifact_id, "artifact_path": value.artifact_path,
             "artifact_kind": value.artifact_kind, "artifact_digest": value.artifact_digest,
             "build_identity": value.build_identity,
         }
-    linkage = _translation_evaluation_linkage(request, work, attempts)
+    try:
+        linkage = ({} if requirement_failure is not None or skip_requirement_linkage
+                   else _translation_evaluation_linkage(request, work, attempts))
+    except Exception as exc:
+        from .requirement_staging import RequirementArtifactError
+        if not isinstance(exc, RequirementArtifactError):
+            raise
+        requirement_failure = exc.detail
+        status = ValidationStatus.INCONCLUSIVE
+        reasons = tuple(sorted(set(reasons) | {exc.reason_code}))
+        linkage = {}
     payload: dict[str, object] = {
         "schemaVersion": EVALUATION_RESULT_SCHEMA,
         "requestIdentity": _request_identity(request), "status": status.value,
@@ -912,6 +942,8 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
         "environmentProvenance": _environment_provenance(request, commands, environment),
         "translationEvaluationLink": linkage,
     }
+    if requirement_failure is not None:
+        payload["requirementStagingFailure"] = dict(requirement_failure)
     identity_payload = dict(payload); identity_payload.pop("replayArtifact")
     payload["evaluationIdentity"] = _digest_bytes(_canonical(identity_payload))
     replay_payload = {
@@ -943,14 +975,13 @@ def _translation_evaluation_linkage(
     l2_path = report_path.with_name(report_path.name + ".l2-requirements.json")
     l2_requirements: object = None
     if l2_path.is_file():
-        from .l2_eligibility import load_l2_requirement_manifest
-        l2_requirements = load_l2_requirement_manifest(l2_path)
+        from .requirement_staging import read_staged_requirements
+        l2_requirements = read_staged_requirements(report_path)["l2"]
     l3_path = report_path.with_name(report_path.name + ".l3-requirements.json")
     l3_requirements: object = None
     if l3_path.is_file():
-        from .l3_intent_requirements import parse_l3_requirement_manifest
-        l3_requirements = parse_l3_requirement_manifest(
-            json.loads(l3_path.read_text(encoding="utf-8"))).to_dict()
+        from .requirement_staging import read_staged_requirements
+        l3_requirements = read_staged_requirements(report_path)["l3"]
     requirement_by_finding = {
         str(item.get("findingId")): item
         for item in (l2_requirements.get("requirements", [])

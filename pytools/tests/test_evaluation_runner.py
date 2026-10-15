@@ -280,8 +280,8 @@ def test_needs_route_skips_target_build_and_is_not_a_build_failure(tmp_path):
 
     assert result["status"] == "needs_route"
     assert result["reasonCodes"] == ["evaluation.translation-outcome-needs-route"]
-    assert [item["phase"] for item in result["commands"]] == ["source-build"]
-    assert result["sourceProgramArtifact"] is not None
+    assert result["commands"] == []
+    assert result["sourceProgramArtifact"] is None
     assert result["targetProgramArtifact"] is None
     assert len(result["attempts"]) == 1
     assert result["attempts"][0]["attemptArtifactId"] == attempt.artifact_id
