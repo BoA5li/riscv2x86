@@ -300,7 +300,7 @@ def test_typed_binding_identity_mismatch_has_precise_reason():
     authority["operands"][0]["valueNodeIdentity"] = _sha("7")
     with pytest.raises(L2OperandObservationError) as caught:
         _sample_observations(((7, 9),), authority, trace_arity=1)
-    assert caught.value.reason_code == "L2_OPERAND_OBSERVATION_BINDING_MISMATCH"
+    assert caught.value.reason_code == "L2_OPERAND_VALUE_NODE_IDENTITY_MISMATCH"
 
 
 @pytest.mark.parametrize("sink_kind", ("c_expression", "memory_store",

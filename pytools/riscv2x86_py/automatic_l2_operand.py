@@ -161,6 +161,64 @@ def _finding(report: Mapping[str, object], fragment_id: str) -> Mapping[str, obj
     return None
 
 
+def _operand_join_reason(actual: Mapping[str, object],
+                         expected: Mapping[str, object]) -> str:
+    """Compare transport facts before parsing, without granting authority.
+
+    A successful comparison is followed by the strict content-identity parsers.
+    This diagnostic pass never repairs a payload or fills a missing identity.
+    """
+    if not actual.get("valueNodeIdentity") or not expected.get("valueNodeIdentity"):
+        return "L2_OPERAND_VALUE_NODE_IDENTITY_MISSING"
+    for field, suffix in (
+        ("operandId", "IDENTITY"), ("operandIndex", "INDEX"),
+        ("declarationId", "DECLARATION_IDENTITY"),
+        ("valueNodeIdentity", "VALUE_NODE_IDENTITY"),
+        ("accessMode", "ACCESS_MODE"), ("widthBits", "WIDTH"),
+        ("signedness", "SIGNEDNESS"), ("parameterIndex", "PARAMETER_INDEX"),
+        ("tiedToOperandId", "TIED_OPERAND"),
+    ):
+        if actual.get(field) != expected.get(field):
+            return "L2_OPERAND_" + suffix + "_MISMATCH"
+    return ""
+
+
+def _observation_join_reason(actual: Mapping[str, object],
+                             expected: Mapping[str, object]) -> str:
+    def normalized(item):
+        return {**item, "declarationId": item.get("declarationIdentity"),
+                "accessMode": item.get("access")}
+    reason = _operand_join_reason(normalized(actual), normalized(expected))
+    if reason:
+        return reason
+    if actual.get("observationSinkIdentity") != expected.get("observationSinkIdentity"):
+        return "L2_OPERAND_OBSERVATION_SINK_IDENTITY_MISMATCH"
+    for field in ("producerFragmentId", "producerValueNodeIdentity",
+                  "consumerFragmentId", "consumerValueNodeIdentity",
+                  "valueFlowEdgeIdentity"):
+        if actual.get(field) != expected.get(field):
+            return "L2_OPERAND_DEPENDENCY_IDENTITY_MISMATCH"
+    for field in ("closureKind", "observationKind", "instrumentationPlanIdentity"):
+        if actual.get(field) != expected.get(field):
+            return "L2_OPERAND_OBSERVATION_ROUTE_MISMATCH"
+    return ""
+
+
+def _ordered_join_reason(actual, expected, *, observation=False) -> str:
+    if not isinstance(actual, list) or not isinstance(expected, list):
+        return "L2_OPERAND_INDEX_MISMATCH"
+    if len(actual) != len(expected):
+        return "L2_OPERAND_INDEX_MISMATCH"
+    for left, right in zip(actual, expected):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return "L2_OPERAND_INDEX_MISMATCH"
+        reason = (_observation_join_reason(left, right) if observation
+                  else _operand_join_reason(left, right))
+        if reason:
+            return reason
+    return ""
+
+
 def _authority(finding: Mapping[str, object], functions: list[object], artifact: object) -> tuple[dict[str, object] | None, str]:
     fragment = finding.get("fragment")
     if not isinstance(fragment, Mapping):
@@ -266,6 +324,22 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         )
     except ValueError:
         return None, "L2_OPERAND_CANONICAL_BINDING_MISMATCH"
+    if per_fragment:
+        compiler_bindings = {item.operand_index: item for item in
+                             parsed_boundary.output_bindings + parsed_boundary.input_bindings}
+        if set(compiler_bindings) != {item.operand_index for item in canonical}:
+            return None, "L2_OPERAND_INDEX_MISMATCH"
+        for item in canonical:
+            compiler = compiler_bindings[item.operand_index]
+            expected = {**item.to_dict(),
+                        "declarationId": compiler.declaration_identity,
+                        "valueNodeIdentity": compiler.value_node_identity,
+                        "accessMode": compiler.access, "widthBits": compiler.width_bits,
+                        "signedness": compiler.signedness}
+            reason = _operand_join_reason(
+                {**item.to_dict(), "declarationId": item.declaration_identity}, expected)
+            if reason:
+                return None, reason
     id_to_index = {item.operand_id: item.operand_index for item in canonical}
     facts = [{
         "operandIndex": item.operand_index,
@@ -287,6 +361,26 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     raw_sidecar = approval.get("l2AuthoritySidecar")
     if not isinstance(raw_sidecar, Mapping):
         return None, "L2_OPERAND_AUTHORITY_SIDECAR_MISSING"
+    expected_facts = [{**fact, "tiedToOperandId": item.tied_to_operand_id}
+                      for fact, item in zip(facts, canonical)]
+    reason = _ordered_join_reason(raw_sidecar.get("operands"), expected_facts)
+    if reason:
+        return None, reason
+    embedded = raw_sidecar.get("operandObservationAuthority")
+    if isinstance(embedded, Mapping):
+        raw_bindings = embedded.get("bindings")
+        if not isinstance(raw_bindings, list) or len(raw_bindings) != len(expected_facts):
+            return None, "L2_OPERAND_INDEX_MISMATCH"
+        for raw_binding, fact in zip(raw_bindings, expected_facts):
+            if not isinstance(raw_binding, Mapping):
+                return None, "L2_OPERAND_INDEX_MISMATCH"
+            reason = _operand_join_reason({
+                **raw_binding, "declarationId": raw_binding.get("declarationIdentity"),
+                "accessMode": raw_binding.get("access"),
+                "tiedToOperandId": fact.get("tiedToOperandId"),
+            }, fact)
+            if reason:
+                return None, reason
     try:
         sidecar = l2_authority_sidecar_from_dict(
             raw_sidecar, expected_fragment_id=str(getattr(artifact, "fragment_id", "")),
@@ -312,13 +406,8 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         return None, "L2_OPERAND_AUTHORITY_FACT_MISSING"
     for item in sidecar_operands:
         compiler = compiler_facts.get(item.get("operandIndex"))
-        if (not isinstance(compiler, Mapping)
-                or item.get("declarationId") != compiler.get("declarationId")
-                or item.get("valueNodeIdentity") != compiler.get("valueNodeIdentity")
-                or item.get("accessMode") != compiler.get("accessMode")
-                or item.get("widthBits") != compiler.get("widthBits")
-                or item.get("signedness") != compiler.get("signedness")):
-            return None, "L2_OPERAND_AUTHORITY_BOUNDARY_MISMATCH"
+        if not isinstance(compiler, Mapping):
+            return None, "L2_OPERAND_INDEX_MISMATCH"
     payload = {
         "schemaVersion": AUTO_L2_AUTHORITY_SCHEMA,
         "producer": "clang-ast-plus-frontend-gnu-shell-v1",
@@ -353,10 +442,14 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             "l2OperandObservationAuthority")
         if not isinstance(raw_observation_authority, Mapping):
             return None, "L2_OPERAND_OBSERVATION_AUTHORITY_MISSING"
-        if (sidecar.operand_observation_authority is None
-                or sidecar.operand_observation_authority.to_dict()
-                != dict(raw_observation_authority)):
-            return None, "L2_OPERAND_OBSERVATION_SIDECAR_MISMATCH"
+        if sidecar.operand_observation_authority is None:
+            return None, "L2_OPERAND_OBSERVATION_AUTHORITY_MISSING"
+        reason = _ordered_join_reason(
+            raw_observation_authority.get("bindings"),
+            sidecar.operand_observation_authority.to_dict()["bindings"],
+            observation=True)
+        if reason:
+            return None, reason
         try:
             observation_authority = operand_observation_authority_from_dict(
                 raw_observation_authority,
@@ -380,6 +473,12 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
             )
         except (KeyError, TypeError, ValueError):
             return None, "L2_OPERAND_OBSERVATION_AUTHORITY_INCOMPLETE"
+        reason = _ordered_join_reason(
+            observation_authority.to_dict()["bindings"],
+            recomputed_observation_authority.to_dict()["bindings"],
+            observation=True)
+        if reason:
+            return None, reason
         if (observation_authority.authority_identity
                 != recomputed_observation_authority.authority_identity
                 or observation_authority.proof_identity
@@ -595,15 +694,16 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
 
     def checked_binding(fact: Mapping[str, object]):
         binding = bindings.get(str(fact.get("operandId", "")))
-        if (binding is None
-                or binding.operand_index != fact.get("operandIndex")
-                or binding.declaration_identity != fact.get("declarationId")
-                or binding.value_node_identity != fact.get("valueNodeIdentity")
-                or binding.access != fact.get("accessMode")
-                or binding.width_bits != fact.get("widthBits")
-                or binding.signedness != fact.get("signedness")):
+        if binding is None:
             raise L2OperandObservationError(
-                "L2_OPERAND_OBSERVATION_BINDING_MISMATCH",
+                "L2_OPERAND_IDENTITY_MISMATCH", "typed operand binding is missing")
+        reason = _operand_join_reason({
+            **binding.to_dict(), "declarationId": binding.declaration_identity,
+            "accessMode": binding.access,
+            "tiedToOperandId": fact.get("tiedToOperandId"),
+        }, fact)
+        if reason:
+            raise L2OperandObservationError(reason,
                 f"typed binding does not match operand {fact.get('operandId', '')}")
         return binding
 
@@ -780,7 +880,9 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
             stage = L2OperandFailureStage.AUTHORITY_JOIN
             authority, reason = _authority(finding, functions, artifact)
             if authority is None:
-                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail(reason)))
+                return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail(
+                    reason, failureStage=L2OperandFailureStage.AUTHORITY_JOIN.value,
+                    artifactPath=str(artifact_path))))
             function_name = authority["function"]
             function = next(item for item in functions if isinstance(item, Mapping) and item.get("name") == function_name)
             stage = L2OperandFailureStage.WRAPPER_MATERIALIZATION
@@ -910,7 +1012,9 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 json.JSONDecodeError) as exc:
             return _failure_result(
                 stage, exc, artifact_path=artifact_path,
-                disposition=(L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE
+                disposition=(L2ProviderExecutionDisposition.PRECONDITION_REJECTED
+                             if stage is L2OperandFailureStage.AUTHORITY_JOIN else
+                             L2ProviderExecutionDisposition.EXECUTED_INCONCLUSIVE
                              if executed else L2ProviderExecutionDisposition.NOT_EXECUTED),
                 reason_code=(exc.reason_code
                              if isinstance(exc, L2OperandObservationError) else ""),
