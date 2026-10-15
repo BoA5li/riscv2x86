@@ -52,6 +52,9 @@ from .l2_materialization import (
     FragmentL2MaterializationDecision, assess_fragment_l2_materializability,
     required_dimensions_for_finding,
 )
+from .canonical_l2_operand import (
+    bind_canonical_l2_operands, canonical_l2_operand_binding_set,
+)
 
 
 _INTEGER = re.compile(r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)$")
@@ -168,65 +171,35 @@ def _scalar_authority(
             or not isinstance(outputs, list) or not isinstance(inputs, list)
             or not outputs + inputs):
         return None
-    declarations = boundary.get("declarations")
-    asm_ids = boundary.get("asmOperandDeclarationIds")
-    value_node_ids = boundary.get("asmOperandValueNodeIdentities")
-    params = boundary.get("parameterDeclarationIds")
-    returned = boundary.get("returnDeclarationId")
-    counts = boundary.get("declarationReferenceCounts")
-    if (not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
-            or not isinstance(value_node_ids, list)
-            or not isinstance(params, list) or not isinstance(counts, Mapping)
-            or len(asm_ids) != len(outputs) + len(inputs)
-            or len(value_node_ids) != len(asm_ids)
-            or any(not isinstance(item, str)
-                   or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
-                   for item in value_node_ids)):
-        return None
-    output_ids, input_ids = asm_ids[:len(outputs)], asm_ids[len(outputs):]
-    read_write_ids = [output_ids[index] for index, item in enumerate(outputs)
-                      if isinstance(item, Mapping)
-                      and str(item.get("constraint", "")).startswith("+")]
-    if not per_fragment:
-        if returned not in output_ids or sorted(input_ids + read_write_ids) != sorted(params):
-            return None
-        expected = {item: asm_ids.count(item) + int(item == returned) for item in set(asm_ids)}
-        if any(counts.get(item) != count for item, count in expected.items()):
-            return None
-    operands = []
-    for index, (raw, declaration_id, access) in enumerate(
-            [(item, output_ids[pos],
-              "read_write" if isinstance(item, Mapping)
-              and str(item.get("constraint", "")).startswith("+") else "output")
-             for pos, item in enumerate(outputs)]
-            + [(item, input_ids[pos], "input") for pos, item in enumerate(inputs)]):
-        declaration = declarations.get(declaration_id)
-        if not isinstance(raw, Mapping) or not isinstance(declaration, Mapping):
-            return None
-        type_name = str(declaration.get("type", ""))
-        width, signedness = _width(type_name), _signedness(type_name)
-        if not width or signedness == "not_applicable":
-            return None
-        constraint = str(raw.get("constraint", ""))
-        operands.append(L2OperandAuthority(
-            operand_id=f"{fragment_id}:{index}:{declaration_id}",
-            operand_index=index,
-            logical_name=str(raw.get("symbolicName") or declaration.get("name") or f"operand{index}"),
-            access_mode=access,
-            type_kind="integer",
-            width_bits=width,
-            signedness=signedness,
-            tied_to_operand_id="",
-            early_clobber=bool(raw.get("isEarlyClobber")) or "&" in constraint,
-            fixed_register_contract="",
-            escape_kind=("function_return" if declaration_id == returned else
-                         "function_argument" if declaration_id in params else "non_escaping"),
-            value_node_identity=value_node_ids[index],
-            declaration_id=str(declaration_id),
-            parameter_index=params.index(declaration_id) if declaration_id in params else None,
-            source_constraint=constraint,
+    try:
+        canonical = bind_canonical_l2_operands(
+            fragment,
+            raw_fragment_boundary if per_fragment else boundary,
+            function_boundary if isinstance(function_boundary, Mapping) else boundary,
+            approval["l2EffectProofFacts"],
+        )
+        operands = [L2OperandAuthority(
+            operand_id=item.operand_id, operand_index=item.operand_index,
+            logical_name=item.logical_name, access_mode=item.access_mode,
+            type_kind=item.type_kind, width_bits=item.width_bits,
+            signedness=item.signedness,
+            tied_to_operand_id=item.tied_to_operand_id,
+            early_clobber=item.early_clobber, fixed_register_contract="",
+            escape_kind=item.escape_kind,
+            value_node_identity=item.value_node_identity,
+            declaration_id=item.declaration_identity,
+            parameter_index=item.parameter_index,
+            source_constraint=item.source_constraint,
             target_contract_carried_by_proof=True,
-        ))
+        ) for item in canonical]
+        if isinstance(approval, dict):
+            approval["l2CanonicalOperandBindings"] = \
+                canonical_l2_operand_binding_set(
+                    canonical, proof_identity=str(approval["proofIdentity"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    output_ids = [item.declaration_id for item in operands
+                  if item.access_mode in {"output", "read_write"}]
     arity = function.get("arity")
     if isinstance(arity, bool) or not isinstance(arity, int) or not 1 <= arity <= 4:
         return None
@@ -265,7 +238,8 @@ def _scalar_authority(
         internal_values = tuple(sorted((L2InternalValueAuthority(
             point.logical_value_id, point.type_contract.type_kind,
             point.type_contract.width_bits, point.type_contract.signedness,
-            "operand" if output_ids[point.operand_index] == returned else "non_escaping",
+            "operand" if canonical[point.operand_index].escape_kind
+            == "function_return" else "non_escaping",
             True,
         ) for point in instrumentation.points), key=lambda item: item.value_id))
         if isinstance(approval, dict):
@@ -292,7 +266,7 @@ def _scalar_authority(
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
-                            "v5", producer_digest),
+                            "v6", producer_digest),
         shell_identity, tuple(operands), (), source_effects, relations,
         (), (), True, control_flow=control_flow, internal_values=internal_values,
     )
@@ -352,43 +326,31 @@ def _memory_authority(
         fragment)
     if not decision.materializable or decision.authority is None:
         return None
-    outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
-    declarations, asm_ids = boundary.get("declarations"), boundary.get("asmOperandDeclarationIds")
-    value_node_ids = boundary.get("asmOperandValueNodeIdentities")
-    params = boundary.get("parameterDeclarationIds")
-    if (not isinstance(outputs, list) or not isinstance(inputs, list)
-            or not isinstance(declarations, Mapping) or not isinstance(asm_ids, list)
-            or not isinstance(value_node_ids, list)
-            or not isinstance(params, list) or len(asm_ids) != len(outputs) + len(inputs)
-            or len(value_node_ids) != len(asm_ids)
-            or any(not isinstance(item, str)
-                   or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
-                   for item in value_node_ids)):
+    raw_fragment_boundary = approval.get("l2FragmentOperandBoundary")
+    function_boundary = function.get("l2OperandBoundary")
+    try:
+        canonical = bind_canonical_l2_operands(
+            fragment,
+            raw_fragment_boundary if isinstance(raw_fragment_boundary, Mapping) else boundary,
+            function_boundary if isinstance(function_boundary, Mapping) else boundary,
+            approval["l2EffectProofFacts"],
+        )
+        operands = [L2OperandAuthority(
+            item.operand_id, item.operand_index, item.logical_name,
+            "address" if item.operand_index == facts.address_operand_index
+            else item.access_mode,
+            item.type_kind, item.width_bits, item.signedness,
+            item.tied_to_operand_id, item.early_clobber, "",
+            item.escape_kind,
+            item.value_node_identity, item.declaration_identity,
+            item.parameter_index, item.source_constraint, True,
+        ) for item in canonical]
+        if isinstance(approval, dict):
+            approval["l2CanonicalOperandBindings"] = \
+                canonical_l2_operand_binding_set(
+                    canonical, proof_identity=str(approval["proofIdentity"]))
+    except (KeyError, TypeError, ValueError):
         return None
-    raw_operands = [(item, "output") for item in outputs] + [(item, "input") for item in inputs]
-    operands = []
-    for index, ((raw, default_access), declaration_id) in enumerate(zip(raw_operands, asm_ids)):
-        declaration = declarations.get(declaration_id)
-        if not isinstance(raw, Mapping) or not isinstance(declaration, Mapping):
-            return None
-        type_name = str(declaration.get("type", ""))
-        is_pointer = bool(_INTEGER_POINTER.fullmatch(type_name.strip()))
-        width = 64 if is_pointer else _width(type_name)
-        signedness = "not_applicable" if is_pointer else _signedness(type_name)
-        if not width or (not is_pointer and signedness == "not_applicable"):
-            return None
-        access = "address" if index == facts.address_operand_index else default_access
-        operands.append(L2OperandAuthority(
-            f"{fragment_id}:{index}:{declaration_id}", index,
-            str(raw.get("symbolicName") or declaration.get("name") or f"operand{index}"),
-            access, "pointer" if is_pointer else "integer", width, signedness, "",
-            bool(raw.get("isEarlyClobber")) or "&" in str(raw.get("constraint", "")), "",
-            "function_argument" if declaration_id in params else
-            "function_return" if default_access == "output" else "non_escaping",
-            value_node_ids[index], str(declaration_id),
-            params.index(declaration_id) if declaration_id in params else None,
-            str(raw.get("constraint", "")), True,
-        ))
     expected_access = {
         L2PatternKind.MEMORY_LOAD: "load",
         L2PatternKind.MEMORY_STORE: "store",
@@ -413,7 +375,7 @@ def _memory_authority(
     effects, relations, shell_identity = proof_authority
     return L2AuthoritySidecar(
         fragment_id, L2AuthorityProducer("frontend-compiler-sidecar",
-          "automatic-memory-authority", "v2", producer_digest),
+          "automatic-memory-authority", "v3", producer_digest),
         shell_identity, tuple(operands), (memory_object,),
         effects, relations, (), (), True,
     )

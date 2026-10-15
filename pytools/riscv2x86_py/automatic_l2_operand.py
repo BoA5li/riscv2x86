@@ -34,6 +34,7 @@ from .l2_scalar_authority import (
     scalar_authority_decision_matches_assessment,
     scalar_authority_decision_from_dict,
 )
+from .canonical_l2_operand import canonical_l2_operand_bindings_from_dict
 
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
@@ -254,47 +255,35 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
     shell_identity = getattr(artifact, "shell_facts_identity", "")
     if not isinstance(shell_identity, str) or _SHA.fullmatch(shell_identity) is None:
         return None, "L2_OPERAND_SHELL_IDENTITY_MISSING"
-    facts = []
-    binding_by_index = ({item.operand_index: item for item in
-                         parsed_boundary.output_bindings + parsed_boundary.input_bindings}
-                        if per_fragment else {})
-    legacy_value_nodes = boundary.get("asmOperandValueNodeIdentities")
-    if (not per_fragment
-            and (not isinstance(legacy_value_nodes, list)
-                 or len(legacy_value_nodes) != len(asm_ids)
-                 or any(not isinstance(item, str)
-                        or _SHA.fullmatch(item) is None
-                        for item in legacy_value_nodes))):
-        return None, "L2_OPERAND_VALUE_NODE_IDENTITY_MISSING"
-    combined = [(item, output_ids[index], "output") for index, item in enumerate(outputs)]
-    combined += [(item, input_ids[index], "input") for index, item in enumerate(inputs)]
-    for index, (raw, declaration_id, role) in enumerate(combined):
-        if not isinstance(raw, Mapping) or declaration_id not in declarations:
-            return None, "L2_OPERAND_AUTHORITY_FACT_MISSING"
-        decl = declarations[declaration_id]
-        if not isinstance(decl, Mapping):
-            return None, "L2_OPERAND_DECLARATION_FACT_MISSING"
-        constraint = str(raw.get("constraint") or "")
-        width, signedness = _width(str(decl.get("type") or "")), _signedness(str(decl.get("type") or ""))
-        if width <= 0 or signedness == "not_applicable":
-            return None, "L2_OPERAND_HOST_TYPE_UNSUPPORTED"
-        access = "read_write" if role == "output" and constraint.startswith("+") else role
-        tied = None
-        if role == "input" and constraint.isdigit():
-            tied = int(constraint)
-        facts.append({
-            "operandIndex": index, "operandName": str(raw.get("symbolicName") or decl.get("name") or f"operand{index}"),
-            "operandId": f"{getattr(artifact, 'fragment_id')}:{index}:{declaration_id}",
-            "declarationId": declaration_id, "accessMode": access, "widthBits": width,
-            "parameterIndex": params.index(declaration_id) if declaration_id in params else None,
-            "signedness": signedness, "tiedToOperandIndex": tied,
-            "earlyClobber": bool(raw.get("isEarlyClobber")) or "&" in constraint,
-            "sourceConstraint": constraint, "targetContractCarriedByProof": True,
-            "escaped": False,
-            "valueNodeIdentity": (
-                binding_by_index[index].value_node_identity
-                if index in binding_by_index else legacy_value_nodes[index]),
-        })
+    raw_canonical = approval.get("l2CanonicalOperandBindings")
+    if not isinstance(raw_canonical, Mapping):
+        return None, "L2_OPERAND_CANONICAL_BINDING_MISSING"
+    try:
+        canonical = canonical_l2_operand_bindings_from_dict(
+            raw_canonical,
+            expected_fragment_id=str(getattr(artifact, "fragment_id", "")),
+            expected_proof_identity=str(getattr(artifact, "proof_identity", "")),
+        )
+    except ValueError:
+        return None, "L2_OPERAND_CANONICAL_BINDING_MISMATCH"
+    id_to_index = {item.operand_id: item.operand_index for item in canonical}
+    facts = [{
+        "operandIndex": item.operand_index,
+        "operandName": item.logical_name,
+        "operandId": item.operand_id,
+        "declarationId": item.declaration_identity,
+        "accessMode": item.access_mode,
+        "widthBits": item.width_bits,
+        "parameterIndex": item.parameter_index,
+        "signedness": item.signedness,
+        "tiedToOperandIndex": (id_to_index[item.tied_to_operand_id]
+                               if item.tied_to_operand_id else None),
+        "earlyClobber": item.early_clobber,
+        "sourceConstraint": item.source_constraint,
+        "targetContractCarriedByProof": True,
+        "escaped": item.escape_kind not in {"none", "non_escaping"},
+        "valueNodeIdentity": item.value_node_identity,
+    } for item in canonical]
     raw_sidecar = approval.get("l2AuthoritySidecar")
     if not isinstance(raw_sidecar, Mapping):
         return None, "L2_OPERAND_AUTHORITY_SIDECAR_MISSING"
