@@ -182,8 +182,10 @@ def main() -> int:
         "schemaVersion": "riscv2x86.l2-baseline-provenance.v1",
         "capturedAtUtc": datetime.now(timezone.utc).isoformat(),
         "repository": str(repo),
-        "gitHead": head,
-        "gitBranch": branch,
+        "archiveToolGitHead": head,
+        "archiveToolGitBranch": branch,
+        "experimentGitHead": baseline["source"]["commit"],
+        "experimentGitBranch": baseline["source"]["branch"],
         "pythonPackage": run([
             "python3", "-c",
             "import riscv2x86_py; print(riscv2x86_py.__file__)",
