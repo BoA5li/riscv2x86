@@ -59,7 +59,7 @@ def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer"):
            "sourceDigest": digest}
     obj["bindingIdentity"] = _identity(obj)
     candidate = {"schemaVersion": "riscv2x86.compiler-fragment-boundary-candidate.v2",
-                 "candidateIdentity": _identity({"bindingKey": key}),
+                 "candidateIdentity": _identity({"schemaVersion": "riscv2x86.compiler-fragment-binding-key.v2", **key}),
                  "fragmentBindingKey": key, "complete": True,
                  "compilerStructureComplete": True,
                  "operandClassificationComplete": True,

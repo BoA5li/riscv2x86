@@ -706,7 +706,7 @@ def _same_source_file(left: object, right: object) -> bool:
     return Path(left).resolve() == Path(right).resolve()
 
 
-def _candidate_for(
+def resolve_compiler_fragment_candidate(
     fragment: Mapping[str, object],
     candidates: Sequence[Mapping[str, object]],
     function: Mapping[str, object],
@@ -772,6 +772,8 @@ def _candidate_for(
     return None, "L2_FRAGMENT_CANDIDATE_IDENTITY_NOT_FOUND"
 
 
+_candidate_for = resolve_compiler_fragment_candidate
+
 def materialize_fragment_execution_authority(
     findings: Sequence[Mapping[str, object]], function: Mapping[str, object],
     program_id: str,
@@ -798,7 +800,7 @@ def materialize_fragment_execution_authority(
     candidate_fragments: dict[str, set[str]] = {}
     for _finding, fragment in scoped:
         fragment_id = str(fragment.get("id") or fragment.get("fragmentId") or "")
-        candidate, candidate_reason = _candidate_for(
+        candidate, candidate_reason = resolve_compiler_fragment_candidate(
             fragment, [item for item in candidates if isinstance(item, Mapping)],
             function)
         resolved[fragment_id] = candidate, candidate_reason, fragment

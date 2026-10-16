@@ -353,6 +353,8 @@ class AsmFragment:
     # content-addressed payload by source range; Phase 5 joins it with decoder
     # atomic metadata and never derives atomicity from C or asm text.
     compilerFragmentAuthority: Dict[str, Any] = field(default_factory=dict)
+    compilerFragmentBinding: Dict[str, Any] = field(default_factory=dict)
+    compilerFragmentJoin: Dict[str, Any] = field(default_factory=dict)
     csrAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

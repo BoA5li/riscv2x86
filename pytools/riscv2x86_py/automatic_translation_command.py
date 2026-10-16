@@ -26,6 +26,7 @@ from .instruction_stream_sync_contracts import load_instruction_stream_sync_regi
 from .csr_environment_contract import load_csr_environment_contract
 from .atomic_authority import COMPILER_FRAGMENT_AUTHORITY_SCHEMA
 from .compiler_fragment_closure import close_compiler_fragment_candidate
+from .l2_fragment_execution import resolve_compiler_fragment_candidate
 
 
 def _identity(value: object) -> str:
@@ -84,47 +85,62 @@ def _inject_compiler_fragment_authority(
     findings = report if isinstance(report, list) else report.get("findings")
     if not isinstance(findings, list):
         raise ValueError("frontend report has no findings")
-    candidates: dict[tuple[str, int, int], list[dict[str, object]]] = {}
-    for function in functions:
-        boundary = function.get("l2OperandBoundary")
-        if not isinstance(boundary, dict):
-            continue
-        for candidate in boundary.get("fragmentCandidates", []):
-            key = candidate.get("fragmentBindingKey") if isinstance(candidate, dict) else None
-            if not isinstance(key, dict):
-                continue
-            match = (str(Path(str(key.get("sourceFile") or "")).resolve()),
-                     int(key.get("beginOffset", -1)), int(key.get("endOffset", -1)))
-            payload = {
-                "schemaVersion": COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
-                "sourceDigest": str(function.get("sourceDigest") or ""),
-                "fragmentId": "", "targetTriple": "riscv64-linux-gnu",
-                "functionIdentity": str(function.get("functionId") or ""),
-                "fragmentBindingKey": key, "candidate": candidate,
-                "memoryObjectBindings": boundary.get("memoryObjectBindings", {}),
-            }
-            candidates.setdefault(match, []).append(payload)
+    joins = []
     for finding in findings:
         fragment = finding.get("fragment") if isinstance(finding, dict) else None
         if not isinstance(fragment, dict):
             continue
-        match = (str(Path(str(fragment.get("fileName") or source)).resolve()),
-                 int(fragment.get("beginOffset", -1)), int(fragment.get("endOffset", -1)))
-        matched = candidates.get(match, [])
-        if len(matched) > 1:
-            raise ValueError("compiler fragment authority binding is ambiguous")
-        if len(matched) != 1:
+        fragment_id = str(fragment.get("fragmentId") or fragment.get("id") or "")
+        matches = []
+        for function in functions:
+            boundary = function.get("l2OperandBoundary", {})
+            candidates = boundary.get("fragmentCandidates", [])
+            candidate, reason = resolve_compiler_fragment_candidate(
+                fragment, candidates, function)
+            if "AMBIGUOUS" in reason:
+                raise ValueError(reason + ": " + fragment_id)
+            if candidate is not None:
+                matches.append((function, candidate))
+        if len(matches) > 1:
+            raise ValueError("compiler fragment authority binding is ambiguous: " + fragment_id)
+        if not matches:
+            record = {"fragmentId": fragment_id, "disposition": "missing",
+                      "reasonCode": "L2_FRAGMENT_CANDIDATE_IDENTITY_NOT_FOUND"}
+            fragment["compilerFragmentJoin"] = record
+            joins.append(record)
             continue
-        payload = dict(matched[0])
-        payload["fragmentId"] = str(fragment.get("fragmentId") or fragment.get("id") or "")
-        payload["candidate"] = close_compiler_fragment_candidate(
-            payload["candidate"], fragment,
-            source_digest=str(payload["sourceDigest"]),
-            function_identity=str(payload["functionIdentity"]),
-        )
+        function, candidate = matches[0]
+        try:
+            closed = close_compiler_fragment_candidate(
+                candidate, fragment, source_digest=str(function["sourceDigest"]),
+                function_identity=str(function["functionId"]))
+        except ValueError as exc:
+            if candidate.get("compilerStructureComplete") is True:
+                raise
+            record = {"fragmentId": fragment_id, "disposition": "rejected",
+                      "reasonCode": "COMPILER_FRAGMENT_CLOSURE_REJECTED", "detail": str(exc)}
+            fragment["compilerFragmentJoin"] = record
+            joins.append(record)
+            continue
+        payload = {
+            "schemaVersion": COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
+            "sourceDigest": function["sourceDigest"], "fragmentId": fragment_id,
+            "targetTriple": "riscv64-linux-gnu", "functionIdentity": function["functionId"],
+            "fragmentBindingKey": candidate["fragmentBindingKey"], "candidate": closed,
+            "memoryObjectBindings": function["l2OperandBoundary"].get("memoryObjectBindings", {}),
+        }
         payload["authorityIdentity"] = _identity(payload)
         fragment["compilerFragmentAuthority"] = payload
+        fragment["compilerFragmentBinding"] = {
+            "candidateIdentity": candidate["candidateIdentity"]}
         finding["sourceDigest"] = payload["sourceDigest"]
+        record = {"fragmentId": fragment_id, "disposition": "matched",
+                  "candidateIdentity": candidate["candidateIdentity"],
+                  "closureIdentity": closed["closureIdentity"]}
+        fragment["compilerFragmentJoin"] = record
+        joins.append(record)
+    atomic_json(raw_report.with_name("compiler-fragment-joins.json"), {
+        "schemaVersion": "riscv2x86.compiler-fragment-joins.v1", "joins": joins})
     raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                           encoding="utf-8")
 
@@ -187,6 +203,11 @@ def main() -> int:
         print("Translation output already exists; use a fresh work directory", file=sys.stderr)
         return 2
     raw = report.with_name("raw_report.json")
+    if any(report.with_name(name).exists() for name in (
+            "raw_report.json", "frontend-report.json", "compiler-candidates.json",
+            "compiler-fragment-joins.json")):
+        print("Compiler input artifacts already exist; use a fresh work directory", file=sys.stderr)
+        return 2
     sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
                                     text=True, capture_output=True, check=False)
     if sysroot_result.returncode:
@@ -205,7 +226,18 @@ def main() -> int:
     if front.returncode or not raw.is_file():
         print(front.stderr, file=sys.stderr); return front.returncode or 2
     try:
+        # Preserve both independent compiler inputs before any enrichment.
+        atomic_json(raw.with_name("frontend-report.json"),
+                    json.loads(raw.read_text(encoding="utf-8")))
         _, compiler_functions = inspect_entry_points(Path(args.source).resolve())
+        snapshot = {
+            "schemaVersion": "riscv2x86.compiler-candidates.v1",
+            "sourceDigest": "sha256:" + sha256(Path(args.source).read_bytes()).hexdigest(),
+            "frontendReportIdentity": _identity(json.loads(raw.read_text(encoding="utf-8"))),
+            "functions": list(compiler_functions),
+        }
+        snapshot["manifestIdentity"] = _identity(snapshot)
+        atomic_json(raw.with_name("compiler-candidates.json"), snapshot)
         _inject_compiler_fragment_authority(raw, Path(args.source).resolve(),
                                             compiler_functions)
     except (OSError, ValueError, json.JSONDecodeError) as exc:

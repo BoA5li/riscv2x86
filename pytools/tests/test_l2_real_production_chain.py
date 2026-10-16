@@ -12,6 +12,9 @@ import subprocess
 import sys
 
 import pytest
+from riscv2x86_py.l2_evidence_reader import load_case_evaluation_result, read_l2_fragment_results
+from riscv2x86_py.compiler_provenance import bind_compiler_provenance, validate_compiler_snapshot
+from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 
 
 SOURCES = {
@@ -72,9 +75,20 @@ def test_real_production_chain_closes_required_dimensions(tmp_path, route):
     if route == "scalar":
         # The report preserves the closed provenance as compilerCandidateIdentity.
         # Check membership in the independent raw compiler candidate set.
-        raw = json.loads(report_path.with_name("raw_report.json").read_text())
-        candidate_ids = {item["candidateIdentity"] for item in _objects(raw)
-                         if isinstance(item.get("candidateIdentity"), str)}
+        raw = json.loads(report_path.with_name("compiler-candidates.json").read_text())
+        actual = bind_compiler_provenance(
+            finding["fragment"], l2_authority_sidecar_from_dict(approval["l2AuthoritySidecar"]))
+        assert actual == approval["compilerAuthorityConsumption"]
+        assert actual is not None
+        candidates = validate_compiler_snapshot(raw)
+        original = candidates[actual["compilerCandidateIdentity"]]
+        closed = finding["fragment"]["compilerFragmentAuthority"]["candidate"]
+        for field in ("fragmentBindingKey", "operandCarriers", "valueNodes"):
+            assert closed[field] == original[field]
+        original_frontend = json.loads(report_path.with_name("frontend-report.json").read_text())
+        from riscv2x86_py.l2_evidence_reader import _identity
+        assert _identity(original_frontend) == raw["frontendReportIdentity"]
+        candidate_ids = set(candidates)
         closed_ids = {item["compilerCandidateIdentity"] for item in _objects(report)
                       if isinstance(item.get("compilerCandidateIdentity"), str)}
         assert closed_ids and closed_ids <= candidate_ids
@@ -87,8 +101,11 @@ def test_real_production_chain_closes_required_dimensions(tmp_path, route):
     else:
         assert approval["l2AuthoritySidecar"]["operands"] == []
         expected_dimensions = {"memory_effects", "shell_semantics"}
-    results = [item["dimensionResults"] for item in _objects(batch)
-               if isinstance(item.get("dimensionResults"), dict)]
+    case, = batch["cases"]
+    evaluation = load_case_evaluation_result(output, case)
+    requirements = json.loads(Path(str(report_path) + ".l2-requirements.json").read_text())
+    results = [result.to_dict()["dimensionResults"]
+               for _attempt, result in read_l2_fragment_results(evaluation, requirements)]
     assert results, "central closer dimension results were not recorded"
     for dimension in expected_dimensions:
         matches = [result[dimension] for result in results if dimension in result]
@@ -98,7 +115,7 @@ def test_real_production_chain_closes_required_dimensions(tmp_path, route):
             for key in ("authorityIdentity", "effectRelationIdentity", "executionIdentity",
                         "sourceObservationIdentity", "targetObservationIdentity"):
                 assert re.fullmatch(r"sha256:[0-9a-f]{64}", result[key])
-    providers = [item for item in _objects(batch) if item.get("executionDisposition") == "executed_verified"]
+    providers = [item for item in _objects(evaluation) if item.get("executionDisposition") == "executed_verified"]
     assert providers
     assert any("executionPlan" in item and "executionPayload" in item for item in providers)
 

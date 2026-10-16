@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 from typing import Mapping, Sequence
 
+from .compiler_provenance import bind_compiler_provenance
+
 from .l2_authority import (
     L2AuthorityProducer,
     L2AuthoritySidecar,
@@ -779,6 +781,19 @@ def materialize_automatic_l2_authority(
             approval["l2AuthorityMaterializationReasonCode"] = (
                 "L2_SCALAR_AUTHORITY_MATERIALIZED" if sidecar is not None else
                 scalar_decision.reason_codes[0])
+        if sidecar is not None and is_scalar:
+            try:
+                join = raw_fragment.get("compilerFragmentJoin", {})
+                if join and join.get("disposition") != "matched":
+                    raise ValueError("COMPILER_FRAGMENT_REQUIRED_JOIN_UNAVAILABLE")
+                if join and not raw_fragment.get("compilerFragmentAuthority"):
+                    raise ValueError("COMPILER_FRAGMENT_REQUIRED_AUTHORITY_MISSING")
+                provenance = bind_compiler_provenance(raw_fragment, sidecar)
+                if provenance is not None:
+                    approval["compilerAuthorityConsumption"] = provenance
+            except ValueError as exc:
+                approval["l2AuthorityMaterializationReasonCode"] = str(exc)
+                sidecar = None
         if sidecar is None:
             if (pattern_kind == L2PatternKind.FENCE.value
                     and isinstance(approval, dict)):

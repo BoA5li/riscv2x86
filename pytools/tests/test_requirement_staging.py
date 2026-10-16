@@ -22,6 +22,7 @@ from tests.test_translation_attempt import _finding
     (TranslationOutcome.FAILED, "not_applicable"),
 ])
 def test_nonzero_backend_stages_terminal_requirements(tmp_path, monkeypatch, outcome, disposition):
+    (tmp_path / "source.c").write_text("void probe(void) {}\n")
     report = tmp_path / "translated.json"
     plan = tmp_path / "validation-plan.json"
     plan.write_text(json.dumps({"schemaVersion": "test-plan"}))
