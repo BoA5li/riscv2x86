@@ -411,8 +411,14 @@ def finalize(request, conclusions, privileged_effect_evidence=()):
     evidence = _evidence(request,final,request.candidate_plan.requirements,privileged_effect_evidence)
     facts = None
     if request.fragment_id:
-        from .l2_effect_proof import build_effect_proof_facts
-        facts = build_effect_proof_facts(request, evidence, request.fragment_id)
+        from .l2_effect_proof import build_effect_proof_facts, EffectClassificationError
+        try:
+            facts = build_effect_proof_facts(request, evidence, request.fragment_id)
+        except EffectClassificationError as exc:
+            return reject(request, SemanticProofReasonCode.SOURCE_INCOMPLETE,
+                          {"failureStage": "effect_classification",
+                           "reasonCode": "phase6d.effect-classification-unproven",
+                           "fragmentId": request.fragment_id, "detail": str(exc)})
     return SemanticProofResult.passed(request.candidate_plan.plan_id,final,evidence,facts)
 
 def run_semantic_proof_gate(*, source_model, preservation_decision=None, candidate_plan, constraints, target_environment, target_semantic_catalog=None, compiler_capabilities=None, helper_contract_registry=None, privileged_runtime_registry=None, privileged_functional_registry=None, privileged_functional_policy=None, fragment_id=""):

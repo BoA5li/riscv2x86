@@ -76,7 +76,7 @@ _LOCAL_BRANCH_SELECT_CONTRACT_ID = "x86.gnu-att.local-branch-select.compare.u32-
 _LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID = "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
 
 
-def _build_rv64_add_model(*, source_cc_clobber: bool = False):
+def _build_rv64_add_model(*, source_cc_clobber: bool = False, include_phase5: bool = False):
     fragment = AsmFragment(
         outputs=[AsmOperand(constraint="=r", exprText="out", isOutput=True)],
         inputs=[
@@ -104,8 +104,12 @@ def _build_rv64_add_model(*, source_cc_clobber: bool = False):
         has_timing_source=False, has_cache_operation=False,
         has_speculation_control=False,
     )
+    blocks = (Block(addr=0x1000, ops=[operation], summary=summary),)
+    state = analyze_privileged_state(
+        fragment_id="typed-scalar", blocks=blocks, cfg=CFGResult(ok=True),
+        execution_facts=None) if include_phase5 else None
     return build_source_semantic_model(
-        fragment=fragment, blocks=(Block(addr=0x1000, ops=[operation], summary=summary),),
+        fragment=fragment, blocks=blocks, privileged_state=state,
         cfg=CFGResult(ok=True), summary=summary, xlen=64,
         runtime_facts=TranslationRuntimeFacts(
             rv_to_operand_index={"a0": 0, "a1": 1, "a2": 2},

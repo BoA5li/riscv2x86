@@ -255,6 +255,10 @@ def effect_proof_facts_from_dict(value: Mapping[str, object]) -> L2EffectProofFa
         relations, shell_fact, raw.get("complete") is True)
 
 
+class EffectClassificationError(ValueError):
+    """The typed source does not justify a complete effect classification."""
+
+
 def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectProofFacts:
     """Produce semantic effects once, after Phase-6D has discharged all gates."""
     source = request.source_model
@@ -276,6 +280,12 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
                         if runtime_contract_id else "")
     relation_kind = "runtime_mediated" if runtime_contract_id else "exact"
     operation_kind = str(getattr(getattr(source.operation, "kind", None), "value", ""))
+    adapter = source.privileged_state
+    privileged_present = False if adapter is None else adapter.semantic_presence
+    if privileged_present is None:
+        raise EffectClassificationError("privileged semantic presence is unproven or inconsistent")
+    if operation_kind == "privileged" and not privileged_present:
+        raise EffectClassificationError("privileged operation has no typed privileged state")
     is_barrier_operation = operation_kind in {"compiler_barrier", "hardware_barrier"}
     # One relation describes a semantic effect family; observations carry a
     # separate sample identity and all reference this stable relation.
@@ -295,7 +305,7 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
                                       and not source.memory.writes_memory else "WriteMemory"),
                     "memory:proved-object",
                     ("kind", "subject", "value", "memory_coordinates", "memory_order"))]
-    elif source.privileged_state is not None:
+    elif privileged_present:
         effects = [("privileged:operation", "PrivilegedOperation", "privileged:state",
                     ("kind", "subject", "value"))]
     else:

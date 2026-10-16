@@ -88,6 +88,29 @@ class SourcePrivilegedSemanticModel:
     strict_reason_codes: tuple[str, ...] = ()
     functional_fallback_reason_codes: tuple[str, ...] = ()
 
+    @property
+    def semantic_presence(self) -> bool | None:
+        """Typed presence, independent of the existence of this adapter.
+
+        None means that Phase 5 has not supplied a consistent classification;
+        consumers must not interpret it as proven absence.
+        """
+        state = self.state
+        if (state is None or not state.classification_complete
+                or not self.classification_complete
+                or PrivilegedSemanticClass.UNKNOWN in state.semantic_classes
+                or self.semantic_classes != state.semantic_classes):
+            return None
+        if state.present:
+            return True
+        effects = (state.csr_effects + state.trap_effects + state.return_effects
+                   + state.interrupt_effects + state.address_translation_effects
+                   + state.virtualization_effects + state.debug_effects)
+        if (not state.complete or effects or state.semantic_classes
+                or self.read_only_counter is not None):
+            return None
+        return False
+
     def __post_init__(self) -> None:
         for values, what in (
             (self.reason_codes, "privileged adapter reasons"),
