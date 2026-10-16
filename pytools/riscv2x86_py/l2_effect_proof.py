@@ -287,9 +287,23 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
     if operation_kind == "privileged" and not privileged_present:
         raise EffectClassificationError("privileged operation has no typed privileged state")
     is_barrier_operation = operation_kind in {"compiler_barrier", "hardware_barrier"}
+    atomic = getattr(source, "atomic", None)
+    atomic_present = bool(getattr(atomic, "present", False))
     # One relation describes a semantic effect family; observations carry a
     # separate sample identity and all reference this stable relation.
-    if source.operation.has_control_flow:
+    if atomic_present:
+        if (not atomic.complete or not atomic.memory_object_identity
+                or not atomic.read_effect_identity or not atomic.write_effect_identity
+                or not atomic.authority_identity or atomic.width_bits not in {32, 64}
+                or atomic.wraparound_width_bits != atomic.width_bits):
+            raise EffectClassificationError("atomic RMW effect authority is incomplete")
+        # One indivisible RMW contains both effects.  Classifying reads+writes
+        # as an ordinary WriteMemory loses the atomicity obligation and could
+        # allow an ordinary memory provider to claim equivalence.
+        effects = [("atomic:rmw", "AtomicReadModifyWrite", atomic.memory_object_identity,
+            ("kind", "subject", "value", "memory_coordinates", "memory_order",
+             "atomicity", "read_modify_write", "result_extension"))]
+    elif source.operation.has_control_flow:
         effects = [("control:continuation", "ControlTransfer", "continuation:proved",
                     ("branch_condition", "branch_continuation", "branch_outcome",
                      "kind", "target", "value"))]

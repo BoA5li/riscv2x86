@@ -162,8 +162,18 @@ def _sidecar_dimension_reasons(sidecar: L2AuthoritySidecar,
     if (L2Dimension.PRIVILEGED_STATE in dimensions
             or L2Dimension.TRAP_SEMANTICS in dimensions) and not sidecar.runtime_contracts:
         reasons.append("L2_FRAGMENT_PRIVILEGED_RUNTIME_AUTHORITY_MISSING")
-    if L2Dimension.ATOMIC_MEMORY_ORDER in dimensions and not sidecar.memory_objects:
-        reasons.append("L2_FRAGMENT_ATOMIC_AUTHORITY_MISSING")
+    if L2Dimension.ATOMIC_MEMORY_ORDER in dimensions:
+        if not sidecar.memory_objects:
+            reasons.append("L2_FRAGMENT_ATOMIC_AUTHORITY_MISSING")
+        atomic_effects = {x.effect_id for x in sidecar.source_effects
+                          if x.effect_kind == "AtomicReadModifyWrite" and x.complete}
+        if not atomic_effects:
+            reasons.append("L2_ATOMIC_RMW_EFFECT_AUTHORITY_MISSING")
+        covered = {x.source_effect_id for x in sidecar.approved_effect_relations
+                   if x.authority_complete and {"atomicity", "memory_order", "read_modify_write",
+                      "result_extension"}.issubset(x.observable_requirements)}
+        if atomic_effects - covered:
+            reasons.append("L2_ATOMIC_RMW_RELATION_INCOMPLETE")
     return not reasons, reasons
 
 
@@ -208,6 +218,13 @@ def assess_fragment_l2_materializability(
                 reasons.append("L2_FRAGMENT_AUTHORITY_SIDECAR_INVALID")
         else:
             reasons.append("L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING")
+            # Preserve the actual unsupported authority family rather than
+            # presenting these routes as generic scalar/memory failures.
+            if (profile is not None and profile.pattern_kind is L2PatternKind.UNKNOWN
+                    and isinstance(fragment, Mapping) and fragment.get("gotoLabels")):
+                reasons.append("L2_ASM_GOTO_CONTINUATION_OBSERVATION_AUTHORITY_REQUIRED")
+            if profile is not None and profile.pattern_kind is L2PatternKind.ATOMIC:
+                reasons.append("L2_ATOMIC_RMW_OBSERVATION_AUTHORITY_REQUIRED")
     boundary_complete = False
     relation_complete = False
     shell_complete = False

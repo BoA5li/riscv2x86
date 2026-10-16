@@ -22,6 +22,7 @@ from .compiler_value_flow import (
     CompilerDownstreamUse, CompilerOperandBinding, CompilerOperandCarrier,
     CompilerValueNode, identity as value_flow_identity,
 )
+from .compiler_expression import expression_from_ast, CompilerExpressionError
 
 AUTO_INVENTORY_SCHEMA = "riscv2x86.automatic-corpus-inventory.v1"
 EXPLICIT_HARNESS_SCHEMA = "riscv2x86.explicit-harness.v1"
@@ -61,25 +62,37 @@ def _walk_ast(node: object):
 
 
 def _unwrap_expression(node: object) -> Mapping[str, object] | None:
-    """Remove AST wrappers which do not change a returned value's provenance."""
-    wrappers = {"ImplicitCastExpr", "ParenExpr", "CStyleCastExpr", "ExprWithCleanups"}
+    """Remove only proven carrier-preserving wrappers; retain real conversions."""
+    wrappers = {"ImplicitCastExpr", "ParenExpr", "CStyleCastExpr"}
     current = node
     while isinstance(current, Mapping) and current.get("kind") in wrappers:
         children = [item for item in current.get("inner", []) if isinstance(item, Mapping)]
         if len(children) != 1:
             return None
+        if current.get("kind") != "ParenExpr":
+            if current.get("castKind") not in {"NoOp", "LValueToRValue"}:
+                break
+            outer_type, inner_type = current.get("type", {}), children[0].get("type", {})
+            if not isinstance(outer_type, Mapping) or not isinstance(inner_type, Mapping):
+                break
+            outer = outer_type.get("desugaredQualType") or outer_type.get("qualType")
+            inner = inner_type.get("desugaredQualType") or inner_type.get("qualType")
+            if not outer or outer != inner:
+                break
         current = children[0]
     return current if isinstance(current, Mapping) else None
 
 
 def _decl_identity(node: object) -> str:
+    # A declaration is not the value of an arbitrary cast of that declaration.
+    # Preserve only parentheses and proven type-preserving compiler loads.
     current = _unwrap_expression(node)
     if current is None or current.get("kind") != "DeclRefExpr":
         return ""
     referenced = current.get("referencedDecl")
     if not isinstance(referenced, Mapping):
         return ""
-    return str(referenced.get("id") or referenced.get("name") or "")
+    return str(referenced.get("id") or "")
 
 
 
@@ -121,10 +134,15 @@ def _line_column_at_byte_offset(source: bytes, offset: int) -> tuple[int, int] |
 def _integer_type(type_name: str) -> tuple[int, str]:
     value = " ".join(type_name.replace("const", "").replace("volatile", "").split())
     fixed = re.fullmatch(r"u?int(8|16|32|64)_t", value)
-    width = int(fixed.group(1)) if fixed else (
-        8 if "char" in value else 16 if "short" in value else
-        64 if "long" in value else 32 if value in {
-            "int", "signed", "signed int", "unsigned", "unsigned int"} else 0)
+    widths = {"char": 8, "signed char": 8, "unsigned char": 8,
+        "short": 16, "short int": 16, "signed short": 16, "signed short int": 16,
+        "unsigned short": 16, "unsigned short int": 16,
+        "int": 32, "signed": 32, "signed int": 32, "unsigned": 32, "unsigned int": 32,
+        "long": 64, "long int": 64, "signed long": 64, "signed long int": 64,
+        "unsigned long": 64, "unsigned long int": 64,
+        "long long": 64, "long long int": 64, "signed long long": 64,
+        "signed long long int": 64, "unsigned long long": 64, "unsigned long long int": 64}
+    width = int(fixed.group(1)) if fixed else widths.get(value, 0)
     signedness = "unsigned" if value.startswith(("u", "unsigned")) else "signed"
     return width, signedness
 
@@ -339,6 +357,23 @@ def _l2_operand_boundary_facts(
         candidate_ids = [stable_declaration(_decl_identity(item))
                          if _decl_identity(item) else "" for item in operand_children]
         slot_records = []
+        expression_records = []
+        for index, child in enumerate(operand_children):
+            try:
+                expression = expression_from_ast(child, source_digest=source_digest,
+                    function_identity=function_identity,
+                    declaration_identity=stable_declaration, source_range=_source_range)
+                expression_records.append({"operandIndex": index, "complete": True,
+                    "expression": expression, "reasonCode": "", "detail": ""})
+            except CompilerExpressionError as exc:
+                expression_records.append({"operandIndex": index, "complete": False,
+                    "expression": None, "reasonCode": exc.reason_code, "detail": str(exc)})
+        expression_facts = {"schemaVersion": "riscv2x86.compiler-expression-slots.v1",
+            "sourceDigest": source_digest, "functionIdentity": function_identity,
+            "candidateIdentity": candidate_by_asm_id[id(asm_node)],
+            "slots": expression_records,
+            "complete": all(x["complete"] for x in expression_records)}
+        expression_facts["factsIdentity"] = value_flow_identity(expression_facts)
         source_range = asm_node.get("range")
         begin = source_range.get("begin") if isinstance(source_range, Mapping) else None
         end = source_range.get("end") if isinstance(source_range, Mapping) else None
@@ -526,6 +561,7 @@ def _l2_operand_boundary_facts(
                 "slots": slot_records, "expressionSlotCount": len(operand_children),
                 "complete": all(item["complete"] for item in slot_records),
             },
+            "compilerExpressionFacts": expression_facts,
             "operandCountAuthority": {
                 "outputCount": output_count,
                 "inputCount": input_count,

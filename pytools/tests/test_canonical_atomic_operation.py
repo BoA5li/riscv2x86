@@ -168,8 +168,16 @@ def test_matching_rmw_builtin_preserves_acq_rel_contract():
         compiler_capabilities=CompilerCapabilityModel(
             False, False, frozenset({"c_builtin:atomic"}),
         ),
+        fragment_id="fragment:atomic-rmw",
     )
     assert proof.approved
+    facts = proof.l2_effect_proof_facts
+    assert facts is not None and facts.complete
+    assert [(effect.effect_id, effect.effect_kind) for effect in facts.source_effects] == [
+        ("atomic:rmw", "AtomicReadModifyWrite")]
+    relation = facts.relations[0].approved_relation()
+    assert {"atomicity", "memory_order", "read_modify_write", "result_extension"}.issubset(
+        relation.observable_requirements)
 
 
 def test_x86_stronger_ordering_refinement_is_explicitly_not_approved():

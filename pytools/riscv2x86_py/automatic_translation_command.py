@@ -26,6 +26,7 @@ from .instruction_stream_sync_contracts import load_instruction_stream_sync_regi
 from .csr_environment_contract import load_csr_environment_contract
 from .atomic_authority import COMPILER_FRAGMENT_AUTHORITY_SCHEMA
 from .compiler_fragment_closure import close_compiler_fragment_candidate, CompilerOperandClosureError
+from .compiler_expression import bind_expression_operands, CompilerExpressionError
 from .translation_preflight import write_preflight_failure, PreflightToolFailure
 from .l2_fragment_execution import resolve_compiler_fragment_candidate
 
@@ -111,6 +112,17 @@ def _inject_compiler_fragment_authority(
             joins.append(record)
             continue
         function, candidate = matches[0]
+        if candidate.get("compilerExpressionFacts") is not None:
+            try:
+                fragment["compilerExpressionJoin"] = bind_expression_operands(
+                    candidate, fragment, source_digest=str(function["sourceDigest"]),
+                    function_identity=str(function["functionId"]))
+            except CompilerExpressionError as exc:
+                fragment["compilerExpressionJoin"] = {
+                    "schemaVersion": "riscv2x86.compiler-expression-join-decision.v1",
+                    "fragmentId": fragment_id, "complete": False,
+                    "reasonCode": exc.reason_code, "detail": str(exc),
+                    "expressionFacts": candidate["compilerExpressionFacts"]}
         try:
             closed = close_compiler_fragment_candidate(
                 candidate, fragment, source_digest=str(function["sourceDigest"]),

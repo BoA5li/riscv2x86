@@ -10,6 +10,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from typing import Mapping
+from .compiler_expression import validate_expression_slots, direct_declaration_carrier
 
 
 CLOSED_COMPILER_FRAGMENT_SCHEMA = "riscv2x86.closed-compiler-fragment.v1"
@@ -62,6 +63,11 @@ def close_compiler_fragment_candidate(
     if not isinstance(outputs, list) or not isinstance(inputs, list):
         raise ValueError("frontend fragment operand partition is missing")
     frontend_operands = outputs + inputs
+    expression_facts = candidate.get("compilerExpressionFacts")
+    if expression_facts is not None:
+        validate_expression_slots(expression_facts, source_digest=source_digest,
+            function_identity=function_identity, candidate_identity=candidate.get("candidateIdentity"),
+            operand_count=len(frontend_operands))
     slots = candidate.get("operandSlotFacts")
     records = slots.get("slots") if isinstance(slots, Mapping) else None
     slot_count = len(records) if isinstance(records, list) else len(carriers)
@@ -73,6 +79,7 @@ def close_compiler_fragment_candidate(
         "unsupportedExpressionKinds": sorted({str(x.get("expressionKind", ""))
             for x in records or [] if x.get("complete") is not True}),
         "operandSlots": records or [],
+        "compilerExpressionFacts": expression_facts,
     }
     if slot_count != len(frontend_operands):
         raise CompilerOperandClosureError("compiler/frontend operand arity mismatch",
@@ -98,6 +105,11 @@ def close_compiler_fragment_candidate(
         value_node = carrier.get("valueNodeIdentity")
         width = carrier.get("widthBits")
         signedness = carrier.get("signedness")
+        if expression_facts is not None:
+            expression_slot = expression_facts["slots"][index]
+            if expression_slot["complete"] and direct_declaration_carrier(
+                    expression_slot["expression"]) != declaration:
+                raise ValueError("COMPILER_EXPRESSION_DECLARATION_CARRIER_MISMATCH")
         if (not isinstance(declaration, str) or not declaration
                 or value_node not in node_ids
                 or isinstance(width, bool) or not isinstance(width, int) or width <= 0

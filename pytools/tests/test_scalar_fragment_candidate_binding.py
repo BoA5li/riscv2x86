@@ -245,15 +245,16 @@ def test_non_operand_ast_children_do_not_shift_candidate_operand_indices():
     )
     candidate = facts["fragmentCandidates"][0]
 
-    assert candidate["complete"] is True
-    assert candidate["reasonCodes"] == []
+    # StringLiteral is a possible operand. Never compact it by AST kind.
+    assert candidate["complete"] is False
+    assert "L2_FRAGMENT_DECLARATION_IDENTITY_MISSING" in candidate["reasonCodes"]
     assert candidate["operandCountAuthority"] == {
         "outputCount": 0,
         "inputCount": 1,
         "inputCountAuthority": "clang-input-constraints",
     }
     assert len(candidate["operandBindings"]) == 1
-    assert candidate["operandBindings"][0]["operandIndex"] == 0
+    assert candidate["operandBindings"][0]["operandIndex"] == 1
     assert candidate["operandBindings"][0]["access"] == "input"
 
 
@@ -287,6 +288,7 @@ def test_real_clang_shape_joins_pointer_carrier_with_frontend_roles():
     )
     out_ref = _ref("out", 62, 65)
     base_ref = _ref("base", 67, 71)
+    base_ref["type"] = {"qualType": "const uint64_t *"}
     function = {
         "kind": "FunctionDecl",
         "name": "probe",
@@ -312,6 +314,7 @@ def test_real_clang_shape_joins_pointer_carrier_with_frontend_roles():
                     out_ref,
                     {
                         "kind": "ImplicitCastExpr",
+                        "castKind": "LValueToRValue",
                         "range": _range(67, 71),
                         "type": {"qualType": "const uint64_t *"},
                         "inner": [base_ref],

@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Record route-contract regressions without shell control-flow/pipeline state.
+
+The runner never changes a checkout or removes results. A failed prerequisite
+prevents the suite and is recorded; nonzero suite verdicts remain visible.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+TESTS = (
+    'test_compiler_expression_contracts.py', 'test_l2_continuation_trace.py',
+    'test_translation_preflight.py', 'test_scalar_fragment_candidate_binding.py',
+    'test_production_route_authority.py', 'test_cbranch_and_compiler_type_contracts.py',
+    'test_canonical_atomic_operation.py', 'test_atomic_phase5_closure.py',
+    'test_l2_materialization_closure.py', 'test_l2_effect_proof_facts.py',
+    'test_real_compiler_operand_types.py', 'test_l2_real_production_chain.py',
+    'test_asm_goto_structured_authority.py', 'test_asm_goto_contract_guards.py',
+    'test_l2_evidence_closure.py', 'test_l2_provider_artifacts.py',
+    'test_requirement_staging.py', 'test_requirement_artifact_ingress.py',
+    'test_fence_execution_closure.py', 'test_dependency_observer_production.py',
+)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--frontend', required=True, type=Path)
+    parser.add_argument('--clang10', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--suite', type=Path)
+    args = parser.parse_args()
+    repo = Path(__file__).resolve().parents[1]
+    output = args.output.absolute()
+    output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        print('Output directory must be empty; existing results were preserved.', file=sys.stderr)
+        return 2
+    env = dict(os.environ)
+    env['PYTHONPATH'] = str(repo/'pytools') + os.pathsep + env.get('PYTHONPATH','')
+    env['PATH'] = str(args.clang10.absolute().parent) + os.pathsep + env.get('PATH','')
+    env['RISCV2X86_TEST_FRONTEND'] = str(args.frontend.absolute())
+    status = {'schemaVersion':'riscv2x86.route-contract-regression.v1',
+        'steps':[], 'generatedSuiteExecuted':False, 'generatedSuiteExitCode':None,
+        'blockers':[], 'python':sys.executable, 'repository':str(repo)}
+
+    def save():
+        (output/'run-status.json').write_text(json.dumps(status, indent=2)+'\n')
+
+    def run(stage, argv, timeout):
+        step = {'stage':stage, 'command':argv, 'returnCode':None}
+        status['steps'].append(step)
+        try:
+            with (output/(stage+'.log')).open('w') as log:
+                result = subprocess.run(argv, cwd=repo, env=env, stdout=log,
+                    stderr=subprocess.STDOUT, timeout=timeout, check=False)
+            step['returnCode'] = result.returncode
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            step.update(exceptionType=type(exc).__name__, detail=str(exc))
+        save()
+        print(stage + ': ' + str(step['returnCode']), flush=True)
+        return step['returnCode'] == 0
+
+    run('git-head', ['git','rev-parse','HEAD'], 30)
+    run('git-branch', ['git','branch','--show-current'], 30)
+    if not run('clang-version',[str(args.clang10.absolute()),'--version'],30):
+        status['blockers'].append('clang-version')
+    elif re.search(r'clang version 10\.', (output/'clang-version.log').read_text()) is None:
+        status['blockers'].append('clang-major-version-is-not-10')
+    if not status['blockers']:
+        if not run('frontend-build',['cmake','--build','build','-j2'],600):
+            status['blockers'].append('frontend-build')
+        if not status['blockers'] and not run('regression', [sys.executable,'-m','pytest','-q',
+                *['pytools/tests/'+name for name in TESTS]],900):
+            status['blockers'].append('regression')
+    if args.suite is not None and not status['blockers']:
+        status['generatedSuiteExecuted'] = True
+        run('generated-suite',[sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
+            '--input',str(args.suite.absolute()), '--frontend',str(args.frontend.absolute()),
+            '--output-directory',str(output/'generated-suite-strict'), '--jobs','1',
+            '--timeout-seconds','120'],7200)
+        status['generatedSuiteExitCode'] = status['steps'][-1]['returnCode']
+        batch = output/'generated-suite-strict'/'batch-evaluation.json'
+        if batch.is_file():
+            try:
+                data = json.loads(batch.read_text())
+                summary = {k:data.get(k) for k in ('batchIdentity','caseCount','statusCounts',
+                    'programValidationCounts','reasonCodeCounts','l2CoverageDiagnostics')}
+                (output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+                if not run('provider-audit',[sys.executable,'-m','riscv2x86_py.l2_provider_artifacts',
+                        '--batch',str(batch)],120):
+                    status['blockers'].append('provider-audit')
+            except (OSError,ValueError) as exc:
+                status['blockers'].append('batch-artifact-invalid')
+                status['batchArtifactFailure'] = {'exceptionType':type(exc).__name__,'detail':str(exc),'artifactPath':str(batch)}
+        else:
+            status['blockers'].append('batch-artifact-missing')
+    save()
+    print('run-status: '+str(output/'run-status.json'))
+    if status['blockers']:
+        return 2
+    return 0 if status['generatedSuiteExitCode'] in (None,0) else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

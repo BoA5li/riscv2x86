@@ -55,3 +55,29 @@ def test_persisted_decision_is_content_addressed_and_fragment_bound():
             materialization_decision=copied,
             expected_fragment_id="fragment:closure")
 
+
+
+def test_ordinary_memory_authority_cannot_close_atomic_dimension():
+    from types import SimpleNamespace
+    from riscv2x86_py.l2_materialization import _sidecar_dimension_reasons
+    sidecar = SimpleNamespace(memory_objects=(object(),), source_effects=(
+        SimpleNamespace(effect_id='memory:access', effect_kind='WriteMemory', complete=True),),
+        approved_effect_relations=())
+    complete, reasons = _sidecar_dimension_reasons(
+        sidecar, (L2Dimension.ATOMIC_MEMORY_ORDER,), L2PatternKind.ATOMIC)
+    assert not complete
+    assert reasons == ['L2_ATOMIC_RMW_EFFECT_AUTHORITY_MISSING']
+
+
+def test_atomic_effect_needs_atomicity_and_ordering_relation_properties():
+    from types import SimpleNamespace
+    from riscv2x86_py.l2_materialization import _sidecar_dimension_reasons
+    from riscv2x86_py.effect_relation import ApprovedEffectRelation
+    sidecar = SimpleNamespace(memory_objects=(object(),), source_effects=(
+        SimpleNamespace(effect_id='atomic:rmw', effect_kind='AtomicReadModifyWrite', complete=True),),
+        approved_effect_relations=(ApprovedEffectRelation('r','atomic:rmw',('target:rmw',),
+            'exact',('kind','value'),(),'',True),))
+    complete, reasons = _sidecar_dimension_reasons(
+        sidecar, (L2Dimension.ATOMIC_MEMORY_ORDER,), L2PatternKind.ATOMIC)
+    assert not complete
+    assert reasons == ['L2_ATOMIC_RMW_RELATION_INCOMPLETE']
