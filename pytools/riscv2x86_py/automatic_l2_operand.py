@@ -47,7 +47,7 @@ from .l2_operand_observation_plan import (
 
 AUTO_L2_OPERAND_SCHEMA = "riscv2x86.auto-l2-operand-runner.v1"
 AUTO_L2_AUTHORITY_SCHEMA = "riscv2x86.auto-logical-operand-authority.v1"
-AUTO_L2_OBSERVATION_SCHEMA = "riscv2x86.auto-logical-operand-observation.v1"
+AUTO_L2_OBSERVATION_SCHEMA = "riscv2x86.auto-logical-operand-observation.v2"
 AUTO_L2_FAILURE_SCHEMA = "riscv2x86.auto-l2-operand-failure.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENT = re.compile(r"^[A-Za-z_]\w*$")
@@ -1022,6 +1022,10 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                     right.stdout, dependency_plan, 8 ** arity)
             stage = L2OperandFailureStage.OBSERVATION_MATERIALIZATION
             observation={"schemaVersion":AUTO_L2_OBSERVATION_SCHEMA,"fragmentId":getattr(artifact,"fragment_id"),"attemptId":Path(str(config["workDirectory"])).name,"seed":seed,"inputDomain":"boundary-cartesian-u64-v1","harnessDigest":_digest_bytes(wrapper.encode()),"authorityIdentity":authority["authorityIdentity"],"sourceTraceDigest":_identity({"boundary":source_rows,"internal":source_internal,"dependencies":source_dependency_events}),"targetTraceDigest":_identity({"boundary":target_rows,"internal":target_internal,"dependencies":target_dependency_events}),"sampleCount":0 if source_rows is None else len(source_rows),"sourceExitCode":left.returncode,"targetExitCode":right.returncode,"sourceStderr":left.stderr,"targetStderr":right.stderr,"operandAuthority":authority["operands"],"instrumentationPlanIdentity":plan.get("planIdentity", "") if isinstance(plan, Mapping) else "","sourceInternalValues":source_internal,"targetInternalValues":target_internal,"sourceSamples":_sample_observations(source_rows,sample_plan,source_internal or None,trace_arity=arity,expected_sample_count=8 ** arity,dependency_values=source_dependencies),"targetSamples":_sample_observations(target_rows,sample_plan,target_internal or None,trace_arity=arity,expected_sample_count=8 ** arity,dependency_values=target_dependencies)}
+            observation["sourceTracePayload"] = {"boundary":source_rows,"internal":source_internal,
+                                                 "dependencies":source_dependency_events}
+            observation["targetTracePayload"] = {"boundary":target_rows,"internal":target_internal,
+                                                 "dependencies":target_dependency_events}
             observation["sourceDependencyEvents"] = source_dependency_events
             observation["targetDependencyEvents"] = target_dependency_events
             observation["dependencyPlanIdentity"] = (dependency_plan["planIdentity"]

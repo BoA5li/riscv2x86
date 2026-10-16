@@ -555,15 +555,19 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
                    "not_run" if "not_run" in statuses else "verified")
         provider_executions[kind]["executed_" + outcome] += 1
 
+    from .l2_provider_artifacts import provider_audit_counts
+    audited_counts = provider_audit_counts(result, case_root)
     case_counts = Counter({"total": 1})
     case_counts["l2_required" if required_pairs else "l2_not_required"] += 1
     return {
-        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v2",
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v3",
         "statisticalUnits": {
             "caseCounts": "case",
             "fragmentCounts": "eligible required fragment",
             "requiredDimensionCounts": "eligible required fragment-dimension",
-            "providerExecutionCounts": "unique providerId + executionIdentity; planned fragment/provider when not executed",
+            "providerExecutionCounts": "legacy inference from dimension results and plans",
+            "providerInvocationCounts": "persisted provider invocation",
+            "auditedProviderExecutionCounts": "unique audited bindingKind + providerId + executionIdentity",
         },
         "caseCounts": dict(sorted(case_counts.items())),
         "fragmentCounts": {
@@ -576,6 +580,7 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
             "required": len(required_pairs),
             "with_result": len(result_required_pairs),
         },
+        **audited_counts,
         "providerExecutionCounts": {
             kind: dict(sorted(provider_executions[kind].items()))
             for kind in provider_executions
@@ -595,6 +600,9 @@ def _merge_l2_coverage(items: object) -> dict[str, object]:
     totals = {field: Counter() for field in fields}
     provider_totals = {kind: Counter() for kind in
                        ("automatic", "explicit", "runtime_adapter")}
+    audit_totals = Counter()
+    audit_providers = {field:{kind:Counter() for kind in provider_totals}
+                      for field in ("providerInvocationCounts","auditedProviderExecutionCounts")}
     for item in items if isinstance(items, list) else []:
         coverage = item.get("l2CoverageDiagnostics") if isinstance(item, Mapping) else None
         if not isinstance(coverage, Mapping):
@@ -604,6 +612,10 @@ def _merge_l2_coverage(items: object) -> dict[str, object]:
             if isinstance(raw, Mapping):
                 totals[field].update({str(key): int(value) for key, value in raw.items()
                                       if isinstance(value, int) and not isinstance(value, bool)})
+        audit_totals.update(coverage.get("providerArtifactAuditCounts", {}))
+        for field, kinds in audit_providers.items():
+            for kind, counts in coverage.get(field, {}).items():
+                if kind in kinds: kinds[kind].update(counts)
         raw_providers = coverage.get("providerExecutionCounts")
         if isinstance(raw_providers, Mapping):
             for kind, counts in raw_providers.items():
@@ -613,14 +625,19 @@ def _merge_l2_coverage(items: object) -> dict[str, object]:
                         if isinstance(value, int) and not isinstance(value, bool)
                     })
     merged = {
-        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v2",
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v3",
         "statisticalUnits": {
             "caseCounts": "case",
             "fragmentCounts": "eligible required fragment",
             "requiredDimensionCounts": "eligible required fragment-dimension",
-            "providerExecutionCounts": "unique providerId + executionIdentity; planned fragment/provider when not executed",
+            "providerExecutionCounts": "legacy inference from dimension results and plans",
+            "providerInvocationCounts": "persisted provider invocation",
+            "auditedProviderExecutionCounts": "unique audited bindingKind + providerId + executionIdentity",
         },
         **{field: dict(sorted(totals[field].items())) for field in fields},
+        "providerArtifactAuditCounts":dict(sorted(audit_totals.items())),
+        **{field:{kind:dict(sorted(counts.items())) for kind,counts in kinds.items()}
+           for field,kinds in audit_providers.items()},
         "providerExecutionCounts": {
             kind: dict(sorted(provider_totals[kind].items())) for kind in provider_totals
         },
@@ -825,9 +842,9 @@ def run_batch_evaluation(
                 "caseCountUnit": "case",
                 "fragmentCountUnit": "eligible required fragment",
                 "requiredDimensionCountUnit": "eligible required fragment-dimension",
-                "providerExecutionCountUnit": (
-                    "unique providerId + executionIdentity; planned fragment/provider when not executed"
-                ),
+                "providerExecutionCountUnit": "legacy inference from dimension results and plans",
+                "providerInvocationCountUnit": "persisted provider invocation",
+                "auditedProviderExecutionCountUnit": "unique audited bindingKind + providerId + executionIdentity",
                 "authorityMaterializationUnit": "eligible required fragment-dimension",
                 "observationProductionUnit": "eligible required fragment-dimension",
                 "relationApprovalUnit": "eligible required fragment-dimension",

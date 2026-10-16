@@ -97,15 +97,20 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     assert result["l2RequiredDimensionCounts"] == {}
     assert result["l2RequirementDenominator"] == 0
     assert result["l2CoverageDiagnostics"] == {
-        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v2",
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v3",
         "statisticalUnits": {
             "caseCounts": "case",
             "fragmentCounts": "eligible required fragment",
             "requiredDimensionCounts": "eligible required fragment-dimension",
+            "providerInvocationCounts": "persisted provider invocation",
+            "auditedProviderExecutionCounts": "unique audited bindingKind + providerId + executionIdentity",
             "providerExecutionCounts": (
-                "unique providerId + executionIdentity; planned fragment/provider when not executed"
+                "legacy inference from dimension results and plans"
             ),
         },
+        "providerInvocationCounts": {"automatic":{},"explicit":{},"runtime_adapter":{}},
+        "auditedProviderExecutionCounts": {"automatic":{},"explicit":{},"runtime_adapter":{}},
+        "providerArtifactAuditCounts": {},
         "caseCounts": {"l2_not_required": 2, "total": 2},
         "fragmentCounts": {"planned": 0, "required": 0, "with_dimension_result": 0},
         "requiredDimensionCounts": {"planned": 0, "required": 0, "with_result": 0},
@@ -117,7 +122,8 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
         "observationProductionCounts": {}, "relationApprovalCounts": {},
     }
     assert result["l2CoverageMetricDefinitions"]["providerExecutionCountUnit"] == (
-        "unique providerId + executionIdentity; planned fragment/provider when not executed")
+        "legacy inference from dimension results and plans")
+    assert result["l2CoverageMetricDefinitions"]["providerInvocationCountUnit"] == "persisted provider invocation"
     assert [item["caseId"] for item in result["cases"]] == ["add-001", "shift-001"]
     assert (output / "cases/add-001/evaluation-result.json").is_file()
     assert (output / "cases/shift-001/evaluation-result.json").is_file()

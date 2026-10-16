@@ -21,6 +21,8 @@ from .l2_dimensions import (
 
 L2_DIMENSION_RESULT_SCHEMA = "riscv2x86.l2-dimension-result.v2"
 L2_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v2"
+L2_AUDITED_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v3"
+L2_FRAGMENT_RESULT_SCHEMAS = {L2_FRAGMENT_RESULT_SCHEMA, L2_AUDITED_FRAGMENT_RESULT_SCHEMA}
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -240,6 +242,7 @@ class L2FragmentResult:
     dimension_results: tuple[L2DimensionResult, ...]
     status: L2DimensionStatus
     claim_scope: L2ClaimScope
+    provider_evidence_index: dict[str, object] | None = None
 
     @property
     def conclusion(self) -> L2ClaimConclusion:
@@ -250,6 +253,9 @@ class L2FragmentResult:
         return self.conclusion is L2ClaimConclusion.ARCHITECTURAL_VERIFIED
 
     def __post_init__(self) -> None:
+        if self.provider_evidence_index is not None:
+            from .l2_provider_artifacts import validate_reference
+            validate_reference(self.provider_evidence_index)
         if not self.fragment_id or not _valid_identity(self.requirement_identity):
             raise ValueError("L2 fragment result identities are invalid")
         parse_l2_dimensions([item.value for item in self.required_dimensions])
@@ -284,7 +290,10 @@ class L2FragmentResult:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schemaVersion": L2_FRAGMENT_RESULT_SCHEMA,
+            "schemaVersion": (L2_AUDITED_FRAGMENT_RESULT_SCHEMA if self.provider_evidence_index is not None
+                              else L2_FRAGMENT_RESULT_SCHEMA),
+            **({"providerEvidenceIndex": dict(self.provider_evidence_index)}
+               if self.provider_evidence_index is not None else {}),
             "fragmentId": self.fragment_id,
             "requirementIdentity": self.requirement_identity,
             "requiredDimensions": [item.value for item in self.required_dimensions],
@@ -303,7 +312,12 @@ class L2FragmentResult:
             "requiredDimensions", "dimensionResults", "status", "claimScope",
             "conclusion",
         }
-        if set(value) != expected or value.get("schemaVersion") != L2_FRAGMENT_RESULT_SCHEMA:
+        schema = value.get("schemaVersion")
+        if schema == L2_AUDITED_FRAGMENT_RESULT_SCHEMA:
+            expected.add("providerEvidenceIndex")
+            from .l2_provider_artifacts import validate_reference
+            validate_reference(value.get("providerEvidenceIndex"))
+        if set(value) != expected or schema not in L2_FRAGMENT_RESULT_SCHEMAS:
             raise ValueError("L2 fragment result schema or fields are invalid")
         required, raw_results = value.get("requiredDimensions"), value.get("dimensionResults")
         if not isinstance(required, list) or not isinstance(raw_results, Mapping):
@@ -323,6 +337,7 @@ class L2FragmentResult:
             tuple(sorted(results, key=lambda item: item.dimension.value)),
             L2DimensionStatus(str(value.get("status"))),
             L2ClaimScope(str(value.get("claimScope"))),
+            value.get("providerEvidenceIndex") if schema == L2_AUDITED_FRAGMENT_RESULT_SCHEMA else None,
         )
         if value.get("conclusion") != result.conclusion.value:
             raise ValueError("L2 fragment conclusion does not match status and scope")

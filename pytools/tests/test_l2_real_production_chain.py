@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 import pytest
-from riscv2x86_py.l2_evidence_reader import load_case_evaluation_result, read_l2_fragment_results
+from riscv2x86_py.l2_evidence_reader import load_case_evaluation_result, read_l2_fragment_results, read_l2_provider_results
 from riscv2x86_py.compiler_provenance import bind_compiler_provenance, validate_compiler_snapshot
 from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 
@@ -115,9 +115,11 @@ def test_real_production_chain_closes_required_dimensions(tmp_path, route):
             for key in ("authorityIdentity", "effectRelationIdentity", "executionIdentity",
                         "sourceObservationIdentity", "targetObservationIdentity"):
                 assert re.fullmatch(r"sha256:[0-9a-f]{64}", result[key])
-    providers = [item for item in _objects(evaluation) if item.get("executionDisposition") == "executed_verified"]
-    assert providers
-    assert any("executionPlan" in item and "executionPayload" in item for item in providers)
+    records = read_l2_provider_results(evaluation, output / "cases" / case["caseId"], requirements)
+    assert records
+    providers = [json.loads(item["envelope"]["normalizedResult"]["detail"]) for item in records]
+    assert all(item["executionDisposition"] == "executed_verified" for item in providers)
+    assert all("executionPlan" in item and "executionPayload" in item for item in providers)
 
 
 @pytest.mark.parametrize("cc_members", [(), (0,), (1,), (0, 1)])

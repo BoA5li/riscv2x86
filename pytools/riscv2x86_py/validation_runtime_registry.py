@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from hashlib import sha256
 import re
 from pathlib import Path
@@ -395,6 +396,9 @@ def _requirement_driven_l2_validator(
                 detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
             )
         provider_results: dict[str, ValidationLayerResult] = {}
+        provider_records = {}
+        persistence_error = None
+        from .l2_provider_artifacts import raw_result, persist_provider_evidence, capture_observation_artifact, read_provider_evidence
         dimension_results: list[L2DimensionResult] = []
         for binding in plan.bindings:
             if binding.binding_status is not L2BindingStatus.RESOLVED:
@@ -410,8 +414,23 @@ def _requirement_driven_l2_validator(
             if binding.provider_id not in provider_results:
                 provider_kwargs = dict(kwargs)
                 provider_kwargs["l2_provider_id"] = binding.provider_id
-                result = validators[binding.provider_id](**provider_kwargs)
-                if not isinstance(result, ValidationLayerResult) or result.level is not kwargs.get("level"):
+                exception = None
+                try:
+                    original = validators[binding.provider_id](**provider_kwargs)
+                except Exception as exc:
+                    exception = {"exceptionType":type(exc).__name__, "detail":str(exc),
+                                 "failureStage":"provider_invocation"}
+                    original = None
+                reported = raw_result(original)
+                result = original
+                if exception is not None:
+                    result = ValidationLayerResult(kwargs["level"],ValidationStatus.INCONCLUSIVE,
+                        detail=json.dumps({"reasonCode":"l2.provider-invocation.exception",
+                            "evidenceProductionDisposition":"not_produced",
+                            **exception},sort_keys=True))
+                if (not isinstance(result, ValidationLayerResult) or result.level is not kwargs.get("level")
+                        or not isinstance(result.status, ValidationStatus)
+                        or not isinstance(result.detail, str) or not isinstance(result.evidence_identity, str)):
                     result = ValidationLayerResult(kwargs["level"], ValidationStatus.FAILED,
                                                    detail="invalid requirement-driven child result")
                 elif (result.status is ValidationStatus.VERIFIED
@@ -421,6 +440,19 @@ def _requirement_driven_l2_validator(
                         detail="verified requirement-driven child has no stable evidence identity",
                     )
                 provider_results[binding.provider_id] = result
+                definition = next(dict(item) for item in raw_providers if item["providerId"] == binding.provider_id)
+                observation_snapshot = None
+                try:
+                    observation_snapshot = capture_observation_artifact(result, definition)
+                except (OSError, ValueError, TypeError) as exc:
+                    persistence_error = exc
+                provider_records[binding.provider_id] = {
+                    "providerDefinition":definition, "observationSnapshot":observation_snapshot,
+                    "reportedResult":reported, "normalizedResult":raw_result(result),
+                    "normalizationDisposition": ("provider_exception" if exception is not None else
+                        "unchanged" if reported == raw_result(result) else "rejected_invalid_result"),
+                    "exception":exception, "centralAssessments":{},
+                }
             result = provider_results[binding.provider_id]
             dimension_status = _dimension_status(result.status)
             claim_scope = (_result_claim_scope(result, artifact)
@@ -526,7 +558,9 @@ def _requirement_driven_l2_validator(
                              L2ProviderExecutionDisposition.PRECONDITION_REJECTED
                              else disposition_reasons or production_reasons
                              or closure_reasons or dimension_contract_reasons or provider_roots)
-                reasons = (preferred[0] if preferred else reasons[0],)
+                reasons = (("l2.provider-invocation.exception",)
+                           if provider_records[binding.provider_id]["exception"] is not None else
+                           (preferred[0] if preferred else reasons[0],))
             dimension_results.append(L2DimensionResult.create(
                 dimension=binding.dimension, status=dimension_status,
                 claim_scope=claim_scope, authority_identity=(authority_identity
@@ -558,12 +592,33 @@ def _requirement_driven_l2_validator(
                      L2ClaimScope.APPROVED_FUNCTIONAL_RELATION else ())
                 ),
             ))
+            provider_records[binding.provider_id]["centralAssessments"][binding.dimension.value] = {
+                "ingressValidationDisposition": ("rejected" if (
+                    disposition_reasons or production_reasons or dimension_contract_reasons or closure_reasons)
+                    else "accepted" if evidence_validation_enabled else "not_evaluated"),
+                "closureDisposition": dimension_status.value,
+                "reasonCodes": list(reasons), "dimensionResult":dimension_results[-1].to_dict(),
+            }
         fragment_result = L2FragmentResult.close(
             fragment_id=fragment_id,
             requirement_identity=requirement.requirement_identity,
             required_dimensions=requirement.required_dimensions,
             dimension_results=dimension_results,
         )
+        try:
+            if persistence_error is not None:
+                raise persistence_error
+            reference = persist_provider_evidence(
+                Path(resolved_plan_path).parent, plan, artifact, provider_records, fragment_result)
+            fragment_result = replace(fragment_result, provider_evidence_index=reference)
+            read_provider_evidence(fragment_result, case_root=Path(resolved_plan_path).parent)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            return ValidationLayerResult(kwargs["level"],ValidationStatus.INCONCLUSIVE,
+                detail=json.dumps({"schemaVersion":"riscv2x86.l2-provider-persistence-failure.v1",
+                    "reasonCode":"l2.provider-evidence.persistence-failed",
+                    "failureStage":"provider_evidence_persistence", "exceptionType":type(exc).__name__,
+                    "artifactPath":str(Path(resolved_plan_path).parent / "l2-provider-evidence"),
+                    "detail":str(exc), "capturedProviderResults":provider_records},sort_keys=True))
         status = (
             ValidationStatus.VERIFIED
             if fragment_result.status is L2DimensionStatus.VERIFIED

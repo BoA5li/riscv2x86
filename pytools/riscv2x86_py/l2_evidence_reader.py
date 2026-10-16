@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from .evaluation import EVALUATION_RESULT_SCHEMA
-from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMA
+from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMAS
 
 
 def _identity(value):
@@ -57,11 +57,13 @@ def read_l2_fragment_results(case_result, requirements=None):
             try:
                 raw = layer.get('detail')
                 value = json.loads(raw) if isinstance(raw, str) else raw
-                if not isinstance(value, Mapping) or value.get('schemaVersion') != L2_FRAGMENT_RESULT_SCHEMA:
+                if not isinstance(value, Mapping) or value.get('schemaVersion') not in L2_FRAGMENT_RESULT_SCHEMAS:
                     raise ValueError('L2 fragment result schema unsupported')
                 result = L2FragmentResult.from_dict(value)
             except (ValueError, TypeError, KeyError) as exc:
                 raise ValueError('evaluation.l2-detail-invalid: ' + str(exc)) from exc
+            if result.provider_evidence_index is not None and layer.get('evidenceIdentity') != result.evidence_identity:
+                raise ValueError('evaluation.l2-layer-evidence-identity-mismatch')
             if result.fragment_id != attempt.get('fragmentId'):
                 raise ValueError('evaluation.l2-fragment-mismatch')
             key = (attempt.get('attemptArtifactId'), result.fragment_id)
@@ -83,3 +85,38 @@ def read_l2_fragment_results(case_result, requirements=None):
                     {d.value for d in result.required_dimensions} != set(item['requiredDimensions'])):
                 raise ValueError('evaluation.l2-requirement-mismatch')
     return tuple(results)
+
+
+def read_l2_provider_results(case_result, case_root, requirements=None):
+    """Follow only versioned invocation references attached to typed L2 results."""
+    from .l2_provider_artifacts import read_provider_evidence
+    attempts = {item['attemptArtifactId']: item for item in case_result.get('attempts', [])}
+    records = []
+    for attempt_id, result in read_l2_fragment_results(case_result, requirements):
+        for envelope in read_provider_evidence(result,case_root=case_root,
+                translation_artifact=attempts[attempt_id].get('translationArtifact')):
+            records.append({'attemptArtifactId':attempt_id,'fragmentId':result.fragment_id,
+                            'envelope':envelope})
+    return tuple(records)
+
+
+def audit_provider_references(case_result, case_root):
+    """Recheck v3 references on export/reload; legacy v2 is never called audited."""
+    from .l2_provider_artifacts import read_provider_evidence
+    records = []
+    for attempt in case_result.get('attempts', []):
+        validation = attempt.get('validation')
+        if not isinstance(validation, Mapping): continue
+        for layer in validation.get('layers', []):
+            if layer.get('level') != 'L2': continue
+            try: value = json.loads(layer.get('detail',''))
+            except (ValueError,TypeError): continue
+            if not isinstance(value, Mapping) or value.get('schemaVersion') != 'riscv2x86.l2-fragment-result.v3':
+                continue
+            result = L2FragmentResult.from_dict(value)
+            if (result.fragment_id != attempt.get('fragmentId')
+                    or result.evidence_identity != layer.get('evidenceIdentity')):
+                raise ValueError('evaluation.l2-provider-reference-layer-mismatch')
+            records.extend(read_provider_evidence(result,case_root=case_root,
+                translation_artifact=attempt.get('translationArtifact')))
+    return tuple(records)

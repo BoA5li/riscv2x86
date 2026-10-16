@@ -764,8 +764,8 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             l2_scope = l2_detail["claimScope"]
             if l2_scope not in {"architectural", "approved_functional_relation"}:
                 raise ValueError("L2 claim scope is not approved")
-            from .l2_results import L2_FRAGMENT_RESULT_SCHEMA, L2FragmentResult
-            if l2_detail.get("schemaVersion") == L2_FRAGMENT_RESULT_SCHEMA:
+            from .l2_results import L2_FRAGMENT_RESULT_SCHEMAS, L2FragmentResult
+            if l2_detail.get("schemaVersion") in L2_FRAGMENT_RESULT_SCHEMAS:
                 typed_l2 = L2FragmentResult.from_dict(l2_detail)
                 if (typed_l2.evidence_identity != prior[2].evidence_identity or
                         typed_l2.fragment_id != getattr(artifact, "fragment_id", None) or

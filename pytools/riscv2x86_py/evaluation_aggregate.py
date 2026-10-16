@@ -224,6 +224,8 @@ def _load_evaluation(path: Path) -> Mapping[str, object]:
                         {"level", "status", "evidenceIdentity", "detail"}):
                     raise ValueError("evaluation validation layer is malformed")
                 ValidationStatus(str(layer.get("status")))
+    from .l2_evidence_reader import audit_provider_references
+    audit_provider_references(value, path.parent)
     return value
 
 

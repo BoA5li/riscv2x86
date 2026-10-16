@@ -15,7 +15,7 @@ from typing import Mapping, Sequence
 from .translation_attempt import load_translation_attempt_archive
 from .evaluation import EVALUATION_RESULT_SCHEMA
 from .l2_dimensions import L2ClaimScope, L2Dimension
-from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMA
+from .l2_results import L2FragmentResult, L2_FRAGMENT_RESULT_SCHEMAS
 from .l2_program_results import ProgramExecutionEvidence
 
 
@@ -289,6 +289,8 @@ def _load_evaluation(path: Path) -> Mapping[str, object]:
         raise ValueError("evaluation identity does not match content")
     if not isinstance(value.get("attempts"), list) or not isinstance(value.get("targetEnvironment"), Mapping):
         raise ValueError("evaluation attempts/environment are missing")
+    from .l2_evidence_reader import audit_provider_references
+    audit_provider_references(value, path.parent)
     return value
 
 
@@ -361,7 +363,7 @@ def _validation_maps(
                     except (ValueError, KeyError, TypeError):
                         layer_map["L3"] = "inconclusive"
                 if (item.get("level") == "L2"
-                        and payload.get("schemaVersion") == L2_FRAGMENT_RESULT_SCHEMA):
+                        and payload.get("schemaVersion") in L2_FRAGMENT_RESULT_SCHEMAS):
                     fragment_result = L2FragmentResult.from_dict(payload)
                     typed_l2 = True
                     if item.get("evidenceIdentity") != fragment_result.evidence_identity:
