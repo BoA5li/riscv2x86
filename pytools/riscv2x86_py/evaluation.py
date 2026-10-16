@@ -389,6 +389,23 @@ def _translation_command_failure_result(
         return _result(request, work, commands, (), ValidationStatus.FAILED,
                        ("evaluation.translation-command-crashed",), None,
                        plan=plan, environment=environment)
+    preflight_path = Path(str(_path(request.translated_report, work)) + ".preflight.json")
+    if preflight_path.exists():
+        from .translation_preflight import read_preflight_failure
+        try:
+            failure = read_preflight_failure(
+                _path(request.translated_report, work),
+                _path(request.source_root, work) / request.source_relative_path,
+                record.command, record.returncode)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            failure = {"failureStage": "preflight_ingress", "artifactPath": str(preflight_path),
+                       "exceptionType": type(exc).__name__, "detail": str(exc)}
+            return _result(request, work, commands, (), ValidationStatus.FAILED,
+                           ("evaluation.translation-preflight-artifact-invalid",), None,
+                           plan=plan, environment=environment, preflight_failure=failure)
+        return _result(request, work, commands, (), ValidationStatus.FAILED,
+                       ("evaluation.translation-preflight-rejected", failure["reasonCode"]), None,
+                       plan=plan, environment=environment, preflight_failure=failure)
     if not archive_path.is_file():
         return _result(
             request, work, commands, (), ValidationStatus.FAILED,
@@ -580,10 +597,20 @@ def run_evaluation(
                  "ATTEMPT_ARCHIVE": str(archive_path)}
     commands: list[CommandRecord] = []
     if request.translation_command:
+        preflight_path = Path(str(report) + ".preflight.json")
+        if preflight_path.exists():
+            return _result(request, work, commands, (), ValidationStatus.FAILED,
+                ("evaluation.translation-preflight-artifact-stale",), None,
+                plan=plan, environment=environment,
+                preflight_failure={"failureStage": "preflight_freshness",
+                    "artifactPath": str(preflight_path), "exceptionType": "FileExistsError",
+                    "detail": "Preflight artifact predates command invocation; use a fresh work directory"})
         command = tuple(str(item) for item in _replace(list(request.translation_command), variables))
         record = command_executor(command, work, plan.timeout_seconds, "translation")
         commands.append(record)
-        if record.status is not ValidationStatus.VERIFIED:
+        if (record.status is not ValidationStatus.VERIFIED
+                or Path(str(report) + ".preflight.json").exists()
+                or not archive_path.is_file()):
             terminal = _translation_command_failure_result(
                 request, work, commands, record, plan, environment, archive_path,
             )
@@ -899,7 +926,8 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
             source_program: ProgramArtifact | None = None,
             target_program: ProgramArtifact | None = None,
             requirement_failure: Mapping[str, object] | None = None,
-            skip_requirement_linkage: bool = False) -> dict[str, object]:
+            skip_requirement_linkage: bool = False,
+            preflight_failure: Mapping[str, object] | None = None) -> dict[str, object]:
     def program(value: ProgramArtifact | None) -> object:
         return None if value is None else {
             "artifact_id": value.artifact_id, "artifact_path": value.artifact_path,
@@ -907,7 +935,9 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
             "build_identity": value.build_identity,
         }
     try:
-        linkage = ({} if requirement_failure is not None or skip_requirement_linkage
+        linkage = ({"schemaVersion": "riscv2x86.translation-preflight-evaluation-link.v1",
+                    "preflightFailure": dict(preflight_failure)} if preflight_failure is not None
+                   else {} if requirement_failure is not None or skip_requirement_linkage
                    else _translation_evaluation_linkage(request, work, attempts))
     except Exception as exc:
         from .requirement_staging import RequirementArtifactError

@@ -29,6 +29,15 @@ def _operand_access(operand: Mapping[str, object], *, output: bool) -> str:
         "output" if output else "input")
 
 
+
+class CompilerOperandClosureError(ValueError):
+    def __init__(self, message, *, incomplete=False, diagnostics=None):
+        super().__init__(message)
+        self.incomplete = incomplete
+        self.reason_code = ("COMPILER_OPERAND_EXPRESSION_AUTHORITY_INCOMPLETE" if incomplete
+                            else "COMPILER_FRONTEND_OPERAND_ARITY_MISMATCH")
+        self.diagnostics = diagnostics or {}
+
 def close_compiler_fragment_candidate(
     candidate: Mapping[str, object], fragment: Mapping[str, object], *,
     source_digest: str, function_identity: str,
@@ -48,15 +57,34 @@ def close_compiler_fragment_candidate(
     if (key.get("sourceDigest") != source_digest
             or key.get("functionIdentity") != function_identity):
         raise ValueError("compiler fragment authority identity mismatch")
-    if candidate.get("compilerStructureComplete") is not True:
-        raise ValueError("compiler fragment structure is incomplete")
     if not isinstance(carriers, list) or not isinstance(nodes, list):
         raise ValueError("compiler fragment carriers/value nodes are missing")
     if not isinstance(outputs, list) or not isinstance(inputs, list):
         raise ValueError("frontend fragment operand partition is missing")
     frontend_operands = outputs + inputs
+    slots = candidate.get("operandSlotFacts")
+    records = slots.get("slots") if isinstance(slots, Mapping) else None
+    slot_count = len(records) if isinstance(records, list) else len(carriers)
+    diagnostics = {
+        "frontendOutputCount": len(outputs), "frontendInputCount": len(inputs),
+        "compilerOperandSlotCount": slot_count, "materializedCarrierCount": len(carriers),
+        "missingOperandIndexes": sorted(set(range(len(frontend_operands))) -
+            {x.get("operandIndex") for x in carriers if isinstance(x, Mapping)}),
+        "unsupportedExpressionKinds": sorted({str(x.get("expressionKind", ""))
+            for x in records or [] if x.get("complete") is not True}),
+        "operandSlots": records or [],
+    }
+    if slot_count != len(frontend_operands):
+        raise CompilerOperandClosureError("compiler/frontend operand arity mismatch",
+                                          diagnostics=diagnostics)
+    if records is not None and any(x.get("complete") is not True for x in records):
+        raise CompilerOperandClosureError("compiler operand expression authority is incomplete",
+                                          incomplete=True, diagnostics=diagnostics)
+    if candidate.get("compilerStructureComplete") is not True:
+        raise ValueError("compiler fragment structure is incomplete")
     if len(carriers) != len(frontend_operands):
-        raise ValueError("compiler/frontend operand arity mismatch")
+        raise CompilerOperandClosureError("compiler/frontend operand arity mismatch",
+                                          diagnostics=diagnostics)
 
     node_ids = {item.get("nodeIdentity") for item in nodes
                 if isinstance(item, Mapping)}

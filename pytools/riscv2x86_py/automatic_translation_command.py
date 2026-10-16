@@ -25,7 +25,8 @@ from .privileged_environment import (
 from .instruction_stream_sync_contracts import load_instruction_stream_sync_registry
 from .csr_environment_contract import load_csr_environment_contract
 from .atomic_authority import COMPILER_FRAGMENT_AUTHORITY_SCHEMA
-from .compiler_fragment_closure import close_compiler_fragment_candidate
+from .compiler_fragment_closure import close_compiler_fragment_candidate, CompilerOperandClosureError
+from .translation_preflight import write_preflight_failure, PreflightToolFailure
 from .l2_fragment_execution import resolve_compiler_fragment_candidate
 
 
@@ -115,10 +116,14 @@ def _inject_compiler_fragment_authority(
                 candidate, fragment, source_digest=str(function["sourceDigest"]),
                 function_identity=str(function["functionId"]))
         except ValueError as exc:
-            if candidate.get("compilerStructureComplete") is True:
+            if isinstance(exc, CompilerOperandClosureError):
+                if not exc.incomplete:
+                    raise
+            elif candidate.get("compilerStructureComplete") is True:
                 raise
             record = {"fragmentId": fragment_id, "disposition": "rejected",
-                      "reasonCode": "COMPILER_FRAGMENT_CLOSURE_REJECTED", "detail": str(exc)}
+                      "reasonCode": getattr(exc, "reason_code", "COMPILER_FRAGMENT_CLOSURE_REJECTED"),
+                      "detail": str(exc), "diagnostics": getattr(exc, "diagnostics", {})}
             fragment["compilerFragmentJoin"] = record
             joins.append(record)
             continue
@@ -197,34 +202,56 @@ def main() -> int:
     parser.add_argument("--instruction-stream-sync-registry")
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
+    def preflight_failure(stage, exc, reason="evaluation.translation-preflight-failed", code=2):
+        command = [sys.executable, "-m", "riscv2x86_py.automatic_translation_command", *sys.argv[1:]]
+        write_preflight_failure(report, args.source, command, stage=stage,
+                                reason_code=reason, exc=exc, returncode=code)
+        print(stage + ": " + str(exc), file=sys.stderr)
+        return code
+
     if any(Path(str(report) + suffix).exists() for suffix in (
             "", ".attempts.json", ".requirement-staging.json", ".requirement-failure.json",
-            ".l2-requirements.json", ".l3-requirements.json")):
-        print("Translation output already exists; use a fresh work directory", file=sys.stderr)
-        return 2
+            ".l2-requirements.json", ".l3-requirements.json", ".preflight.json")):
+        if Path(str(report) + ".preflight.json").exists():
+            print("Preflight artifact already exists; use a fresh work directory", file=sys.stderr)
+            return 2
+        return preflight_failure("output_freshness", FileExistsError(
+            "Translation output already exists; use a fresh work directory"))
     raw = report.with_name("raw_report.json")
     if any(report.with_name(name).exists() for name in (
             "raw_report.json", "frontend-report.json", "compiler-candidates.json",
             "compiler-fragment-joins.json")):
-        print("Compiler input artifacts already exist; use a fresh work directory", file=sys.stderr)
-        return 2
-    sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
-                                    text=True, capture_output=True, check=False)
+        return preflight_failure("output_freshness", FileExistsError(
+            "Compiler input artifacts already exist; use a fresh work directory"))
+
+    try:
+        sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
+                                        text=True, capture_output=True, check=False)
+    except OSError as exc:
+        return preflight_failure("sysroot_inspection", exc)
     if sysroot_result.returncode:
-        print(sysroot_result.stderr, file=sys.stderr); return 2
+        return preflight_failure("sysroot_inspection", PreflightToolFailure(sysroot_result))
     sysroot = sysroot_result.stdout.strip()
     if sysroot == "/" and Path("/usr/riscv64-linux-gnu/include").is_dir():
         sysroot = "/usr/riscv64-linux-gnu"
-    front = subprocess.run((args.frontend, "--analysis-only", "-o", str(report.with_name("dummy")),
+    try:
+        front = subprocess.run((args.frontend, "--analysis-only", "-o", str(report.with_name("dummy")),
                             "--src-root", str(Path(args.source_root).resolve()),
                             "--report-json", str(raw), str(Path(args.source).resolve()), "--",
                             "--target=riscv64-linux-gnu", "--sysroot=" + sysroot,
                             "-std=gnu11", "-march=rv64gc", "-mabi=lp64d"),
-                           text=True, capture_output=True, check=False)
+                               text=True, capture_output=True, check=False)
+    except OSError as exc:
+        return preflight_failure("frontend_execution", exc)
     (report.parent / "frontend.stdout").write_text(front.stdout, encoding="utf-8")
     (report.parent / "frontend.stderr").write_text(front.stderr, encoding="utf-8")
     if front.returncode or not raw.is_file():
-        print(front.stderr, file=sys.stderr); return front.returncode or 2
+        # Nonzero frontend is a failed command; do not infer source validity by stderr text.
+        return preflight_failure("frontend_execution", PreflightToolFailure(front),
+                                 "evaluation.translation-frontend-crashed" if front.returncode < 0
+                                 else "evaluation.translation-frontend-failed",
+                                 front.returncode if front.returncode > 0 else 2)
+    preflight_stage = "compiler_inspection"
     try:
         # Preserve both independent compiler inputs before any enrichment.
         atomic_json(raw.with_name("frontend-report.json"),
@@ -238,25 +265,24 @@ def main() -> int:
         }
         snapshot["manifestIdentity"] = _identity(snapshot)
         atomic_json(raw.with_name("compiler-candidates.json"), snapshot)
+        preflight_stage = "compiler_fragment_closure"
         _inject_compiler_fragment_authority(raw, Path(args.source).resolve(),
                                             compiler_functions)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print("Compiler fragment authority binding failed: " + str(exc), file=sys.stderr)
-        return 2
+        return preflight_failure(preflight_stage, exc,
+                                 getattr(exc, "reason_code", "evaluation.translation-compiler-authority-invalid"))
     if args.atomic_authority_sidecar:
         try:
             _inject_atomic_authority(raw, Path(args.source).resolve(),
                                      Path(args.atomic_authority_sidecar).resolve())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("Atomic authority binding failed: " + str(exc), file=sys.stderr)
-            return 2
+            return preflight_failure("atomic_authority_binding", exc)
     if args.csr_authority_sidecar:
         try:
             _inject_csr_authority(raw, Path(args.source).resolve(),
                                   Path(args.csr_authority_sidecar).resolve())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("CSR authority binding failed: " + str(exc), file=sys.stderr)
-            return 2
+            return preflight_failure("csr_authority_binding", exc)
     if args.csr_environment_contract:
         try:
             csr_environment = load_csr_environment_contract(
@@ -276,8 +302,7 @@ def main() -> int:
                     and not args.allow_functional_fallbacks):
                 raise ValueError("functional CSR relation requires --allow-functional-fallbacks")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("CSR environment binding failed: " + str(exc), file=sys.stderr)
-            return 2
+            return preflight_failure("csr_environment_binding", exc)
     backend = [sys.executable, "-m", "riscv2x86_py.cli", "--in", str(raw),
                "--out", str(report), "--xlen", "64", "--skip-verify"]
     if args.privileged_environment_sidecar:
@@ -316,8 +341,7 @@ def main() -> int:
             if environment.ignored_state_sidecar is not None:
                 backend.extend(("--privileged-ignored-state-declarations", str(environment.ignored_state_sidecar)))
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("Privileged environment binding failed: " + str(exc), file=sys.stderr)
-            return 2
+            return preflight_failure("privileged_environment_binding", exc)
     if args.allow_functional_fallbacks:
         backend.append("--allow-functional-fallbacks")
     if args.csr_environment_contract:
@@ -329,12 +353,13 @@ def main() -> int:
                 args.instruction_stream_sync_registry, source_path=args.source,
             )
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print("Instruction-stream synchronization binding failed: " + str(exc),
-                  file=sys.stderr)
-            return 2
+            return preflight_failure("instruction_stream_sync_binding", exc)
         backend.extend(("--instruction-stream-sync-registry",
                         str(Path(args.instruction_stream_sync_registry).resolve())))
-    back = subprocess.run(backend, text=True, capture_output=True, check=False)
+    try:
+        back = subprocess.run(backend, text=True, capture_output=True, check=False)
+    except OSError as exc:
+        return preflight_failure("backend_launch", exc, "evaluation.translation-backend-launch-failed")
     (report.parent / "backend.stdout").write_text(back.stdout, encoding="utf-8")
     (report.parent / "backend.stderr").write_text(back.stderr, encoding="utf-8")
     if back.returncode:

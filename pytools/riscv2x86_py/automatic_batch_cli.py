@@ -82,6 +82,21 @@ def _decl_identity(node: object) -> str:
     return str(referenced.get("id") or referenced.get("name") or "")
 
 
+
+def _asm_operand_expressions(asm_node):
+    """Preserve expression positions; declaration availability is not arity.
+
+    GNU output/input roles still come from the Clang tooling frontend. Unknown
+    expression carriers remain explicit incomplete slots, never fake variables.
+    """
+    for item in asm_node.get("inner", []):
+        if not isinstance(item, Mapping):
+            continue
+        kind = str(item.get("kind", ""))
+        if (kind.endswith(("Expr", "Literal")) or
+                kind in {"UnaryOperator", "BinaryOperator", "CompoundAssignOperator"}):
+            yield item
+
 def _source_range(node: Mapping[str, object]) -> tuple[int, int] | None:
     raw = node.get("range")
     begin = raw.get("begin") if isinstance(raw, Mapping) else None
@@ -320,21 +335,10 @@ def _l2_operand_boundary_facts(
             **binding_key,
         })
     for asm_index, asm_node in enumerate(asm_nodes):
-        # GCCAsmStmt may contain non-operand AST children.  Retain only
-        # expression nodes that carry a compiler declaration reference; an
-        # unresolved referenced declaration remains in the sequence as an
-        # empty stable identity so completeness fails closed instead of
-        # shifting subsequent operand indices.
-        operand_children: list[Mapping[str, object]] = []
-        candidate_ids: list[str] = []
-        for item in asm_node.get("inner", []):
-            if not isinstance(item, Mapping):
-                continue
-            raw_declaration = _decl_identity(item)
-            if not raw_declaration:
-                continue
-            operand_children.append(item)
-            candidate_ids.append(stable_declaration(raw_declaration))
+        operand_children = list(_asm_operand_expressions(asm_node))
+        candidate_ids = [stable_declaration(_decl_identity(item))
+                         if _decl_identity(item) else "" for item in operand_children]
+        slot_records = []
         source_range = asm_node.get("range")
         begin = source_range.get("begin") if isinstance(source_range, Mapping) else None
         end = source_range.get("end") if isinstance(source_range, Mapping) else None
@@ -413,8 +417,20 @@ def _l2_operand_boundary_facts(
                     operand_index, declaration_id, node_id, access,
                     width, signedness, True)
                     if output_count >= 0 else None)
-            except ValueError:
+            except ValueError as exc:
+                slot_records.append({"operandIndex": operand_index,
+                    "expressionKind": str(child.get("kind", "")),
+                    "expressionIdentity": ast_id, "declarationIdentity": declaration_id,
+                    "sourceRange": list(_source_range(child) or (-1, -1)),
+                    "complete": False,
+                    "reasonCode": "COMPILER_OPERAND_EXPRESSION_AUTHORITY_INCOMPLETE",
+                    "detail": str(exc)})
                 continue
+            slot_records.append({"operandIndex": operand_index,
+                "expressionKind": str(child.get("kind", "")),
+                "expressionIdentity": ast_id, "declarationIdentity": declaration_id,
+                "sourceRange": list(_source_range(child) or (-1, -1)),
+                "complete": True, "reasonCode": "", "detail": ""})
             value_nodes.append(value_node.to_dict())
             operand_carriers.append(carrier.to_dict())
             if binding is not None:
@@ -505,6 +521,11 @@ def _l2_operand_boundary_facts(
             "compilerStructureComplete": candidate_complete,
             "operandClassificationComplete": classification_complete,
             "downstreamUseEnumerationComplete": True,
+            "operandSlotFacts": {
+                "schemaVersion": "riscv2x86.compiler-operand-slots.v1",
+                "slots": slot_records, "expressionSlotCount": len(operand_children),
+                "complete": all(item["complete"] for item in slot_records),
+            },
             "operandCountAuthority": {
                 "outputCount": output_count,
                 "inputCount": input_count,
@@ -516,16 +537,10 @@ def _l2_operand_boundary_facts(
             "classificationReasonCodes": sorted(classification_reasons),
         })
     if len(asm_nodes) == 1:
-        # Keep the compatibility boundary aligned with the canonical
-        # per-fragment operand sequence; non-operand AST children must not
-        # create empty declaration slots here either.
-        asm_ids = []
-        for item in asm_nodes[0].get("inner", []):
-            if not isinstance(item, Mapping):
-                continue
-            raw_declaration = _decl_identity(item)
-            if raw_declaration:
-                asm_ids.append(stable_declaration(raw_declaration))
+        # The legacy path must not compact unresolved expression slots either.
+        asm_ids = [stable_declaration(_decl_identity(item))
+                   if _decl_identity(item) else ""
+                   for item in _asm_operand_expressions(asm_nodes[0])]
         source_range = asm_nodes[0].get("range")
         end = source_range.get("end") if isinstance(source_range, Mapping) else None
         if isinstance(end, Mapping):
