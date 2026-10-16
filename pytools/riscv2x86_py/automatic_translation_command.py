@@ -134,6 +134,16 @@ def _inject_compiler_fragment_authority(
             "fragmentBindingKey": candidate["fragmentBindingKey"], "candidate": closed,
             "memoryObjectBindings": function["l2OperandBoundary"].get("memoryObjectBindings", {}),
         }
+        typed = {}
+        for index, operand in enumerate(fragment.get("outputs", []) + fragment.get("inputs", [])):
+            raw_type = operand.get("compilerType")
+            if isinstance(raw_type, dict) and raw_type:
+                typed[str(index)] = {"operandIndex": index,
+                    "valueNodeIdentity": closed["operandBindings"][index]["valueNodeIdentity"],
+                    "compilerType": raw_type}
+        if typed:
+            payload["schemaVersion"] = "riscv2x86.compiler-fragment-authority.v2"
+            payload["compilerTypeBindings"] = typed
         payload["authorityIdentity"] = _identity(payload)
         fragment["compilerFragmentAuthority"] = payload
         fragment["compilerFragmentBinding"] = {

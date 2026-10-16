@@ -38,6 +38,28 @@ static void loadOperands(const llvm::json::Object *obj,
         if (auto b = o->getBoolean("isOutput"))       op.isOutput = *b;
         if (auto b = o->getBoolean("isTied"))         op.isTied = *b;
         if (auto b = o->getBoolean("isEarlyClobber")) op.isEarlyClobber = *b;
+        if (auto *t = o->getObject("compilerType")) {
+            auto schema = t->getString("schemaVersion");
+            if (!schema || *schema != "riscv2x86.clang-operand-type.v1") {
+                out.push_back(std::move(op));
+                continue;
+            }
+            if (auto s = t->getString("canonicalType")) op.compilerType.canonicalType = s->str();
+            if (auto s = t->getString("pointeeType")) op.compilerType.pointeeType = s->str();
+            if (auto s = t->getString("qualifiers")) op.compilerType.qualifiers = s->str();
+            if (auto s = t->getString("pointeeQualifiers")) op.compilerType.pointeeQualifiers = s->str();
+            if (auto n = t->getInteger("widthBits")) op.compilerType.widthBits = static_cast<unsigned>(*n);
+            if (auto n = t->getInteger("alignmentBytes")) op.compilerType.alignmentBytes = static_cast<unsigned>(*n);
+            if (auto n = t->getInteger("pointeeWidthBits")) op.compilerType.pointeeWidthBits = static_cast<unsigned>(*n);
+            if (auto n = t->getInteger("pointeeAlignmentBytes")) op.compilerType.pointeeAlignmentBytes = static_cast<unsigned>(*n);
+            if (auto b = t->getBoolean("isInteger")) op.compilerType.isInteger = *b;
+            if (auto b = t->getBoolean("isPointer")) op.compilerType.isPointer = *b;
+            if (auto b = t->getBoolean("isSigned")) op.compilerType.isSigned = *b;
+            if (auto b = t->getBoolean("pointeeIsInteger")) op.compilerType.pointeeIsInteger = *b;
+            if (auto b = t->getBoolean("sideEffectFree")) op.compilerType.sideEffectFree = *b;
+            if (auto b = t->getBoolean("expressionRepeatable")) op.compilerType.expressionRepeatable = *b;
+            if (auto b = t->getBoolean("modifiableLvalue")) op.compilerType.modifiableLvalue = *b;
+        }
         out.push_back(std::move(op));
     }
 }

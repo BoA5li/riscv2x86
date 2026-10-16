@@ -19,6 +19,34 @@ using namespace riscv2x86;
 
 namespace {
 
+AsmOperand::CompilerType operandCompilerType(const Expr *expr, ASTContext &ctx) {
+    AsmOperand::CompilerType out;
+    const auto type = expr->getType().getCanonicalType();
+    if (type->isIncompleteType() || (!type->isIntegerType() && !type->isPointerType()))
+        return out;
+    out.canonicalType = type.getUnqualifiedType().getAsString();
+    out.qualifiers = type.getQualifiers().getAsString();
+    out.widthBits = static_cast<unsigned>(ctx.getTypeSize(type));
+    out.alignmentBytes = static_cast<unsigned>(ctx.getTypeAlignInChars(type).getQuantity());
+    out.isInteger = type->isIntegerType();
+    out.isPointer = type->isPointerType();
+    out.isSigned = type->isSignedIntegerType();
+    out.sideEffectFree = !expr->HasSideEffects(ctx);
+    out.expressionRepeatable = out.sideEffectFree && isa<DeclRefExpr>(expr->IgnoreParenImpCasts());
+    out.modifiableLvalue = expr->isModifiableLvalue(ctx) == Expr::MLV_Valid;
+    if (out.isPointer) {
+        const auto pointee = type->getPointeeType().getCanonicalType();
+        if (!pointee->isIncompleteType() && pointee->isIntegerType()) {
+            out.pointeeType = pointee.getUnqualifiedType().getAsString();
+            out.pointeeQualifiers = pointee.getQualifiers().getAsString();
+            out.pointeeWidthBits = static_cast<unsigned>(ctx.getTypeSize(pointee));
+            out.pointeeAlignmentBytes = static_cast<unsigned>(ctx.getTypeAlignInChars(pointee).getQuantity());
+            out.pointeeIsInteger = true;
+        }
+    }
+    return out;
+}
+
 BuiltinFinding::TypeContract makeTypeContract(QualType type, ASTContext &ctx) {
     BuiltinFinding::TypeContract out;
     const QualType canonical = type.getCanonicalType();
@@ -343,6 +371,7 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
         op.constraint = S->getOutputConstraint(i).str();
 
         if (const Expr *E = S->getOutputExpr(i)) {
+            op.compilerType = operandCompilerType(E, Ctx);
             op.exprText = Lexer::getSourceText(
                 CharSourceRange::getTokenRange(E->getSourceRange()),
                 SM, Ctx.getLangOpts()).str();
@@ -370,6 +399,7 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
         op.constraint = S->getInputConstraint(i).str();
 
         if (const Expr *E = S->getInputExpr(i)) {
+            op.compilerType = operandCompilerType(E, Ctx);
             op.exprText = Lexer::getSourceText(
                 CharSourceRange::getTokenRange(E->getSourceRange()),
                 SM, Ctx.getLangOpts()).str();

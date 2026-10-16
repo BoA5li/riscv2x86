@@ -164,6 +164,7 @@ class SourceAsmOperandModel:
     is_output: bool
     is_tied: bool
     is_early_clobber: bool
+    compiler_type: object | None = None
 
     @property
     def has_constraint(self) -> bool:
@@ -200,6 +201,13 @@ class SourceAsmOperandModel:
             isTied
             isEarlyClobber
         """
+        from .compiler_operand_type import compiler_operand_type_from_dict
+        raw_type = getattr(operand, "compilerType", {})
+        try:
+            compiler_type = compiler_operand_type_from_dict(raw_type) if raw_type else None
+        except ValueError:
+            # Unsupported compiler types do not become fabricated scalar facts.
+            compiler_type = None
         return cls(
             constraint=_text(getattr(operand, "constraint", "")),
             expr_text=_text(getattr(operand, "exprText", "")),
@@ -209,6 +217,7 @@ class SourceAsmOperandModel:
             is_early_clobber=bool(
                 getattr(operand, "isEarlyClobber", False)
             ),
+            compiler_type=compiler_type,
         )
 
 

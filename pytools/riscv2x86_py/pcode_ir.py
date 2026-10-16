@@ -765,6 +765,32 @@ class Op:
     output: Optional[Var]
     inputs: List[Var]
 
+
+@dataclass(frozen=True)
+class CanonicalConditionalTransfer:
+    """Opcode-owned roles; code references are not data-memory reads."""
+    target_kind: str
+    target: Var
+    condition: Var
+
+
+def conditional_transfer_from_op(op: Op) -> CanonicalConditionalTransfer:
+    if op.opcode.upper() != "CBRANCH" or op.output is not None or len(op.inputs) != 2:
+        raise ValueError("CBRANCH_INPUT_CONTRACT_INVALID")
+    target, condition = op.inputs
+    if (type(target.offset) is not int or type(target.size) is not int or target.size <= 0
+            or target.kind not in {VarKind.MEM, VarKind.CONST}):
+        raise ValueError("CBRANCH_TARGET_UNRESOLVED")
+    if target.kind is VarKind.MEM and target.space != "ram":
+        raise ValueError("CBRANCH_TARGET_SPACE_UNSUPPORTED")
+    if (condition.size != 1 or type(condition.size) is not int
+            or condition.kind not in {VarKind.REG, VarKind.UNIQUE, VarKind.CONST}
+            or (condition.kind is VarKind.CONST and condition.offset not in {0, 1})):
+        raise ValueError("CBRANCH_BOOLEAN_CONDITION_INVALID")
+    return CanonicalConditionalTransfer(
+        "pcode_relative" if target.kind is VarKind.CONST else "machine_address",
+        target, condition)
+
 @dataclass
 class CanonicalInsn:
     """

@@ -228,6 +228,22 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
                        << "\",\"isOutput\":" << (o.isOutput ? "true" : "false")
                        << ",\"isTied\":" << (o.isTied ? "true" : "false")
                        << ",\"isEarlyClobber\":" << (o.isEarlyClobber ? "true" : "false")
+                       << ",\"compilerType\":{\"schemaVersion\":\"riscv2x86.clang-operand-type.v1\""
+                       << ",\"canonicalType\":\"" << escape(o.compilerType.canonicalType) << "\""
+                       << ",\"qualifiers\":\"" << escape(o.compilerType.qualifiers) << "\""
+                       << ",\"pointeeQualifiers\":\"" << escape(o.compilerType.pointeeQualifiers) << "\""
+                       << ",\"widthBits\":" << o.compilerType.widthBits
+                       << ",\"alignmentBytes\":" << o.compilerType.alignmentBytes
+                       << ",\"isInteger\":" << (o.compilerType.isInteger ? "true" : "false")
+                       << ",\"isPointer\":" << (o.compilerType.isPointer ? "true" : "false")
+                       << ",\"isSigned\":" << (o.compilerType.isSigned ? "true" : "false")
+                       << ",\"pointeeType\":\"" << escape(o.compilerType.pointeeType) << "\""
+                       << ",\"pointeeWidthBits\":" << o.compilerType.pointeeWidthBits
+                       << ",\"pointeeAlignmentBytes\":" << o.compilerType.pointeeAlignmentBytes
+                       << ",\"pointeeIsInteger\":" << (o.compilerType.pointeeIsInteger ? "true" : "false")
+                       << ",\"sideEffectFree\":" << (o.compilerType.sideEffectFree ? "true" : "false")
+                       << ",\"expressionRepeatable\":" << (o.compilerType.expressionRepeatable ? "true" : "false")
+                       << ",\"modifiableLvalue\":" << (o.compilerType.modifiableLvalue ? "true" : "false") << "}"
                        << "}";
                     if (j + 1 < v.size()) os << ",";
                 }

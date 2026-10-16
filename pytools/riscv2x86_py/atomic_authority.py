@@ -14,6 +14,7 @@ from .compiler_fragment_closure import (
     validate_closed_compiler_fragment_candidate,
 )
 from .route_authority import AtomicAuthorityError
+from .compiler_operand_type import compiler_operand_type_from_dict
 
 
 ATOMIC_AUTHORITY_PRODUCER_REGISTRY = AuthorityProducerRegistry((
@@ -51,11 +52,15 @@ def atomic_runtime_object_from_compiler_authority(
         "functionIdentity", "fragmentBindingKey", "candidate",
         "memoryObjectBindings", "authorityIdentity",
     }
+    typed = raw_authority.get("schemaVersion") == "riscv2x86.compiler-fragment-authority.v2"
+    if typed:
+        required.add("compilerTypeBindings")
     if set(raw_authority) != required:
         raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_FIELDS_INVALID", "compiler fragment authority fields are invalid")
     unsigned = {key: value for key, value in raw_authority.items()
                 if key != "authorityIdentity"}
-    if (raw_authority.get("schemaVersion") != COMPILER_FRAGMENT_AUTHORITY_SCHEMA
+    if (raw_authority.get("schemaVersion") not in {COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
+                "riscv2x86.compiler-fragment-authority.v2"}
             or raw_authority.get("sourceDigest") != source_digest
             or raw_authority.get("fragmentId") != fragment_id
             or raw_authority.get("targetTriple") != "riscv64-linux-gnu"
@@ -158,6 +163,23 @@ def atomic_runtime_object_from_compiler_authority(
     else:
         raise AtomicAuthorityError("ATOMIC_RESULT_SEMANTICS_UNSUPPORTED", "atomic result semantics is unsupported")
     declaration = str(binding.get("declarationIdentity") or "")
+    type_bindings = raw_authority.get("compilerTypeBindings", {})
+    type_binding = type_bindings.get(str(address_index)) if isinstance(type_bindings, Mapping) else None
+    if (not isinstance(type_binding, Mapping)
+            or set(type_binding) != {"operandIndex", "valueNodeIdentity", "compilerType"}
+            or type_binding.get("operandIndex") != address_index
+            or type_binding.get("valueNodeIdentity") != binding["valueNodeIdentity"]):
+        raise AtomicAuthorityError("ATOMIC_POINTEE_TYPE_AUTHORITY_MISSING", "Compiler pointer/pointee type binding is required; a value node is not a C type")
+    try:
+        pointer_type = compiler_operand_type_from_dict(type_binding["compilerType"])
+    except ValueError as exc:
+        raise AtomicAuthorityError("ATOMIC_POINTEE_TYPE_AUTHORITY_INVALID", str(exc)) from exc
+    if (not pointer_type.is_pointer or not pointer_type.side_effect_free
+            or pointer_type.width_bits != binding["widthBits"]
+            or pointer_type.pointee_width_bits != width_bits):
+        raise AtomicAuthorityError("ATOMIC_POINTEE_WIDTH_MISMATCH", "Compiler pointee width disagrees with atomic memory access")
+    if pointer_type.pointee_qualifiers:
+        raise AtomicAuthorityError("ATOMIC_POINTEE_QUALIFIER_CONTRACT_REQUIRED", "Qualified atomic objects require a dedicated qualifier/shell contract")
     memory_object = objects.get(declaration)
     if not isinstance(memory_object, Mapping):
         raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_MISSING", "atomic memory object binding is missing")
@@ -219,6 +241,8 @@ def atomic_runtime_object_from_compiler_authority(
         "memoryAccessWidth": width_bits, "inputEffectiveWidth": width_bits,
         "registerResultWidth": result_binding.get("widthBits") if result_semantics == "old_value" else None,
         "resultSemantics": result_semantics,
+        "compilerPointerTypeIdentity": pointer_type.type_identity,
+        "compilerPointeeTypeIdentity": pointer_type.pointee_type_identity,
     }
     join_identity = _identity(relation)
     return {address_index: AtomicMemoryObjectRuntimeFact(
@@ -226,8 +250,7 @@ def atomic_runtime_object_from_compiler_authority(
         address_space_identity=str(getattr(
             atomic_operation, "address_space_identity", "")),
         alignment_bytes=alignment,
-        pointee_type_id=str(carrier.get("typeIdentity") or
-                            carrier.get("valueNodeIdentity") or ""),
+        pointee_type_id=pointer_type.pointee_type_identity,
         authority_identity=join_identity,
         operation_kind=operation_kind,
         arithmetic_relation=arithmetic,

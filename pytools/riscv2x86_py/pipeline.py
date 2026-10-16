@@ -1580,6 +1580,7 @@ def run(
                 if getattr(summary, "atomic_semantics", None) is not None else None),
             "compilerAuthorityIdentity": (compiler_authority.get("authorityIdentity", "")
                 if isinstance(compiler_authority, Mapping) else ""),
+            "compilerFragmentJoin": dict(getattr(f.fragment, "compilerFragmentJoin", {}) or {}),
         }
         if summary.has_atomic and getattr(summary, "atomic_semantics", None) is None:
             d = RouteAuthorityDecision("atomic", str(f.fragment.id), "atomic_decoder",
@@ -1630,7 +1631,8 @@ def run(
                 and not compiler_authority
                 and not f.translationRuntimeFacts.atomic_memory_objects):
             d = RouteAuthorityDecision("atomic", str(f.fragment.id), "atomic_compiler_join",
-                "ATOMIC_COMPILER_AUTHORITY_MISSING", "No compiler object/operand authority or explicit sidecar",
+                str(atomic_inputs["compilerFragmentJoin"].get("reasonCode") or "ATOMIC_COMPILER_AUTHORITY_MISSING"),
+                str(atomic_inputs["compilerFragmentJoin"].get("detail") or "No compiler object/operand authority or explicit sidecar"),
                 content_identity(atomic_inputs), inputs_payload=atomic_inputs)
             f.routeAuthorityDiagnostics.append(d.to_dict())
 

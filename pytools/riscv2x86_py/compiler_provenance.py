@@ -1,6 +1,7 @@
 """Validate compiler closure against the canonical operands actually emitted."""
 from .compiler_fragment_closure import validate_closed_compiler_fragment_candidate
 from .l2_evidence_reader import _identity
+from .compiler_operand_type import compiler_operand_type_from_dict
 
 
 def bind_compiler_provenance(fragment, sidecar):
@@ -13,7 +14,8 @@ def bind_compiler_provenance(fragment, sidecar):
     candidate = authority['candidate']
     validate_closed_compiler_fragment_candidate(candidate)
     key = candidate['fragmentBindingKey']
-    if (authority.get('schemaVersion') != 'riscv2x86.compiler-fragment-authority.v1' or
+    if (authority.get('schemaVersion') not in {'riscv2x86.compiler-fragment-authority.v1',
+            'riscv2x86.compiler-fragment-authority.v2'} or
             authority.get('targetTriple') != 'riscv64-linux-gnu' or
             authority['fragmentBindingKey'] != key or
             key['sourceDigest'] != authority['sourceDigest'] or
@@ -34,6 +36,25 @@ def bind_compiler_provenance(fragment, sidecar):
     if len(indexes) != len(set(indexes)) or len(bindings) != len(sidecar.operands):
         raise ValueError('COMPILER_AUTHORITY_OPERAND_ARITY_MISMATCH')
     by_index = {b['operandIndex']: b for b in bindings}
+    if authority['schemaVersion'] == 'riscv2x86.compiler-fragment-authority.v2':
+        types = authority.get('compilerTypeBindings')
+        if not isinstance(types, dict) or not types:
+            raise ValueError('COMPILER_AUTHORITY_TYPES_MISSING')
+        for key, record in types.items():
+            if (not isinstance(record, dict) or set(record) != {'operandIndex', 'valueNodeIdentity', 'compilerType'}
+                    or type(record['operandIndex']) is not int
+                    or str(record['operandIndex']) != key
+                    or record['operandIndex'] not in by_index):
+                raise ValueError('COMPILER_AUTHORITY_TYPE_BINDING_INVALID')
+            binding = by_index[record['operandIndex']]
+            parsed = compiler_operand_type_from_dict(record['compilerType'])
+            carrier = next((x for x in candidate['operandCarriers']
+                            if x['operandIndex'] == record['operandIndex']), None)
+            if (record['valueNodeIdentity'] != binding['valueNodeIdentity']
+                    or parsed.width_bits != binding['widthBits']
+                    or carrier is None
+                    or carrier['carrierKind'] != ('pointer' if parsed.is_pointer else 'integer')):
+                raise ValueError('COMPILER_AUTHORITY_TYPE_VALUE_MISMATCH')
     for operand in sidecar.operands:
         binding = by_index.get(operand.operand_index)
         expected = {'declarationIdentity': operand.declaration_id,

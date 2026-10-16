@@ -84,6 +84,15 @@ def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer"):
                  "functionIdentity": key["functionIdentity"],
                  "fragmentBindingKey": key, "candidate": candidate,
                  "memoryObjectBindings": {declaration: obj}}
+    authority["schemaVersion"] = "riscv2x86.compiler-fragment-authority.v2"
+    authority["compilerTypeBindings"] = {"1": {"operandIndex": 1, "valueNodeIdentity": node,
+        "compilerType": {"schemaVersion": "riscv2x86.clang-operand-type.v1",
+            "canonicalType": "unsigned long *", "widthBits": 64, "alignmentBytes": 8,
+            "isInteger": False, "isPointer": True, "isSigned": False,
+            "pointeeType": "unsigned long", "pointeeWidthBits": 64,
+            "pointeeAlignmentBytes": 8, "pointeeIsInteger": True,
+            "sideEffectFree": True, "modifiableLvalue": False,
+            "qualifiers": "", "pointeeQualifiers": "", "expressionRepeatable": True}}}
     authority["authorityIdentity"] = _identity(authority)
     return authority
 

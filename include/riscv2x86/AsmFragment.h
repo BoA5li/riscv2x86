@@ -9,12 +9,21 @@ namespace riscv2x86 {
 
 // 单个操作数的约束与绑定
 struct AsmOperand {
+    struct CompilerType {
+        std::string canonicalType, pointeeType, qualifiers, pointeeQualifiers;
+        unsigned widthBits = 0, alignmentBytes = 0;
+        unsigned pointeeWidthBits = 0, pointeeAlignmentBytes = 0;
+        bool isInteger = false, isPointer = false, isSigned = false;
+        bool pointeeIsInteger = false, sideEffectFree = false, modifiableLvalue = false;
+        bool expressionRepeatable = false;
+    };
     std::string constraint;       // 例如 "r", "=r", "+m", "I"
     std::string exprText;         // 对应的 C 表达式原始文本
     std::string symbolicName;     // [name] 形式的符号名（可空）
     bool isOutput = false;
     bool isTied = false;
     bool isEarlyClobber = false;
+    CompilerType compilerType;
 };
 
 // asm 片段类型

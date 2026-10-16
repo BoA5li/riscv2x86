@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
 from .route_authority import RouteAuthorityDecision, content_identity
+from .pcode_ir import conditional_transfer_from_op
 try:
     from .cfg import CFGResult
     from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
@@ -840,9 +841,9 @@ def _normalize_asm_goto_predicate(
     integer constant zero are accepted.  Duplicate definitions, cycles and
     every other arithmetic relation remain fail-closed.
     """
-    condition_inputs = [item for item in branch.inputs
-                        if getattr(item, "kind", None) is not VarKind.CONST]
-    if len(condition_inputs) != 1:
+    try:
+        transfer = conditional_transfer_from_op(branch)
+    except ValueError:
         return None
     # A flat region-wide dictionary is not dominance authority. Until a
     # versioned SSA/dominance graph is supplied, accept only definitions before
@@ -884,7 +885,7 @@ def _normalize_asm_goto_predicate(
             consumer = producer
             value = producer.inputs[0]
         return value
-    condition = condition_inputs[0]
+    condition = transfer.condition
     inverted = False
     seen: set[object] = set()
     consumer = branch
@@ -1005,6 +1006,12 @@ def _build_asm_goto_control_flow_authority(
     if len(branch_ops) != 1:
         return record("predicate_normalization", "ASM_GOTO_BRANCH_ARITY_UNSUPPORTED", "Expected exactly one canonical CBRANCH")
     branch = branch_ops[0]
+    try:
+        transfer = conditional_transfer_from_op(branch)
+    except ValueError as exc:
+        return record("canonical_control_transfer", str(exc), "CBRANCH input roles are malformed or unsupported")
+    if transfer.target_kind == "machine_address" and transfer.target.offset != branch_instructions[0].direct_target:
+        return record("decoder_region", "ASM_GOTO_TARGET_IDENTITY_MISMATCH", "Canonical code target disagrees with instruction target")
     normalized = _normalize_asm_goto_predicate(semantic_ops, branch)
     if normalized is None:
         return record("predicate_normalization", "ASM_GOTO_PREDICATE_UNSUPPORTED", "Predicate is outside the closed zero/nonzero def-use vocabulary")
@@ -4346,16 +4353,16 @@ def _runtime_operand_semantics(
         expression = (
             SourceExpressionBinding(
                 expression_id=f"asm-operand:{index}",
-                c_type_id=None,
-                is_side_effect_free=True,
-                is_repeatable=True,
+                c_type_id=(operand.compiler_type.type_identity if atomic_objects and operand.compiler_type else None),
+                is_side_effect_free=(operand.compiler_type.side_effect_free if operand.compiler_type else True),
+                is_repeatable=(operand.compiler_type.expression_repeatable if operand.compiler_type else True),
             ) if reads else None
         )
         lvalue = (
             SourceLvalueBinding(
                 lvalue_id=f"asm-operand:{index}",
-                c_type_id=None,
-                is_modifiable=True,
+                c_type_id=(operand.compiler_type.type_identity if atomic_objects and operand.compiler_type else None),
+                is_modifiable=(operand.compiler_type.modifiable_lvalue if operand.compiler_type else True),
             ) if writes else None
         )
         result[index] = RuntimeOperandSemanticFact(
