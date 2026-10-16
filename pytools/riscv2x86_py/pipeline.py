@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import replace, asdict
+from .route_authority import RouteAuthorityDecision, content_identity
 
 import re
 from collections.abc import Mapping
@@ -165,6 +166,7 @@ def _complete_non_candidate_evaluation_states(findings: List[Finding]) -> None:
             translation_outcome=outcome,
             validation_outcome=status,
             publication_outcome=publication,
+            reason_codes=tuple(sorted(set(finding.translationReasonCodes))),
         )
 
 
@@ -176,6 +178,7 @@ def _record_non_candidate_attempt(
     metadata = getattr(tr, "metadata", {})
     child_attempts = metadata.get("attempts", ()) if isinstance(metadata, dict) else ()
     reasons = list(getattr(tr, "reasonCodes", ()) or ())
+    reasons.extend(finding.translationReasonCodes)
     if isinstance(child_attempts, (tuple, list)):
         for child in child_attempts:
             if not isinstance(child, dict):
@@ -1570,6 +1573,20 @@ def run(
         compiler_authority = getattr(
             f.fragment, "compilerFragmentAuthority", {},
         )
+        atomic_inputs = {
+            "machineBytes": ar.machine_code.hex(),
+            "machineCodeIdentity": content_identity(ar.machine_code.hex()),
+            "canonicalOperation": (asdict(summary.atomic_semantics)
+                if getattr(summary, "atomic_semantics", None) is not None else None),
+            "compilerAuthorityIdentity": (compiler_authority.get("authorityIdentity", "")
+                if isinstance(compiler_authority, Mapping) else ""),
+        }
+        if summary.has_atomic and getattr(summary, "atomic_semantics", None) is None:
+            d = RouteAuthorityDecision("atomic", str(f.fragment.id), "atomic_decoder",
+                "ATOMIC_CANONICAL_OPERATION_UNAVAILABLE",
+                "Decoder/canonical ingress supplied no supported typed atomic operation",
+                content_identity(atomic_inputs), inputs_payload=atomic_inputs)
+            f.routeAuthorityDiagnostics.append(d.to_dict())
         if (getattr(summary, "atomic_semantics", None) is not None
                 and compiler_authority
                 and not f.translationRuntimeFacts.atomic_memory_objects):
@@ -1588,7 +1605,18 @@ def run(
                     atomic_memory_objects=atomic_objects,
                     provenance="compiler-decoder-atomic-authority-join.v1",
                 )
+                d = RouteAuthorityDecision("atomic", str(f.fragment.id), "atomic_compiler_join",
+                    "ATOMIC_COMPILER_DECODER_JOIN_BOUND",
+                    "Compiler object and decoder operation joined; target proof and concurrent observations remain separate",
+                    content_identity(atomic_inputs), True, atomic_inputs)
+                f.routeAuthorityDiagnostics.append(d.to_dict())
             except (SemanticAuthorityError, TypeError, ValueError) as exc:
+                d = RouteAuthorityDecision("atomic", str(f.fragment.id),
+                    getattr(exc, "failure_stage", "atomic_compiler_join"),
+                    getattr(exc, "reason_code", "ATOMIC_COMPILER_AUTHORITY_INVALID"),
+                    str(exc), content_identity(atomic_inputs), inputs_payload=atomic_inputs)
+                f.routeAuthorityDiagnostics.append(d.to_dict())
+                f.translationReasonCodes.append(d.reason_code)
                 detail = "production atomic authority rejected: " + str(exc)
                 f.notes.append("phase5-atomic-ingress: " + detail)
                 f.category = "Unsupported"
@@ -1598,6 +1626,13 @@ def run(
                 f.verificationDetail = detail
                 stats["unsupported"] += 1
                 continue
+        elif (getattr(summary, "atomic_semantics", None) is not None
+                and not compiler_authority
+                and not f.translationRuntimeFacts.atomic_memory_objects):
+            d = RouteAuthorityDecision("atomic", str(f.fragment.id), "atomic_compiler_join",
+                "ATOMIC_COMPILER_AUTHORITY_MISSING", "No compiler object/operand authority or explicit sidecar",
+                content_identity(atomic_inputs), inputs_payload=atomic_inputs)
+            f.routeAuthorityDiagnostics.append(d.to_dict())
 
         if blocks is None:
             detail = (
@@ -1848,10 +1883,13 @@ def run(
         )
         f.buildFamily = str(getattr(tr, "buildFamily", "") or "")
         translation_metadata = dict(getattr(tr, "metadata", {}) or {})
+        f.routeAuthorityDiagnostics.extend(translation_metadata.get("routeAuthorityDiagnostics", []))
         f.translationReasonCodes = list(dict.fromkeys(
             str(code) for code in (getattr(tr, "reasonCodes", ()) or ())
             if str(code)
         ))
+        f.translationReasonCodes.extend(d["reasonCode"] for d in f.routeAuthorityDiagnostics
+                                        if not d["accepted"] and d["reasonCode"] not in f.translationReasonCodes)
         raw_plan_attempts = translation_metadata.get("attempts", ())
         f.translationPlanAttempts = [
             {

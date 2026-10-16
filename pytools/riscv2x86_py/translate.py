@@ -845,6 +845,11 @@ def _output(
         output_metadata.update(metadata)
 
     if context.sourceModel is not None and context.fragment.id:
+        route_decision = context.sourceModel.control_flow.asm_goto_authority_decision
+        if route_decision is not None:
+            output_metadata["routeAuthorityDiagnostics"] = [route_decision.to_dict()]
+            if not route_decision.accepted:
+                merged_reason_codes.append(route_decision.reason_code)
         profile = profile_from_source_model(context.fragment.id, context.sourceModel)
         approval = output_metadata.get("approvalArtifact")
         if isinstance(approval, dict):

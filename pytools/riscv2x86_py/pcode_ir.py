@@ -2071,17 +2071,32 @@ def _is_proven_direct_conditional_branch_fragment(
     """Prove the finite direct conditional-transfer shape used by asm-goto.
 
     A resolved CBRANCH has one taken target and an implicit fallthrough.  The
-    predicate intentionally excludes unresolved targets, mixed instruction
-    sequences, calls, indirect transfers, memory effects, atomics, barriers,
+    predicate intentionally excludes unresolved targets, non-straight-line
+    regions, calls, indirect transfers, memory effects, atomics, barriers,
     and every opcode outside the closed integer-condition vocabulary.
     """
-    if len(insns) != 1:
+    if not insns:
         return False
-
-    ins = insns[0]
+    # A straight-line typed prefix is valid predicate computation. Branches
+    # within that prefix, gaps, overlap, cycles and non-integer effects are
+    # not admitted by this bounded region proof.
+    for index, item in enumerate(insns):
+        if (type(item.size) is not int or item.size <= 0 or type(item.addr) is not int
+                or (index and item.addr != insns[index - 1].addr + insns[index - 1].size)
+                or item.has_call_or_return_op or item.has_atomic
+                or item.barrier_info is not None or item.has_unknown_barrier):
+            return False
+        if index < len(insns) - 1:
+            if item.terminator_kind or item.has_branch_op:
+                return False
+            if any((op.opcode or "").upper() not in
+                   _NON_SEMANTIC_CANONICAL_OPCODES | _PROVEN_PURE_INTEGER_OPCODES
+                   for op in item.ops):
+                return False
+    ins = insns[-1]
     if (
         ins.terminator_kind != "CBRANCH"
-        or ins.direct_target is None
+        or type(ins.direct_target) is not int
         or not ins.has_branch_op
         or ins.has_call_or_return_op
         or ins.has_atomic
@@ -2089,13 +2104,15 @@ def _is_proven_direct_conditional_branch_fragment(
         or ins.has_unknown_barrier
     ):
         return False
+    if insns[0].addr <= ins.direct_target < ins.addr + ins.size:
+        return False
 
     allowed = (
         _NON_SEMANTIC_CANONICAL_OPCODES
         | _PROVEN_PURE_INTEGER_OPCODES
         | {"CBRANCH"}
     )
-    opcodes = [(op.opcode or "").upper() for op in ins.ops]
+    opcodes = [(op.opcode or "").upper() for item in insns for op in item.ops]
     return opcodes.count("CBRANCH") == 1 and all(
         opcode in allowed for opcode in opcodes
     )

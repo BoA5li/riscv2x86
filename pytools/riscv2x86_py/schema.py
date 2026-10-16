@@ -415,6 +415,7 @@ class Finding:
     # before any validation/publication branch mutates the public finding.
     translationReasonCodes: List[str] = field(default_factory=list)
     translationPlanAttempts: List[Dict[str, Any]] = field(default_factory=list)
+    routeAuthorityDiagnostics: List[Dict[str, Any]] = field(default_factory=list)
     # Phase 6E/6F approved replacement provenance, consumed by C++ --apply.
     approvalArtifact: Dict[str, Any] = field(default_factory=dict)
 

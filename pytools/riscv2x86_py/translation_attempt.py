@@ -11,9 +11,11 @@ from typing import Mapping, Sequence
 
 from .schema import PublicationOutcome, TranslationOutcome, ValidationOutcome
 from .l2_authority import l2_authority_sidecar_from_dict
+from .route_authority import validate_route_decision
 
 
 TRANSLATION_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v2"
+DIAGNOSTIC_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v3"
 TRANSLATION_ATTEMPT_ARCHIVE_SCHEMA = "riscv2x86.translation-attempt-archive.v2"
 _LEGACY_ATTEMPT_SCHEMA = "riscv2x86.translation-attempt.v1"
 _LEGACY_ARCHIVE_SCHEMA = "riscv2x86.translation-attempt-archive.v1"
@@ -116,10 +118,20 @@ class TranslationAttempt:
     effect_relation_set_identity: str = ""
     l2_authority_complete: bool = False
     staging_disposition: AttemptStagingDisposition | None = None
+    route_authority_diagnostics: tuple[Mapping[str, object], ...] = ()
 
     def __post_init__(self) -> None:
-        if self.schema_version != TRANSLATION_ATTEMPT_SCHEMA:
+        if self.route_authority_diagnostics and self.schema_version == TRANSLATION_ATTEMPT_SCHEMA:
+            object.__setattr__(self, "schema_version", DIAGNOSTIC_ATTEMPT_SCHEMA)
+        if self.schema_version not in {TRANSLATION_ATTEMPT_SCHEMA, DIAGNOSTIC_ATTEMPT_SCHEMA}:
             raise ValueError("translation attempt schema is unsupported")
+        if self.schema_version == DIAGNOSTIC_ATTEMPT_SCHEMA:
+            if not self.route_authority_diagnostics:
+                raise ValueError("diagnostic attempt lacks route decisions")
+            for decision in self.route_authority_diagnostics:
+                validate_route_decision(decision)
+                if decision["fragmentIdentity"] != self.fragment_id:
+                    raise ValueError("route decision fragment mismatch")
         if not self.finding_id or not self.fragment_id:
             raise ValueError("translation attempt finding/fragment identity is missing")
         digest = "sha256:" + sha256(self.candidate_replacement.encode("utf-8")).hexdigest()
@@ -235,6 +247,8 @@ class TranslationAttempt:
             "l2AuthorityComplete": self.l2_authority_complete,
             "bindingComplete": self.binding_complete,
         }
+        if self.schema_version == DIAGNOSTIC_ATTEMPT_SCHEMA:
+            payload["routeAuthorityDiagnostics"] = [dict(x) for x in self.route_authority_diagnostics]
         if include_artifact_id:
             payload["artifactId"] = self.artifact_id
         return payload
@@ -260,6 +274,10 @@ _ATTEMPT_FIELDS = {
 def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAttempt:
     legacy = value.get("schemaVersion") == _LEGACY_ATTEMPT_SCHEMA
     expected_fields = _ATTEMPT_FIELDS - ({"stagingDisposition"} if legacy else set())
+    if value.get("schemaVersion") == DIAGNOSTIC_ATTEMPT_SCHEMA:
+        expected_fields = expected_fields | {"routeAuthorityDiagnostics"}
+        if not isinstance(value.get("routeAuthorityDiagnostics"), list):
+            raise ValueError("route authority diagnostics must be an array")
     if set(value) != expected_fields:
         raise ValueError("translation attempt fields are invalid")
     if (not isinstance(value.get("bindingComplete"), bool)
@@ -311,6 +329,7 @@ def translation_attempt_from_dict(value: Mapping[str, object]) -> TranslationAtt
         l2_authority_identity=_sha(value.get("l2AuthorityIdentity"), "l2AuthorityIdentity", optional=True),
         effect_relation_set_identity=_sha(value.get("effectRelationSetIdentity"), "effectRelationSetIdentity", optional=True),
         l2_authority_complete=value["l2AuthorityComplete"],
+        route_authority_diagnostics=tuple(value.get("routeAuthorityDiagnostics", ())),
         binding_complete=value["bindingComplete"],
         # A v1 identity covers the v1 payload.  Compatibility adaptation
         # intentionally re-addresses the upgraded v2 payload.
@@ -395,7 +414,10 @@ def terminal_attempt_from_finding(finding: object, finding_index: int) -> Transl
             tuple(sorted(set(str(item) for item in artifact.get("reasonCodes", [])
                              if str(item)))),
         ),
-        reason_codes=tuple(sorted(set(str(item) for item in artifact.get("reasonCodes", []) if str(item)))),
+        reason_codes=tuple(sorted(set(
+            [str(item) for item in artifact.get("reasonCodes", []) if str(item)]
+            + [d["reasonCode"] for d in getattr(finding, "routeAuthorityDiagnostics", ()) if not d["accepted"]]))),
+        route_authority_diagnostics=tuple(getattr(finding, "routeAuthorityDiagnostics", ())),
         l2_authority_identity=l2_identity,
         effect_relation_set_identity=relation_identity,
         l2_authority_complete=l2_complete,

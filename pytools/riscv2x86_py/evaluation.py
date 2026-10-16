@@ -868,6 +868,7 @@ def _attempt_result(attempt: object, validation: TranslationValidationResult | N
         "findingId": getattr(attempt, "finding_id"),
         "fragmentId": getattr(attempt, "fragment_id"),
         "attemptArtifactId": getattr(attempt, "artifact_id"),
+        "routeAuthorityDiagnostics": [dict(x) for x in getattr(attempt, "route_authority_diagnostics", ())],
         "translationOutcome": getattr(attempt, "translation_outcome").value,
         "status": status.value,
         "validation": None if validation is None else validation.to_dict(),
@@ -1174,6 +1175,7 @@ def _translation_evaluation_linkage(
                 "translationKind": finding.get("translationKind", ""),
                 "translationStageVerificationStatus": finding.get("verificationStatus", ""),
                 "translationStageVerificationDetail": finding.get("verificationDetail", ""),
+                "routeAuthorityDiagnostics": finding.get("routeAuthorityDiagnostics", []),
                 "candidateArchived": bool(
                     isinstance(final, Mapping)
                     and final.get("translationOutcome") in {

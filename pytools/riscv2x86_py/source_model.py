@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
+from .route_authority import RouteAuthorityDecision, content_identity
 try:
     from .cfg import CFGResult
     from .pcode_ir import BarrierKind, Block, FenceSet, IRSummary, VarKind, StackFrameSemantics, StackFrameClassification, StackAddressBase, PrivateFrameLayoutFacts, StackAccessKind
@@ -172,6 +173,7 @@ class SourceControlFlowModel:
     asm_goto_condition_kind: str | None = None
     asm_goto_condition_operand_index: int | None = None
     asm_goto_authority: AsmGotoControlFlowAuthority | None = None
+    asm_goto_authority_decision: RouteAuthorityDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -842,6 +844,12 @@ def _normalize_asm_goto_predicate(
                         if getattr(item, "kind", None) is not VarKind.CONST]
     if len(condition_inputs) != 1:
         return None
+    # A flat region-wide dictionary is not dominance authority. Until a
+    # versioned SSA/dominance graph is supplied, accept only definitions before
+    # their use in this ordered stream, never future definitions.
+    positions = {id(op): index for index, op in enumerate(semantic_ops)}
+    if id(branch) not in positions:
+        return None
     producers: dict[object, Op] = {}
     for item in semantic_ops:
         if item.output is None or item.opcode.upper() == "CBRANCH":
@@ -850,28 +858,47 @@ def _normalize_asm_goto_predicate(
             return None
         producers[item.output] = item
 
-    def resolve_value(value: object, visited: set[object]) -> object | None:
+    def precedes(producer, consumer):
+        return positions[id(producer)] < positions[id(consumer)]
+
+    def transparent(producer):
+        if len(producer.inputs) != 1 or producer.output is None:
+            return False
+        source_size = getattr(producer.inputs[0], "size", None)
+        result_size = getattr(producer.output, "size", None)
+        return (isinstance(source_size, int) and isinstance(result_size, int)
+                and source_size > 0 and result_size > 0
+                and (source_size == result_size if producer.opcode.upper() == "COPY"
+                     else source_size <= result_size))
+
+    def resolve_value(value: object, visited: set[object], consumer: Op) -> object | None:
         while value in producers:
             if value in visited:
                 return None
             visited.add(value)
             producer = producers[value]
-            if producer.opcode.upper() not in {"COPY", "INT_ZEXT", "INT_SEXT"} \
-                    or len(producer.inputs) != 1:
+            if (not precedes(producer, consumer)
+                    or producer.opcode.upper() not in {"COPY", "INT_ZEXT", "INT_SEXT"}
+                    or not transparent(producer)):
                 return None
+            consumer = producer
             value = producer.inputs[0]
         return value
     condition = condition_inputs[0]
     inverted = False
     seen: set[object] = set()
+    consumer = branch
     while condition in producers:
         if condition in seen:
             return None
         seen.add(condition)
         producer = producers[condition]
+        if not precedes(producer, consumer):
+            return None
+        consumer = producer
         opcode = producer.opcode.upper()
         if opcode in {"COPY", "INT_ZEXT", "INT_SEXT"}:
-            if len(producer.inputs) != 1:
+            if not transparent(producer):
                 return None
             condition = producer.inputs[0]
             continue
@@ -891,14 +918,14 @@ def _normalize_asm_goto_predicate(
                    and getattr(constant, "offset", None) == 0]
         if len(matches) != 1:
             return None
-        condition = resolve_value(matches[0][0], seen)
+        condition = resolve_value(matches[0][0], seen, producer)
         if condition is None or getattr(condition, "kind", None) is not VarKind.REG:
             return None
         zero_when_true = opcode == "INT_EQUAL"
         if inverted:
             zero_when_true = not zero_when_true
         return ("zero" if zero_when_true else "nonzero", condition)
-    condition = resolve_value(condition, seen)
+    condition = resolve_value(condition, seen, consumer)
     if condition is None or getattr(condition, "kind", None) is not VarKind.REG:
         return None
     return ("zero" if inverted else "nonzero", condition)
@@ -908,6 +935,7 @@ def _build_asm_goto_control_flow_authority(
     *, fragment: AsmFragment, shell: SourceShellModel, blocks: Sequence[Block],
     cfg: CFGResult, runtime_status: RuntimeFactStatus,
     operands: "SourceOperandModel", memory: "SourceMemoryModel",
+    diagnostics: list[RouteAuthorityDecision] | None = None,
 ) -> AsmGotoControlFlowAuthority | None:
     """Join frontend continuations with canonical predicate semantics.
 
@@ -916,14 +944,48 @@ def _build_asm_goto_control_flow_authority(
     has one direct conditional exit.  Predicate meaning is recovered from the
     canonical region-wide def-use graph.
     """
-    if (not shell.has_asm_goto or not shell.asm_goto_control_flow_complete or
-            not _cfg_ok(cfg) or memory.reads_memory or memory.writes_memory or
-            len(shell.goto_edges) != 1 or len(shell.goto_labels) != 1 or
-            len(shell.asm_goto_successor_continuation_ids) != 2 or
-            not runtime_status.structurally_valid or not operands.complete):
+    if not shell.has_asm_goto:
         return None
-
     instructions = [item for block in blocks for item in block.instructions]
+    def var_snapshot(var):
+        if var is None:
+            return None
+        kind = getattr(var, "kind", None)
+        return {"kind": getattr(kind, "value", str(kind)),
+                "space": getattr(var, "space", ""), "offset": getattr(var, "offset", None),
+                "size": getattr(var, "size", None), "name": getattr(var, "name", "")}
+    decision_inputs = {
+        "fragmentId": str(fragment.id or fragment.fragmentId),
+        "continuations": list(shell.asm_goto_successor_continuation_ids),
+        "edges": list(shell.goto_edges), "cfgOk": _cfg_ok(cfg),
+        "instructions": [{"address": i.addr, "size": i.size,
+            "target": i.direct_target, "terminator": i.terminator_kind,
+            "ops": [{"opcode": o.opcode, "output": var_snapshot(o.output),
+                     "inputs": [var_snapshot(v) for v in o.inputs]} for o in i.ops]}
+            for i in instructions],
+        "registerOperands": sorted(runtime_status.rv_to_operand_index.items()),
+        "compilerContinuationsComplete": shell.asm_goto_control_flow_complete,
+        "operandAuthorityComplete": operands.complete,
+        "readsMemory": memory.reads_memory, "writesMemory": memory.writes_memory,
+    }
+    inputs_identity = content_identity(decision_inputs)
+    def record(stage, code, detail, accepted=False):
+        if diagnostics is not None:
+            diagnostics.append(RouteAuthorityDecision("asm_goto",
+                str(fragment.id or fragment.fragmentId), stage, code, detail,
+                inputs_identity, accepted, decision_inputs))
+        return None
+    if not shell.asm_goto_control_flow_complete:
+        return record("compiler_continuation", "ASM_GOTO_COMPILER_CONTINUATION_INCOMPLETE", "Clang continuation interface is incomplete")
+    if not _cfg_ok(cfg):
+        return record("decoder_region", "ASM_GOTO_CFG_INCOMPLETE", "Canonical CFG is not closed")
+    if memory.reads_memory or memory.writes_memory:
+        return record("effect_closure", "ASM_GOTO_MEMORY_EFFECT_UNSUPPORTED", "Region has memory effects outside this control route")
+    if (len(shell.goto_edges) != 1 or len(shell.goto_labels) != 1 or
+            len(shell.asm_goto_successor_continuation_ids) != 2):
+        return record("compiler_continuation", "ASM_GOTO_EXIT_ARITY_UNSUPPORTED", "Only one taken and one fallthrough continuation are supported")
+    if not runtime_status.structurally_valid or not operands.complete:
+        return record("operand_join", "ASM_GOTO_OPERAND_AUTHORITY_INCOMPLETE", "Compiler/assembler operand authority is incomplete")
     branch_instructions = [item for item in instructions
                            if item.terminator_kind == "CBRANCH"]
     if (len(branch_instructions) != 1 or
@@ -932,29 +994,29 @@ def _build_asm_goto_control_flow_authority(
             branch_instructions[0].has_atomic or
             branch_instructions[0].barrier_info is not None or
             branch_instructions[0].has_unknown_barrier):
-        return None
+        return record("decoder_region", "ASM_GOTO_DIRECT_CONDITIONAL_EXIT_UNPROVEN", "Expected one typed direct conditional exit")
     if any(item.has_call_or_return_op or item.has_atomic
            or item.barrier_info is not None or item.has_unknown_barrier
            for item in instructions):
-        return None
+        return record("effect_closure", "ASM_GOTO_SPECIAL_EFFECT_UNSUPPORTED", "Region contains call/return, atomic or barrier effects")
     semantic_ops = [item for block in blocks for item in block.ops
                     if item.opcode.upper() not in {"IMARK"}]
     branch_ops = [item for item in semantic_ops if item.opcode.upper() == "CBRANCH"]
     if len(branch_ops) != 1:
-        return None
+        return record("predicate_normalization", "ASM_GOTO_BRANCH_ARITY_UNSUPPORTED", "Expected exactly one canonical CBRANCH")
     branch = branch_ops[0]
     normalized = _normalize_asm_goto_predicate(semantic_ops, branch)
     if normalized is None:
-        return None
+        return record("predicate_normalization", "ASM_GOTO_PREDICATE_UNSUPPORTED", "Predicate is outside the closed zero/nonzero def-use vocabulary")
     condition_kind, register_value = normalized
     if getattr(register_value, "kind", None) is not VarKind.REG:
-        return None
+        return record("operand_join", "ASM_GOTO_PREDICATE_CARRIER_UNSUPPORTED", "Normalized predicate has no register carrier")
 
     register_to_operand: dict[str, int] = {}
     for register, index in runtime_status.rv_to_operand_index.items():
         canonical = canonicalize_riscv_register_name(register)
         if not canonical or canonical in register_to_operand:
-            return None
+            return record("operand_join", "ASM_GOTO_REGISTER_OPERAND_AMBIGUOUS", "Register-to-operand map is not unique")
         register_to_operand[canonical] = index
     register = canonicalize_riscv_register_name(getattr(register_value, "name", ""))
     operand_index = register_to_operand.get(register)
@@ -964,7 +1026,7 @@ def _build_asm_goto_control_flow_authority(
             operand.access is not SourceOperandAccess.INPUT or
             not operand.reads or operand.writes or operand.width_bits not in {32, 64} or
             operand.signedness is SourceSignedness.UNKNOWN):
-        return None
+        return record("operand_join", "ASM_GOTO_PREDICATE_OPERAND_UNBOUND", "Predicate must bind one complete read-only integer input")
 
     edge = shell.goto_edges[0]
     fallthrough = shell.asm_goto_fallthrough_continuation_id
@@ -972,12 +1034,13 @@ def _build_asm_goto_control_flow_authority(
     expected = {fallthrough, taken}
     if (not fallthrough or not taken or taken == fallthrough or
             set(shell.asm_goto_successor_continuation_ids) != expected):
-        return None
+        return record("compiler_continuation", "ASM_GOTO_CONTINUATION_IDENTITY_MISMATCH", "Taken/fallthrough identities do not match the compiler successor set")
     output_ids = tuple(sorted(
         f"operand:{item.source_operand_index}" for item in operands.operands
         if item.access in {SourceOperandAccess.OUTPUT, SourceOperandAccess.READ_WRITE}
     ))
     clobbers = tuple(sorted(set(shell.normalized_clobbers)))
+    record("source_authority", "ASM_GOTO_SOURCE_AUTHORITY_BOUND", "Bounded source authority constructed; target proof and observations are separate obligations", True)
     return AsmGotoControlFlowAuthority(
         fragment_id=str(fragment.id or fragment.fragmentId),
         condition_kind=condition_kind,
@@ -1053,10 +1116,15 @@ def build_source_semantic_model(
         runtime_status=runtime_status,
     )
 
+    goto_diagnostics: list[RouteAuthorityDecision] = []
     asm_goto_authority = _build_asm_goto_control_flow_authority(
         fragment=fragment, shell=shell, blocks=blocks, cfg=cfg,
         runtime_status=runtime_status, operands=operands, memory=memory,
+        diagnostics=goto_diagnostics,
     )
+    if goto_diagnostics:
+        control_flow = replace(control_flow,
+            asm_goto_authority_decision=goto_diagnostics[0])
     if asm_goto_authority is not None:
         operand_index = int(asm_goto_authority.lhs_binding.rsplit(":", 1)[1])
         control_flow = replace(

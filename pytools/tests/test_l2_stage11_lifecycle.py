@@ -14,6 +14,8 @@ from tests.test_translation_attempt import _finding
 @pytest.mark.parametrize("fault", ["published", "crash", "malformed_report", "classification_failure"])
 def test_backend_lifecycle_never_publishes_partial_requirement_bundle(tmp_path, monkeypatch, fault):
     report = tmp_path / "report.json"
+    source = tmp_path / "source.c"
+    source.write_text("void source(void) {}\n", encoding="utf-8")
     finding = _finding(TranslationOutcome.EMITTED)
     finding.validationOutcome = "verified"
     finding.publicationOutcome = "admitted"
@@ -37,7 +39,7 @@ def test_backend_lifecycle_never_publishes_partial_requirement_bundle(tmp_path, 
         def fail(*a): raise ValueError("classifier rejected semantic authority")
         monkeypatch.setattr(command, "classify_l2_requirements", fail)
     monkeypatch.setattr(sys, "argv", ["translation", "--frontend", "/frontend",
-        "--source", "source.c", "--source-root", str(tmp_path), "--report", str(report)])
+        "--source", str(source), "--source-root", str(tmp_path), "--report", str(report)])
     status = command.main()
     if fault == "published":
         assert status == 0
