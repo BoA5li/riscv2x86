@@ -97,11 +97,11 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
     assert result["l2RequiredDimensionCounts"] == {}
     assert result["l2RequirementDenominator"] == 0
     assert result["l2CoverageDiagnostics"] == {
-        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v3",
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v4",
         "statisticalUnits": {
             "caseCounts": "case",
-            "fragmentCounts": "eligible required fragment",
-            "requiredDimensionCounts": "eligible required fragment-dimension",
+            "fragmentCounts": "required fragment, including precondition-blocked",
+            "requiredDimensionCounts": "required fragment-dimension, including precondition-blocked",
             "providerInvocationCounts": "persisted provider invocation",
             "auditedProviderExecutionCounts": "unique audited bindingKind + providerId + executionIdentity",
             "providerExecutionCounts": (
@@ -111,7 +111,7 @@ def test_batch_runs_all_cases_and_persists_summary(tmp_path):
         "providerInvocationCounts": {"automatic":{},"explicit":{},"runtime_adapter":{}},
         "auditedProviderExecutionCounts": {"automatic":{},"explicit":{},"runtime_adapter":{}},
         "providerArtifactAuditCounts": {},
-        "caseCounts": {"l2_not_required": 2, "total": 2},
+        "caseCounts": {"l2_classification_incomplete": 2, "total": 2},
         "fragmentCounts": {"planned": 0, "required": 0, "with_dimension_result": 0},
         "requiredDimensionCounts": {"planned": 0, "required": 0, "with_result": 0},
         "providerExecutionCounts": {
@@ -247,7 +247,7 @@ def test_resolved_plan_missing_is_scoped_to_required_fragments(tmp_path):
         }],
     }}, "attempts": []}
     coverage = _l2_coverage_diagnostics(no_requirement, tmp_path / "absent")
-    assert coverage["caseCounts"] == {"l2_not_required": 1, "total": 1}
+    assert coverage["caseCounts"] == {"l2_classification_incomplete": 1, "total": 1}
     assert coverage["missingCapabilityCounts"] == {}
 
     required = {"translationEvaluationLink": {"l2Requirements": {

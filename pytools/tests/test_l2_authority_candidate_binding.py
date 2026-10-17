@@ -153,4 +153,8 @@ def test_incomplete_authority_is_inconclusive_not_semantic_failure(tmp_path):
         source_observation=observation, target_observation=observation,
     )
     assert result.status is ValidationStatus.INCONCLUSIVE
-    assert "l2.provider-execution-disposition.missing" in result.detail
+    detail = json.loads(result.detail)
+    assert detail["schemaVersion"] == "riscv2x86.l2-fragment-result.v4"
+    assert detail["precondition"]["executionDisposition"] == "precondition_rejected"
+    assert "L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING" in detail["reasonCodes"]
+    assert "l2.provider-execution-disposition.missing" not in result.detail

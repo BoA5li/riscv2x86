@@ -347,6 +347,9 @@ def _layer_failure_reasons(layer: ValidationLayerResult) -> tuple[str, ...]:
         code = detail.get("reasonCode")
         if isinstance(code, str) and code:
             reasons.add(code)
+        codes = detail.get("reasonCodes")
+        if isinstance(codes, list):
+            reasons.update(code for code in codes if isinstance(code, str) and code)
         if layer.status is ValidationStatus.INCONCLUSIVE and (
                 "sourceBuild" in detail or "targetBuild" in detail):
             reasons.add("validation.infrastructure:harness-build:" + layer.level.value)

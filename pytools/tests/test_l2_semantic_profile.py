@@ -76,7 +76,7 @@ def test_profiles_are_per_fragment_and_do_not_consume_names_or_asm_text():
         "scalar", "branch",
     ]
     assert len({item["semanticProfileIdentity"] for item in manifest["requirements"]}) == 2
-    assert all(item["eligibilityStatus"] == "eligible"
+    assert all(item["eligibilityStatus"] == "inconclusive"
                for item in manifest["requirements"])
 
 
@@ -125,11 +125,11 @@ def test_profile_identity_participates_in_requirement_and_artifact_identity():
     assert a.identity != b.identity
 
 
-def test_scalar_profile_remains_eligible_with_canonical_capabilities():
+def test_complete_scalar_profile_still_requires_approved_authority():
     profile = profile_from_source_model("fragment:0", _source_model())
     result = L2EligibilityClassifier().classify(_finding("fragment:0", profile), 0)
     assert profile.pattern_kind is L2PatternKind.SCALAR
-    assert result["eligibilityStatus"] == "eligible"
+    assert result["eligibilityStatus"] == "inconclusive"
     assert result["requiredCapabilities"] == [
         "logical_operand_observation", "shell_observation",
     ]
@@ -166,7 +166,7 @@ def test_privileged_profile_completeness_ignores_unrelated_shapes():
     finding["translationReasonCodes"] = ["SM_TRAP", "SM_MEMORY_EFFECT"]
     finding["fragment"]["clobbers"] = ["memory"]
     result = L2EligibilityClassifier().classify(finding, 0)
-    assert result["eligibilityStatus"] == "eligible"
+    assert result["eligibilityStatus"] == "inconclusive"
     assert result["requiredDimensions"] == [
         "privileged_state", "shell_semantics",
     ]
@@ -186,7 +186,7 @@ def test_instruction_visibility_profile_does_not_require_branch_dimension():
     finding = _finding(profile.fragment_id, profile, control=True)
     finding["fragment"]["hasExternalControlFlow"] = True
     result = L2EligibilityClassifier().classify(finding, 0)
-    assert result["eligibilityStatus"] == "eligible"
+    assert result["eligibilityStatus"] == "inconclusive"
     assert result["requiredDimensions"] == [
         "memory_effects", "shell_semantics",
     ]

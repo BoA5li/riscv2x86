@@ -9,10 +9,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
 TESTS = (
+    'test_l2_precondition_obligations.py', 'test_l2_semantic_profile.py',
+    'test_l2_dimension_results.py', 'test_l2_requirement_driven_registry.py',
+    'test_batch_evaluation_cli.py', 'test_production_evidence_contract.py',
     'test_compiler_expression_contracts.py', 'test_l2_continuation_trace.py',
     'test_translation_preflight.py', 'test_scalar_fragment_candidate_binding.py',
     'test_production_route_authority.py', 'test_cbranch_and_compiler_type_contracts.py',
@@ -70,6 +74,13 @@ def main():
         status['blockers'].append('clang-version')
     elif re.search(r'clang version 10\.', (output/'clang-version.log').read_text()) is None:
         status['blockers'].append('clang-major-version-is-not-10')
+    if not status['blockers']:
+        tools = {name:shutil.which(name,path=env['PATH']) for name in
+                 ('llvm-mc','riscv64-linux-gnu-gcc','qemu-riscv64','gcc')}
+        (output/'production-tools.log').write_text(json.dumps(tools,indent=2)+'\n')
+        status['productionTools'] = tools
+        if any(value is None for value in tools.values()):
+            status['blockers'].append('production-tools')
     if not status['blockers']:
         if not run('frontend-build',['cmake','--build','build','-j2'],600):
             status['blockers'].append('frontend-build')

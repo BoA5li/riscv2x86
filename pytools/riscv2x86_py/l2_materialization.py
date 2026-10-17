@@ -17,6 +17,8 @@ FRAGMENT_L2_MATERIALIZATION_DECISION_SCHEMA = \
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _PROFILE_DIMENSIONS = {
+    L2PatternKind.ASM_GOTO: (L2Dimension.CONTROL_FLOW, L2Dimension.LOGICAL_OPERANDS,
+                             L2Dimension.SHELL_SEMANTICS),
     L2PatternKind.SCALAR: (L2Dimension.LOGICAL_OPERANDS, L2Dimension.SHELL_SEMANTICS),
     L2PatternKind.BRANCH: (L2Dimension.CONTROL_FLOW, L2Dimension.LOGICAL_OPERANDS,
                            L2Dimension.SHELL_SEMANTICS),
@@ -49,6 +51,11 @@ def _identity(value: object) -> str:
 def required_dimensions_for_finding(finding: Mapping[str, object]) -> tuple[L2Dimension, ...]:
     profile = profile_from_finding(finding)
     dimensions = set(_PROFILE_DIMENSIONS.get(profile.pattern_kind, ()))
+    if profile.pattern_kind is L2PatternKind.ASM_GOTO:
+        if not (profile.operand_shape.input_count or profile.operand_shape.output_count):
+            dimensions.discard(L2Dimension.LOGICAL_OPERANDS)
+        if profile.memory_shape.reads or profile.memory_shape.writes:
+            dimensions.add(L2Dimension.MEMORY_EFFECTS)
     if profile.pattern_kind is L2PatternKind.COMPOSITE:
         if profile.memory_shape.reads or profile.memory_shape.writes:
             dimensions.add(L2Dimension.MEMORY_EFFECTS)
@@ -220,8 +227,7 @@ def assess_fragment_l2_materializability(
             reasons.append("L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING")
             # Preserve the actual unsupported authority family rather than
             # presenting these routes as generic scalar/memory failures.
-            if (profile is not None and profile.pattern_kind is L2PatternKind.UNKNOWN
-                    and isinstance(fragment, Mapping) and fragment.get("gotoLabels")):
+            if profile is not None and profile.pattern_kind is L2PatternKind.ASM_GOTO:
                 reasons.append("L2_ASM_GOTO_CONTINUATION_OBSERVATION_AUTHORITY_REQUIRED")
             if profile is not None and profile.pattern_kind is L2PatternKind.ATOMIC:
                 reasons.append("L2_ATOMIC_RMW_OBSERVATION_AUTHORITY_REQUIRED")

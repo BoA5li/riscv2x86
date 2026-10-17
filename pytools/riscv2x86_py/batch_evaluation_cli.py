@@ -407,10 +407,16 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
     requirements = manifest.get("requirements") if isinstance(manifest, Mapping) else None
     required_pairs: set[tuple[str, str]] = set()
     required_fragments: set[str] = set()
+    eligible_pairs: set[tuple[str, str]] = set()
+    eligible_fragments: set[str] = set()
+    eligibility_counts: Counter[str] = Counter()
     if isinstance(requirements, list):
         for requirement in requirements:
-            if (not isinstance(requirement, Mapping)
-                    or requirement.get("eligibilityStatus") != "eligible"):
+            if not isinstance(requirement, Mapping):
+                continue
+            eligibility = requirement.get("eligibilityStatus")
+            eligibility_counts[str(eligibility)] += 1
+            if eligibility not in {"eligible", "inconclusive"}:
                 continue
             fragment_id = requirement.get("fragmentId")
             dimensions = requirement.get("requiredDimensions")
@@ -422,6 +428,9 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
             if valid_dimensions:
                 required_fragments.add(fragment_id)
                 required_pairs.update((fragment_id, item) for item in valid_dimensions)
+                if eligibility == "eligible":
+                    eligible_fragments.add(fragment_id)
+                    eligible_pairs.update((fragment_id, item) for item in valid_dimensions)
 
     provider_executions = {kind: Counter() for kind in
                            ("automatic", "explicit", "runtime_adapter")}
@@ -483,13 +492,15 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
             seen_bindings[binding_key] = signature
             if binding_key not in required_pairs:
                 continue
+            if binding_key not in eligible_pairs:
+                continue  # Authority rejection is not a provider capability failure.
             if kind not in provider_executions or not provider_id:
                 missing_capabilities["provider_unbound"] += 1
             for capability in missing_tuple:
                 missing_capabilities[capability] += 1
     # A missing plan is meaningful only for an eligible requirement that has
     # required dimensions.  Count missing required fragments, never cases.
-    for _fragment_id in sorted(required_fragments - planned_fragments):
+    for _fragment_id in sorted(eligible_fragments - planned_fragments):
         missing_capabilities["resolved_plan_missing"] += 1
 
     planned_required_pairs = set(seen_bindings) & required_pairs
@@ -558,13 +569,20 @@ def _l2_coverage_diagnostics(result: Mapping[str, object], case_root: Path) -> d
     from .l2_provider_artifacts import provider_audit_counts
     audited_counts = provider_audit_counts(result, case_root)
     case_counts = Counter({"total": 1})
-    case_counts["l2_required" if required_pairs else "l2_not_required"] += 1
+    if required_pairs:
+        case_counts["l2_required"] += 1
+        if required_pairs - eligible_pairs:
+            case_counts["l2_precondition_blocked"] += 1
+    elif eligibility_counts and set(eligibility_counts) == {"not_applicable"}:
+        case_counts["l2_not_applicable"] += 1
+    else:
+        case_counts["l2_classification_incomplete"] += 1
     return {
-        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v3",
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v4",
         "statisticalUnits": {
             "caseCounts": "case",
-            "fragmentCounts": "eligible required fragment",
-            "requiredDimensionCounts": "eligible required fragment-dimension",
+            "fragmentCounts": "required fragment, including precondition-blocked",
+            "requiredDimensionCounts": "required fragment-dimension, including precondition-blocked",
             "providerExecutionCounts": "legacy inference from dimension results and plans",
             "providerInvocationCounts": "persisted provider invocation",
             "auditedProviderExecutionCounts": "unique audited bindingKind + providerId + executionIdentity",
@@ -625,11 +643,11 @@ def _merge_l2_coverage(items: object) -> dict[str, object]:
                         if isinstance(value, int) and not isinstance(value, bool)
                     })
     merged = {
-        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v3",
+        "schemaVersion": "riscv2x86.l2-coverage-diagnostics.v4",
         "statisticalUnits": {
             "caseCounts": "case",
-            "fragmentCounts": "eligible required fragment",
-            "requiredDimensionCounts": "eligible required fragment-dimension",
+            "fragmentCounts": "required fragment, including precondition-blocked",
+            "requiredDimensionCounts": "required fragment-dimension, including precondition-blocked",
             "providerExecutionCounts": "legacy inference from dimension results and plans",
             "providerInvocationCounts": "persisted provider invocation",
             "auditedProviderExecutionCounts": "unique audited bindingKind + providerId + executionIdentity",
@@ -840,14 +858,14 @@ def run_batch_evaluation(
             "l2CoverageDiagnostics": _merge_l2_coverage(completed),
             "l2CoverageMetricDefinitions": {
                 "caseCountUnit": "case",
-                "fragmentCountUnit": "eligible required fragment",
-                "requiredDimensionCountUnit": "eligible required fragment-dimension",
+                "fragmentCountUnit": "required fragment, including precondition-blocked",
+                "requiredDimensionCountUnit": "required fragment-dimension, including precondition-blocked",
                 "providerExecutionCountUnit": "legacy inference from dimension results and plans",
                 "providerInvocationCountUnit": "persisted provider invocation",
                 "auditedProviderExecutionCountUnit": "unique audited bindingKind + providerId + executionIdentity",
-                "authorityMaterializationUnit": "eligible required fragment-dimension",
-                "observationProductionUnit": "eligible required fragment-dimension",
-                "relationApprovalUnit": "eligible required fragment-dimension",
+                "authorityMaterializationUnit": "required fragment-dimension, including precondition-blocked",
+                "observationProductionUnit": "required fragment-dimension, including precondition-blocked",
+                "relationApprovalUnit": "required fragment-dimension, including precondition-blocked",
                 "missingCapabilityUnit": "eligible unresolved fragment-dimension capability",
             },
             "statisticalUnits": {"translationCoverage": "fragment",

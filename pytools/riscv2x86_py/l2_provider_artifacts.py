@@ -304,6 +304,9 @@ def provider_audit_counts(case_result, case_root):
         fragments = ()
     attempts = {item.get('attemptArtifactId'):item for item in case_result.get('attempts', [])}
     for attempt_id, fragment in fragments:
+        if fragment.precondition is not None:
+            audit['valid_precondition_rejections'] += 1
+            continue
         if fragment.provider_evidence_index is None:
             audit['legacy_result_without_index'] += 1
             continue
@@ -355,29 +358,43 @@ def main(argv=None):
     from .l2_evidence_reader import load_case_evaluation_result, read_l2_provider_results
     parser = argparse.ArgumentParser(description='Audit retained L2 provider evidence in a batch')
     parser.add_argument('--batch',required=True)
+    parser.add_argument('--scope', choices=('all','verified-only'), default='all')
     args = parser.parse_args(argv)
     path = Path(args.batch).resolve()
-    failures=[]; audited=0; invocations=0; skipped=0
+    failures=[]; audited=0; invocations=0; skipped=0; validated=0; preconditions=0
     try:
         batch=json.loads(path.read_text(encoding='utf-8'))
         for case in batch['cases']:
-            if case.get('programValidationLevels',{}).get('L2') != 'verified':
+            verified = case.get('programValidationLevels',{}).get('L2') == 'verified'
+            if args.scope == 'verified-only' and not verified:
                 skipped+=1
                 continue
             try:
                 evaluation=load_case_evaluation_result(path.parent,case)
+                from .l2_evidence_reader import read_l2_fragment_results
+                fragments=read_l2_fragment_results(evaluation)
+                preconditions += sum(f.precondition is not None for _,f in fragments)
                 records=read_l2_provider_results(evaluation,path.parent/'cases'/case['caseId'])
-                if not records: raise ValueError('verified L2 case has no retained provider invocations')
-                audited+=1; invocations+=len(records)
+                if verified and (not records or any(f.status.value != 'verified' for _,f in fragments)):
+                    raise ValueError('verified L2 case has no complete retained fragment/provider evidence')
+                validated+=1
+                if records:
+                    audited+=1; invocations+=len(records)
+                else:
+                    skipped+=1  # No invocation exists; the case result was still validated.
             except (OSError,ValueError,TypeError,KeyError) as exc:
-                failures.append({'caseId':case.get('caseId',''),'exceptionType':type(exc).__name__,'detail':str(exc)})
+                failures.append({'caseId':case.get('caseId',''),'exceptionType':type(exc).__name__,
+                    'failureStage':'case_result_and_provider_audit', 'artifactPath':case.get('resultPath',''),
+                    'detail':str(exc)})
     except (OSError,ValueError,TypeError,KeyError) as exc:
         failures.append({'exceptionType':type(exc).__name__,'detail':str(exc)})
-    print(json.dumps({'schemaVersion':'riscv2x86.l2-provider-audit-summary.v1',
-        'auditDisposition':'failed' if failures else 'complete' if audited else 'not_applicable',
+    print(json.dumps({'schemaVersion':'riscv2x86.l2-provider-audit-summary.v2',
+        'auditDisposition':'failed' if failures else 'complete' if validated else 'not_applicable',
+        'auditScope':args.scope, 'validatedCaseResults':validated,
+        'preconditionRejectedFragments':preconditions,
         'auditedCases':audited,'providerInvocations':invocations,'skippedCases':skipped,
         'failures':failures},ensure_ascii=False,sort_keys=True))
-    return 1 if failures else 0 if audited else 2
+    return 1 if failures else 0 if validated else 2
 
 
 if __name__ == '__main__':

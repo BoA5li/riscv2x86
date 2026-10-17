@@ -17,6 +17,7 @@ def runner():
 @pytest.mark.parametrize('failed', ['clang-version','frontend-build','regression',None])
 def test_runner_preserves_nonzero_results_and_never_runs_suite_after_failed_prerequisite(tmp_path, monkeypatch, failed):
     module = runner(); output=tmp_path/'out'; calls=[]
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kwargs:'/tools/'+name)
     monkeypatch.setattr(module.sys,'argv',['runner','--frontend',str(tmp_path/'frontend'),
         '--clang10',str(tmp_path/'clang'),'--suite',str(tmp_path/'suite'),'--output',str(output)])
     def run(argv, **kwargs):

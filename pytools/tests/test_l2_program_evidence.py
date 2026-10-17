@@ -1,4 +1,5 @@
 import json
+import pytest
 from types import SimpleNamespace
 
 from riscv2x86_py.evaluation import _translation_evaluation_linkage
@@ -19,12 +20,15 @@ EXECUTION, SOURCE, TARGET = _id("e"), _id("b"), _id("c")
 
 
 def _finding(fragment_id):
-    return {"fragment": {"id": fragment_id, "outputs": [{"name": "out"}],
+    from tests.l2_profile_fixtures import profile_dict
+    from tests.l2_materialization_fixtures import attach_complete_scalar_authority
+    finding = {"fragment": {"id": fragment_id, "outputs": [{"name": "out"}],
                          "inputs": [{"name": "in"}], "clobbers": [],
                          "controlFlowSurface": "StraightLine"},
             "translationOutcome": "emitted", "translationKind": "x86_inline_asm",
             "verificationStatus": "inconclusive", "verificationDetail": "pending",
-            "suggestedReplacement": ""}
+            "suggestedReplacement": "", "l2SemanticProfile": profile_dict(fragment_id)}
+    return attach_complete_scalar_authority(finding)
 
 
 def _fragment_result(
@@ -69,13 +73,28 @@ def _attempt(index, fragment_id, result):
 
 
 def _setup(tmp_path, count=3):
+    from riscv2x86_py.l3_intent_requirements import classify_l3_requirements
+    from riscv2x86_py.requirement_staging import write_requirement_staging
+    from riscv2x86_py.schema import TranslationOutcome
+    from riscv2x86_py.translation_attempt import save_translation_attempt_archive, terminal_attempt_from_finding
+    from tests.test_translation_attempt import _finding as terminal_finding
     report = {"findings": [_finding(f"fragment:{index}") for index in range(count)]}
     path = tmp_path / "translated-report.json"
     path.write_text(json.dumps(report), encoding="utf-8")
     manifest = L2EligibilityClassifier().classify_report(report)
     path.with_name(path.name + ".l2-requirements.json").write_text(
         json.dumps(manifest), encoding="utf-8")
-    request = SimpleNamespace(translated_report=path.name, attempt_archive="attempts.json",
+    path.with_name(path.name + ".l3-requirements.json").write_text(
+        json.dumps(classify_l3_requirements(report).to_dict()), encoding="utf-8")
+    archived = []
+    for index in range(count):
+        finding = terminal_finding(TranslationOutcome.EMITTED, index=index)
+        finding.validationOutcome = "not_verified"
+        finding.translationAttemptArtifact["reasonCodes"] = ["validation.external-evaluation-pending"]
+        archived.append(terminal_attempt_from_finding(finding, index))
+    save_translation_attempt_archive(tuple(archived), str(path) + ".attempts.json")
+    write_requirement_staging(path, returncode=1)
+    request = SimpleNamespace(translated_report=path.name, attempt_archive=path.name+".attempts.json",
                               source_relative_path="case.c")
     return request, manifest["requirements"]
 
@@ -275,6 +294,7 @@ def test_functional_member_cannot_close_architectural_program_group():
 
 
 def test_stale_requirement_manifest_cannot_omit_candidate_from_l2_gate(tmp_path):
+    from riscv2x86_py.requirement_staging import RequirementArtifactError
     request, requirements = _setup(tmp_path, 2)
     path = tmp_path / request.translated_report
     stale = L2EligibilityClassifier().classify_report({"findings": [_finding("other")]})
@@ -282,7 +302,5 @@ def test_stale_requirement_manifest_cannot_omit_candidate_from_l2_gate(tmp_path)
         json.dumps(stale), encoding="utf-8")
     attempts = [_attempt(i, f"fragment:{i}", _fragment_result(
         f"fragment:{i}", requirements[i])) for i in range(2)]
-    group = next(item for item in _translation_evaluation_linkage(
-        request, tmp_path, attempts)["validationGroups"] if item["level"] == "L2")
-    assert group["status"] == "inconclusive"
-    assert len(group["requiredMemberAttemptIds"]) == 2
+    with pytest.raises(RequirementArtifactError):
+        _translation_evaluation_linkage(request, tmp_path, attempts)

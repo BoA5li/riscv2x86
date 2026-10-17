@@ -21,6 +21,7 @@ _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 class L2PatternKind(str, Enum):
     SCALAR = "scalar"
     BRANCH = "branch"
+    ASM_GOTO = "asm_goto"
     JUMP = "jump"
     MEMORY_LOAD = "memory_load"
     MEMORY_STORE = "memory_store"
@@ -34,6 +35,7 @@ class L2PatternKind(str, Enum):
 
 
 _CAPABILITIES = {
+    L2PatternKind.ASM_GOTO: ("asm_goto_continuation_observation", "logical_operand_observation", "shell_observation"),
     L2PatternKind.SCALAR: ("logical_operand_observation", "shell_observation"),
     L2PatternKind.BRANCH: ("control_flow_observation", "logical_operand_observation",
                            "shell_observation"),
@@ -204,6 +206,9 @@ class L2FragmentSemanticProfile:
                 self.operand_shape.complete, self.control_flow_shape.complete),
             L2PatternKind.BRANCH: (
                 self.operand_shape.complete, self.control_flow_shape.complete),
+            L2PatternKind.ASM_GOTO: (
+                self.operand_shape.complete, self.control_flow_shape.complete,
+                self.control_flow_shape.continuation_count >= 2),
             L2PatternKind.JUMP: (
                 self.operand_shape.complete, self.control_flow_shape.complete),
             L2PatternKind.MEMORY_LOAD: (
@@ -269,7 +274,9 @@ def profile_from_source_model(
         bool(getattr(control, "has_indirect_control_flow", False)),
         bool(getattr(control, "has_external_control_flow", False)),
         bool(getattr(control, "has_multiple_exits", False)),
-        2 if branch else 1 if jump else len(successors),
+        (len(getattr(control, "asm_goto_successor_continuation_ids", ()) or ())
+         if bool(getattr(shell, "has_asm_goto", False)) else
+         2 if branch else 1 if jump else len(successors)),
         bool(getattr(control, "cfg_ok", False))
         and not bool(getattr(control, "has_unknown_target", True)),
     )
@@ -368,9 +375,9 @@ def profile_from_source_model(
     elif memory_barrier:
         kind = L2PatternKind.FENCE
     elif bool(getattr(shell, "has_asm_goto", False)):
-        # Host-C continuations require a versioned explicit harness.  Treating
-        # asm-goto as an automatic local branch would overclaim observability.
-        kind = L2PatternKind.UNKNOWN
+        # A known semantic family keeps its obligations even when no provider
+        # can execute them. This is not the local branch-select pattern.
+        kind = L2PatternKind.ASM_GOTO
     elif branch:
         kind = L2PatternKind.BRANCH
     elif jump:

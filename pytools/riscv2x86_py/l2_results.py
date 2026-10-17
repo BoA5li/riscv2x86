@@ -22,7 +22,9 @@ from .l2_dimensions import (
 L2_DIMENSION_RESULT_SCHEMA = "riscv2x86.l2-dimension-result.v2"
 L2_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v2"
 L2_AUDITED_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v3"
-L2_FRAGMENT_RESULT_SCHEMAS = {L2_FRAGMENT_RESULT_SCHEMA, L2_AUDITED_FRAGMENT_RESULT_SCHEMA}
+L2_PRECONDITION_FRAGMENT_RESULT_SCHEMA = "riscv2x86.l2-fragment-result.v4"
+L2_FRAGMENT_RESULT_SCHEMAS = {L2_FRAGMENT_RESULT_SCHEMA, L2_AUDITED_FRAGMENT_RESULT_SCHEMA,
+                             L2_PRECONDITION_FRAGMENT_RESULT_SCHEMA}
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -243,6 +245,7 @@ class L2FragmentResult:
     status: L2DimensionStatus
     claim_scope: L2ClaimScope
     provider_evidence_index: dict[str, object] | None = None
+    precondition: Mapping[str, object] | None = None
 
     @property
     def conclusion(self) -> L2ClaimConclusion:
@@ -253,10 +256,40 @@ class L2FragmentResult:
         return self.conclusion is L2ClaimConclusion.ARCHITECTURAL_VERIFIED
 
     def __post_init__(self) -> None:
+        if self.precondition is not None:
+            p = self.precondition
+            fields = {"schemaVersion", "failureStage", "reasonCodes", "eligibilityStatus",
+                      "executionDisposition", "evidenceProductionDisposition"}
+            if (not isinstance(p, Mapping) or set(p) != fields
+                    or p["schemaVersion"] != "riscv2x86.l2-precondition-rejection.v1"
+                    or p["failureStage"] not in {"requirement_ingress", "requirement_classification", "profile_binding"}
+                    or p["executionDisposition"] != "precondition_rejected"
+                    or p["evidenceProductionDisposition"] != "not_produced"
+                    or p["eligibilityStatus"] not in {"eligible", "inconclusive", "not_applicable", "missing"}
+                    or not isinstance(p["reasonCodes"], list) or not p["reasonCodes"]
+                    or any(not isinstance(x, str) or not x for x in p["reasonCodes"])
+                    or p["reasonCodes"] != sorted(set(p["reasonCodes"]))):
+                raise ValueError("L2 precondition rejection schema/fields are invalid")
+            if (self.provider_evidence_index is not None
+                    or self.status is not L2DimensionStatus.INCONCLUSIVE
+                    or self.claim_scope is not L2ClaimScope.NONE
+                    or tuple(x.dimension for x in self.dimension_results) != self.required_dimensions
+                    or any(x.status is not L2DimensionStatus.INCONCLUSIVE
+                           or x.claim_scope is not L2ClaimScope.NONE or x.evidence_identity
+                           or x.reason_codes != (p["reasonCodes"][0],)
+                           or x.relation_kind or x.verified_properties
+                           or any((x.authority_identity, x.execution_identity,
+                                   x.source_observation_identity, x.target_observation_identity,
+                                   x.effect_relation_identity)) for x in self.dimension_results)):
+                raise ValueError("L2 precondition rejection cannot contain execution evidence or a claim")
         if self.provider_evidence_index is not None:
             from .l2_provider_artifacts import validate_reference
             validate_reference(self.provider_evidence_index)
-        if not self.fragment_id or not _valid_identity(self.requirement_identity):
+        missing_requirement = (self.precondition is not None
+            and self.precondition["eligibilityStatus"] == "missing"
+            and self.precondition["failureStage"] == "requirement_ingress"
+            and self.requirement_identity == "")
+        if not self.fragment_id or not (_valid_identity(self.requirement_identity) or missing_requirement):
             raise ValueError("L2 fragment result identities are invalid")
         parse_l2_dimensions([item.value for item in self.required_dimensions])
         dimensions = tuple(item.dimension for item in self.dimension_results)
@@ -284,14 +317,36 @@ class L2FragmentResult:
             _closed_scope(status, required, by_dimension),
         )
 
+    @classmethod
+    def reject_precondition(cls, *, fragment_id, requirement_identity, required_dimensions,
+                            reason_codes, failure_stage, eligibility_status):
+        reasons = sorted(set(reason_codes))
+        if not reasons:
+            raise ValueError("L2 precondition rejection needs a root reason")
+        dimensions = tuple(required_dimensions)
+        results = tuple(L2DimensionResult.create(dimension=d,
+            status=L2DimensionStatus.INCONCLUSIVE, reason_codes=(reasons[0],),
+            materialize_evidence=False) for d in dimensions)
+        return cls(fragment_id, requirement_identity, dimensions, results,
+            L2DimensionStatus.INCONCLUSIVE, L2ClaimScope.NONE, precondition={
+                "schemaVersion": "riscv2x86.l2-precondition-rejection.v1",
+                "failureStage": failure_stage, "reasonCodes": reasons,
+                "eligibilityStatus": eligibility_status,
+                "executionDisposition": "precondition_rejected",
+                "evidenceProductionDisposition": "not_produced"})
+
     @property
     def evidence_identity(self) -> str:
         return _identity(self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schemaVersion": (L2_AUDITED_FRAGMENT_RESULT_SCHEMA if self.provider_evidence_index is not None
+            "schemaVersion": (L2_PRECONDITION_FRAGMENT_RESULT_SCHEMA if self.precondition is not None else
+                              L2_AUDITED_FRAGMENT_RESULT_SCHEMA if self.provider_evidence_index is not None
                               else L2_FRAGMENT_RESULT_SCHEMA),
+            **({"precondition": dict(self.precondition),
+                "reasonCodes": list(self.precondition["reasonCodes"])}
+               if self.precondition is not None else {}),
             **({"providerEvidenceIndex": dict(self.provider_evidence_index)}
                if self.provider_evidence_index is not None else {}),
             "fragmentId": self.fragment_id,
@@ -313,6 +368,10 @@ class L2FragmentResult:
             "conclusion",
         }
         schema = value.get("schemaVersion")
+        if schema == L2_PRECONDITION_FRAGMENT_RESULT_SCHEMA:
+            expected.update({"precondition", "reasonCodes"})
+            if not isinstance(value.get("requirementIdentity"), str):
+                raise ValueError("L2 precondition requirement identity must be a string")
         if schema == L2_AUDITED_FRAGMENT_RESULT_SCHEMA:
             expected.add("providerEvidenceIndex")
             from .l2_provider_artifacts import validate_reference
@@ -338,7 +397,11 @@ class L2FragmentResult:
             L2DimensionStatus(str(value.get("status"))),
             L2ClaimScope(str(value.get("claimScope"))),
             value.get("providerEvidenceIndex") if schema == L2_AUDITED_FRAGMENT_RESULT_SCHEMA else None,
+            value.get("precondition") if schema == L2_PRECONDITION_FRAGMENT_RESULT_SCHEMA else None,
         )
+        if schema == L2_PRECONDITION_FRAGMENT_RESULT_SCHEMA and (
+                result.precondition is None or value["reasonCodes"] != result.precondition["reasonCodes"]):
+            raise ValueError("L2 precondition result root reasons are inconsistent")
         if value.get("conclusion") != result.conclusion.value:
             raise ValueError("L2 fragment conclusion does not match status and scope")
         return result

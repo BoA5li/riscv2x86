@@ -360,14 +360,19 @@ def _requirement_driven_l2_validator(
     def validate(**kwargs: object) -> ValidationLayerResult:
         artifact = kwargs.get("translation_artifact")
         fragment_id = str(getattr(artifact, "fragment_id", ""))
+        def reject_precondition(reasons, stage, missing=False):
+            result = L2FragmentResult.reject_precondition(
+                fragment_id=fragment_id or configured_fragment_id,
+                requirement_identity=("" if missing else requirement.requirement_identity),
+                required_dimensions=(() if missing else requirement.required_dimensions),
+                reason_codes=reasons, failure_stage=stage,
+                eligibility_status=("missing" if missing else requirement.eligibility_status.value))
+            return ValidationLayerResult(kwargs["level"], ValidationStatus.INCONCLUSIVE,
+                detail=json.dumps(result.to_dict(), sort_keys=True, separators=(",", ":")),
+                evidence_identity=result.evidence_identity)
         if fragment_id != configured_fragment_id or requirement is None or plan is None:
-            detail = {"schemaVersion": "riscv2x86.validation-dimensions.v1",
-                      "reasonCode": "l2.requirement.fragment-missing",
-                      "fragmentId": fragment_id, "dimensions": {}}
-            return ValidationLayerResult(
-                kwargs["level"], ValidationStatus.INCONCLUSIVE,
-                detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
-            )
+            return reject_precondition(("l2.requirement.fragment-missing",),
+                                       "requirement_ingress", missing=True)
         if requirement.semantic_profile_identity and (
                 getattr(artifact, "l2_semantic_profile_identity", "")
                 != requirement.semantic_profile_identity
@@ -376,25 +381,10 @@ def _requirement_driven_l2_validator(
                 or plan.semantic_profile_identity != requirement.semantic_profile_identity
                 or plan.pattern_kind != requirement.pattern_kind
                 or plan.required_capabilities != requirement.required_capabilities):
-            detail = {
-                "schemaVersion": "riscv2x86.validation-dimensions.v1",
-                "reasonCode": "l2.semantic-profile.binding-mismatch",
-                "fragmentId": fragment_id, "dimensions": {},
-            }
-            return ValidationLayerResult(
-                kwargs["level"], ValidationStatus.INCONCLUSIVE,
-                detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
-            )
+            return reject_precondition(("l2.semantic-profile.binding-mismatch",), "profile_binding")
         if requirement.eligibility_status.value != "eligible":
-            detail = {"schemaVersion": "riscv2x86.validation-dimensions.v1",
-                      "reasonCode": "l2.requirement.not-eligible",
-                      "fragmentId": fragment_id,
-                      "eligibilityStatus": requirement.eligibility_status.value,
-                      "dimensions": {}}
-            return ValidationLayerResult(
-                kwargs["level"], ValidationStatus.INCONCLUSIVE,
-                detail=json.dumps(detail, sort_keys=True, separators=(",", ":")),
-            )
+            return reject_precondition(requirement.reason_codes or ("l2.requirement.not-eligible",),
+                                       "requirement_classification")
         provider_results: dict[str, ValidationLayerResult] = {}
         provider_records = {}
         persistence_error = None

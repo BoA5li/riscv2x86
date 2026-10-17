@@ -231,15 +231,20 @@ def test_asm_goto_profile_is_not_automatic_branch():
             has_memory_barrier=False, has_instruction_barrier=False, has_unknown_barrier=False),
         atomic=None, barrier=None, privileged_state=None, value_program=None,
         completeness=SimpleNamespace(cfg_ok=True))
-    assert profile_from_source_model("fragment:goto", model).pattern_kind is L2PatternKind.UNKNOWN
+    profile = profile_from_source_model("fragment:goto", model)
+    assert profile.pattern_kind is L2PatternKind.ASM_GOTO
+    assert not profile.complete  # This fixture supplies no compiler continuation identities.
 
 
 def test_control_provider_rejects_missing_environment_capability():
+    from tests.l2_materialization_fixtures import complete_materialization_decision
     profile = _profile("fragment:capability", L2PatternKind.JUMP)
     requirement = L2FragmentRequirement(
         profile.fragment_id, "sha256:" + "1" * 64,
         (L2Dimension.CONTROL_FLOW,), L2EligibilityStatus.ELIGIBLE,
-        profile.profile_identity, profile.pattern_kind.value, profile.required_capabilities)
+        profile.profile_identity, profile.pattern_kind.value, profile.required_capabilities,
+        materialization_decision=complete_materialization_decision(
+            profile.fragment_id, (L2Dimension.CONTROL_FLOW,)))
     provider = L2ValidatorProvider(
         "generic-control", (L2Dimension.CONTROL_FLOW,),
         (L2PatternKind.BRANCH, L2PatternKind.JUMP),

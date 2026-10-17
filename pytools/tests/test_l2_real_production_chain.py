@@ -149,3 +149,33 @@ def test_real_downstream_fragment_program_observation(tmp_path, cc_members):
     assert all(x['sourceDependencyEvents'] for x in observed)
     assert all(x['sourceDependencyEvents'] == x['targetDependencyEvents'] for x in observed)
     assert len({x['fragmentId'] for x in observed}) == 2
+
+
+def test_real_asm_goto_keeps_obligations_when_automatic_observer_is_unavailable(tmp_path):
+    """Acceptance for rejection lifecycle, not completion of asm-goto L2."""
+    frontend=_tools()
+    source=tmp_path/'inputs'; source.mkdir()
+    (source/'control.c').write_text('#include <stdint.h>\nuint64_t probe(uint64_t x){\n'
+        '__asm__ goto volatile("beqz %0, %l[taken]" : : "r"(x) : : taken);\n'
+        'return 7; taken: return 9; }\n')
+    output=tmp_path/'results'
+    completed=subprocess.run([sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
+        '--input',str(source),'--frontend',frontend,'--output-directory',str(output),
+        '--jobs','1','--timeout-seconds','120'],capture_output=True,text=True,timeout=300)
+    assert completed.returncode==1, completed.stdout+completed.stderr
+    batch=json.loads((output/'batch-evaluation.json').read_text())
+    assert batch['statusCounts']=={'inconclusive':1}
+    assert batch['programValidationCounts']['L0']=={'verified':1}
+    assert batch['programValidationCounts']['L1']=={'verified':1}
+    case,=batch['cases']; evaluation=load_case_evaluation_result(output,case)
+    results=read_l2_fragment_results(evaluation)
+    assert len(results)==1
+    raw=results[0][1].to_dict()
+    assert raw['schemaVersion']=='riscv2x86.l2-fragment-result.v4'
+    assert set(raw['requiredDimensions'])=={'control_flow','logical_operands','shell_semantics'}
+    assert 'L2_ASM_GOTO_CONTINUATION_OBSERVATION_AUTHORITY_REQUIRED' in raw['reasonCodes']
+    assert read_l2_provider_results(evaluation,output/'cases'/case['caseId'])==()
+    counts=batch['l2CoverageDiagnostics']
+    assert counts['caseCounts']['l2_precondition_blocked']==1
+    assert counts['requiredDimensionCounts']['required']==3
+    assert counts['providerArtifactAuditCounts'].get('invalid_fragment_result',0)==0

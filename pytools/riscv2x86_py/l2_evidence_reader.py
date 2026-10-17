@@ -62,10 +62,14 @@ def read_l2_fragment_results(case_result, requirements=None):
                 result = L2FragmentResult.from_dict(value)
             except (ValueError, TypeError, KeyError) as exc:
                 raise ValueError('evaluation.l2-detail-invalid: ' + str(exc)) from exc
-            if result.provider_evidence_index is not None and layer.get('evidenceIdentity') != result.evidence_identity:
+            if (result.provider_evidence_index is not None or result.precondition is not None) and layer.get('evidenceIdentity') != result.evidence_identity:
                 raise ValueError('evaluation.l2-layer-evidence-identity-mismatch')
             if result.fragment_id != attempt.get('fragmentId'):
                 raise ValueError('evaluation.l2-fragment-mismatch')
+            expected_layer_status = (result.status.value if result.status.value in {'verified','failed'}
+                                     else 'inconclusive')
+            if layer.get('status') != expected_layer_status:
+                raise ValueError('evaluation.l2-layer-status-mismatch')
             key = (attempt.get('attemptArtifactId'), result.fragment_id)
             if not key[0] or key in seen:
                 raise ValueError('evaluation.l2-attempt-duplicate-or-missing')
@@ -75,7 +79,7 @@ def read_l2_fragment_results(case_result, requirements=None):
         from .l2_eligibility import validate_l2_requirement_manifest
         validate_l2_requirement_manifest(requirements)
         expected = {item['fragmentId']: item for item in requirements['requirements']
-                    if item['eligibilityStatus'] == 'eligible'}
+                    if item['eligibilityStatus'] != 'not_applicable'}
         actual = {result.fragment_id for _, result in results}
         if actual != set(expected):
             raise ValueError('evaluation.l2-required-fragment-set-mismatch')
@@ -84,6 +88,8 @@ def read_l2_fragment_results(case_result, requirements=None):
             if (result.requirement_identity != item['requirementIdentity'] or
                     {d.value for d in result.required_dimensions} != set(item['requiredDimensions'])):
                 raise ValueError('evaluation.l2-requirement-mismatch')
+            if item['eligibilityStatus'] != 'eligible' and result.precondition is None:
+                raise ValueError('evaluation.l2-noneligible-result-has-execution-claim')
     return tuple(results)
 
 
@@ -93,6 +99,8 @@ def read_l2_provider_results(case_result, case_root, requirements=None):
     attempts = {item['attemptArtifactId']: item for item in case_result.get('attempts', [])}
     records = []
     for attempt_id, result in read_l2_fragment_results(case_result, requirements):
+        if result.precondition is not None:
+            continue
         for envelope in read_provider_evidence(result,case_root=case_root,
                 translation_artifact=attempts[attempt_id].get('translationArtifact')):
             records.append({'attemptArtifactId':attempt_id,'fragmentId':result.fragment_id,
@@ -111,12 +119,15 @@ def audit_provider_references(case_result, case_root):
             if layer.get('level') != 'L2': continue
             try: value = json.loads(layer.get('detail',''))
             except (ValueError,TypeError): continue
-            if not isinstance(value, Mapping) or value.get('schemaVersion') != 'riscv2x86.l2-fragment-result.v3':
+            if not isinstance(value, Mapping) or value.get('schemaVersion') not in {
+                    'riscv2x86.l2-fragment-result.v3', 'riscv2x86.l2-fragment-result.v4'}:
                 continue
             result = L2FragmentResult.from_dict(value)
             if (result.fragment_id != attempt.get('fragmentId')
                     or result.evidence_identity != layer.get('evidenceIdentity')):
                 raise ValueError('evaluation.l2-provider-reference-layer-mismatch')
+            if result.precondition is not None:
+                continue
             records.extend(read_provider_evidence(result,case_root=case_root,
                 translation_artifact=attempt.get('translationArtifact')))
     return tuple(records)

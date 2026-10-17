@@ -60,6 +60,8 @@ _DIMENSION_CAPABILITY = {
 
 
 def _dimension_capability(dimension: L2Dimension, pattern: L2PatternKind) -> str:
+    if dimension is L2Dimension.CONTROL_FLOW and pattern is L2PatternKind.ASM_GOTO:
+        return "asm_goto_continuation_observation"
     if dimension is L2Dimension.MEMORY_EFFECTS:
         if pattern is L2PatternKind.FENCE:
             return "ordering_observation"
@@ -231,8 +233,11 @@ class L2FragmentRequirement:
     required_capabilities: tuple[str, ...] = ()
     memory_authority_decision: Mapping[str, object] | None = None
     materialization_decision: Mapping[str, object] | None = None
+    reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if any(not isinstance(x, str) or not x for x in self.reason_codes) or self.reason_codes != tuple(sorted(set(self.reason_codes))):
+            raise ValueError("L2 requirement reasons must be sorted nonempty strings")
         if self.required_capabilities != tuple(sorted(set(self.required_capabilities))):
             raise ValueError("L2 requirement capabilities must be unique and sorted")
         try:
@@ -383,6 +388,9 @@ class L2ValidatorResolver:
 
 
 def fragment_requirement_from_dict(value: Mapping[str, object]) -> L2FragmentRequirement:
+    reasons = value.get("reasonCodes", [])
+    if not isinstance(reasons, list) or any(not isinstance(x, str) or not x for x in reasons):
+        raise ValueError("L2 requirement reason codes must be an array of strings")
     dimensions = value.get("requiredDimensions")
     if not isinstance(dimensions, list):
         raise ValueError("L2 fragment requirement dimensions are missing")
@@ -418,7 +426,7 @@ def fragment_requirement_from_dict(value: Mapping[str, object]) -> L2FragmentReq
     return L2FragmentRequirement(
         fragment_id, requirement_identity, parsed_dimensions, eligibility,
         profile_identity, pattern_kind, tuple(capabilities), memory_decision,
-        materialization_decision,
+        materialization_decision, tuple(reasons),
     )
 
 
