@@ -2044,6 +2044,29 @@ def _is_proven_straight_line_barrier_fragment(
     return True
 
 
+def _is_proven_instruction_fence_control_closure(insns: list[CanonicalInsn]) -> bool:
+    """A standalone typed instruction fence has no program control exit.
+
+    This does not prove instruction visibility, cache/speculation behavior,
+    or a target relation. Those require an independent environment contract.
+    Unknown userops mixed with the barrier are deliberately not admitted.
+    """
+    if len(insns) != 1:
+        return False
+    ins = insns[0]
+    barrier = ins.barrier_info
+    if (barrier is None or not barrier.is_instruction_fence or barrier.is_unknown or not barrier.semantics_complete
+            or ins.has_unknown_barrier or ins.has_atomic or ins.terminator_kind
+            or ins.has_branch_op or ins.has_call_or_return_op
+            or ins.privileged_operations):
+        return False
+    semantic = [op for op in ins.ops if op.opcode.upper() not in _NON_SEMANTIC_CANONICAL_OPCODES]
+    if len(semantic) > 1 or any(op.opcode.upper() not in _BARRIER_OPS | {'CALLOTHER'} for op in semantic):
+        return False
+    return not any(var.kind in {VarKind.REG, VarKind.MEM}
+        for op in semantic for var in tuple(op.inputs) + (() if op.output is None else (op.output,)))
+
+
 def _is_proven_straight_line_direct_memory_fragment(
     insns: list[CanonicalInsn],
 ) -> bool:
@@ -2282,6 +2305,9 @@ def _summarize_instructions(
         else None
     )
 
+    control_absent = (False if _is_proven_instruction_fence_control_closure(insns)
+                      else proven_false)
+
     return IRSummary(
         is_single_block=is_single_block,
         has_branch=has_branch,
@@ -2304,9 +2330,9 @@ def _summarize_instructions(
         #
         # 仅在 canonical IR 命中上述封闭、穷尽的形状证明时填写 False。
         # 其他情况保留 None，禁止将未知语义错误降级为安全语义。
-        has_return=proven_false,
-        has_tail_call=proven_false,
-        has_indirect_control_flow=proven_false,
+        has_return=control_absent,
+        has_tail_call=control_absent,
+        has_indirect_control_flow=control_absent,
         has_timing_source=proven_false,
         has_cache_operation=proven_false,
         has_speculation_control=proven_false,

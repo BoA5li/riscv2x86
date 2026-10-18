@@ -1221,6 +1221,7 @@ def run(
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
     privileged_pipeline_inputs: PrivilegedPipelineInputs | None = None,
+    csr_architecture_profile: dict | None = None,
     instruction_stream_sync_registry: InstructionStreamSyncRegistry | None = None,
     csr_runtime_registry: CsrRuntimeRegistry | None = None,
     csr_renderer_registry: CsrRendererRegistry | None = None,
@@ -1228,6 +1229,11 @@ def run(
     validation_runner: PipelineValidationRunner | None = None,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
+    if csr_architecture_profile is not None:
+        from .csr_architecture_profile import parse_profile
+        parse_profile(csr_architecture_profile, xlen_bits=xlen)
+        if csr_architecture_profile["fragmentId"] not in {f.fragment.id for f in findings}:
+            raise ValueError("CSR_ARCH_PROFILE_FRAGMENT_MISMATCH")
 
     # The normal CLI path supplies Phase-4 authority inputs, never prebuilt
     # Phase-5 semantic models.  Direct model mappings remain a compatibility
@@ -1516,14 +1522,34 @@ def run(
         if ar.relocations:
             f.notes.append(f"assemble: extracted {len(ar.relocations)} relocations")
 
-        # Phase-4 CSR ingress receives only the selected execution sidecar profile.
-        # Without one, the lifter emits no catalog-approved CSR fact.
+        # Static ISA interpretation can be supplied independently of access
+        # policy. Neither source authorizes a privileged execution by itself.
         csr_execution_facts = default_user_process_execution_facts(f.fragment.id)
         if privileged_pipeline_inputs is not None:
             csr_sidecar = privileged_pipeline_inputs.execution_sidecar
             if csr_sidecar is not None:
                 csr_execution_facts = csr_sidecar.facts_for(f.fragment.id)
         csr_decoder_profile = (None if csr_execution_facts is None else profile_from_execution_facts(csr_execution_facts, xlen_bits=xlen))
+        if csr_architecture_profile is not None and csr_architecture_profile.get("fragmentId") == f.fragment.id:
+            from .csr_architecture_profile import parse_profile
+            try:
+                explicit_profile = parse_profile(csr_architecture_profile,
+                    source_digest=getattr(f, "sourceDigest", ""), fragment_id=f.fragment.id, xlen_bits=xlen)
+                if csr_decoder_profile is not None and csr_decoder_profile.catalog_profile() != explicit_profile.catalog_profile():
+                    raise ValueError("CSR_ARCH_PROFILE_EXECUTION_CONFLICT")
+                csr_decoder_profile = explicit_profile
+            except ValueError as exc:
+                code = str(exc)
+                payload = {"architectureProfile":csr_architecture_profile,
+                           "failureStage":"csr_architecture_binding"}
+                f.routeAuthorityDiagnostics.append(RouteAuthorityDecision("csr",str(f.fragment.id),
+                    "csr_architecture_binding",code,code,content_identity(payload),inputs_payload=payload).to_dict())
+                f.translationReasonCodes.append(code)
+                f.category, f.verificationStatus = "Unsupported", "unsupported"
+                f.verificationDetail = code
+                f.suggestedReplacement = ""
+                stats["unsupported"] += 1
+                continue
 
         # Phase 5
         #lr = lift(ar.machine_code, xlen=xlen, relocations=ar.relocations)
@@ -1802,6 +1828,20 @@ def run(
                 csr_authority = authority_from_phase4_facts(
                     lifted_insns=lr.insns, runtime_facts=f.translationRuntimeFacts,
                 )
+                if any(getattr(ins, "decoded_csr_instruction", None) is not None for ins in lr.insns):
+                    from .csr_production_binding import bind_csr_compiler_operands
+                    witness = {"compilerAuthorityIdentity": getattr(f.fragment, "compilerFragmentAuthority", {}).get("authorityIdentity", "")}
+                    try:
+                        csr_authority, witness = bind_csr_compiler_operands(
+                            f.fragment, f.translationRuntimeFacts, lr.insns,
+                            source_digest=str(getattr(f, "sourceDigest", "")),
+                            architecture_profile=csr_decoder_profile)
+                        code, detail, accepted = "CSR_COMPILER_JOIN_COMPLETE", "Static CSR operand relation closed; execution permission remains independent", True
+                    except (ValueError, TypeError, KeyError) as exc:
+                        code, detail, accepted = getattr(exc, "reason_code", "CSR_COMPILER_JOIN_INVALID"), str(exc), False
+                    f.routeAuthorityDiagnostics.append(RouteAuthorityDecision(
+                        "csr", str(f.fragment.id), "csr_compiler_join", code, detail,
+                        content_identity(witness), accepted, witness).to_dict())
             privileged_state = replace(
                 privileged_state,
                 csr_operand_bindings=join_csr_operand_bindings(

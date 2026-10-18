@@ -247,6 +247,7 @@ def main() -> int:
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
+    parser.add_argument("--csr-architecture-profile")
     parser.add_argument("--csr-environment-contract")
     parser.add_argument("--privileged-environment-sidecar")
     parser.add_argument("--instruction-stream-sync-registry")
@@ -327,6 +328,17 @@ def main() -> int:
                                      Path(args.atomic_authority_sidecar).resolve())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return preflight_failure("atomic_authority_binding", exc)
+    if args.csr_architecture_profile:
+        try:
+            from .csr_architecture_profile import load_profile
+            profile = load_profile(args.csr_architecture_profile, source=args.source)
+            raw_value = json.loads(raw.read_text())
+            findings = raw_value if isinstance(raw_value, list) else raw_value.get("findings", [])
+            ids = {item.get("fragment", {}).get("fragmentId") or item.get("fragment", {}).get("id") for item in findings}
+            if profile["fragmentId"] not in ids:
+                raise ValueError("CSR_ARCH_PROFILE_FRAGMENT_MISMATCH")
+        except (OSError, ValueError, KeyError) as exc:
+            return preflight_failure("csr_architecture_binding", exc)
     if args.csr_authority_sidecar:
         try:
             _inject_csr_authority(raw, Path(args.source).resolve(),
@@ -394,6 +406,8 @@ def main() -> int:
             return preflight_failure("privileged_environment_binding", exc)
     if args.allow_functional_fallbacks:
         backend.append("--allow-functional-fallbacks")
+    if args.csr_architecture_profile:
+        backend.extend(("--csr-architecture-profile", str(Path(args.csr_architecture_profile).resolve())))
     if args.csr_environment_contract:
         backend.extend(("--csr-environment-contract",
                         str(Path(args.csr_environment_contract).resolve())))

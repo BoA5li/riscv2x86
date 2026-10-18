@@ -847,7 +847,7 @@ def _output(
     if context.sourceModel is not None and context.fragment.id:
         route_decision = context.sourceModel.control_flow.asm_goto_authority_decision
         if route_decision is not None:
-            output_metadata["routeAuthorityDiagnostics"] = [route_decision.to_dict()]
+            output_metadata.setdefault("routeAuthorityDiagnostics", []).append(route_decision.to_dict())
             if not route_decision.accepted:
                 merged_reason_codes.append(route_decision.reason_code)
         profile = profile_from_source_model(context.fragment.id, context.sourceModel)
@@ -951,6 +951,21 @@ def _needs_route(
     reason_code: str,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> TranslationOutput:
+    # A process exit status is not a semantic verdict. Preserve the precise
+    # route precondition, including nested CSR/ISS proof reasons, in the same
+    # content-bound format consumed by attempts and evaluator diagnostics.
+    if route in {"instruction_stream_synchronization_adapter", "csr_runtime",
+                 "riscv_counter_csr_runtime_adapter", "csr_production_pipeline"} or reason_code.startswith(("TR_CSR_", "TR_INSTRET_")):
+        from .route_authority import RouteAuthorityDecision, content_identity
+        metadata = dict(metadata or {})
+        nested = metadata.get("phase6dReasonCode") or next(iter(metadata.get("csrPipelineReasonCodes", ())), reason_code)
+        payload = {"route":route, "rootReasonCode":nested, "details":dict(metadata),
+                   "executionDisposition":"precondition_rejected",
+                   "evidenceProductionDisposition":"not_produced"}
+        decision = RouteAuthorityDecision(route, context.fragment.id,
+            "instruction_stream_contract" if route == "instruction_stream_synchronization_adapter" else "csr_translation_contract",
+            str(nested), reason, content_identity(payload), inputs_payload=payload)
+        metadata.setdefault("routeAuthorityDiagnostics", []).append(decision.to_dict())
     return _output(
         kind="needs_route",
         replacement="",

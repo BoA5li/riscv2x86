@@ -921,6 +921,7 @@ def prepare_automatic_inventory(
     l3_provider_directory: str | Path | None = None,
     atomic_authority_directory: str | Path | None = None,
     csr_authority_directory: str | Path | None = None,
+    csr_architecture_directory: str | Path | None = None,
     csr_environment_contract_directory: str | Path | None = None,
     instruction_stream_sync_directory: str | Path | None = None,
     l3_diagnostic: bool = False,
@@ -948,6 +949,9 @@ def prepare_automatic_inventory(
                    else Path(atomic_authority_directory).resolve())
     if atomic_root is not None and not atomic_root.is_dir():
         raise ValueError("atomic authority directory is unavailable")
+    csr_architecture_root = None if csr_architecture_directory is None else Path(csr_architecture_directory).resolve()
+    if csr_architecture_root is not None and not csr_architecture_root.is_dir():
+        raise ValueError("CSR architecture profile directory is unavailable")
     csr_root = (None if csr_authority_directory is None
                 else Path(csr_authority_directory).resolve())
     if csr_root is not None and not csr_root.is_dir():
@@ -1078,6 +1082,10 @@ def prepare_automatic_inventory(
             atomic_sidecar = atomic_root / (relative + ".atomic-authority.json")
             if atomic_sidecar.is_file():
                 translation.extend(("--atomic-authority-sidecar", str(atomic_sidecar)))
+        if csr_architecture_root is not None:
+            profile = csr_architecture_root / (relative + ".csr-architecture.json")
+            if profile.is_file():
+                translation.extend(("--csr-architecture-profile", str(profile)))
         if csr_root is not None:
             csr_sidecar = csr_root / (relative + ".csr-authority.json")
             if csr_sidecar.is_file():
@@ -1462,6 +1470,7 @@ def main() -> int:
                         help="directory containing <source>.c.l3-providers.json bindings")
     parser.add_argument("--atomic-authority-directory",
                         help="directory containing <source>.c.atomic-authority.json bindings")
+    parser.add_argument("--csr-architecture-directory", help="source-bound CSR specification profiles; grants no execution permission")
     parser.add_argument("--csr-authority-directory",
                         help="directory containing <source>.c.csr-authority.json bindings")
     parser.add_argument("--csr-environment-contract-directory",
@@ -1485,6 +1494,7 @@ def main() -> int:
                                     l3_provider_directory=args.l3_provider_directory,
                                     atomic_authority_directory=args.atomic_authority_directory,
                                     csr_authority_directory=args.csr_authority_directory,
+                                    csr_architecture_directory=args.csr_architecture_directory,
                                     csr_environment_contract_directory=args.csr_environment_contract_directory,
                                     instruction_stream_sync_directory=args.instruction_stream_sync_directory,
                                     l3_diagnostic=args.l3_diagnostic)

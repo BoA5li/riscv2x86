@@ -14,6 +14,9 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_csr_sync_production_contracts.py',
+    'test_csr_metadata_ingress.py', 'test_csr_value_flow.py',
+    'test_csr_translation_pipeline.py', 'test_instruction_stream_sync_contracts.py',
     'test_atomic_memory_address_binding.py',
     'test_register_read_views.py',
     'test_fragment_source_range.py',
@@ -44,6 +47,10 @@ def main():
     parser.add_argument('--clang10', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--suite', type=Path)
+    parser.add_argument('--csr-architecture-directory', type=Path)
+    parser.add_argument('--csr-authority-directory', type=Path)
+    parser.add_argument('--csr-environment-contract-directory', type=Path)
+    parser.add_argument('--instruction-stream-sync-directory', type=Path)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     output = args.output.absolute()
@@ -97,10 +104,16 @@ def main():
             status['blockers'].append('regression')
     if args.suite is not None and not status['blockers']:
         status['generatedSuiteExecuted'] = True
-        run('generated-suite',[sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
+        suite_command = [sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
             '--input',str(args.suite.absolute()), '--frontend',str(args.frontend.absolute()),
             '--output-directory',str(output/'generated-suite-strict'), '--jobs','1',
-            '--timeout-seconds','120'],7200)
+            '--timeout-seconds','120']
+        for name in ('csr_architecture_directory', 'csr_authority_directory',
+                     'csr_environment_contract_directory', 'instruction_stream_sync_directory'):
+            value = getattr(args, name)
+            if value is not None:
+                suite_command.extend(('--' + name.replace('_','-'), str(value.absolute())))
+        run('generated-suite', suite_command, 7200)
         status['generatedSuiteExitCode'] = status['steps'][-1]['returnCode']
         batch = output/'generated-suite-strict'/'batch-evaluation.json'
         if batch.is_file():

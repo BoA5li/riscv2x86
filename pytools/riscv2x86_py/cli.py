@@ -130,6 +130,7 @@ def main() -> int:
         default=None,
         help="Versioned independent instruction-stream synchronization registry.",
     )
+    ap.add_argument("--csr-architecture-profile")
     ap.add_argument(
         "--csr-environment-contract",
         default=None,
@@ -206,6 +207,9 @@ def main() -> int:
             None if args.validation_context is None
             else load_pipeline_validation_context(args.validation_context)
         )
+        from .csr_architecture_profile import load_profile
+        csr_architecture_profile = (None if args.csr_architecture_profile is None
+                                    else load_profile(args.csr_architecture_profile))
         stats = run(
             args.inp,
             args.out,
@@ -218,6 +222,7 @@ def main() -> int:
             whole_function_sidecar=whole_function_sidecar,
             privileged_pipeline_inputs=privileged_pipeline_inputs,
             instruction_stream_sync_registry=instruction_stream_sync_registry,
+            csr_architecture_profile=csr_architecture_profile,
             csr_runtime_registry=(None if csr_environment_contract is None
                                   else csr_environment_contract.runtime_registry),
             csr_renderer_registry=(None if csr_environment_contract is None
