@@ -36,6 +36,30 @@ def _tools():
     return str(Path(frontend).resolve())
 
 
+def _assert_frontend_accepts(frontend, source, root):
+    """Exercise the linked tooling frontend, independently of external clang."""
+    report = root / 'syntax-report.json'
+    completed = subprocess.run([frontend, '--analysis-only', '-o', str(root/'dummy'),
+        '--src-root', str(source.parent), '--report-json', str(report), str(source),
+        '--', '--target=riscv64-linux-gnu', '--sysroot=/usr/riscv64-linux-gnu',
+        '-std=gnu11', '-march=rv64gc', '-mabi=lp64d'],
+        capture_output=True, text=True, timeout=120, check=False)
+    assert completed.returncode == 0, ('frontend fixture precondition failed: '
+        + completed.stdout + completed.stderr)
+    payload = json.loads(report.read_text())
+    assert payload.get('findings'), 'frontend accepted fixture without an asm finding'
+
+
+def _case_failure_details(output):
+    records = []
+    for path in sorted(output.glob('cases/*/evaluation-result.json')):
+        raw = json.loads(path.read_text())
+        records.append({'artifactPath': str(path), 'status': raw.get('status'),
+            'reasonCodes': raw.get('reasonCodes'), 'commands': raw.get('commands'),
+            'translationEvaluationLink': raw.get('translationEvaluationLink')})
+    return json.dumps(records, ensure_ascii=False, indent=2)
+
+
 def _objects(value):
     if isinstance(value, dict):
         yield value
@@ -156,15 +180,16 @@ def test_real_asm_goto_keeps_obligations_when_automatic_observer_is_unavailable(
     frontend=_tools()
     source=tmp_path/'inputs'; source.mkdir()
     (source/'control.c').write_text('#include <stdint.h>\nuint64_t probe(uint64_t x){\n'
-        '__asm__ goto volatile("beqz %0, %l[taken]" : : "r"(x) : : taken);\n'
+        '__asm__ volatile goto("beqz %0, %l[taken]" : : "r"(x) : : taken);\n'
         'return 7; taken: return 9; }\n')
+    _assert_frontend_accepts(frontend, source/'control.c', tmp_path)
     output=tmp_path/'results'
     completed=subprocess.run([sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
         '--input',str(source),'--frontend',frontend,'--output-directory',str(output),
         '--jobs','1','--timeout-seconds','120'],capture_output=True,text=True,timeout=300)
     assert completed.returncode==1, completed.stdout+completed.stderr
     batch=json.loads((output/'batch-evaluation.json').read_text())
-    assert batch['statusCounts']=={'inconclusive':1}
+    assert batch['statusCounts']=={'inconclusive':1}, _case_failure_details(output)
     assert batch['programValidationCounts']['L0']=={'verified':1}
     assert batch['programValidationCounts']['L1']=={'verified':1}
     case,=batch['cases']; evaluation=load_case_evaluation_result(output,case)
