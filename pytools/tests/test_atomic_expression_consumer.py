@@ -101,3 +101,39 @@ def test_memory_role_and_machine_join_survive_runtime_snapshot():
     restored=translation_runtime_facts_from_dict(translation_runtime_facts_to_dict(facts))
     assert restored.atomic_memory_objects==objects
     assert restored.asm_goto_machine_join==facts.asm_goto_machine_join
+
+
+def memory_only_authority():
+    authority=authority_for_expression()
+    original=deepcopy(authority['candidate']['expressionClosureInputs']['candidate'])
+    fragment=deepcopy(authority['candidate']['expressionClosureInputs']['fragment'])
+    pointer=authority['compilerTypeBindings']['2']['compilerType']
+    fragment['outputs'][1]['constraint']='+A'
+    fragment['outputs'][1]['compilerAddressType']=pointer
+    fragment['inputs']=[]
+    original['operandCarriers']=[x for x in original['operandCarriers'] if x['operandIndex']!=2]
+    original['operandBindings']=[x for x in original['operandBindings'] if x['operandIndex']!=2]
+    original['operandSlotFacts']['slots']=original['operandSlotFacts']['slots'][:2]
+    facts=original['compilerExpressionFacts'];facts['slots']=facts['slots'][:2]
+    facts['factsIdentity']=identity({k:v for k,v in facts.items() if k!='factsIdentity'})
+    authority['candidate']=close_compiler_fragment_candidate(original,fragment,
+        source_digest=authority['sourceDigest'],function_identity=authority['functionIdentity'])
+    authority['compilerTypeBindings']={'0':authority['compilerTypeBindings'].get('0',{}),
+        '1':{'operandIndex':1,'valueNodeIdentity':authority['candidate']['operandBindings'][1]['valueNodeIdentity'],
+             'compilerType':fragment['outputs'][1]['compilerType']}}
+    authority['authorityIdentity']=identity({k:v for k,v in authority.items() if k!='authorityIdentity'})
+    return authority
+
+
+def test_memory_operand_projects_address_without_an_extra_pointer_gnu_slot():
+    authority=memory_only_authority()
+    runtime=TranslationRuntimeFacts(rv_to_operand_index={'a0':0,'a1':1},operand_width_bits={0:64,1:64})
+    objects=atomic_runtime_object_from_compiler_authority(authority,
+        fragment_id=authority['fragmentId'],source_digest=authority['sourceDigest'],
+        begin_offset=100,end_offset=140,runtime_facts=runtime,atomic_operation=_atomic())
+    assert set(objects)=={1}
+    projection=objects[1].address_projection
+    assert projection['baseDeclarationIdentity'] in authority['memoryObjectBindings']
+    assert projection['offsetBytes']==0
+    assert objects[1].operand_role=='memory_lvalue'
+    assert authority['candidate']['operandBindings'][1]['declarationIdentity']==''

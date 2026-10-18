@@ -146,7 +146,8 @@ def _inject_compiler_fragment_authority(
                 raise
             record = {"fragmentId": fragment_id, "disposition": "rejected",
                       "reasonCode": getattr(exc, "reason_code", "COMPILER_FRAGMENT_CLOSURE_REJECTED"),
-                      "detail": str(exc), "diagnostics": getattr(exc, "diagnostics", {})}
+                      "detail": str(exc), "failureStage": getattr(exc,"failure_stage","compiler_fragment_closure"),
+                      "diagnostics": getattr(exc, "diagnostics", {})}
             fragment["compilerFragmentJoin"] = record
             joins.append(record)
             continue

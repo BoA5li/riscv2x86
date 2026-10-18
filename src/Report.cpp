@@ -244,6 +244,22 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
                        << ",\"sideEffectFree\":" << (o.compilerType.sideEffectFree ? "true" : "false")
                        << ",\"expressionRepeatable\":" << (o.compilerType.expressionRepeatable ? "true" : "false")
                        << ",\"modifiableLvalue\":" << (o.compilerType.modifiableLvalue ? "true" : "false") << "}"
+                       << ",\"compilerAddressType\":{\"schemaVersion\":\"riscv2x86.clang-operand-type.v1\""
+                       << ",\"canonicalType\":\"" << escape(o.compilerAddressType.canonicalType) << "\""
+                       << ",\"qualifiers\":\"" << escape(o.compilerAddressType.qualifiers) << "\""
+                       << ",\"pointeeQualifiers\":\"" << escape(o.compilerAddressType.pointeeQualifiers) << "\""
+                       << ",\"widthBits\":" << o.compilerAddressType.widthBits
+                       << ",\"alignmentBytes\":" << o.compilerAddressType.alignmentBytes
+                       << ",\"isInteger\":" << (o.compilerAddressType.isInteger ? "true" : "false")
+                       << ",\"isPointer\":" << (o.compilerAddressType.isPointer ? "true" : "false")
+                       << ",\"isSigned\":" << (o.compilerAddressType.isSigned ? "true" : "false")
+                       << ",\"pointeeType\":\"" << escape(o.compilerAddressType.pointeeType) << "\""
+                       << ",\"pointeeWidthBits\":" << o.compilerAddressType.pointeeWidthBits
+                       << ",\"pointeeAlignmentBytes\":" << o.compilerAddressType.pointeeAlignmentBytes
+                       << ",\"pointeeIsInteger\":" << (o.compilerAddressType.pointeeIsInteger ? "true" : "false")
+                       << ",\"sideEffectFree\":" << (o.compilerAddressType.sideEffectFree ? "true" : "false")
+                       << ",\"expressionRepeatable\":" << (o.compilerAddressType.expressionRepeatable ? "true" : "false")
+                       << ",\"modifiableLvalue\":" << (o.compilerAddressType.modifiableLvalue ? "true" : "false") << "}"
                        << "}";
                     if (j + 1 < v.size()) os << ",";
                 }

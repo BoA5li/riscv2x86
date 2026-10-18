@@ -245,7 +245,7 @@ def _counter_return_semantics(function: Mapping[str, object]) -> dict[str, str]:
 def _l2_operand_boundary_facts(
     function: Mapping[str, object], *, source_digest: str = "",
     function_identity: str = "", source_file: str = "",
-    source_bytes: bytes = b"",
+    source_bytes: bytes = b"", type_resolver=None,
 ) -> dict[str, object]:
     """Export compiler-AST identities needed for bounded automatic L2-A.
 
@@ -362,7 +362,7 @@ def _l2_operand_boundary_facts(
             try:
                 expression = expression_from_ast(child, source_digest=source_digest,
                     function_identity=function_identity,
-                    declaration_identity=stable_declaration, source_range=_source_range)
+                    declaration_identity=stable_declaration, source_range=_source_range, type_resolver=type_resolver)
                 expression_records.append({"operandIndex": index, "complete": True,
                     "expression": expression, "reasonCode": "", "detail": ""})
             except CompilerExpressionError as exc:
@@ -623,6 +623,27 @@ def _l2_operand_boundary_facts(
     }
 
 
+def _compiler_type_alias_resolver(root):
+    aliases={};ambiguous=set()
+    for declaration in _walk_ast(root):
+        if declaration.get('kind') not in {'TypedefDecl','TypeAliasDecl'}:continue
+        alias=declaration.get('name');typ=declaration.get('type',{})
+        underlying=typ.get('desugaredQualType') or typ.get('qualType')
+        if not alias or not underlying:continue
+        if alias in aliases and aliases[alias]!=underlying:ambiguous.add(alias)
+        aliases[alias]=underlying
+    def resolve_compiler_type(text):
+        seen=set()
+        while text not in seen:
+            seen.add(text)
+            resolved=re.sub(r'\b[A-Za-z_]\w*\b',
+                lambda m:aliases.get(m[0],m[0]) if m[0] not in ambiguous else m[0],text)
+            if resolved==text:return text
+            text=resolved
+        raise ValueError('COMPILER_TYPE_ALIAS_CYCLE')
+    return resolve_compiler_type
+
+
 def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str = "riscv64") -> tuple[bool, tuple[dict[str, object], ...]]:
     """Use the compiler AST, never textual `main`/signature guessing."""
     if target_isa not in {'riscv64','x86_64'}:
@@ -637,6 +658,7 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
         raise ValueError("entry-point AST inspection failed: " + result.stderr.strip())
     root = json.loads(result.stdout)
     functions = []
+    resolve_compiler_type=_compiler_type_alias_resolver(root)
     has_main = False
     for node in _walk_ast(root):
         if node.get("kind") != "FunctionDecl" or not any(
@@ -710,7 +732,7 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                 node, source_digest=source_digest,
                 function_identity=function_identity,
                 source_file=str(source.resolve()),
-                source_bytes=source.read_bytes())
+                source_bytes=source.read_bytes(),type_resolver=resolve_compiler_type)
             functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")

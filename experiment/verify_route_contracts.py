@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_gnu_operand_contract.py',
     'test_compiler_expression_evaluation.py', 'test_atomic_expression_consumer.py',
     'test_l2_atomic_production.py', 'test_atomic_native_observation.py',
     'test_asm_goto_machine_join.py', 'test_asm_goto_region_closure.py',
@@ -89,7 +90,7 @@ def main():
         if not run('frontend-build',['cmake','--build','build','-j2'],600):
             status['blockers'].append('frontend-build')
         if not status['blockers'] and not run('regression', [sys.executable,'-m','pytest','-q',
-                *['pytools/tests/'+name for name in TESTS]],900):
+                *['pytools/tests/'+name for name in TESTS]],1800):
             status['blockers'].append('regression')
     if args.suite is not None and not status['blockers']:
         status['generatedSuiteExecuted'] = True

@@ -49,7 +49,10 @@ def _machine_join(target=0x100):
         'fragmentId':fragment.id,'machineCodeIdentity':'sha256:'+'1'*64,
         'bindings':[{'compilerLabel':'taken','continuationId':fragment.gotoEdges[0].targetContinuationId,
             'externalLabelIndex':0,'assemblerSymbol':'.Lriscv2x86_asm_goto_0','machineOffset':target}]}
-    return {**payload,'joinIdentity':identity(payload)}
+    raw={**payload,'joinIdentity':identity(payload)}
+    layout={'schemaVersion':'riscv2x86.asm-goto-machine-layout.v2','assemblerJoin':raw,
+        'fragmentId':fragment.id,'liftBaseAddress':0,'imageSizeBytes':max(target,1)}
+    return {**layout,'joinIdentity':identity(layout)}
 
 
 def _authority(raw="not assembly"):

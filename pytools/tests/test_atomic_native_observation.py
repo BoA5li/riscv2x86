@@ -29,7 +29,7 @@ def rendered_atomic(model,constraints):
     recipe=GPR_INTEGER_RENDERER_CONTRACT_REGISTRY.resolve(approved)
     assert recipe is not None
     result=render_approved_target_lowering(Phase6FRenderRequest(approved,environment,
-        RendererContext({plan.plan_id:recipe},{0:'value',1:'ptr'})))
+        RendererContext({plan.plan_id:recipe},{0:'value',1:'*ptr' if model.atomic.address_projection else 'ptr'})))
     assert result.kind is RenderedReplacementKind.C_BUILTIN,result
     return result
 
@@ -139,3 +139,17 @@ def test_native_atomic_provider_preserves_four_dimension_execution_evidence(tmp_
     for dimension in ('logical_operands','memory_effects','atomic_memory_order','shell_semantics'):
         evidence,reasons=validated_provider_evidence(detail,artifact,dimension=dimension,provider_id='atomic-provider')
         assert evidence is not None and not reasons,reasons
+
+
+def test_memory_only_renderer_evaluates_address_not_memory_contents(tmp_path):
+    finding,functions,model,constraints=atomic_finding(memory_only=True)
+    sidecar=materialize_atomic_authority(finding,functions,'sha256:'+'f'*64)
+    assert sidecar is not None
+    atom=finding['approvalArtifact']['l2AtomicProofFacts']['atomicOperation']
+    rendered=rendered_atomic(model,constraints)
+    assert '&(*ptr)' in rendered.emitted_text
+    harness=atomic_wrapper(functions[0],atom,sidecar)
+    declaration='unsigned long probe(unsigned long *ptr,unsigned long value)'
+    oracle=declaration+'{ __asm__ volatile("lock xaddq %0,(%1)" : "+r"(value) : "r"(ptr) : "memory","cc"); return value; }'
+    target=declaration+'{ '+rendered.emitted_text+' return value; }'
+    assert atomic_events(execute(tmp_path,oracle,harness,'address-oracle'),atom)==atomic_events(execute(tmp_path,target,harness,'address-target'),atom)

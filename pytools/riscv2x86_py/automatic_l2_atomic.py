@@ -27,9 +27,15 @@ def atomic_wrapper(function,atom,sidecar):
     types=function['parameterTypes'];pointers=function['pointerParameters']
     by_index={x.operand_index:x for x in sidecar.operands}
     address=by_index[atom['address_operand_index']];value=by_index[atom['value_operand_index']]
+    address_parameter=address.parameter_index
+    if atom.get('address_projection'):
+        base=atom['address_projection']['baseDeclarationIdentity']
+        parameters=function['l2OperandBoundary']['parameterDeclarationIds']
+        if base not in parameters:raise ValueError('L2_ATOMIC_ADDRESS_PARAMETER_UNBOUND')
+        address_parameter=parameters.index(base)
     if (function.get('arity')!=2 or len(types)!=2 or len(pointers)!=1
-            or address.parameter_index!=pointers[0] or value.parameter_index is None
-            or value.parameter_index==address.parameter_index
+            or address_parameter!=pointers[0] or value.parameter_index is None
+            or value.parameter_index==address_parameter
             or _INTEGER_POINTER_TYPE.fullmatch(types[pointers[0]]) is None
             or _INTEGER_TYPE.fullmatch(types[value.parameter_index]) is None
             or (function['returnType']!='void' and _INTEGER_TYPE.fullmatch(function['returnType']) is None)

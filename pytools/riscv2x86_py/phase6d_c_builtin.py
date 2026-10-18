@@ -43,7 +43,8 @@ def prove(r):
                     or ((expected_projection!='identity' or expected_truncation!='none')
                         and (atom.width_bits!=32 or atom.register_width_bits!=64 or atom.result_extension not in {'sign_extend','none'}))):
                 return reject(r,SemanticProofReasonCode.BINDING_UNSAFE)
-        if (contract.object_operand_index != atom.address_operand_index or
+        if (contract.object_address_of_lvalue != bool(atom.address_projection) or
+                contract.object_operand_index != atom.address_operand_index or
                 contract.result_operand_index != atom.result_operand_index or
                 contract.value_operand_index != atom.value_operand_index or
                 contract.width_bits != atom.width_bits or

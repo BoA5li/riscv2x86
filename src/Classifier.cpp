@@ -372,6 +372,11 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
 
         if (const Expr *E = S->getOutputExpr(i)) {
             op.compilerType = operandCompilerType(E, Ctx);
+            const Expr *addressExpr = E->IgnoreParens();
+            if (const auto *deref = dyn_cast<UnaryOperator>(addressExpr)) {
+                if (deref->getOpcode() == UO_Deref)
+                    op.compilerAddressType = operandCompilerType(deref->getSubExpr(), Ctx);
+            }
             op.exprText = Lexer::getSourceText(
                 CharSourceRange::getTokenRange(E->getSourceRange()),
                 SM, Ctx.getLangOpts()).str();
@@ -400,6 +405,11 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
 
         if (const Expr *E = S->getInputExpr(i)) {
             op.compilerType = operandCompilerType(E, Ctx);
+            const Expr *addressExpr = E->IgnoreParens();
+            if (const auto *deref = dyn_cast<UnaryOperator>(addressExpr)) {
+                if (deref->getOpcode() == UO_Deref)
+                    op.compilerAddressType = operandCompilerType(deref->getSubExpr(), Ctx);
+            }
             op.exprText = Lexer::getSourceText(
                 CharSourceRange::getTokenRange(E->getSourceRange()),
                 SM, Ctx.getLangOpts()).str();

@@ -60,6 +60,28 @@ static void loadOperands(const llvm::json::Object *obj,
             if (auto b = t->getBoolean("expressionRepeatable")) op.compilerType.expressionRepeatable = *b;
             if (auto b = t->getBoolean("modifiableLvalue")) op.compilerType.modifiableLvalue = *b;
         }
+        if (auto *t = o->getObject("compilerAddressType")) {
+            auto schema = t->getString("schemaVersion");
+            if (!schema || *schema != "riscv2x86.clang-operand-type.v1") {
+                out.push_back(std::move(op));
+                continue;
+            }
+            if (auto s = t->getString("canonicalType")) op.compilerAddressType.canonicalType = s->str();
+            if (auto s = t->getString("pointeeType")) op.compilerAddressType.pointeeType = s->str();
+            if (auto s = t->getString("qualifiers")) op.compilerAddressType.qualifiers = s->str();
+            if (auto s = t->getString("pointeeQualifiers")) op.compilerAddressType.pointeeQualifiers = s->str();
+            if (auto n = t->getInteger("widthBits")) op.compilerAddressType.widthBits = static_cast<unsigned>(*n);
+            if (auto n = t->getInteger("alignmentBytes")) op.compilerAddressType.alignmentBytes = static_cast<unsigned>(*n);
+            if (auto n = t->getInteger("pointeeWidthBits")) op.compilerAddressType.pointeeWidthBits = static_cast<unsigned>(*n);
+            if (auto n = t->getInteger("pointeeAlignmentBytes")) op.compilerAddressType.pointeeAlignmentBytes = static_cast<unsigned>(*n);
+            if (auto b = t->getBoolean("isInteger")) op.compilerAddressType.isInteger = *b;
+            if (auto b = t->getBoolean("isPointer")) op.compilerAddressType.isPointer = *b;
+            if (auto b = t->getBoolean("isSigned")) op.compilerAddressType.isSigned = *b;
+            if (auto b = t->getBoolean("pointeeIsInteger")) op.compilerAddressType.pointeeIsInteger = *b;
+            if (auto b = t->getBoolean("sideEffectFree")) op.compilerAddressType.sideEffectFree = *b;
+            if (auto b = t->getBoolean("expressionRepeatable")) op.compilerAddressType.expressionRepeatable = *b;
+            if (auto b = t->getBoolean("modifiableLvalue")) op.compilerAddressType.modifiableLvalue = *b;
+        }
         out.push_back(std::move(op));
     }
 }

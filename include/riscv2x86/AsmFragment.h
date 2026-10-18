@@ -24,6 +24,7 @@ struct AsmOperand {
     bool isTied = false;
     bool isEarlyClobber = false;
     CompilerType compilerType;
+    CompilerType compilerAddressType;
 };
 
 // asm 片段类型

@@ -109,6 +109,19 @@ def atomic_runtime_object_from_compiler_authority(
         raise AtomicAuthorityError("ATOMIC_OPERAND_INDEX_SET_MISMATCH", "compiler/assembler operand authority mismatch")
     binding = binding_by_index.get(address_index)
     carrier = carrier_by_index.get(address_index)
+    projection = None
+    if isinstance(carrier, Mapping) and carrier.get('carrierKind')=='memory_lvalue':
+        from .memory_address_projection import project_memory_address
+        try:projection=project_memory_address(candidate,address_index)
+        except ValueError as exc:
+            raise AtomicAuthorityError('ATOMIC_ADDRESS_PROJECTION_UNPROVEN',str(exc)) from exc
+        pointer=compiler_operand_type_from_dict(projection['compilerPointerType'])
+        # A typed address view, not an extra GNU operand or declaration carrier.
+        binding={**binding,'declarationIdentity':projection['baseDeclarationIdentity'],
+            'widthBits':pointer.width_bits,'access':'input'}
+        carrier={**carrier,'carrierKind':'pointer','declarationIdentity':projection['baseDeclarationIdentity'],
+            'widthBits':pointer.width_bits}
+
     if (not isinstance(binding, Mapping) or not isinstance(carrier, Mapping)
             or carrier.get("carrierKind") != "pointer"
             or binding.get("access") not in {"input", "read_write"}
@@ -194,6 +207,9 @@ def atomic_runtime_object_from_compiler_authority(
     declaration = str(binding.get("declarationIdentity") or "")
     type_bindings = raw_authority.get("compilerTypeBindings", {})
     type_binding = type_bindings.get(str(address_index)) if isinstance(type_bindings, Mapping) else None
+    if projection is not None:
+        type_binding={'operandIndex':address_index,'valueNodeIdentity':binding['valueNodeIdentity'],
+            'compilerType':projection['compilerPointerType']}
     if (not isinstance(type_binding, Mapping)
             or set(type_binding) != {"operandIndex", "valueNodeIdentity", "compilerType"}
             or type_binding.get("operandIndex") != address_index
@@ -280,8 +296,10 @@ def atomic_runtime_object_from_compiler_authority(
         "compilerPointeeTypeIdentity": pointer_type.pointee_type_identity,
         "expressionMemoryBindingIdentities": sorted(expression_memory_bindings),
     }
+    if projection is not None:relation["addressProjection"] = projection
     join_identity = _identity(relation)
     address_fact = AtomicMemoryObjectRuntimeFact(
+        address_projection=projection,
         object_identity=str(memory_object["objectIdentity"]),
         address_space_identity=str(getattr(
             atomic_operation, "address_space_identity", "")),

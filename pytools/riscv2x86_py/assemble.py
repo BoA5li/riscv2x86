@@ -132,7 +132,14 @@ def _operand_placeholder(op, idx: int) -> str:
     c = (getattr(op, "constraint", "") or "").strip()
     normalized = c.replace("=", "").replace("+", "").replace("&", "").replace("%", "")
 
-    if "A" in normalized or "m" in normalized:
+    from .gnu_operand_contract import parse_riscv_operand
+    try:
+        contract=parse_riscv_operand(c,output=bool(getattr(op,'isOutput',False)))
+    except ValueError:
+        contract=None  # legacy materialization alone never approves semantics
+    if contract is not None and contract.role=='memory_lvalue':
+        return f"({reg})"
+    if contract is None and ("A" in normalized or "m" in normalized):
         return f"({reg})"
     return reg
 

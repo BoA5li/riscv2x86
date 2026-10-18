@@ -1511,8 +1511,15 @@ def run(
 
         # Phase 5
         #lr = lift(ar.machine_code, xlen=xlen, relocations=ar.relocations)
+        lift_base = 0x10000
+        if f.translationRuntimeFacts.asm_goto_machine_join:
+            from .asm_goto_machine_join import bind_lift_layout
+            f.translationRuntimeFacts = replace(f.translationRuntimeFacts,
+                asm_goto_machine_join=bind_lift_layout(
+                    f.translationRuntimeFacts.asm_goto_machine_join, ar.machine_code, lift_base))
         lr = lift(
             ar.machine_code,
+            base_addr=lift_base,
             xlen=xlen,
             relocations=ar.relocations,
             language=language,

@@ -157,6 +157,7 @@ class AsmOperand:
     isTied: bool = False
     isEarlyClobber: bool = False
     compilerType: Dict[str, Any] = field(default_factory=dict)
+    compilerAddressType: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

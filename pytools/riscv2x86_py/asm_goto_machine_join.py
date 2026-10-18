@@ -39,6 +39,8 @@ def bind_machine_continuations(elf, fragment, materialized, base_by_section, mac
 
 
 def validate_machine_continuations(raw, fragment_id, edges):
+    if isinstance(raw,Mapping) and raw.get('schemaVersion')=='riscv2x86.asm-goto-machine-layout.v2':
+        return validate_lift_layout(raw,fragment_id,edges)
     if (not isinstance(raw,Mapping) or set(raw)!={'schemaVersion','fragmentId','machineCodeIdentity','bindings','joinIdentity'}
             or raw['schemaVersion']!=SCHEMA or raw['fragmentId']!=fragment_id
             or not isinstance(raw['machineCodeIdentity'],str)
@@ -55,3 +57,29 @@ def validate_machine_continuations(raw, fragment_id, edges):
                 or type(record['machineOffset']) is not int or record['machineOffset']<0):
             raise ValueError('ASM_GOTO_MACHINE_CONTINUATION_MISMATCH')
     return records
+
+
+def bind_lift_layout(join, machine_code, lift_base):
+    """Bind assembler offsets to this exact lift invocation, never a C identity."""
+    if type(lift_base) is not int or lift_base<0:
+        raise ValueError('ASM_GOTO_LIFT_BASE_INVALID')
+    if join.get('machineCodeIdentity')!='sha256:'+sha256(machine_code).hexdigest():
+        raise ValueError('ASM_GOTO_MACHINE_CODE_IDENTITY_MISMATCH')
+    payload={'schemaVersion':'riscv2x86.asm-goto-machine-layout.v2',
+        'assemblerJoin':dict(join),'fragmentId':join['fragmentId'],
+        'liftBaseAddress':lift_base,'imageSizeBytes':len(machine_code)}
+    return {**payload,'joinIdentity':identity(payload)}
+
+
+def validate_lift_layout(raw, fragment_id, edges):
+    if (set(raw)!={'schemaVersion','assemblerJoin','fragmentId','liftBaseAddress','imageSizeBytes','joinIdentity'}
+            or raw['fragmentId']!=fragment_id or type(raw['liftBaseAddress']) is not int
+            or raw['liftBaseAddress']<0 or type(raw['imageSizeBytes']) is not int
+            or raw['imageSizeBytes']<=0
+            or raw['joinIdentity']!=identity({k:v for k,v in raw.items() if k!='joinIdentity'})
+            or raw.get('assemblerJoin',{}).get('schemaVersion')!=SCHEMA):
+        raise ValueError('ASM_GOTO_LIFT_LAYOUT_INVALID')
+    records=validate_machine_continuations(raw['assemblerJoin'],fragment_id,edges)
+    if any(r['machineOffset']>raw['imageSizeBytes'] for r in records):
+        raise ValueError('ASM_GOTO_SYMBOL_OUTSIDE_CODE')
+    return [{**r,'machineAddress':raw['liftBaseAddress']+r['machineOffset']} for r in records]

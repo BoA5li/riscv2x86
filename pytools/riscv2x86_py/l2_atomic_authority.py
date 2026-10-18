@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from .compiler_value_flow import identity
 from .l2_effect_proof import effect_proof_facts_from_dict
 
-SCHEMA='riscv2x86.l2-atomic-proof-facts.v1'
+SCHEMA='riscv2x86.l2-atomic-proof-facts.v2'
 
 
 def _json(value):
@@ -127,7 +127,9 @@ def materialize_atomic_authority(finding,functions,producer_digest):
             runtime_facts=TranslationRuntimeFacts(rv_to_operand_index=register_map,
                 operand_width_bits={b['operandIndex']:b['widthBits'] for b in candidate['operandBindings']}),
             atomic_operation=decoded)
-        if rebound[atom['address_operand_index']].authority_identity!=atom['authority_identity']:return None
+        address_fact=rebound[atom['address_operand_index']]
+        if (address_fact.authority_identity!=atom['authority_identity']
+                or address_fact.address_projection!=atom.get('address_projection')):return None
         raw_operands=fragment['outputs']+fragment['inputs']
         bindings=candidate['operandBindings'];carriers=candidate['operandCarriers']
         if len(bindings)!=len(raw_operands) or len(carriers)!=len(bindings):return None
@@ -161,7 +163,9 @@ def materialize_atomic_authority(finding,functions,producer_digest):
                 signed,'','&' in gnu['constraint'],'','memory_object' if kind in {'aggregate','pointer'} else 'function_return' if declaration==boundary.get('returnDeclarationId') else 'function_argument' if parameter is not None else 'non_escaping',
                 binding['valueNodeIdentity'],declaration,parameter,gnu['constraint'],True,**expression_kwargs))
         address=operands[atom['address_operand_index']]
-        obj=compiler['memoryObjectBindings'][address.declaration_id]
+        projection=atom.get('address_projection')
+        base_declaration=projection['baseDeclarationIdentity'] if projection else address.declaration_id
+        obj=compiler['memoryObjectBindings'][base_declaration]
         if (obj['objectIdentity']!=atom['memory_object_identity'] or obj['objectSizeBytes']<atom['width_bits']//8
                 or obj['provenAlignmentBytes']!=atom['alignment_bytes']):return None
         memory=L2MemoryObjectAuthority(obj['objectIdentity'],obj['bindingOrigin'],obj['objectSizeBytes'],

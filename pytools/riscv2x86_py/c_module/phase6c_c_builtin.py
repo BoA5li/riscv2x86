@@ -61,6 +61,7 @@ class CBuiltinContract:
     result_carrier_width_bits: int | None = None
     input_truncation: str = 'none'
     result_projection: str = 'identity'
+    object_address_of_lvalue: bool = False
 
 
 _ORDER_CONSTANTS = {
@@ -128,8 +129,32 @@ def _derive_atomic_contract(source_model, candidate_plan):
             address.address.address_space_identity != atom.address_space_identity):
         return _atomic_binding_failure(candidate_plan, expected="proven_address_binding")
 
+    from ..gnu_operand_contract import parse_riscv_operand
+    try:
+        shell_operand=source_model.shell.all_operands[atom.address_operand_index]
+        gnu_address=parse_riscv_operand(shell_operand.constraint,output=shell_operand.is_output)
+    except (ValueError,IndexError):
+        return _atomic_binding_failure(candidate_plan,expected="typed_gnu_address_role")
+    projection=address.address.address_projection
+    if (gnu_address.role=='memory_lvalue') != bool(projection):
+        return _atomic_binding_failure(candidate_plan,expected="memory_address_projection")
+    if projection:
+        from ..compiler_value_flow import identity
+        from ..compiler_operand_type import compiler_operand_type_from_dict
+        try:
+            pointer=compiler_operand_type_from_dict(projection['compilerPointerType'])
+            valid=(projection.get('projectionIdentity')==identity({k:v for k,v in projection.items() if k!='projectionIdentity'})
+                and projection.get('operandIndex')==atom.address_operand_index
+                and projection.get('projectionKind')=='address_of_exact_dereference'
+                and projection.get('offsetBytes')==0 and projection.get('evaluationCount')==1
+                and pointer.type_identity==address.expression.c_type_id
+                and pointer.pointee_type_identity==address.address.pointee_type_id
+                and projection==atom.address_projection)
+        except (ValueError,KeyError,TypeError):valid=False
+        if not valid:return _atomic_binding_failure(candidate_plan,expected="closed_memory_address_projection")
     common = {
         "object_operand_index": atom.address_operand_index,
+        "object_address_of_lvalue": bool(address.address.address_projection),
         "width_bits": atom.width_bits,
         "alignment_bytes": atom.alignment_bytes,
         "success_ordering": atom.success_ordering.value,

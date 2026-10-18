@@ -37,3 +37,20 @@ def test_rehashed_wrong_join_is_rejected(field,value):
     raw,edges=bind(); raw['bindings'][0][field]=value
     raw['joinIdentity']=identity({k:v for k,v in raw.items() if k!='joinIdentity'})
     with pytest.raises(ValueError): validate_machine_continuations(raw,'fragment',edges)
+
+
+@pytest.mark.parametrize('base',[0,4096,65536])
+def test_layout_and_phase4_copy_preserve_machine_join(base):
+    from riscv2x86_py.asm_goto_machine_join import bind_lift_layout
+    from riscv2x86_py.runtime_facts import TranslationRuntimeFacts,build_translation_runtime_facts
+    raw,edges=bind()
+    facts=TranslationRuntimeFacts(rv_to_operand_index={'a0':0},operand_width_bits={0:64},asm_goto_machine_join=raw)
+    result=build_translation_runtime_facts(finding=SimpleNamespace(),
+        assemble_result=SimpleNamespace(translation_runtime_facts=facts))
+    assert result.ok,result.error
+    assert result.facts.asm_goto_machine_join==raw
+    layout=bind_lift_layout(result.facts.asm_goto_machine_join,b'1234',base)
+    records=validate_machine_continuations(layout,'fragment',edges)
+    assert records[0]['machineAddress']==base+4
+    assert records[0]['continuationId']=='source:exit'
+    with pytest.raises(ValueError):bind_lift_layout(raw,b'4321',base)

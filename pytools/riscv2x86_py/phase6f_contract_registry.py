@@ -952,7 +952,7 @@ def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
                 contract.value_operand_index is not None or
                 not contract.result_c_type_id):
             return None
-        arguments = (CBuiltinArgument(contract.object_operand_index), order)
+        arguments = (CBuiltinArgument(contract.object_operand_index,address_of_lvalue=contract.object_address_of_lvalue), order)
         result = contract.result_operand_index
     elif contract.semantic_contract_id == "c.builtin.atomic-store-n.u32-u64.v2":
         if (contract.value_operand_index is None or
@@ -960,8 +960,8 @@ def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
                 not contract.value_c_type_id):
             return None
         arguments = (
-            CBuiltinArgument(contract.object_operand_index),
-            CBuiltinArgument(contract.value_operand_index,object_type_operand_index=contract.object_operand_index if contract.input_truncation=='low_bits' else None),
+            CBuiltinArgument(contract.object_operand_index,address_of_lvalue=contract.object_address_of_lvalue),
+            CBuiltinArgument(contract.value_operand_index,object_type_operand_index=contract.object_operand_index if contract.input_truncation=='low_bits' else None,object_type_is_lvalue=contract.input_truncation=='low_bits' and contract.object_address_of_lvalue),
             order,
         )
         result = None
@@ -972,8 +972,8 @@ def _atomic_public_builtin_recipe(approved: ApprovedTargetLoweringPlan):
                  not contract.result_c_type_id)):
             return None
         arguments = (
-            CBuiltinArgument(contract.object_operand_index),
-            CBuiltinArgument(contract.value_operand_index,object_type_operand_index=contract.object_operand_index if contract.input_truncation=='low_bits' else None),
+            CBuiltinArgument(contract.object_operand_index,address_of_lvalue=contract.object_address_of_lvalue),
+            CBuiltinArgument(contract.value_operand_index,object_type_operand_index=contract.object_operand_index if contract.input_truncation=='low_bits' else None,object_type_is_lvalue=contract.input_truncation=='low_bits' and contract.object_address_of_lvalue),
             order,
         )
         result = contract.result_operand_index

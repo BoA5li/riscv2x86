@@ -1025,6 +1025,9 @@ def _build_asm_goto_control_flow_authority(
     if transfer.target_kind == "machine_address" and transfer.target.offset != branch_instructions[0].direct_target:
         return record("decoder_region", "ASM_GOTO_TARGET_IDENTITY_MISMATCH", "Canonical code target disagrees with instruction target")
     machine_join = runtime_status.asm_goto_machine_join
+    if machine_join.get('schemaVersion')!='riscv2x86.asm-goto-machine-layout.v2':
+        return record('assembler_continuation_join','ASM_GOTO_LIFT_LAYOUT_REQUIRED',
+            'Assembler offsets must be bound to this lift invocation')
     from .asm_goto_machine_join import validate_machine_continuations
     try:
         machine_targets = validate_machine_continuations(machine_join,
@@ -1033,7 +1036,7 @@ def _build_asm_goto_control_flow_authority(
         return record('assembler_continuation_join', str(exc),
                       'Assembler symbol to compiler continuation authority is required')
     if (len(machine_targets) != 1
-            or machine_targets[0]['machineOffset'] != branch_instructions[0].direct_target):
+            or machine_targets[0].get('machineAddress',machine_targets[0]['machineOffset']) != branch_instructions[0].direct_target):
         return record('assembler_continuation_join', 'ASM_GOTO_MACHINE_TARGET_MISMATCH',
                       'Decoded target does not select the assembler-bound source continuation')
     normalized = _normalize_asm_goto_predicate(semantic_ops, branch)
@@ -3232,6 +3235,7 @@ class SourceAddressBinding:
     atomic_read_effect_identity: Optional[str] = None
     atomic_write_effect_identity: Optional[str] = None
     atomic_address_space_relation_identity: Optional[str] = None
+    address_projection: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -3560,6 +3564,7 @@ class SourceAtomicOperationModel:
     arithmetic_relation: Optional[str] = None
     wraparound_width_bits: Optional[int] = None
     authority_identity: Optional[str] = None
+    address_projection: dict | None = None
     register_width_bits: int = 0
     result_extension: str = ""
     capability_reason_codes: tuple[str, ...] = ()
@@ -4383,8 +4388,10 @@ def _runtime_operand_semantics(
         memory_lvalue = (index in atomic_objects
             and atomic_objects[index].operand_role == "memory_lvalue")
         if memory_lvalue:
-            if constraint not in {"+m", "=m", "m"}:
-                continue
+            from .gnu_operand_contract import parse_riscv_operand
+            try:memory_contract=parse_riscv_operand(constraint,output=operand.is_output)
+            except ValueError:continue
+            if memory_contract.role!='memory_lvalue':continue
             kind = SourceOperandKind.MEMORY
         elif index in memory_address_operand_offsets:
             kind = SourceOperandKind.ADDRESS
@@ -4399,6 +4406,11 @@ def _runtime_operand_semantics(
                 is_repeatable=(operand.compiler_type.expression_repeatable if operand.compiler_type else True),
             ) if reads else None
         )
+        if memory_lvalue and atomic_objects[index].address_projection:
+            from .compiler_operand_type import compiler_operand_type_from_dict
+            projected=atomic_objects[index].address_projection
+            expression=SourceExpressionBinding(projected['addressValueNodeIdentity'],
+                compiler_operand_type_from_dict(projected['compilerPointerType']).type_identity,True,True)
         lvalue = (
             SourceLvalueBinding(
                 lvalue_id=f"asm-operand:{index}",
@@ -4420,6 +4432,7 @@ def _runtime_operand_semantics(
             lvalue=lvalue,
             address=(SourceAddressBinding(
                 address_id=f"canonical-memory-address:{index}",
+                address_projection=(atomic_objects[index].address_projection if index in atomic_objects else None),
                 pointee_type_id=(atomic_objects[index].pointee_type_id
                                  if index in atomic_objects else None),
                 alignment_bytes=(atomic_objects[index].alignment_bytes
@@ -5959,6 +5972,7 @@ def _build_atomic_operation_model(
                                address.wraparound_width_bits),
         authority_identity=(None if address is None else
                             address.atomic_authority_identity),
+        address_projection=None if address is None else address.address_projection,
         register_width_bits=getattr(structured_atomic,'register_width_bits',0),
         result_extension=getattr(structured_atomic,'result_extension',''),
         capability_reason_codes=capability_reason_codes,

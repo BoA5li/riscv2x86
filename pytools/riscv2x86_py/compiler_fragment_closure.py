@@ -200,6 +200,9 @@ def close_compiler_fragment_candidate(candidate, fragment, *, source_digest, fun
             exc.diagnostics['expressionClosureFailure'] = {
                 'reasonCode': getattr(evaluation_error, 'reason_code', 'COMPILER_EXPRESSION_CLOSURE_REJECTED'),
                 'detail': str(evaluation_error)}
+            exc.failure_stage="compiler_expression_closure"
+            exc.reason_code=getattr(evaluation_error,'reason_code','COMPILER_EXPRESSION_CLOSURE_REJECTED')
+            exc.args=(str(evaluation_error),)
             raise exc from evaluation_error
 
 

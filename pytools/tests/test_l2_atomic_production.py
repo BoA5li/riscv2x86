@@ -21,15 +21,17 @@ from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.atomic_builtin_shell import fnv,build_atomic_builtin_shell,validate_atomic_builtin_shell
 
 
-def atomic_finding(expression=False,memory_width=64):
+def atomic_finding(expression=False,memory_width=64,memory_only=False):
     from tests.test_atomic_expression_consumer import authority_for_expression
-    compiler=authority_for_expression() if expression else _compiler_authority()
+    from tests.test_atomic_expression_consumer import memory_only_authority
+    compiler=memory_only_authority() if memory_only else authority_for_expression() if expression else _compiler_authority()
     pointer_index=2 if expression else 1
     value_type=ctype()
     value_node=compiler['candidate']['operandBindings'][0]['valueNodeIdentity']
     compiler['compilerTypeBindings']['0']={'operandIndex':0,'valueNodeIdentity':value_node,'compilerType':value_type}
     compiler['authorityIdentity']=identity({k:v for k,v in compiler.items() if k!='authorityIdentity'})
-    pointer_type=compiler['compilerTypeBindings'][str(pointer_index)]['compilerType']
+    pointer_type=(compiler['candidate']['expressionClosureInputs']['fragment']['outputs'][1]['compilerAddressType']
+        if memory_only else compiler['compilerTypeBindings'][str(pointer_index)]['compilerType'])
     if memory_width==32:
         pointer_type.update(canonicalType='unsigned int *',pointeeType='unsigned int',pointeeWidthBits=32,pointeeAlignmentBytes=4)
         compiler['authorityIdentity']=identity({k:v for k,v in compiler.items() if k!='authorityIdentity'})
@@ -41,19 +43,23 @@ def atomic_finding(expression=False,memory_width=64):
     obj=atomic_runtime_object_from_compiler_authority(compiler,fragment_id=compiler['fragmentId'],
         source_digest=compiler['sourceDigest'],begin_offset=100,end_offset=140,runtime_facts=runtime,atomic_operation=decoded)[pointer_index]
     fragment=AsmFragment(id=compiler['fragmentId'],rawAsmText='typed decoder fixture',isVolatile=True,clobbers=['memory','cc'],
-        outputs=[AsmOperand(constraint='+r',exprText='value',isOutput=True,compilerType=value_type)]+([AsmOperand(constraint='+m',exprText='*ptr',isOutput=True,compilerType=value_type)] if expression else []),
-        inputs=[AsmOperand(constraint='r',exprText='ptr',compilerType=pointer_type)],compilerFragmentAuthority=compiler)
+        outputs=[AsmOperand(constraint='+r',exprText='value',isOutput=True,compilerType=value_type)]+([AsmOperand(constraint='+A' if memory_only else '+m',exprText='*ptr',isOutput=True,compilerType=value_type,compilerAddressType=pointer_type)] if expression or memory_only else []),
+        inputs=[] if memory_only else [AsmOperand(constraint='r',exprText='ptr',compilerType=pointer_type)],compilerFragmentAuthority=compiler)
     model=_atomic_model();old_value,old_pointer=model.operands.operands
     address=replace(old_pointer.address,pointee_type_id=obj.pointee_type_id,memory_object_identity=obj.object_identity,
         atomic_authority_identity=obj.authority_identity,atomic_read_effect_identity=obj.read_effect_identity,
-        atomic_write_effect_identity=obj.write_effect_identity,atomic_address_space_relation_identity=obj.address_space_relation_identity)
+        atomic_write_effect_identity=obj.write_effect_identity,atomic_address_space_relation_identity=obj.address_space_relation_identity,address_projection=obj.address_projection)
     from riscv2x86_py.compiler_operand_type import compiler_operand_type_from_dict
     value_type_id=compiler_operand_type_from_dict(value_type).type_identity
     pointer_type_id=compiler_operand_type_from_dict(pointer_type).type_identity
     value=replace(old_value,expression=replace(old_value.expression,c_type_id=value_type_id),
         lvalue=replace(old_value.lvalue,c_type_id=value_type_id))
     pointer=replace(old_pointer,source_operand_index=pointer_index,address=address,expression=replace(old_pointer.expression,c_type_id=pointer_type_id))
-    atom=replace(model.atomic,width_bits=memory_width,wraparound_width_bits=memory_width,
+    if memory_only:
+        from riscv2x86_py.source_model import SourceOperandKind,SourceOperandAccess
+        pointer=replace(pointer,kind=SourceOperandKind.MEMORY,access=SourceOperandAccess.READ_WRITE,
+            writes=True,read_before_write=True,lvalue=value.lvalue)
+    atom=replace(model.atomic,address_projection=obj.address_projection,width_bits=memory_width,wraparound_width_bits=memory_width,
         register_width_bits=64,result_extension=decoded.result_extension,address_operand_index=pointer_index,memory_object_identity=obj.object_identity,authority_identity=obj.authority_identity,
         read_effect_identity=obj.read_effect_identity,write_effect_identity=obj.write_effect_identity)
     model=replace(model,shell=SourceShellModel.from_fragment(fragment),atomic=atom,
@@ -77,7 +83,7 @@ def atomic_finding(expression=False,memory_width=64):
     from dataclasses import asdict
     raw=asdict(fragment);raw['enclosingFunction']='probe'
     value_decl=compiler['candidate']['operandBindings'][0]['declarationIdentity']
-    pointer_decl=compiler['candidate']['operandBindings'][pointer_index]['declarationIdentity']
+    pointer_decl=(obj.address_projection['baseDeclarationIdentity'] if memory_only else compiler['candidate']['operandBindings'][pointer_index]['declarationIdentity'])
     function={'name':'probe','functionId':compiler['functionIdentity'],'sourceDigest':compiler['sourceDigest'],
         'arity':2,'parameterTypes':[pointer_type['canonicalType'],'unsigned long'],'returnType':'unsigned long','pointerParameters':[0],
         'l2OperandBoundary':{'declarations':{value_decl:{'name':'value','type':'unsigned long'},pointer_decl:{'name':'ptr','type':pointer_type['canonicalType']}},
@@ -154,3 +160,26 @@ def test_atomic_shell_distinguishes_source_slice_from_asm_template():
     approval['atomicBuiltinShell']=build_atomic_builtin_shell(fragment,approval)
     assert approval['atomicBuiltinShell']['sourceSliceDigest']!=approval['atomicBuiltinShell']['asmTemplateDigest']
     assert validate_atomic_builtin_shell(fragment,approval,text)
+
+
+def test_memory_only_address_projection_reaches_proof_and_l2_sidecar():
+    finding,functions,model,constraints=atomic_finding(memory_only=True)
+    assert constraints.c_builtin_constraint.object_address_of_lvalue
+    assert model.atomic.address_projection['operandIndex']==1
+    sidecar=materialize_atomic_authority(finding,functions,'sha256:'+'f'*64)
+    assert sidecar is not None
+    assert sidecar.operands[1].declaration_id==''
+    assert sidecar.operands[1].operand_role=='memory_lvalue'
+
+
+def test_memory_operand_cannot_reuse_pointer_contract_without_projection():
+    finding,functions,model,constraints=atomic_finding(memory_only=True)
+    pointer=model.operands.operands[1]
+    pointer=replace(pointer,address=replace(pointer.address,address_projection=None))
+    model=replace(model,atomic=replace(model.atomic,address_projection=None),
+        operands=replace(model.operands,operands=(model.operands.operands[0],pointer)))
+    plan=next(p for p in generate_candidate_plans(model) if p.plan_id=='c-builtin.atomic-fetch-add')
+    env=TargetEnvironment.fixed_sysv_amd64_gnu_att(available_features={'compiler:atomic-builtin'},
+        builtin_capabilities={'c_builtin:atomic','c_builtin:compiler_barrier'})
+    result=derive_target_constraints(source_model=model,candidate_plan=plan,target_environment=env)
+    assert not result.success

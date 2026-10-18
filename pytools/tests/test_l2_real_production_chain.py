@@ -216,18 +216,20 @@ def test_real_asm_goto_observes_actual_continuations(tmp_path,taken_return):
 
 @pytest.mark.parametrize('opcode', ['amoadd','amoxor','amoand','amoor','amoswap'])
 @pytest.mark.parametrize('width', [32,64])
-def test_real_atomic_expression_chain_closes_all_dimensions(tmp_path,opcode,width):
+@pytest.mark.parametrize('memory_only',[False,True])
+def test_real_atomic_expression_chain_closes_all_dimensions(tmp_path,opcode,width,memory_only):
     """Actual compiler/decoder/proof/provider chain, with a GNU memory lvalue."""
     frontend=_tools()
     source=tmp_path/'inputs';source.mkdir()
     element='uint32_t' if width==32 else 'uint64_t'
     suffix='w' if width==32 else 'd'
     fixture=source/'probe.c'
+    assembly=(f'{opcode}.{suffix}.aqrl %0, %2, %1' if memory_only else f'{opcode}.{suffix}.aqrl %0, %2, (%3)')
+    operands=': "=r"(old), "+A"(*ptr) : "r"(value) : "memory"' if memory_only else ': "=r"(old), "+m"(*ptr) : "r"(value), "r"(ptr) : "memory"'
     fixture.write_text('#include <stdint.h>\n'
         f'uint64_t probe({element} *ptr,uint64_t value){{\n'
         'uint64_t old;\n'
-        f'__asm__ volatile("{opcode}.{suffix}.aqrl %0, %2, (%3)" '
-        ': "=r"(old), "+m"(*ptr) : "r"(value), "r"(ptr) : "memory");\n'
+        f'__asm__ volatile("{assembly}" {operands});\n'
         'return old; }\n')
     _assert_frontend_accepts(frontend,fixture,tmp_path)
     output=tmp_path/'results'

@@ -32,7 +32,7 @@ def _reject(code, detail):
 
 
 def expression_from_ast(node, *, source_digest, function_identity,
-                        declaration_identity, source_range):
+                        declaration_identity, source_range, type_resolver=None):
     """Encode a bounded AST grammar without stripping casts or evaluating C.
 
     `declaration_identity` and `source_range` are compiler-index callbacks.
@@ -82,6 +82,7 @@ def expression_from_ast(node, *, source_digest, function_identity,
     if not isinstance(raw_type, Mapping):
         _reject("COMPILER_EXPRESSION_PROVENANCE_INCOMPLETE", "Expression type is malformed")
     canonical = raw_type.get("desugaredQualType") or raw_type.get("qualType", "")
+    if type_resolver is not None:canonical=type_resolver(canonical)
     extent = source_range(node)
     category = node.get("valueCategory", "")
     if (not canonical or extent is None or category not in {"lvalue", "rvalue", "prvalue"}
@@ -94,7 +95,8 @@ def expression_from_ast(node, *, source_digest, function_identity,
         "operation": operation, "declarationIdentity": declaration,
         "literalValue": literal, "children": [expression_from_ast(x,
             source_digest=source_digest, function_identity=function_identity,
-            declaration_identity=declaration_identity, source_range=source_range) for x in children]}
+            declaration_identity=declaration_identity, source_range=source_range,
+            type_resolver=type_resolver) for x in children]}
     result["expressionIdentity"] = identity(result)
     validate_expression(result, source_digest=source_digest, function_identity=function_identity)
     return result
@@ -230,8 +232,13 @@ def bind_expression_operands(candidate, fragment, *, source_digest, function_ide
         if output and not ctype.modifiable_lvalue:
             _reject("COMPILER_EXPRESSION_OUTPUT_NOT_MODIFIABLE", "Output expression is not a modifiable lvalue")
         # This is the compiler operand constraint, not an asm-template match.
+        from .gnu_operand_contract import parse_riscv_operand
+        try:contract=parse_riscv_operand(constraint,output=output)
+        except ValueError as exc:
+            _reject('COMPILER_EXPRESSION_CONSTRAINT_CONTRACT_REQUIRED',
+                str(exc)+' at operand '+str(index)+' constraint '+repr(constraint))
         body = constraint.lstrip("=+&%")
-        if body == "m":
+        if contract.role == "memory_lvalue":
             role = "memory_lvalue"
             if expression["valueCategory"] != "lvalue":
                 _reject("COMPILER_EXPRESSION_MEMORY_NOT_LVALUE", "Memory operand is not an lvalue")

@@ -61,5 +61,13 @@ def test_real_complex_expressions_join_before_legacy_declaration_closure(tmp_pat
     assert join['operands'][0]['access'] == access
     assert join['operands'][0]['declarationIdentity'] == ''
     # No fictional declaration or legacy carrier is supplied to the route.
-    assert fragment['compilerFragmentJoin']['disposition'] == 'rejected'
-    assert 'compilerFragmentAuthority' not in fragment
+    if role=='memory_lvalue':
+        assert fragment['compilerFragmentJoin']['disposition']=='matched'
+        closed=fragment['compilerFragmentAuthority']['candidate']
+        assert closed['schemaVersion']=='riscv2x86.closed-compiler-fragment.v2'
+        assert closed['operandBindings'][0]['declarationIdentity']==''
+        assert closed['operandCarriers'][0]['carrierKind']=='memory_lvalue'
+        assert closed['expressionEvaluation']['semanticRouteApproved'] is False
+    else:
+        assert fragment['compilerFragmentJoin']['disposition']=='rejected'
+        assert 'compilerFragmentAuthority' not in fragment

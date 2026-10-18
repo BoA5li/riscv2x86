@@ -118,8 +118,16 @@ class CBuiltinArgument:
     literal: str | None = None
 
     object_type_operand_index: int | None = None
+    address_of_lvalue: bool = False
+    object_type_is_lvalue: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.address_of_lvalue) is not bool or type(self.object_type_is_lvalue) is not bool:
+            raise ValueError('builtin projection flags must be booleans')
+        if self.address_of_lvalue and self.operand_index is None:
+            raise ValueError('address projection requires an operand binding')
+        if self.object_type_is_lvalue and self.object_type_operand_index is None:
+            raise ValueError('object type projection requires an object binding')
         if (self.operand_index is None) == (self.literal is None):
             raise ValueError("C builtin argument requires exactly one source")
         if self.operand_index is not None and (
@@ -471,10 +479,13 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
             args = [_binding(ctx, i) for i in p.argument_operand_indexes]
         if p.argument_sequence:
             for position,item in enumerate(p.argument_sequence):
+                if item.address_of_lvalue and args[position] is not None:
+                    args[position]="&("+args[position]+")"
                 if item.object_type_operand_index is not None:
                     obj=_binding(ctx,item.object_type_operand_index)
                     if obj is None or args[position] is None:
                         return _failure(request,RenderReasonCode.OPERAND_BINDING_MISSING,internal=True)
+                    if item.object_type_is_lvalue:obj='&('+obj+')'
                     args[position]='(__typeof__(*('+obj+')))('+args[position]+')'
         result = _binding(ctx, p.result_operand_index) if p.result_operand_index is not None else None
         if any(x is None for x in args) or (p.result_operand_index is not None and result is None): return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
@@ -493,6 +504,10 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
             for argument in p.argument_sequence:
                 expected_object=(atomic_contract.object_operand_index if argument.operand_index==atomic_contract.value_operand_index
                     and atomic_contract.input_truncation=='low_bits' else None)
+                expected_address=argument.operand_index==atomic_contract.object_operand_index and atomic_contract.object_address_of_lvalue
+                if (argument.address_of_lvalue!=expected_address or
+                        argument.object_type_is_lvalue!=(expected_object is not None and atomic_contract.object_address_of_lvalue)):
+                    return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
                 if argument.object_type_operand_index!=expected_object:
                     return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
         if type(p.compiler_barrier_shell) is not bool or atomic_kind != p.compiler_barrier_shell:

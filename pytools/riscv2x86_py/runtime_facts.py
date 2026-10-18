@@ -22,6 +22,7 @@ class AtomicMemoryObjectRuntimeFact:
     write_effect_identity: str | None = None
     address_space_relation_identity: str | None = None
     operand_role: str = "address"
+    address_projection: dict | None = None
 
     def __post_init__(self) -> None:
         if (self.operand_role not in {"address", "memory_lvalue"} or
@@ -545,6 +546,7 @@ def translation_runtime_facts_to_dict(
         "instructionStreamSyncProofId": facts.instruction_stream_sync_proof_id,
         "atomicMemoryObjects": {
             str(index): {
+                **({"addressProjection": item.address_projection} if item.address_projection else {}),
                 **({"operandRole": item.operand_role} if item.operand_role != "address" else {}),
                 "objectIdentity": item.object_identity,
                 "addressSpaceIdentity": item.address_space_identity,
@@ -635,12 +637,13 @@ def translation_runtime_facts_from_dict(
                     "pointeeTypeId", "authorityIdentity", "operationKind",
                     "arithmeticRelation", "wraparoundWidthBits", "ordering"}
         required.update({"readEffectIdentity", "writeEffectIdentity"})
-        allowed = required | {"addressSpaceRelationIdentity", "operandRole"}
+        allowed = required | {"addressSpaceRelationIdentity", "operandRole", "addressProjection"}
         if (not required.issubset(raw_item) or not set(raw_item).issubset(allowed)
                 or not isinstance(raw_item.get("ordering"), list)):
             raise ValueError("atomic memory object authority fields are invalid")
         atomic_objects[index] = AtomicMemoryObjectRuntimeFact(
             operand_role=raw_item.get("operandRole", "address"),
+            address_projection=raw_item.get("addressProjection"),
             object_identity=raw_item["objectIdentity"],
             address_space_identity=raw_item["addressSpaceIdentity"],
             alignment_bytes=raw_item["alignmentBytes"],
@@ -1135,5 +1138,10 @@ def build_translation_runtime_facts(
             operand_width_bits=operand_width_bits,
             instruction_stream_sync_noop_proven=noop_proven,
             instruction_stream_sync_proof_id=proof_id,
+            asm_goto_machine_join=dict(_read_field(container, "asm_goto_machine_join", "asmGotoMachineJoin", default={}) or {}),
+            atomic_memory_objects=dict(_read_field(container, "atomic_memory_objects", default={}) or {}),
+            asm_goto_condition_kind=_read_field(container,"asm_goto_condition_kind","asmGotoConditionKind",default=None),
+            asm_goto_condition_operand_index=_read_field(container,"asm_goto_condition_operand_index","asmGotoConditionOperandIndex",default=None),
+            provenance=str(_read_field(container,"provenance",default="assembled") or "assembled"),
         ),
     )
