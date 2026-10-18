@@ -57,6 +57,18 @@ def _case_failure_details(output):
         records.append({'artifactPath': str(path), 'status': raw.get('status'),
             'reasonCodes': raw.get('reasonCodes'), 'commands': raw.get('commands'),
             'translationEvaluationLink': raw.get('translationEvaluationLink')})
+    for path in sorted(output.glob('cases/*/work/translation-work/translated_report.json')):
+        report=json.loads(path.read_text())
+        for finding in report.get('findings',[]):
+            fragment=finding.get('fragment',{})
+            compiler=fragment.get('compilerFragmentAuthority',{})
+            records.append({'artifactPath':str(path),'fragmentId':fragment.get('id'),
+                'frontendRange':{k:fragment.get(k) for k in
+                    ('beginOffset','endOffset','astBeginOffset','astEndOffset')},
+                'compilerFragmentJoin':fragment.get('compilerFragmentJoin'),
+                'fragmentBindingKey':compiler.get('fragmentBindingKey'),
+                'sourceRangeBinding':compiler.get('sourceRangeBinding'),
+                'routeAuthorityDiagnostics':finding.get('routeAuthorityDiagnostics')})
     return json.dumps(records, ensure_ascii=False, indent=2)
 
 

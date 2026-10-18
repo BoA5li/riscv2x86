@@ -284,6 +284,8 @@ class AsmFragment:
     column: int = 0
     beginOffset: int = 0
     endOffset: int = 0
+    astBeginOffset: int = -1
+    astEndOffset: int = -1
     enclosingFunction: str = ""
 
     id: str = ""

@@ -228,6 +228,8 @@ bool loadReportJSON(const std::string &path, ClassificationReport &rep) {
             if (auto i = fo->getInteger("column"))           g.column = static_cast<unsigned>(*i);
             if (auto i = fo->getInteger("beginOffset"))      g.beginOffset = static_cast<unsigned>(*i);
             if (auto i = fo->getInteger("endOffset"))        g.endOffset = static_cast<unsigned>(*i);
+            if (auto i = fo->getInteger("astBeginOffset")) g.astBeginOffset = static_cast<int>(*i);
+            if (auto i = fo->getInteger("astEndOffset")) g.astEndOffset = static_cast<int>(*i);
             if (auto s = fo->getString("enclosingFunction")) g.enclosingFunction = s->str();
             if (auto s = fo->getString("id"))                g.id = s->str();
 

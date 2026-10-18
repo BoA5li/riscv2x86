@@ -39,7 +39,7 @@ def _identity(value: object) -> str:
 def atomic_runtime_object_from_compiler_authority(
     raw_authority: Mapping[str, object], *, fragment_id: str,
     source_digest: str, begin_offset: int, end_offset: int,
-    runtime_facts: object, atomic_operation: object,
+    runtime_facts: object, atomic_operation: object, frontend_fragment: Mapping | None = None,
 ) -> dict[int, AtomicMemoryObjectRuntimeFact]:
     """Join compiler object authority with decoder-owned AMO semantics.
 
@@ -53,7 +53,11 @@ def atomic_runtime_object_from_compiler_authority(
         "functionIdentity", "fragmentBindingKey", "candidate",
         "memoryObjectBindings", "authorityIdentity",
     }
-    typed = raw_authority.get("schemaVersion") == "riscv2x86.compiler-fragment-authority.v2"
+    from .fragment_source_range import AUTHORITY_SCHEMA, validate_fragment_source_range
+    ranged = raw_authority.get("schemaVersion") == AUTHORITY_SCHEMA
+    typed = ranged or raw_authority.get("schemaVersion") == "riscv2x86.compiler-fragment-authority.v2"
+    if ranged:
+        required.add("sourceRangeBinding")
     if typed:
         required.add("compilerTypeBindings")
     if set(raw_authority) != required:
@@ -61,7 +65,7 @@ def atomic_runtime_object_from_compiler_authority(
     unsigned = {key: value for key, value in raw_authority.items()
                 if key != "authorityIdentity"}
     if (raw_authority.get("schemaVersion") not in {COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
-                "riscv2x86.compiler-fragment-authority.v2"}
+                "riscv2x86.compiler-fragment-authority.v2", AUTHORITY_SCHEMA}
             or raw_authority.get("sourceDigest") != source_digest
             or raw_authority.get("fragmentId") != fragment_id
             or raw_authority.get("targetTriple") != "riscv64-linux-gnu"
@@ -73,15 +77,22 @@ def atomic_runtime_object_from_compiler_authority(
     if not isinstance(key, Mapping) or not isinstance(candidate, Mapping) \
             or not isinstance(objects, Mapping):
         raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_PAYLOAD_INVALID", "compiler fragment authority payload is malformed")
-    if (key.get("sourceDigest") != source_digest
-            or key.get("functionIdentity") != raw_authority.get("functionIdentity")
-            or key.get("beginOffset") != begin_offset
-            or key.get("endOffset") != end_offset
-            or candidate.get("fragmentBindingKey") != key
-            or candidate.get("complete") is not True
-            or candidate.get("compilerStructureComplete") is not True
-            or candidate.get("operandClassificationComplete") is not True):
-        raise AtomicAuthorityError("ATOMIC_COMPILER_FRAGMENT_BINDING_MISMATCH", "compiler fragment binding does not match frontend fragment")
+    from .fragment_source_range import equal, FragmentRangeError
+    try:
+        equal("source_digest", source_digest, key.get("sourceDigest"))
+        equal("function_identity", raw_authority.get("functionIdentity"), key.get("functionIdentity"))
+        equal("candidate_key", dict(key), candidate.get("fragmentBindingKey"))
+        for field in ("complete", "compilerStructureComplete", "operandClassificationComplete"):
+            equal(field, True, candidate.get(field))
+        if ranged:
+            validate_fragment_source_range(raw_authority["sourceRangeBinding"], key,
+                fragment_id=fragment_id, source_digest=source_digest,
+                begin_offset=begin_offset, end_offset=end_offset, frontend_fragment=frontend_fragment)
+        else:
+            equal("begin_offset", begin_offset, key.get("beginOffset"))
+            equal("end_offset", end_offset, key.get("endOffset"))
+    except FragmentRangeError as exc:
+        raise AtomicAuthorityError(exc.reason_code, str(exc), exc.failure_stage) from exc
     try:
         validate_closed_compiler_fragment_candidate(candidate)
     except ValueError as exc:

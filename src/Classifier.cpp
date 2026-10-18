@@ -176,32 +176,20 @@ unsigned getStmtLikeEndOffsetIncludingSemi(SourceLocation endLoc,
         return SM.getFileOffset(spellingEnd);
     }
 
-    FileID fid = SM.getFileID(afterTok);
-    bool invalid = false;
-    StringRef buffer = SM.getBufferData(fid, &invalid);
-    if (invalid) {
-        return SM.getFileOffset(afterTok);
-    }
-
-    unsigned offset = SM.getFileOffset(afterTok);
-    if (offset > buffer.size()) {
-        return static_cast<unsigned>(buffer.size());
-    }
-
-    unsigned i = offset;
-    while (i < buffer.size()) {
-        char c = buffer[i];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-            ++i;
-            continue;
+    // Use Clang tokens: comments are trivia, not statement boundaries.
+    SourceLocation cursor = afterTok;
+    Token token;
+    while (!Lexer::getRawToken(cursor, token, SM, LangOpts, true)) {
+        if (token.is(tok::semi)) {
+            SourceLocation end = Lexer::getLocForEndOfToken(token.getLocation(), 0, SM, LangOpts);
+            return end.isValid() ? SM.getFileOffset(end) : SM.getFileOffset(afterTok);
         }
-        if (c == ';') {
-            ++i;
-        }
-        break;
+        if (!token.is(tok::comment)) break;
+        SourceLocation next = Lexer::getLocForEndOfToken(token.getLocation(), 0, SM, LangOpts);
+        if (next.isInvalid() || next == cursor) break;
+        cursor = next;
     }
-
-    return i;
+    return SM.getFileOffset(afterTok);
 }
 
 static std::string getImmediateMacroNameSafe(SourceLocation loc,
@@ -354,6 +342,12 @@ AsmFragment extractGCCAsm(const GCCAsmStmt *S, ASTContext &Ctx) {
     frag.column = PL.isValid() ? PL.getColumn() : 0;
     frag.beginOffset = SM.getFileOffset(beginLoc);
     frag.endOffset = getStmtLikeEndOffsetIncludingSemi(endLoc, SM, Ctx.getLangOpts());
+    // Macro spelling/expansion joins need a separate authority; do not invent one.
+    if (!S->getBeginLoc().isMacroID() && !S->getEndLoc().isMacroID()
+            && SM.getFileID(beginLoc) == SM.getFileID(endLoc)) {
+        frag.astBeginOffset = static_cast<int>(SM.getFileOffset(beginLoc));
+        frag.astEndOffset = static_cast<int>(getTokenEndOffset(endLoc, SM, Ctx.getLangOpts()));
+    }
     frag.id = makeFragmentId(frag.fileName, frag.line, frag.column);
     frag.enclosingFunction = getEnclosingFunctionName(S, Ctx);
     frag.isVolatile = S->isVolatile();

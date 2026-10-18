@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_fragment_source_range.py',
     'test_gnu_operand_contract.py',
     'test_compiler_expression_evaluation.py', 'test_atomic_expression_consumer.py',
     'test_l2_atomic_production.py', 'test_atomic_native_observation.py',

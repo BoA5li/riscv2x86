@@ -1616,6 +1616,7 @@ def run(
                     source_digest=str(getattr(f, "sourceDigest", "")),
                     begin_offset=int(f.fragment.beginOffset),
                     end_offset=int(f.fragment.endOffset),
+                    frontend_fragment=asdict(f.fragment),
                     runtime_facts=f.translationRuntimeFacts,
                     atomic_operation=summary.atomic_semantics,
                 )

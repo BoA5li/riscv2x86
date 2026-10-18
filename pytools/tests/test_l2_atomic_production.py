@@ -21,10 +21,14 @@ from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.atomic_builtin_shell import fnv,build_atomic_builtin_shell,validate_atomic_builtin_shell
 
 
-def atomic_finding(expression=False,memory_width=64,memory_only=False):
+def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_override=None):
     from tests.test_atomic_expression_consumer import authority_for_expression
     from tests.test_atomic_expression_consumer import memory_only_authority
     compiler=memory_only_authority() if memory_only else authority_for_expression() if expression else _compiler_authority()
+    if compiler_override is not None:compiler=compiler_override
+    ranged=compiler.get('schemaVersion')=='riscv2x86.compiler-fragment-authority.v3'
+    frontend_range={'beginOffset':100,'endOffset':141 if ranged else 140,
+        'astBeginOffset':100 if ranged else -1,'astEndOffset':140 if ranged else -1}
     pointer_index=2 if expression else 1
     value_type=ctype()
     value_node=compiler['candidate']['operandBindings'][0]['valueNodeIdentity']
@@ -41,8 +45,9 @@ def atomic_finding(expression=False,memory_width=64,memory_only=False):
     runtime=TranslationRuntimeFacts(rv_to_operand_index={'a0':0,'a1':pointer_index},operand_width_bits={i:64 for i in range(pointer_index+1)})
     decoded=_atomic();decoded.width_bits=memory_width;decoded.register_width_bits=64;decoded.result_extension='sign_extend' if memory_width==32 else 'identity'
     obj=atomic_runtime_object_from_compiler_authority(compiler,fragment_id=compiler['fragmentId'],
-        source_digest=compiler['sourceDigest'],begin_offset=100,end_offset=140,runtime_facts=runtime,atomic_operation=decoded)[pointer_index]
-    fragment=AsmFragment(id=compiler['fragmentId'],rawAsmText='typed decoder fixture',isVolatile=True,clobbers=['memory','cc'],
+        source_digest=compiler['sourceDigest'],begin_offset=100,end_offset=frontend_range['endOffset'],
+        frontend_fragment={'id':compiler['fragmentId'],**frontend_range},runtime_facts=runtime,atomic_operation=decoded)[pointer_index]
+    fragment=AsmFragment(id=compiler['fragmentId'],**frontend_range,rawAsmText='typed decoder fixture',isVolatile=True,clobbers=['memory','cc'],
         outputs=[AsmOperand(constraint='+r',exprText='value',isOutput=True,compilerType=value_type)]+([AsmOperand(constraint='+A' if memory_only else '+m',exprText='*ptr',isOutput=True,compilerType=value_type,compilerAddressType=pointer_type)] if expression or memory_only else []),
         inputs=[] if memory_only else [AsmOperand(constraint='r',exprText='ptr',compilerType=pointer_type)],compilerFragmentAuthority=compiler)
     model=_atomic_model();old_value,old_pointer=model.operands.operands

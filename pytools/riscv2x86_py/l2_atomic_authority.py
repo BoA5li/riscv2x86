@@ -123,7 +123,8 @@ def materialize_atomic_authority(finding,functions,producer_digest):
             register_width_bits=atom.get('register_width_bits',0),result_extension=atom.get('result_extension',''))
         key=compiler['fragmentBindingKey']
         rebound=atomic_runtime_object_from_compiler_authority(compiler,fragment_id=fragment_id,
-            source_digest=compiler['sourceDigest'],begin_offset=key['beginOffset'],end_offset=key['endOffset'],
+            source_digest=matches[0]['sourceDigest'],begin_offset=fragment.get('beginOffset'),
+            end_offset=fragment.get('endOffset'),frontend_fragment=fragment,
             runtime_facts=TranslationRuntimeFacts(rv_to_operand_index=register_map,
                 operand_width_bits={b['operandIndex']:b['widthBits'] for b in candidate['operandBindings']}),
             atomic_operation=decoded)

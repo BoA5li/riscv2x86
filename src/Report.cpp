@@ -215,6 +215,8 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
             os << "        \"column\": " << g.column << ",\n";
             os << "        \"beginOffset\": " << g.beginOffset << ",\n";
             os << "        \"endOffset\": " << g.endOffset << ",\n";
+            os << "        \"astBeginOffset\": " << g.astBeginOffset << ",\n";
+            os << "        \"astEndOffset\": " << g.astEndOffset << ",\n";
             os << "        \"enclosingFunction\": \"" << escape(g.enclosingFunction) << "\",\n";
             os << "        \"id\": \"" << escape(g.id) << "\",\n";
 

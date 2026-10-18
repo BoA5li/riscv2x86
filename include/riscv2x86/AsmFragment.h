@@ -96,6 +96,9 @@ struct AsmFragment {
     unsigned column = 0;
     unsigned beginOffset = 0;     // 在源文件中的字节偏移
     unsigned endOffset = 0;
+    // Compiler AST token range, distinct from the replacement statement range.
+    int astBeginOffset = -1;
+    int astEndOffset = -1;
 
     // 所属函数
     std::string enclosingFunction;

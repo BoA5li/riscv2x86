@@ -168,6 +168,22 @@ def _inject_compiler_fragment_authority(
         if typed:
             payload["schemaVersion"] = "riscv2x86.compiler-fragment-authority.v2"
             payload["compilerTypeBindings"] = typed
+        # New frontends export an AST token range independently of replacement.
+        # Legacy artifacts retain their old exact-range contract; no migration by guess.
+        if "astBeginOffset" in fragment or "astEndOffset" in fragment:
+            from .fragment_source_range import bind_fragment_source_range, FragmentRangeError, AUTHORITY_SCHEMA
+            try:
+                payload["sourceRangeBinding"] = bind_fragment_source_range(
+                    fragment, candidate["fragmentBindingKey"], source.read_bytes())
+            except FragmentRangeError as exc:
+                record = {"fragmentId": fragment_id, "disposition": "rejected",
+                    "reasonCode": exc.reason_code, "detail": str(exc),
+                    "failureStage": exc.failure_stage, "diagnostics": exc.diagnostics}
+                fragment["compilerFragmentJoin"] = record
+                joins.append(record)
+                continue
+            payload["schemaVersion"] = AUTHORITY_SCHEMA
+            payload.setdefault("compilerTypeBindings", {})
         payload["authorityIdentity"] = _identity(payload)
         fragment["compilerFragmentAuthority"] = payload
         fragment["compilerFragmentBinding"] = {

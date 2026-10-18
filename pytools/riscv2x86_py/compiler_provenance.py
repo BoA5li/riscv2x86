@@ -15,12 +15,23 @@ def bind_compiler_provenance(fragment, sidecar):
     validate_closed_compiler_fragment_candidate(candidate)
     key = candidate['fragmentBindingKey']
     if (authority.get('schemaVersion') not in {'riscv2x86.compiler-fragment-authority.v1',
-            'riscv2x86.compiler-fragment-authority.v2'} or
+            'riscv2x86.compiler-fragment-authority.v2',
+            'riscv2x86.compiler-fragment-authority.v3'} or
             authority.get('targetTriple') != 'riscv64-linux-gnu' or
             authority['fragmentBindingKey'] != key or
             key['sourceDigest'] != authority['sourceDigest'] or
             key['functionIdentity'] != authority['functionIdentity']):
         raise ValueError('COMPILER_AUTHORITY_SOURCE_BINDING_MISMATCH')
+    if authority.get('schemaVersion') == 'riscv2x86.compiler-fragment-authority.v3':
+        from .fragment_source_range import validate_fragment_source_range
+        if set(authority) != {'schemaVersion', 'sourceDigest', 'fragmentId', 'targetTriple',
+                'functionIdentity', 'fragmentBindingKey', 'candidate', 'memoryObjectBindings',
+                'compilerTypeBindings', 'sourceRangeBinding', 'authorityIdentity'}:
+            raise ValueError('COMPILER_AUTHORITY_FIELDS_INVALID')
+        validate_fragment_source_range(authority.get('sourceRangeBinding'), key,
+            fragment_id=fragment.get('fragmentId') or fragment.get('id'),
+            source_digest=authority['sourceDigest'], begin_offset=fragment.get('beginOffset'),
+            end_offset=fragment.get('endOffset'), frontend_fragment=fragment)
     expected_candidate = _identity({
         'schemaVersion': 'riscv2x86.compiler-fragment-binding-key.v2', **key})
     if candidate.get('candidateIdentity') != expected_candidate:
@@ -36,9 +47,9 @@ def bind_compiler_provenance(fragment, sidecar):
     if len(indexes) != len(set(indexes)) or len(bindings) != len(sidecar.operands):
         raise ValueError('COMPILER_AUTHORITY_OPERAND_ARITY_MISMATCH')
     by_index = {b['operandIndex']: b for b in bindings}
-    if authority['schemaVersion'] == 'riscv2x86.compiler-fragment-authority.v2':
+    if authority['schemaVersion'] in {'riscv2x86.compiler-fragment-authority.v2', 'riscv2x86.compiler-fragment-authority.v3'}:
         types = authority.get('compilerTypeBindings')
-        if not isinstance(types, dict) or not types:
+        if not isinstance(types, dict) or (not types and (bindings or authority['schemaVersion'] == 'riscv2x86.compiler-fragment-authority.v2')):
             raise ValueError('COMPILER_AUTHORITY_TYPES_MISSING')
         for key, record in types.items():
             if (not isinstance(record, dict) or set(record) != {'operandIndex', 'valueNodeIdentity', 'compilerType'}
