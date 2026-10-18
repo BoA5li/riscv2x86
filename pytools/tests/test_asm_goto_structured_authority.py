@@ -42,6 +42,16 @@ def _fragment(raw="this text is deliberately not interpreted"):
     )
 
 
+def _machine_join(target=0x100):
+    from riscv2x86_py.compiler_value_flow import identity
+    fragment=_fragment()
+    payload={'schemaVersion':'riscv2x86.asm-goto-machine-continuations.v1',
+        'fragmentId':fragment.id,'machineCodeIdentity':'sha256:'+'1'*64,
+        'bindings':[{'compilerLabel':'taken','continuationId':fragment.gotoEdges[0].targetContinuationId,
+            'externalLabelIndex':0,'assemblerSymbol':'.Lriscv2x86_asm_goto_0','machineOffset':target}]}
+    return {**payload,'joinIdentity':identity(payload)}
+
+
 def _authority(raw="not assembly"):
     register = Var(VarKind.REG, "register", 10, 8, "a0")
     zero = Var(VarKind.CONST, "const", 0, 8)
@@ -57,7 +67,7 @@ def _authority(raw="not assembly"):
                   terminator_kind="cbranch", has_branch=True)
     facts = TranslationRuntimeFacts(
         rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64},
-        provenance="test",
+        provenance="test", asm_goto_machine_join=_machine_join(),
     )
     operand = SourceOperandBinding(
         0, SourceOperandKind.REGISTER, SourceOperandAccess.INPUT, 64,
@@ -124,7 +134,7 @@ def _model(raw="not interpreted", comparison_opcode="INT_EQUAL"):
         summary=summary, xlen=64,
         runtime_facts=TranslationRuntimeFacts(
             rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64},
-            provenance="test"),
+            provenance="test", asm_goto_machine_join=_machine_join()),
     )
 
 
@@ -280,7 +290,7 @@ def test_cycle_or_unbound_predicate_fails_closed():
         cfg=CFGResult(ok=True),
         runtime_status=_runtime_fact_status(TranslationRuntimeFacts(
             rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64},
-            provenance="test")),
+            provenance="test", asm_goto_machine_join=_machine_join())),
         operands=SourceOperandModel((SourceOperandBinding(
             0, SourceOperandKind.REGISTER, SourceOperandAccess.INPUT, 64,
             SourceSignedness.SIGNLESS, True, False, False, None, False, None,
@@ -290,7 +300,7 @@ def test_cycle_or_unbound_predicate_fails_closed():
     assert rejected is None
 
 
-def test_region_wide_def_use_normalizes_predicate_without_address_identity_join():
+def test_region_wide_def_use_normalizes_predicate_with_machine_continuation_join():
     register = Var(VarKind.REG, "register", 10, 8, "a0")
     copied = Var(VarKind.UNIQUE, "unique", 7, 8)
     predicate = Var(VarKind.UNIQUE, "unique", 8, 1)
@@ -313,7 +323,7 @@ def test_region_wide_def_use_normalizes_predicate_without_address_identity_join(
         cfg=CFGResult(ok=True),
         runtime_status=_runtime_fact_status(TranslationRuntimeFacts(
             rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64},
-            provenance="test")),
+            provenance="test", asm_goto_machine_join=_machine_join(0x9000))),
         operands=SourceOperandModel((SourceOperandBinding(
             0, SourceOperandKind.REGISTER, SourceOperandAccess.INPUT, 64,
             SourceSignedness.SIGNLESS, True, False, False, None, False,

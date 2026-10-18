@@ -1969,6 +1969,8 @@ def assemble(
             obj_path,
         ]
 
+        if materialized.asm_goto_targets:
+            cmd.append('-save-temp-labels')
         if pic_like:
             cmd.append("--position-independent")
 
@@ -2032,6 +2034,11 @@ def assemble(
                     frag,
                     base_by_sec_idx,
                 )
+                if materialized.asm_goto_targets:
+                    from .asm_goto_machine_join import bind_machine_continuations
+                    machine_join = bind_machine_continuations(elf, frag, materialized,
+                        base_by_sec_idx, machine_code)
+                    runtime_facts = replace(runtime_facts, asm_goto_machine_join=machine_join)
         except Exception as e:
             return AssembleResult(
                 ok=False,

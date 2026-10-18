@@ -175,32 +175,76 @@ def test_real_downstream_fragment_program_observation(tmp_path, cc_members):
     assert len({x['fragmentId'] for x in observed}) == 2
 
 
-def test_real_asm_goto_keeps_obligations_when_automatic_observer_is_unavailable(tmp_path):
-    """Acceptance for rejection lifecycle, not completion of asm-goto L2."""
+@pytest.mark.parametrize("taken_return", [7,9])
+def test_real_asm_goto_observes_actual_continuations(tmp_path,taken_return):
+    """Equal return values must not conceal distinct observed continuations."""
     frontend=_tools()
     source=tmp_path/'inputs'; source.mkdir()
     (source/'control.c').write_text('#include <stdint.h>\nuint64_t probe(uint64_t x){\n'
         '__asm__ volatile goto("beqz %0, %l[taken]" : : "r"(x) : : taken);\n'
-        'return 7; taken: return 9; }\n')
+        f'return 7; taken: return {taken_return}; }}\n')
     _assert_frontend_accepts(frontend, source/'control.c', tmp_path)
     output=tmp_path/'results'
     completed=subprocess.run([sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
         '--input',str(source),'--frontend',frontend,'--output-directory',str(output),
         '--jobs','1','--timeout-seconds','120'],capture_output=True,text=True,timeout=300)
-    assert completed.returncode==1, completed.stdout+completed.stderr
+    assert completed.returncode==0, completed.stdout+completed.stderr+_case_failure_details(output)
     batch=json.loads((output/'batch-evaluation.json').read_text())
-    assert batch['statusCounts']=={'inconclusive':1}, _case_failure_details(output)
+    assert batch['statusCounts']=={'verified':1}, _case_failure_details(output)
     assert batch['programValidationCounts']['L0']=={'verified':1}
     assert batch['programValidationCounts']['L1']=={'verified':1}
     case,=batch['cases']; evaluation=load_case_evaluation_result(output,case)
     results=read_l2_fragment_results(evaluation)
     assert len(results)==1
     raw=results[0][1].to_dict()
-    assert raw['schemaVersion']=='riscv2x86.l2-fragment-result.v4'
+    report_path,=output.glob('cases/*/work/translation-work/translated_report.json')
+    finding,=json.loads(report_path.read_text())['findings']
+    assert finding['approvalArtifact']['l2AuthoritySidecar']['complete'] is True
+    assert 'precondition' not in raw
     assert set(raw['requiredDimensions'])=={'control_flow','logical_operands','shell_semantics'}
-    assert 'L2_ASM_GOTO_CONTINUATION_OBSERVATION_AUTHORITY_REQUIRED' in raw['reasonCodes']
-    assert read_l2_provider_results(evaluation,output/'cases'/case['caseId'])==()
+    assert all(item['status']=='verified' for item in raw['dimensionResults'].values())
+    assert all(not item['reasonCodes'] for item in raw['dimensionResults'].values())
+    assert len(read_l2_provider_results(evaluation,output/'cases'/case['caseId']))==1
+    observed_path,=output.glob('cases/*/work/**/effect-observation.json')
+    observations=json.loads(observed_path.read_text())
+    assert len({event['continuationId'] for event in observations['source']['events']})==2
     counts=batch['l2CoverageDiagnostics']
-    assert counts['caseCounts']['l2_precondition_blocked']==1
+    assert counts['caseCounts'].get('l2_precondition_blocked',0)==0
     assert counts['requiredDimensionCounts']['required']==3
     assert counts['providerArtifactAuditCounts'].get('invalid_fragment_result',0)==0
+
+
+@pytest.mark.parametrize('opcode', ['amoadd','amoxor','amoand','amoor','amoswap'])
+@pytest.mark.parametrize('width', [32,64])
+def test_real_atomic_expression_chain_closes_all_dimensions(tmp_path,opcode,width):
+    """Actual compiler/decoder/proof/provider chain, with a GNU memory lvalue."""
+    frontend=_tools()
+    source=tmp_path/'inputs';source.mkdir()
+    element='uint32_t' if width==32 else 'uint64_t'
+    suffix='w' if width==32 else 'd'
+    fixture=source/'probe.c'
+    fixture.write_text('#include <stdint.h>\n'
+        f'uint64_t probe({element} *ptr,uint64_t value){{\n'
+        'uint64_t old;\n'
+        f'__asm__ volatile("{opcode}.{suffix}.aqrl %0, %2, (%3)" '
+        ': "=r"(old), "+m"(*ptr) : "r"(value), "r"(ptr) : "memory");\n'
+        'return old; }\n')
+    _assert_frontend_accepts(frontend,fixture,tmp_path)
+    output=tmp_path/'results'
+    completed=subprocess.run([sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
+        '--input',str(source),'--frontend',frontend,'--output-directory',str(output),
+        '--jobs','1','--timeout-seconds','120'],capture_output=True,text=True,timeout=300,check=False)
+    assert completed.returncode==0,completed.stdout+completed.stderr+_case_failure_details(output)
+    batch=json.loads((output/'batch-evaluation.json').read_text())
+    assert batch['statusCounts']=={'verified':1},_case_failure_details(output)
+    case,=batch['cases']
+    evaluation=load_case_evaluation_result(output,case)
+    fragments=read_l2_fragment_results(evaluation)
+    assert fragments
+    # The dedicated atomic provider must actually persist evidence, not an
+    # ordinary memory provider returning a coincidentally equal final value.
+    provider_files=list(output.glob('cases/*/work/replay/**/atomic-observation.json'))
+    assert provider_files
+    payload=json.loads(provider_files[0].read_text())
+    assert payload['atomicityEvidenceKind']=='approved-phase6d-compiler-builtin-contract'
+    assert len(payload['source']['events'])==8

@@ -7,10 +7,13 @@ consumers never guess operand roles from assembly text or variable names.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from hashlib import sha256
 import json
 from typing import Mapping
 from .compiler_expression import validate_expression_slots, direct_declaration_carrier
+from .compiler_expression_evaluation import close_expression_evaluation
+from .compiler_operand_type import compiler_operand_type_from_dict
 
 
 CLOSED_COMPILER_FRAGMENT_SCHEMA = "riscv2x86.closed-compiler-fragment.v1"
@@ -39,7 +42,7 @@ class CompilerOperandClosureError(ValueError):
                             else "COMPILER_FRONTEND_OPERAND_ARITY_MISMATCH")
         self.diagnostics = diagnostics or {}
 
-def close_compiler_fragment_candidate(
+def _close_declaration_candidate(
     candidate: Mapping[str, object], fragment: Mapping[str, object], *,
     source_digest: str, function_identity: str,
 ) -> dict[str, object]:
@@ -177,10 +180,117 @@ def close_compiler_fragment_candidate(
     return result
 
 
+EXPRESSION_CLOSED_SCHEMA = "riscv2x86.closed-compiler-fragment.v2"
+
+
+def close_compiler_fragment_candidate(candidate, fragment, *, source_digest, function_identity):
+    try:
+        return _close_declaration_candidate(candidate, fragment,
+            source_digest=source_digest, function_identity=function_identity)
+    except CompilerOperandClosureError as exc:
+        if not exc.incomplete:
+            raise
+        facts = candidate.get('compilerExpressionFacts')
+        if not isinstance(facts, Mapping) or facts.get('complete') is not True:
+            raise
+        try:
+            return _close_expression_candidate(candidate, fragment,
+                source_digest=source_digest, function_identity=function_identity)
+        except ValueError as evaluation_error:
+            exc.diagnostics['expressionClosureFailure'] = {
+                'reasonCode': getattr(evaluation_error, 'reason_code', 'COMPILER_EXPRESSION_CLOSURE_REJECTED'),
+                'detail': str(evaluation_error)}
+            raise exc from evaluation_error
+
+
+def _close_expression_candidate(candidate, fragment, *, source_digest, function_identity):
+    """Close memory lvalues without pretending they are declaration values.
+
+    Only legacy incompleteness caused by non-declaration memory slots is
+    recovered. Scalar expression outputs require a separate def-use producer.
+    Object/effect approval remains a downstream semantic obligation.
+    """
+    evaluation = close_expression_evaluation(candidate, fragment,
+        source_digest=source_digest, function_identity=function_identity)
+    key = candidate.get('fragmentBindingKey', {})
+    if (key.get('sourceDigest') != source_digest or key.get('functionIdentity') != function_identity
+            or type(key.get('beginOffset')) is not int or type(key.get('endOffset')) is not int
+            or key['beginOffset'] < 0 or key['endOffset'] < key['beginOffset']
+            or set(candidate.get('reasonCodes', [])) - {
+                'L2_FRAGMENT_DECLARATION_IDENTITY_MISSING', 'L2_FRAGMENT_VALUE_NODE_MISSING'}
+            or candidate.get('downstreamUseEnumerationComplete') is not True):
+        raise ValueError('COMPILER_EXPRESSION_FRAGMENT_STRUCTURE_UNPROVEN')
+    existing = {x['operandIndex']: x for x in candidate['operandCarriers']}
+    if len(existing) != len(candidate['operandCarriers']):
+        raise ValueError('COMPILER_EXPRESSION_DUPLICATE_CARRIER')
+    carriers, bindings, nodes = [], [], list(candidate['valueNodes'])
+    node_ids = {x['nodeIdentity'] for x in nodes}
+    for item, joined in zip(evaluation['bindings'], evaluation['expressionJoin']['operands']):
+        index = item['operandIndex']
+        carrier = existing.get(index)
+        if carrier is not None:
+            if (carrier['declarationIdentity'] != item['declarationIdentity']
+                    or carrier['valueNodeIdentity'] not in node_ids or carrier.get('complete') is not True):
+                raise ValueError('COMPILER_EXPRESSION_DECLARATION_CARRIER_MISMATCH')
+            typ = compiler_operand_type_from_dict(joined['compilerType'])
+            if (carrier.get('widthBits') != typ.width_bits
+                    or carrier.get('signedness') != ('signed' if typ.is_signed else 'unsigned')
+                    or carrier.get('carrierKind') != ('pointer' if typ.is_pointer else 'integer')):
+                raise ValueError('COMPILER_EXPRESSION_TYPE_CARRIER_MISMATCH')
+            carrier = dict(carrier)
+        else:
+            if item['role'] != 'memory_lvalue' or item['declarationIdentity']:
+                raise ValueError('COMPILER_EXPRESSION_SCALAR_VALUE_FLOW_REQUIRED')
+            typ = compiler_operand_type_from_dict(joined['compilerType'])
+            address = item['addressNode']
+            node = {**address, 'nodeIdentity': address['valueNodeIdentity'],
+                    'complete': True}
+            nodes.append(node)
+            carrier = {'schemaVersion': 'riscv2x86.compiler-expression-carrier.v1',
+                'operandIndex': index, 'declarationIdentity': '',
+                'expressionIdentity': item['expressionIdentity'],
+                'valueNodeIdentity': address['valueNodeIdentity'],
+                'carrierKind': 'memory_lvalue', 'widthBits': typ.width_bits,
+                'signedness': 'signed' if typ.is_signed else 'unsigned',
+                'addressSpaceIdentity': '', 'complete': True,
+                'evaluationBindingIdentity': item['bindingIdentity']}
+        carriers.append(carrier)
+        bindings.append({'operandIndex': index, 'declarationIdentity': carrier['declarationIdentity'],
+            'valueNodeIdentity': carrier['valueNodeIdentity'], 'access': item['access'],
+            'widthBits': carrier['widthBits'], 'signedness': carrier['signedness'], 'complete': True})
+    result = dict(candidate)
+    result.update(schemaVersion=EXPRESSION_CLOSED_SCHEMA,
+        sourceCandidateSchemaVersion=candidate['schemaVersion'],
+        compilerStructureComplete=True, operandClassificationComplete=True,
+        complete=True, reasonCodes=[], classificationReasonCodes=[],
+        operandCarriers=carriers, operandBindings=bindings, valueNodes=nodes,
+        expressionEvaluation=evaluation,
+        expressionClosureInputs={'candidate': deepcopy(candidate), 'fragment': deepcopy({
+            'id': fragment.get('fragmentId') or fragment.get('id'),
+            'outputs': fragment['outputs'], 'inputs': fragment['inputs']})},
+        closureProvenance={'compilerCandidateIdentity': candidate['candidateIdentity'],
+            'frontendFragmentIdentity': fragment.get('fragmentId') or fragment.get('id'),
+            'producerIdentities': ['clang-json-ast.compiler-value-flow.v2',
+                                   'clang-tooling.gnu-inline-asm-fragment.v1']})
+    result['closureIdentity'] = _identity(result)
+    return result
+
+
 def validate_closed_compiler_fragment_candidate(
     candidate: Mapping[str, object],
 ) -> None:
     """Validate the closed payload before a typed semantic consumer uses it."""
+    if candidate.get('schemaVersion') == EXPRESSION_CLOSED_SCHEMA:
+        inputs = candidate.get('expressionClosureInputs')
+        if not isinstance(inputs, Mapping) or set(inputs) != {'candidate', 'fragment'}:
+            raise ValueError('COMPILER_EXPRESSION_CLOSURE_INPUTS_MISSING')
+        original = inputs['candidate']
+        key = original.get('fragmentBindingKey', {})
+        rebuilt = _close_expression_candidate(original, inputs['fragment'],
+            source_digest=key.get('sourceDigest'), function_identity=key.get('functionIdentity'))
+        if dict(candidate) != rebuilt:
+            raise ValueError('COMPILER_EXPRESSION_CLOSURE_MISMATCH')
+        return
     if candidate.get("schemaVersion") != CLOSED_COMPILER_FRAGMENT_SCHEMA:
         raise ValueError("closed compiler fragment schema is unsupported")
     declared = candidate.get("closureIdentity")

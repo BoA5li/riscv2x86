@@ -145,7 +145,7 @@ def test_matching_rmw_builtin_preserves_acq_rel_contract():
                 if item.plan_id == "c-builtin.atomic-fetch-add")
     environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
         available_features={"compiler:atomic-builtin"},
-        builtin_capabilities={"c_builtin:atomic"},
+        builtin_capabilities={"c_builtin:atomic","c_builtin:compiler_barrier"},
     )
     derived = derive_target_constraints(
         source_model=model, candidate_plan=plan, target_environment=environment,
@@ -166,7 +166,7 @@ def test_matching_rmw_builtin_preserves_acq_rel_contract():
             frozenset({plan.kind}), frozenset({semantic_id}), "atomic-test-v1",
         ),
         compiler_capabilities=CompilerCapabilityModel(
-            False, False, frozenset({"c_builtin:atomic"}),
+            False, False, frozenset({"c_builtin:atomic","c_builtin:compiler_barrier"}),
         ),
         fragment_id="fragment:atomic-rmw",
     )

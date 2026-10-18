@@ -303,6 +303,16 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
         effects = [("atomic:rmw", "AtomicReadModifyWrite", atomic.memory_object_identity,
             ("kind", "subject", "value", "memory_coordinates", "memory_order",
              "atomicity", "read_modify_write", "result_extension"))]
+    elif source.control_flow.has_asm_goto:
+        authority = source.control_flow.asm_goto_authority
+        if (authority is None or not authority.complete
+                or not authority.predicate_region_identity
+                or not authority.machine_continuation_join_identity):
+            raise EffectClassificationError('asm-goto region/continuation authority is incomplete')
+        from dataclasses import asdict
+        effects = [('control:continuation', 'ControlTransfer', 'asm-goto:'+identity(asdict(authority)),
+                    ('branch_condition', 'branch_continuation', 'branch_outcome',
+                     'kind', 'target', 'value'))]
     elif source.operation.has_control_flow:
         effects = [("control:continuation", "ControlTransfer", "continuation:proved",
                     ("branch_condition", "branch_continuation", "branch_outcome",

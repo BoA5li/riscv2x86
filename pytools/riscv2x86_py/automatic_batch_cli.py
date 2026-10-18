@@ -623,10 +623,14 @@ def _l2_operand_boundary_facts(
     }
 
 
-def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tuple[dict[str, object], ...]]:
+def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str = "riscv64") -> tuple[bool, tuple[dict[str, object], ...]]:
     """Use the compiler AST, never textual `main`/signature guessing."""
-    command = (clang, "--target=riscv64-linux-gnu", "--sysroot=" + _sysroot(),
-               "-std=gnu11", "-march=rv64gc", "-mabi=lp64d", "-fsyntax-only",
+    if target_isa not in {'riscv64','x86_64'}:
+        raise ValueError('entry-point target ISA is unsupported')
+    target_flags = (("--target=riscv64-linux-gnu", "--sysroot=" + _sysroot(),
+                     "-march=rv64gc", "-mabi=lp64d") if target_isa=='riscv64'
+                    else ('--target=x86_64-linux-gnu',))
+    command = (clang, *target_flags, "-std=gnu11", "-fsyntax-only",
                "-Xclang", "-ast-dump=json", str(source))
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode:
@@ -691,6 +695,17 @@ def inspect_entry_points(source: Path, clang: str = "clang") -> tuple[bool, tupl
                         "returnType": return_type, "parameterTypes": param_types,
                         "pointerParameters": pointer_parameters}
             function.update(_counter_return_semantics(node))
+            from .compiler_continuation_sites import continuation_sites
+            site_facts = continuation_sites(node, source_digest=source_digest,
+                function_identity=function_identity,source_range=_source_range,
+                asm_operands=_asm_operand_expressions,declaration_id=_decl_identity)
+            if site_facts is not None:
+                function['compilerContinuationSites'] = site_facts
+            from .compiler_continuation_sites import atomic_function_scope
+            atomic_scope = atomic_function_scope(node, source_digest=source_digest,
+                function_identity=function_identity,source_range=_source_range)
+            if atomic_scope is not None:
+                function['compilerAtomicFunctionScope'] = atomic_scope
             function["l2OperandBoundary"] = _l2_operand_boundary_facts(
                 node, source_digest=source_digest,
                 function_identity=function_identity,
@@ -1226,6 +1241,22 @@ def prepare_automatic_inventory(
                     "automatic-l2-effect-differential",
                     effect_config("control-flow-functions"),
                 ))
+            if any(item.get('compilerContinuationSites') is not None for item in functions):
+                l2_environment_capabilities.update(('asm_goto_continuation_observation',
+                    'logical_operand_observation','shell_observation'))
+                l2_providers.append(provider('automatic-l2-asm-goto-continuation-v1',
+                    [L2Dimension.CONTROL_FLOW.value,L2Dimension.LOGICAL_OPERANDS.value,
+                     L2Dimension.SHELL_SEMANTICS.value],['asm_goto'],
+                    ['asm_goto_continuation_observation','logical_operand_observation','shell_observation'],
+                    'automatic-l2-effect-differential',effect_config('asm-goto-continuations')))
+            if has_memory_objects and any(item.get('compilerAtomicFunctionScope') is not None for item in functions):
+                l2_environment_capabilities.update(('atomic_outcome_observation','logical_operand_observation',
+                    'object_relative_memory_observation','shell_observation'))
+                l2_providers.append(provider('automatic-l2-atomic-rmw-v1',
+                    [L2Dimension.ATOMIC_MEMORY_ORDER.value,L2Dimension.LOGICAL_OPERANDS.value,
+                     L2Dimension.MEMORY_EFFECTS.value,L2Dimension.SHELL_SEMANTICS.value],['atomic'],
+                    ['atomic_outcome_observation','logical_operand_observation','object_relative_memory_observation','shell_observation'],
+                    'automatic-l2-effect-differential',effect_config('atomic-rmw-functions')))
             if has_memory_objects:
                 l2_environment_capabilities.update(("logical_operand_observation",
                                                     "object_relative_memory_observation",

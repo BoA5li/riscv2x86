@@ -14,6 +14,10 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_compiler_expression_evaluation.py', 'test_atomic_expression_consumer.py',
+    'test_l2_atomic_production.py', 'test_atomic_native_observation.py',
+    'test_asm_goto_machine_join.py', 'test_asm_goto_region_closure.py',
+    'test_l2_asm_goto_authority.py', 'test_continuation_instrumentation.py',
     'test_l2_precondition_obligations.py', 'test_l2_semantic_profile.py',
     'test_l2_dimension_results.py', 'test_l2_requirement_driven_registry.py',
     'test_batch_evaluation_cli.py', 'test_production_evidence_contract.py',

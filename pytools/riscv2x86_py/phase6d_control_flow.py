@@ -30,6 +30,8 @@ def prove(r):
         authority = s.control_flow.asm_goto_authority
         expected_binding = None if index is None else f"asm-goto:{kind}:operand:{index}"
         if (authority is None or not authority.complete or
+                not authority.predicate_region_identity or
+                not authority.machine_continuation_join_identity or
                 contract.asm_goto_authority != authority or
                 kind not in semantic_ids or index is None or
                 s.control_flow.has_multiple_exits or

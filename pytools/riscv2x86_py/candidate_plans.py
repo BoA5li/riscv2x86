@@ -695,7 +695,7 @@ def _generate_atomic_candidates(
             ),
             metadata={
                 "strategy": "compiler_atomic_builtin",
-                "renderer_semantic_contract_id": "c.builtin.atomic-load-n.u32-u64.v1",
+                "renderer_semantic_contract_id": "c.builtin.atomic-load-n.u32-u64.v2",
             },
             rationale=(
                 "Atomic load is a candidate only for the registered "
@@ -722,7 +722,7 @@ def _generate_atomic_candidates(
             ),
             metadata={
                 "strategy": "compiler_atomic_builtin",
-                "renderer_semantic_contract_id": "c.builtin.atomic-store-n.u32-u64.v1",
+                "renderer_semantic_contract_id": "c.builtin.atomic-store-n.u32-u64.v2",
             },
             rationale=(
                 "Atomic store is a candidate only for the registered "
@@ -761,7 +761,7 @@ def _generate_atomic_candidates(
                 "result_semantics": ("old_value", "none"),
                 "required_target_feature": "compiler:atomic-builtin",
                 "renderer_semantic_contract_id":
-                    f"c.builtin.atomic-{operation.replace('_', '-')}.u32-u64.v1",
+                    f"c.builtin.atomic-{operation.replace('_', '-')}.u32-u64.v2",
             },
             rationale=(
                 "A typed atomic RMW may use only the public __atomic builtin "

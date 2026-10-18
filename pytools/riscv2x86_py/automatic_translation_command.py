@@ -26,6 +26,7 @@ from .instruction_stream_sync_contracts import load_instruction_stream_sync_regi
 from .csr_environment_contract import load_csr_environment_contract
 from .atomic_authority import COMPILER_FRAGMENT_AUTHORITY_SCHEMA
 from .compiler_fragment_closure import close_compiler_fragment_candidate, CompilerOperandClosureError
+from .compiler_expression_evaluation import close_expression_evaluation
 from .compiler_expression import bind_expression_operands, CompilerExpressionError
 from .translation_preflight import write_preflight_failure, PreflightToolFailure
 from .l2_fragment_execution import resolve_compiler_fragment_candidate
@@ -123,6 +124,16 @@ def _inject_compiler_fragment_authority(
                     "fragmentId": fragment_id, "complete": False,
                     "reasonCode": exc.reason_code, "detail": str(exc),
                     "expressionFacts": candidate["compilerExpressionFacts"]}
+            try:
+                fragment["compilerExpressionEvaluation"] = close_expression_evaluation(
+                    candidate, fragment, source_digest=str(function["sourceDigest"]),
+                    function_identity=str(function["functionId"]))
+            except CompilerExpressionError as exc:
+                fragment["compilerExpressionEvaluation"] = {
+                    "schemaVersion": "riscv2x86.compiler-evaluation-decision.v1",
+                    "fragmentId": fragment_id, "complete": False,
+                    "failureStage": "expression_evaluation_closure",
+                    "reasonCode": exc.reason_code, "detail": str(exc)}
         try:
             closed = close_compiler_fragment_candidate(
                 candidate, fragment, source_digest=str(function["sourceDigest"]),

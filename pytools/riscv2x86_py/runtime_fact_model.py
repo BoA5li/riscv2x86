@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping as ABCMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
@@ -140,6 +140,7 @@ class RuntimeFactStatus:
     has_operand_width_facts: bool
 
     structural_errors: Tuple[str, ...]
+    asm_goto_machine_join: Mapping[str, object] = field(default_factory=dict)
 
     @property
     def structurally_valid(self) -> bool:
@@ -521,4 +522,5 @@ class RuntimeFactStatus:
             has_register_operand_bindings=bool(rv_map),
             has_operand_width_facts=bool(width_map),
             structural_errors=_deduplicated_messages(errors),
+            asm_goto_machine_join=dict(getattr(facts, 'asm_goto_machine_join', {}) or {}),
         )

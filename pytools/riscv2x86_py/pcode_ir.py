@@ -43,6 +43,8 @@ class CanonicalAtomicOperation:
     atomicity_scope: str
     address_space_identity: str
     complete: bool
+    register_width_bits: int = 0
+    result_extension: str = ""
 
     def __post_init__(self) -> None:
         if self.operation_kind not in {
@@ -63,6 +65,14 @@ class CanonicalAtomicOperation:
         structurally_complete = all(isinstance(item, str) and item for item in required)
         structurally_complete &= ((self.result_semantics == "none") ==
                                   (self.result_binding is None))
+        if self.register_width_bits:
+            expected_extension=('none' if self.result_semantics=='none' else 'sign_extend'
+                if self.register_width_bits>self.width_bits else 'identity')
+            if (type(self.register_width_bits) is not int or self.register_width_bits not in {32,64}
+                    or self.register_width_bits<self.width_bits or self.result_extension!=expected_extension):
+                raise ValueError('canonical atomic register/result width contract is invalid')
+        elif self.result_extension:
+            raise ValueError('canonical result extension lacks register width authority')
         if self.complete and not structurally_complete:
             raise ValueError("complete canonical atomic operation lacks bindings")
 
@@ -84,6 +94,8 @@ def _canonical_atomic_operation(ins: Any) -> CanonicalAtomicOperation | None:
             atomicity_scope=raw.atomicity_scope,
             address_space_identity=raw.address_space_identity,
             complete=bool(raw.complete),
+            register_width_bits=getattr(raw,'register_width_bits',0),
+            result_extension=getattr(raw,'result_extension',''),
         )
     except (AttributeError, TypeError, ValueError):
         return None

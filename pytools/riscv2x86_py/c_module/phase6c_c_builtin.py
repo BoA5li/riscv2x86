@@ -57,6 +57,10 @@ class CBuiltinContract:
     authority_identity: str | None = None
     arithmetic_relation: str | None = None
     wraparound_width_bits: int | None = None
+    input_carrier_width_bits: int | None = None
+    result_carrier_width_bits: int | None = None
+    input_truncation: str = 'none'
+    result_projection: str = 'identity'
 
 
 _ORDER_CONSTANTS = {
@@ -68,8 +72,8 @@ _ORDER_CONSTANTS = {
     SourceMemoryOrdering.SEQ_CST: "__ATOMIC_SEQ_CST",
 }
 
-_LOAD_CONTRACT_ID = "c.builtin.atomic-load-n.u32-u64.v1"
-_STORE_CONTRACT_ID = "c.builtin.atomic-store-n.u32-u64.v1"
+_LOAD_CONTRACT_ID = "c.builtin.atomic-load-n.u32-u64.v2"
+_STORE_CONTRACT_ID = "c.builtin.atomic-store-n.u32-u64.v2"
 _RMW_CONTRACTS = {
     SourceAtomicRmwOperation.FETCH_ADD: ("__atomic_fetch_add", "fetch-add"),
     SourceAtomicRmwOperation.FETCH_AND: ("__atomic_fetch_and", "fetch-and"),
@@ -176,16 +180,19 @@ def _derive_atomic_contract(source_model, candidate_plan):
         value = _operand_by_index(source_model, atom.value_operand_index)
         result = (_operand_by_index(source_model, atom.result_operand_index)
                   if atom.result_operand_index is not None else None)
+        def supported_carrier(width):
+            return width==atom.width_bits or (atom.width_bits==32 and width==64
+                and atom.register_width_bits==64 and atom.result_extension in {'sign_extend','none'})
         if (value is None or value.expression is None or
-                value.width_bits != atom.width_bits or
+                not supported_carrier(value.width_bits) or
                 atom.result_semantics not in {"old_value", "none"} or
                 (atom.result_semantics == "old_value" and (
                     result is None or result.lvalue is None or
                     not result.lvalue.is_modifiable or
-                    result.width_bits != atom.width_bits))):
+                    not supported_carrier(result.width_bits)))):
             return _atomic_binding_failure(candidate_plan, expected="typed_rmw_value_and_result_relation")
         builtin, suffix = recipe
-        semantic_id = f"c.builtin.atomic-{suffix}.u32-u64.v1"
+        semantic_id = f"c.builtin.atomic-{suffix}.u32-u64.v2"
         if candidate_plan.metadata.get("atomic_operation_kind") != atom.rmw_operation.value:
             return _failure(candidate_plan, "C_BUILTIN_OPERATION_UNSUPPORTED", {
                 "expected_atomic_operation_kind": atom.rmw_operation.value,
@@ -195,10 +202,14 @@ def _derive_atomic_contract(source_model, candidate_plan):
             value_operand_index=atom.value_operand_index,
             result_operand_index=atom.result_operand_index,
             value_c_type_id=address.address.pointee_type_id,
-            result_c_type_id=(address.address.pointee_type_id
+            result_c_type_id=(result.lvalue.c_type_id
                               if atom.result_operand_index is not None else None),
             semantic_contract_id=semantic_id,
             builtin_identifier=builtin,
+            input_carrier_width_bits=value.width_bits,
+            result_carrier_width_bits=0 if result is None else result.width_bits,
+            input_truncation='low_bits' if value.width_bits>atom.width_bits else 'none',
+            result_projection='sign_extend_32_to_64' if result is not None and result.width_bits>atom.width_bits else 'identity',
             **common,
         )
     return _failure(candidate_plan, "C_BUILTIN_OPERATION_UNSUPPORTED", {
@@ -217,6 +228,10 @@ def derive_c_builtin_constraints(source_model: SourceSemanticModel, candidate_pl
     contract = None
     memory_constraint = TargetMemoryConstraint()
     if source_model.atomic.present:
+        if (not source_model.shell.has_memory_clobber
+                or 'c_builtin:compiler_barrier' not in target_environment.builtin_capabilities):
+            return _failure(candidate_plan,'C_BUILTIN_CAPABILITY_UNAVAILABLE',{
+                'required':'atomic_memory_clobber_and_compiler_barrier_shell'})
         contract = _derive_atomic_contract(source_model, candidate_plan)
         if not isinstance(contract, CBuiltinContract):
             return contract
@@ -251,4 +266,5 @@ def derive_c_builtin_constraints(source_model: SourceSemanticModel, candidate_pl
         return _failure(candidate_plan, "C_BUILTIN_OPERATION_UNSUPPORTED", {
             "expected_semantic_contract_id": str(expected_semantic_id),
         })
-    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id, environment=target_environment, c_builtin_constraint=contract, memory_constraint=memory_constraint, control_flow_constraint=TargetControlFlowConstraint()))
+    return TargetConstraintDerivationResult.succeeded(TargetConstraintModel(plan_id=candidate_plan.plan_id, environment=target_environment, c_builtin_constraint=contract, memory_constraint=memory_constraint, control_flow_constraint=TargetControlFlowConstraint(),
+        preserve_volatile=source_model.atomic.present,preserve_cc_clobber=source_model.atomic.present))

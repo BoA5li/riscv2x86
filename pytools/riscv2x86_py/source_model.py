@@ -1,7 +1,7 @@
 # translator/phase6/source_model.py
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from types import MappingProxyType
 from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
@@ -105,6 +105,10 @@ class AsmGotoControlFlowAuthority:
     memory_effect: str
     complete: bool
     reason_codes: Tuple[str, ...] = ()
+    predicate_region_identity: str = ""
+    machine_continuation_join_identity: str = ""
+    predicate_region_payload: dict = field(default_factory=dict)
+    machine_continuation_join_payload: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.condition_kind not in {"zero", "nonzero", "eq", "ne", "unsigned_lt"}:
@@ -1006,12 +1010,32 @@ def _build_asm_goto_control_flow_authority(
     if len(branch_ops) != 1:
         return record("predicate_normalization", "ASM_GOTO_BRANCH_ARITY_UNSUPPORTED", "Expected exactly one canonical CBRANCH")
     branch = branch_ops[0]
+    from .asm_goto_region import close_predicate_region, AsmGotoRegionError
+    try:
+        region = close_predicate_region(blocks, branch)
+    except AsmGotoRegionError as exc:
+        return record(exc.failure_stage, exc.reason_code, str(exc))
+    if any(item.writes for item in operands.operands):
+        return record('output_definedness', 'ASM_GOTO_OUTPUT_DEFINEDNESS_AUTHORITY_REQUIRED',
+                      'Per-exit output definedness is not supplied by a predicate-only region')
     try:
         transfer = conditional_transfer_from_op(branch)
     except ValueError as exc:
         return record("canonical_control_transfer", str(exc), "CBRANCH input roles are malformed or unsupported")
     if transfer.target_kind == "machine_address" and transfer.target.offset != branch_instructions[0].direct_target:
         return record("decoder_region", "ASM_GOTO_TARGET_IDENTITY_MISMATCH", "Canonical code target disagrees with instruction target")
+    machine_join = runtime_status.asm_goto_machine_join
+    from .asm_goto_machine_join import validate_machine_continuations
+    try:
+        machine_targets = validate_machine_continuations(machine_join,
+            str(fragment.id or fragment.fragmentId), shell.goto_edges)
+    except ValueError as exc:
+        return record('assembler_continuation_join', str(exc),
+                      'Assembler symbol to compiler continuation authority is required')
+    if (len(machine_targets) != 1
+            or machine_targets[0]['machineOffset'] != branch_instructions[0].direct_target):
+        return record('assembler_continuation_join', 'ASM_GOTO_MACHINE_TARGET_MISMATCH',
+                      'Decoded target does not select the assembler-bound source continuation')
     normalized = _normalize_asm_goto_predicate(semantic_ops, branch)
     if normalized is None:
         return record("predicate_normalization", "ASM_GOTO_PREDICATE_UNSUPPORTED", "Predicate is outside the closed zero/nonzero def-use vocabulary")
@@ -1057,6 +1081,10 @@ def _build_asm_goto_control_flow_authority(
         external_label_index=edge[2], goto_outputs=output_ids,
         clobbers=clobbers,
         memory_effect=("compiler_barrier" if shell.has_memory_clobber else "none"),
+        predicate_region_identity=region['regionIdentity'],
+        machine_continuation_join_identity=machine_join['joinIdentity'],
+        predicate_region_payload=region,
+        machine_continuation_join_payload=dict(machine_join),
         complete=True,
     )
 
@@ -3532,6 +3560,8 @@ class SourceAtomicOperationModel:
     arithmetic_relation: Optional[str] = None
     wraparound_width_bits: Optional[int] = None
     authority_identity: Optional[str] = None
+    register_width_bits: int = 0
+    result_extension: str = ""
     capability_reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -4248,6 +4278,11 @@ def _runtime_operand_bindings(
     for source_operand_index in ambiguous_indices:
         result.pop(source_operand_index, None)
 
+    for index, fact in runtime_facts.atomic_memory_objects.items():
+        if (fact.operand_role == "memory_lvalue" and fact.authority_complete
+                and _is_valid_source_operand_index(index)):
+            # This is an object ownership binding, never a register alias.
+            result[index] = fact
     return result
 
 def _runtime_operand_widths(
@@ -4345,7 +4380,13 @@ def _runtime_operand_semantics(
             )
         else:
             access = SourceOperandAccess.INPUT
-        if index in memory_address_operand_offsets:
+        memory_lvalue = (index in atomic_objects
+            and atomic_objects[index].operand_role == "memory_lvalue")
+        if memory_lvalue:
+            if constraint not in {"+m", "=m", "m"}:
+                continue
+            kind = SourceOperandKind.MEMORY
+        elif index in memory_address_operand_offsets:
             kind = SourceOperandKind.ADDRESS
             access = SourceOperandAccess.ADDRESS
         reads = access in {SourceOperandAccess.INPUT, SourceOperandAccess.READ_WRITE, SourceOperandAccess.ADDRESS}
@@ -4384,7 +4425,7 @@ def _runtime_operand_semantics(
                 alignment_bytes=(atomic_objects[index].alignment_bytes
                                  if index in atomic_objects else None),
                 provenance_known=True,
-                byte_offset=memory_address_operand_offsets[index],
+                byte_offset=0 if memory_lvalue else memory_address_operand_offsets[index],
                 memory_object_identity=(atomic_objects[index].object_identity
                                         if index in atomic_objects else None),
                 address_space_identity=(atomic_objects[index].address_space_identity
@@ -4406,7 +4447,7 @@ def _runtime_operand_semantics(
                 atomic_address_space_relation_identity=(
                     atomic_objects[index].address_space_relation_identity
                     if index in atomic_objects else None),
-            ) if index in memory_address_operand_offsets else None),
+            ) if memory_lvalue or index in memory_address_operand_offsets else None),
         )
     return result
 
@@ -5918,6 +5959,8 @@ def _build_atomic_operation_model(
                                address.wraparound_width_bits),
         authority_identity=(None if address is None else
                             address.atomic_authority_identity),
+        register_width_bits=getattr(structured_atomic,'register_width_bits',0),
+        result_extension=getattr(structured_atomic,'result_extension',''),
         capability_reason_codes=capability_reason_codes,
     )
 

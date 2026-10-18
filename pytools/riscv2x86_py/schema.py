@@ -359,6 +359,7 @@ class AsmFragment:
     # Independent expression/type/GNU-role join. This is not semantic route
     # approval and must survive report loading even when legacy closure fails.
     compilerExpressionJoin: Dict[str, Any] = field(default_factory=dict)
+    compilerExpressionEvaluation: Dict[str, Any] = field(default_factory=dict)
     csrAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

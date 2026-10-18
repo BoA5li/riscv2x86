@@ -117,6 +117,8 @@ class CBuiltinArgument:
     operand_index: int | None = None
     literal: str | None = None
 
+    object_type_operand_index: int | None = None
+
     def __post_init__(self) -> None:
         if (self.operand_index is None) == (self.literal is None):
             raise ValueError("C builtin argument requires exactly one source")
@@ -126,6 +128,10 @@ class CBuiltinArgument:
             raise TypeError("operand_index must be a non-negative int")
         if self.literal is not None and (not isinstance(self.literal, str) or not self.literal.strip()):
             raise TypeError("literal must be a non-empty str")
+
+        if self.object_type_operand_index is not None and (self.operand_index is None
+                or type(self.object_type_operand_index) is not int or self.object_type_operand_index<0):
+            raise ValueError('builtin argument conversion lacks a typed object')
 
 
 @dataclass(frozen=True)
@@ -137,6 +143,8 @@ class CBuiltinRecipe:
     # for existing callers while they migrate to a fully explicit contract.
     argument_sequence: tuple[CBuiltinArgument, ...] = ()
     required_declaration: str | None = None
+    compiler_barrier_shell: bool = False
+    result_projection: str = "identity"
 
 
 @dataclass(frozen=True)
@@ -461,10 +469,37 @@ def _render_contract(request: Phase6FRenderRequest, contract: RendererContract) 
             ]
         else:
             args = [_binding(ctx, i) for i in p.argument_operand_indexes]
+        if p.argument_sequence:
+            for position,item in enumerate(p.argument_sequence):
+                if item.object_type_operand_index is not None:
+                    obj=_binding(ctx,item.object_type_operand_index)
+                    if obj is None or args[position] is None:
+                        return _failure(request,RenderReasonCode.OPERAND_BINDING_MISSING,internal=True)
+                    args[position]='(__typeof__(*('+obj+')))('+args[position]+')'
         result = _binding(ctx, p.result_operand_index) if p.result_operand_index is not None else None
         if any(x is None for x in args) or (p.result_operand_index is not None and result is None): return _failure(request, RenderReasonCode.OPERAND_BINDING_MISSING, internal=True)
         call = p.builtin_identifier + "(" + ", ".join(args) + ")"
-        return RenderedReplacement(RenderedReplacementKind.C_BUILTIN, p, (f"{result} = {call};" if result else f"{call};"), (), a.source_model_id, a.plan.plan_id, ctx.renderer_id, ctx.renderer_version)
+        atomic_contract = a.constraints.c_builtin_constraint
+        if p.result_projection not in {'identity','sign_extend_32_to_64'}:
+            return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        if p.result_projection=='sign_extend_32_to_64':
+            call='(__INT64_TYPE__)(__INT32_TYPE__)('+call+')'
+        text = f"{result} = {call};" if result else f"{call};"
+        atomic_contract = a.constraints.c_builtin_constraint
+        atomic_kind = getattr(getattr(atomic_contract,'kind',None),'value','') in {'atomic_load','atomic_store','atomic_rmw'}
+        if atomic_kind:
+            if p.result_projection!=atomic_contract.result_projection:
+                return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+            for argument in p.argument_sequence:
+                expected_object=(atomic_contract.object_operand_index if argument.operand_index==atomic_contract.value_operand_index
+                    and atomic_contract.input_truncation=='low_bits' else None)
+                if argument.object_type_operand_index!=expected_object:
+                    return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        if type(p.compiler_barrier_shell) is not bool or atomic_kind != p.compiler_barrier_shell:
+            return _failure(request,RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT,internal=True)
+        if p.compiler_barrier_shell:
+            text = '{ __atomic_signal_fence(__ATOMIC_SEQ_CST); ' + text + ' __atomic_signal_fence(__ATOMIC_SEQ_CST); }'
+        return RenderedReplacement(RenderedReplacementKind.C_BUILTIN, p, text, (), a.source_model_id, a.plan.plan_id, ctx.renderer_id, ctx.renderer_version)
     if kind is RendererContractKind.HELPER_CALL and isinstance(p, HelperCallRecipe):
         if a.constraints.helper_abi_contract is None:return _failure(request, RenderReasonCode.HELPER_CONTRACT_MISSING, internal=True)
         args=[_binding(ctx,i) for i in p.argument_operand_indexes]; result=_binding(ctx,p.result_operand_index) if p.result_operand_index is not None else None

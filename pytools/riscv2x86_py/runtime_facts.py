@@ -21,9 +21,11 @@ class AtomicMemoryObjectRuntimeFact:
     read_effect_identity: str | None = None
     write_effect_identity: str | None = None
     address_space_relation_identity: str | None = None
+    operand_role: str = "address"
 
     def __post_init__(self) -> None:
-        if (not self.object_identity or not self.address_space_identity or
+        if (self.operand_role not in {"address", "memory_lvalue"} or
+                not self.object_identity or not self.address_space_identity or
                 isinstance(self.alignment_bytes, bool) or self.alignment_bytes <= 0 or
                 (self.pointee_type_id is not None and not self.pointee_type_id) or
                 (self.wraparound_width_bits is not None and
@@ -87,6 +89,7 @@ class TranslationRuntimeFacts:
     atomic_memory_objects: Mapping[int, AtomicMemoryObjectRuntimeFact] = field(
         default_factory=dict
     )
+    asm_goto_machine_join: Mapping[str, object] = field(default_factory=dict)
 
 
 class TranslationFactsError(ValueError):
@@ -535,12 +538,14 @@ def translation_runtime_facts_to_dict(
     return {
         "rvToOperandIndex": dict(facts.rv_to_operand_index),
         "operandWidthBits": dict(facts.operand_width_bits),
+        "asmGotoMachineJoin": dict(facts.asm_goto_machine_join),
         "asmGotoConditionKind": facts.asm_goto_condition_kind,
         "asmGotoConditionOperandIndex": facts.asm_goto_condition_operand_index,
         "instructionStreamSyncNoopProven": facts.instruction_stream_sync_noop_proven,
         "instructionStreamSyncProofId": facts.instruction_stream_sync_proof_id,
         "atomicMemoryObjects": {
             str(index): {
+                **({"operandRole": item.operand_role} if item.operand_role != "address" else {}),
                 "objectIdentity": item.object_identity,
                 "addressSpaceIdentity": item.address_space_identity,
                 "alignmentBytes": item.alignment_bytes,
@@ -630,11 +635,12 @@ def translation_runtime_facts_from_dict(
                     "pointeeTypeId", "authorityIdentity", "operationKind",
                     "arithmeticRelation", "wraparoundWidthBits", "ordering"}
         required.update({"readEffectIdentity", "writeEffectIdentity"})
-        allowed = required | {"addressSpaceRelationIdentity"}
+        allowed = required | {"addressSpaceRelationIdentity", "operandRole"}
         if (not required.issubset(raw_item) or not set(raw_item).issubset(allowed)
                 or not isinstance(raw_item.get("ordering"), list)):
             raise ValueError("atomic memory object authority fields are invalid")
         atomic_objects[index] = AtomicMemoryObjectRuntimeFact(
+            operand_role=raw_item.get("operandRole", "address"),
             object_identity=raw_item["objectIdentity"],
             address_space_identity=raw_item["addressSpaceIdentity"],
             alignment_bytes=raw_item["alignmentBytes"],
@@ -700,6 +706,7 @@ def translation_runtime_facts_from_dict(
         instruction_stream_sync_noop_proven=instruction_stream_sync_noop_proven,
         instruction_stream_sync_proof_id=instruction_stream_sync_proof_id,
         atomic_memory_objects=atomic_objects,
+        asm_goto_machine_join=dict(value.get("asmGotoMachineJoin", {})),
     )
 
 # ---------------------------------------------------------------------------

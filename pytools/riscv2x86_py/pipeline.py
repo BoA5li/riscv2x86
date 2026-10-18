@@ -927,6 +927,17 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
             )
         return reasons
 
+    # A registered atomic builtin owns a separate typed compiler shell.
+    artifact = dict(getattr(tr,'metadata',{}).get('approvalArtifact',{}) or {})
+    if kind == 'c' and artifact.get('replacementKind') == 'c_builtin':
+        from .atomic_builtin_shell import SEMANTICS, validate_atomic_builtin_shell
+        if artifact.get('rendererSemanticContractId') in SEMANTICS:
+            try:
+                validate_atomic_builtin_shell(frag,artifact,replacement)
+            except (ValueError,TypeError,KeyError) as exc:
+                reasons.append(str(exc))
+            return reasons
+
     # ---------- pure C / lower_to_c 路径 ----------
     if not is_x86_inline_asm:
         if is_volatile:
@@ -1913,6 +1924,10 @@ def run(
         )
         if f.approvalArtifact:
             f.approvalArtifact["sourceSliceDigest"] = _approval_digest(f.rawSourceText)
+            if f.approvalArtifact.get("atomicBuiltinShell"):
+                from .atomic_builtin_shell import build_atomic_builtin_shell
+                f.approvalArtifact["atomicBuiltinShell"] = build_atomic_builtin_shell(
+                    f.fragment, f.approvalArtifact)
         f.notes.extend(translation_notes)
 
         # Phase 7: inline-asm 外壳语义检查。

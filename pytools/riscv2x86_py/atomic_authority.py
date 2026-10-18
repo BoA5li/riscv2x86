@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from hashlib import sha256
 import json
+from dataclasses import replace
 
 from .runtime_facts import AtomicMemoryObjectRuntimeFact
 from .semantic_authority import (
@@ -122,12 +123,17 @@ def atomic_runtime_object_from_compiler_authority(
     result_semantics = getattr(atomic_operation, "result_semantics", None)
     value_binding = binding_by_index.get(value_index)
     value_carrier = carrier_by_index.get(value_index)
+    register_width=getattr(atomic_operation,'register_width_bits',0)
+    extension=getattr(atomic_operation,'result_extension','')
+    def carrier_width_supported(width):
+        return width==width_bits or (width_bits==32 and width==64 and register_width==64
+            and extension in {'sign_extend','none'})
     if (not isinstance(value_index, int)
             or not isinstance(value_binding, Mapping)
             or not isinstance(value_carrier, Mapping)
             or value_binding.get("access") not in {"input", "read_write"}
             or value_carrier.get("carrierKind") != "integer"
-            or value_binding.get("widthBits") != width_bits
+            or not carrier_width_supported(value_binding.get("widthBits"))
             or value_binding.get("valueNodeIdentity") !=
                 value_carrier.get("valueNodeIdentity")):
         raise AtomicAuthorityError("ATOMIC_INPUT_VALUE_BINDING_INCOMPLETE", "atomic input value binding is incomplete")
@@ -155,13 +161,36 @@ def atomic_runtime_object_from_compiler_authority(
                 or result_carrier.get("carrierKind") != "integer"
                 or result_binding.get("valueNodeIdentity") != result_carrier.get("valueNodeIdentity")
                 or result_binding.get("declarationIdentity") != result_carrier.get("declarationIdentity")
-                or result_binding.get("widthBits") != width_bits
-                or result_carrier.get("widthBits") != width_bits
+                or not carrier_width_supported(result_binding.get("widthBits"))
+                or result_carrier.get("widthBits") != result_binding.get("widthBits")
                 or result_binding.get("complete") is not True
                 or result_carrier.get("complete") is not True):
             raise AtomicAuthorityError("ATOMIC_RESULT_CARRIER_MISMATCH", "atomic result carrier width/value binding disagrees")
     else:
         raise AtomicAuthorityError("ATOMIC_RESULT_SEMANTICS_UNSUPPORTED", "atomic result semantics is unsupported")
+    expression_memory_bindings = []
+    expression_memory_indexes = []
+    if candidate.get('schemaVersion') == 'riscv2x86.closed-compiler-fragment.v2':
+        evaluation = candidate['expressionEvaluation']
+        from .compiler_expression import direct_declaration_carrier
+        if binding.get('access') != 'input':
+            raise AtomicAuthorityError('ATOMIC_EXPRESSION_ADDRESS_PHASE_UNPROVEN',
+                'Expression-backed objects require a read-only pointer carrier')
+        for evaluated, joined in zip(evaluation['bindings'], evaluation['expressionJoin']['operands']):
+            if evaluated['role'] != 'memory_lvalue':
+                continue
+            expression = joined['expression']
+            while expression['kind'] == 'ParenExpr':
+                expression = expression['children'][0]
+            if (expression['kind'] != 'UnaryOperator' or expression['operation'] != '*'
+                    or len(expression['children']) != 1
+                    or direct_declaration_carrier(expression['children'][0]) != binding['declarationIdentity']
+                    or evaluated['access'] != 'read_write'
+                    or joined['compilerType']['widthBits'] != width_bits):
+                raise AtomicAuthorityError('ATOMIC_EXPRESSION_OBJECT_ADDRESS_UNPROVEN',
+                    'Memory lvalue must be an exact read-write dereference of the bound pointer at the access width')
+            expression_memory_bindings.append(evaluated['bindingIdentity'])
+            expression_memory_indexes.append(evaluated['operandIndex'])
     declaration = str(binding.get("declarationIdentity") or "")
     type_bindings = raw_authority.get("compilerTypeBindings", {})
     type_binding = type_bindings.get(str(address_index)) if isinstance(type_bindings, Mapping) else None
@@ -230,6 +259,7 @@ def atomic_runtime_object_from_compiler_authority(
         "schemaVersion": "riscv2x86.atomic-compiler-decoder-join.v1",
         "compilerAuthorityIdentity": raw_authority["authorityIdentity"],
         "fragmentId": fragment_id, "addressOperandIndex": address_index,
+        "valueOperandIndex": value_index, "resultOperandIndex": result_index,
         "decoderOperationKind": operation_kind, "widthBits": width_bits,
         "ordering": list(ordering),
         "sourceAddressSpace": memory_object["addressSpaceIdentity"],
@@ -239,13 +269,19 @@ def atomic_runtime_object_from_compiler_authority(
         "memoryObjectBindingIdentity": memory_object["bindingIdentity"],
         "environmentAssumption": memory_object["bindingOrigin"],
         "memoryAccessWidth": width_bits, "inputEffectiveWidth": width_bits,
-        "registerResultWidth": result_binding.get("widthBits") if result_semantics == "old_value" else None,
+        "inputCarrierWidth":value_binding['widthBits'],
+        "inputTruncation":'low_bits' if value_binding['widthBits']>width_bits else 'none',
+        "sourceRegisterWidth":register_width,
+        "registerResultWidth": (register_width or result_binding.get('widthBits')) if result_semantics=='old_value' else 0,
+        "resultCarrierWidth":result_binding.get('widthBits') if result_semantics=='old_value' else 0,
+        "resultExtension":extension or ('identity' if result_semantics=='old_value' else 'none'),
         "resultSemantics": result_semantics,
         "compilerPointerTypeIdentity": pointer_type.type_identity,
         "compilerPointeeTypeIdentity": pointer_type.pointee_type_identity,
+        "expressionMemoryBindingIdentities": sorted(expression_memory_bindings),
     }
     join_identity = _identity(relation)
-    return {address_index: AtomicMemoryObjectRuntimeFact(
+    address_fact = AtomicMemoryObjectRuntimeFact(
         object_identity=str(memory_object["objectIdentity"]),
         address_space_identity=str(getattr(
             atomic_operation, "address_space_identity", "")),
@@ -259,7 +295,9 @@ def atomic_runtime_object_from_compiler_authority(
         read_effect_identity=join_identity + ":read",
         write_effect_identity=join_identity + ":write",
         address_space_relation_identity=join_identity + ":address-space",
-    )}
+    )
+    return {address_index: address_fact, **{index: replace(address_fact,
+        operand_role="memory_lvalue") for index in expression_memory_indexes}}
 
 
 def atomic_runtime_objects_from_bundle(

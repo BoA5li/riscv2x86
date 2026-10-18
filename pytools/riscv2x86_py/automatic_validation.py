@@ -235,7 +235,7 @@ def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
     offsets.  Its entire post-call state is serialized, so stores cannot pass merely
     because the function returned successfully.
     """
-    lines = ["#include <stdint.h>", "#include <stdio.h>"]
+    lines = ["#include <stdint.h>", "#include <stdio.h>", "#include <string.h>"]
     for function in functions:
         name = function.get("name")
         return_type = function.get("returnType")
@@ -253,7 +253,7 @@ def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
             raise ValueError("automatic memory-object harness signature is invalid")
         params = ", ".join(parameter_types) if parameter_types else "void"
         lines.append(f"{return_type} {name}({params});")
-    lines.append("static void dump_object(const char *name,const uint64_t *p){")
+    lines.append("static void dump_object(const char *name,const void *object){ uint64_t p[4]; memcpy(p,object,sizeof p);")
     lines.append('printf("%s=[%016llx,%016llx,%016llx,%016llx]\\n",name,')
     lines.append("(unsigned long long)p[0],(unsigned long long)p[1],")
     lines.append("(unsigned long long)p[2],(unsigned long long)p[3]);}")
@@ -294,9 +294,15 @@ def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
         loops = "".join(f"for(unsigned {item}=0;{item}<8;++{item}){{"
                         for item in loop_names)
         lines.append("{" + loops)
-        lines.append("uint64_t object[4]={UINT64_C(0x1122334455667788),"
+        from .automatic_batch_cli import _INTEGER_POINTER_TYPE
+        pointer_type = parameter_types[pointer_index]
+        if _INTEGER_POINTER_TYPE.fullmatch(pointer_type) is None:
+            raise ValueError('memory harness pointee type is unsupported')
+        pointee = ' '.join(x for x in pointer_type[:-1].split() if x not in {'const','volatile'})
+        lines.append(f"{pointee} object[32/sizeof({pointee})] __attribute__((aligned(16)));")
+        lines.append("const uint64_t initial[4]={UINT64_C(0x1122334455667788),"
                      "UINT64_C(0x8877665544332211),UINT64_C(0x0123456789abcdef),"
-                     "UINT64_C(0xfedcba9876543210)};")
+                     "UINT64_C(0xfedcba9876543210)}; memcpy(object,initial,sizeof initial);")
         scalar_by_param = dict(zip(scalar_indices, loop_names))
         args = []
         for index, parameter_type in enumerate(parameter_types):

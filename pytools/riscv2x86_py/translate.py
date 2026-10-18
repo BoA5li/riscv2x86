@@ -858,6 +858,22 @@ def _output(
         if isinstance(approval, dict):
             approval["l2SemanticProfileIdentity"] = profile.profile_identity
             approval["l2PatternKind"] = profile.pattern_kind.value
+            from .l2_asm_goto import asm_goto_proof_facts
+            goto_facts = asm_goto_proof_facts(context.fragment.id, context.sourceModel, approval)
+            if goto_facts is not None:
+                approval['l2AsmGotoProofFacts'] = goto_facts
+            from .l2_atomic_authority import atomic_proof_facts
+            atomic_facts = atomic_proof_facts(context.fragment.id, context.sourceModel, approval)
+            if atomic_facts is not None:
+                approval['l2AtomicProofFacts'] = atomic_facts
+                if approval.get('atomicBuiltinCompilerBarrierShell') is True:
+                    from .atomic_builtin_shell import build_atomic_builtin_shell
+                    try:
+                        approval['atomicBuiltinShell'] = build_atomic_builtin_shell(context.fragment,approval)
+                    except (ValueError,TypeError,KeyError):
+                        # The publication gate retains the precise failure;
+                        # no generic pure-C path may inherit this exception.
+                        pass
             control_facts = control_flow_proof_facts_from_source_model(
                 context.fragment.id, context.sourceModel,
             )
@@ -3677,13 +3693,13 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
             "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
             "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
-            "c.builtin.atomic-load-n.u32-u64.v1",
-            "c.builtin.atomic-store-n.u32-u64.v1",
-            "c.builtin.atomic-fetch-add.u32-u64.v1",
-            "c.builtin.atomic-fetch-and.u32-u64.v1",
-            "c.builtin.atomic-fetch-or.u32-u64.v1",
-            "c.builtin.atomic-fetch-xor.u32-u64.v1",
-            "c.builtin.atomic-exchange.u32-u64.v1",
+            "c.builtin.atomic-load-n.u32-u64.v2",
+            "c.builtin.atomic-store-n.u32-u64.v2",
+            "c.builtin.atomic-fetch-add.u32-u64.v2",
+            "c.builtin.atomic-fetch-and.u32-u64.v2",
+            "c.builtin.atomic-fetch-or.u32-u64.v2",
+            "c.builtin.atomic-fetch-xor.u32-u64.v2",
+            "c.builtin.atomic-exchange.u32-u64.v2",
             "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
             "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1",
             "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
@@ -3862,6 +3878,7 @@ def _translate_phase6_proof_pipeline(
         "rendererRegistryId": renderer_contract_registry.registry_id,
         "rendererRegistryVersion": renderer_contract_registry.version,
         "replacementKind": rendered.kind.value,
+        "atomicBuiltinCompilerBarrierShell": bool(getattr(rendered.target_ast,'compiler_barrier_shell',False)),
         "replacementDigest": _approval_digest(rendered.emitted_text),
         "sourceSliceDigest": _approval_digest(context.fragment.rawAsmText),
         "targetRegisterPolicyVersion": POLICY_VERSION,

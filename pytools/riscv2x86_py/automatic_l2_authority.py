@@ -140,6 +140,50 @@ def _proof_effect_authority(approval: Mapping[str, object], fragment_id: str):
     return effects, relations, shell_identity
 
 
+def _asm_goto_authority(finding, functions, producer_digest):
+    from .l2_asm_goto import validate_asm_goto_proof_facts
+    from .l2_authority import L2ControlFlowAuthority
+    fragment, approval=finding.get('fragment'),finding.get('approvalArtifact')
+    if not isinstance(fragment,Mapping) or not isinstance(approval,Mapping):
+        return None
+    profile=finding.get('l2SemanticProfile',{})
+    if profile.get('patternKind')!='asm_goto':
+        return None
+    try:
+        authority=validate_asm_goto_proof_facts(approval.get('l2AsmGotoProofFacts'),fragment,approval)
+        matches=[x for x in functions if x.get('name')==fragment.get('enclosingFunction')]
+        if len(matches)!=1:
+            return None
+        function_boundary=matches[0]['l2OperandBoundary']
+        boundary=approval.get('l2FragmentOperandBoundary',function_boundary)
+        canonical=bind_canonical_l2_operands(fragment,boundary,function_boundary,approval['l2EffectProofFacts'])
+        if len(canonical)!=1 or canonical[0].access_mode!='input':
+            return None
+        index=int(authority.lhs_binding.split(':')[-1])
+        if canonical[0].operand_index!=index:
+            return None
+        operands=tuple(L2OperandAuthority(operand_id=x.operand_id,operand_index=x.operand_index,
+            logical_name=x.logical_name,access_mode=x.access_mode,type_kind=x.type_kind,
+            width_bits=x.width_bits,signedness=x.signedness,tied_to_operand_id=x.tied_to_operand_id,
+            early_clobber=x.early_clobber,fixed_register_contract='',escape_kind=x.escape_kind,
+            value_node_identity=x.value_node_identity,declaration_id=x.declaration_identity,
+            parameter_index=x.parameter_index,source_constraint=x.source_constraint) for x in canonical)
+        effects,relations,shell=_proof_effect_authority(approval,authority.fragment_id)
+        if (len(effects)!=1 or effects[0].effect_kind!='ControlTransfer'
+                or len(relations)!=1 or not {'branch_continuation','target'}.issubset(relations[0].observable_requirements)):
+            return None
+        control=L2ControlFlowAuthority('asm-goto:predicate',(operands[0].operand_id,),
+            tuple(sorted((authority.taken_successor_block,authority.fallthrough_successor_block))),True,
+            transfer_kind='asm_goto',condition_kind=authority.condition_kind,
+            source_continuation=authority.fallthrough_successor_block,
+            target_continuation=authority.taken_successor_block,termination_kind='fallthrough')
+        return L2AuthoritySidecar(authority.fragment_id,
+            L2AuthorityProducer('translation-proof-sidecar','automatic-asm-goto-authority','v1',producer_digest),
+            shell,operands,(),effects,relations,(),(),True,control_flow=(control,))
+    except (KeyError,TypeError,ValueError):
+        return None
+
+
 def _scalar_authority(
     finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     producer_digest: str,
@@ -751,7 +795,10 @@ def materialize_automatic_l2_authority(
                 finding, function,
                 raw_boundary if isinstance(raw_boundary, Mapping) else None)
             approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
+        from .l2_atomic_authority import materialize_atomic_authority
         sidecar = (_functional_relation_authority(finding, producer_digest)
+                   or materialize_atomic_authority(finding, functions, producer_digest)
+                   or _asm_goto_authority(finding, functions, producer_digest)
                    or _fence_authority(finding, functions, producer_digest)
                    or _memory_authority(finding, functions, producer_digest)
                    or _scalar_authority(finding, functions, producer_digest))

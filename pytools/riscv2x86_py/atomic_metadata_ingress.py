@@ -27,6 +27,8 @@ class DecodedAtomicOperation:
     atomicity_scope: str
     address_space_identity: str
     complete: bool = True
+    register_width_bits: int = 0
+    result_extension: str = ""
 
 
 _RMW_KIND = {
@@ -72,4 +74,6 @@ def decode_atomic_operation(machine_bytes: bytes, *, xlen_bits: int) -> DecodedA
         ordering_after="acquire" if aq else "relaxed",
         atomicity_scope="system",
         address_space_identity="riscv.default-data-address-space",
+        register_width_bits=xlen_bits,
+        result_extension=('none' if rd==0 else 'sign_extend' if width_bits<xlen_bits else 'identity'),
     )
