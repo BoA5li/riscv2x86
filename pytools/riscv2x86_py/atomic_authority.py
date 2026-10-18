@@ -194,6 +194,7 @@ def atomic_runtime_object_from_compiler_authority(
         raise AtomicAuthorityError("ATOMIC_RESULT_SEMANTICS_UNSUPPORTED", "atomic result semantics is unsupported")
     expression_memory_bindings = []
     expression_memory_indexes = []
+    expression_access_bindings = []
     if candidate.get('schemaVersion') == 'riscv2x86.closed-compiler-fragment.v2':
         evaluation = candidate['expressionEvaluation']
         from .compiler_expression import direct_declaration_carrier
@@ -215,6 +216,18 @@ def atomic_runtime_object_from_compiler_authority(
                     'Memory lvalue must be an exact read-write dereference of the bound pointer at the access width')
             expression_memory_bindings.append(evaluated['bindingIdentity'])
             expression_memory_indexes.append(evaluated['operandIndex'])
+            expression_access_bindings.append({
+                'schemaVersion':'riscv2x86.atomic-memory-access-binding.v1',
+                'fragmentId':fragment_id,'sourceDigest':source_digest,
+                'compilerAuthorityIdentity':raw_authority['authorityIdentity'],
+                'memoryOperandIndex':evaluated['operandIndex'],'addressOperandIndex':address_index,
+                'memoryExpressionIdentity':evaluated['expressionIdentity'],
+                'evaluationBindingIdentity':evaluated['bindingIdentity'],
+                'addressValueNodeIdentity':binding['valueNodeIdentity'],
+                'memoryAddressValueNodeIdentity':evaluated['addressNode']['valueNodeIdentity'],
+                'memoryObjectIdentity':'', 'offsetBytes':0,'widthBits':width_bits,
+                'access':evaluated['access'],'relationKind':'exact_dereference_of_carrier'})
+
     declaration = str(binding.get("declarationIdentity") or "")
     type_bindings = raw_authority.get("compilerTypeBindings", {})
     type_binding = type_bindings.get(str(address_index)) if isinstance(type_bindings, Mapping) else None
@@ -307,6 +320,11 @@ def atomic_runtime_object_from_compiler_authority(
         "compilerPointeeTypeIdentity": pointer_type.pointee_type_identity,
         "expressionMemoryBindingIdentities": sorted(expression_memory_bindings),
     }
+    if expression_access_bindings:
+        for association in expression_access_bindings:
+            association['memoryObjectIdentity']=memory_object['objectIdentity']
+        relation['schemaVersion']='riscv2x86.atomic-compiler-decoder-join.v2'
+        relation['expressionMemoryAccessBindings']=expression_access_bindings
     if projection is not None:relation["addressProjection"] = projection
     join_identity = _identity(relation)
     address_fact = AtomicMemoryObjectRuntimeFact(
@@ -325,8 +343,19 @@ def atomic_runtime_object_from_compiler_authority(
         write_effect_identity=join_identity + ":write",
         address_space_relation_identity=join_identity + ":address-space",
     )
-    return {address_index: address_fact, **{index: replace(address_fact,
-        operand_role="memory_lvalue") for index in expression_memory_indexes}}
+    objects={address_index:address_fact}
+    from .atomic_memory_binding import validate_binding
+    for association in expression_access_bindings:
+        association={**association,'joinPayload':json.loads(json.dumps(relation)),
+            'authorityIdentity':join_identity,
+            'readEffectIdentity':address_fact.read_effect_identity,
+            'writeEffectIdentity':address_fact.write_effect_identity}
+        association['bindingIdentity']=_identity(association)
+        validate_binding(association)
+        objects[association['memoryOperandIndex']]=replace(address_fact,
+            operand_role='memory_lvalue',memory_access_binding=association)
+    return objects
+
 
 
 def atomic_runtime_objects_from_bundle(

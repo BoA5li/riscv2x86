@@ -3236,6 +3236,7 @@ class SourceAddressBinding:
     atomic_write_effect_identity: Optional[str] = None
     atomic_address_space_relation_identity: Optional[str] = None
     address_projection: dict | None = None
+    memory_access_binding: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -4433,6 +4434,7 @@ def _runtime_operand_semantics(
             address=(SourceAddressBinding(
                 address_id=f"canonical-memory-address:{index}",
                 address_projection=(atomic_objects[index].address_projection if index in atomic_objects else None),
+                memory_access_binding=(atomic_objects[index].memory_access_binding if index in atomic_objects else None),
                 pointee_type_id=(atomic_objects[index].pointee_type_id
                                  if index in atomic_objects else None),
                 alignment_bytes=(atomic_objects[index].alignment_bytes

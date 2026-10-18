@@ -120,10 +120,23 @@ class L2EligibilityClassifier:
         outcome = str(finding.get("translationOutcome") or "not_attempted")
         legacy_dimensions, diagnostics = _structured_dimensions(finding)
         dimensions = legacy_dimensions
+        binding_profile_rejection = False
         try:
             semantic_profile = profile_from_finding(finding)
             profile_diagnostics = (() if semantic_profile.complete else
                                    ("l2.semantic-profile.incomplete",))
+            if not semantic_profile.complete:
+                from .atomic_memory_binding import identity as binding_identity
+                decision=(finding.get('approvalArtifact') or {}).get('l2AtomicMemoryBindingDecision',{})
+                if (isinstance(decision,Mapping) and decision.get('schemaVersion')=='riscv2x86.atomic-memory-profile-decision.v1'
+                        and decision.get('profileIdentity')==semantic_profile.profile_identity
+                        and decision.get('fragmentId')==fragment_id and decision.get('complete') is False
+                        and decision.get('decisionIdentity')==binding_identity({k:v for k,v in decision.items() if k!='decisionIdentity'})
+                        and isinstance(decision.get('issues'),list) and decision['issues']):
+                    first=decision['issues'][0]
+                    if isinstance(first,Mapping) and str(first.get('reasonCode','')).startswith('L2_ATOMIC_MEMORY_'):
+                        profile_diagnostics=(first['reasonCode'],)
+                        binding_profile_rejection=True
             # A v3 typed semantic profile is the authority for required
             # dimensions. Legacy structured hints remain useful diagnostics,
             # but may not silently enlarge the verification gate: those hints
@@ -152,10 +165,14 @@ class L2EligibilityClassifier:
             disposition = L2DimensionStatus.INCONCLUSIVE
             reason_codes = ("l2.translation-outcome-unknown",)
         else:
-            if semantic_profile is not None and fragment_id and dimensions:
+            if semantic_profile is not None and fragment_id and dimensions and not binding_profile_rejection:
                 materialization_decision = assess_fragment_l2_materializability(
                     finding, dimensions)
-            if (materialization_decision is not None
+            if binding_profile_rejection:
+                eligibility = L2EligibilityStatus.INCONCLUSIVE
+                disposition = L2DimensionStatus.INCONCLUSIVE
+                reason_codes = profile_diagnostics
+            elif (materialization_decision is not None
                     and not materialization_decision.executable):
                 eligibility = L2EligibilityStatus.INCONCLUSIVE
                 disposition = L2DimensionStatus.INCONCLUSIVE

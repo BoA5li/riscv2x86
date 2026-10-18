@@ -23,8 +23,18 @@ class AtomicMemoryObjectRuntimeFact:
     address_space_relation_identity: str | None = None
     operand_role: str = "address"
     address_projection: dict | None = None
+    memory_access_binding: dict | None = None
 
     def __post_init__(self) -> None:
+        if self.memory_access_binding is not None:
+            from .atomic_memory_binding import validate_binding
+            b=validate_binding(self.memory_access_binding)
+            if (self.operand_role!='memory_lvalue' or b['memoryObjectIdentity']!=self.object_identity
+                    or b['authorityIdentity']!=self.authority_identity
+                    or b['widthBits']!=self.wraparound_width_bits
+                    or b['readEffectIdentity']!=self.read_effect_identity
+                    or b['writeEffectIdentity']!=self.write_effect_identity):
+                raise ValueError('ATOMIC_MEMORY_BINDING_FACT_MISMATCH')
         if (self.operand_role not in {"address", "memory_lvalue"} or
                 not self.object_identity or not self.address_space_identity or
                 isinstance(self.alignment_bytes, bool) or self.alignment_bytes <= 0 or
@@ -546,6 +556,8 @@ def translation_runtime_facts_to_dict(
         "instructionStreamSyncProofId": facts.instruction_stream_sync_proof_id,
         "atomicMemoryObjects": {
             str(index): {
+                **({"schemaVersion":"riscv2x86.atomic-memory-object-runtime.v2",
+                    "memoryAccessBinding":item.memory_access_binding} if item.memory_access_binding else {}),
                 **({"addressProjection": item.address_projection} if item.address_projection else {}),
                 **({"operandRole": item.operand_role} if item.operand_role != "address" else {}),
                 "objectIdentity": item.object_identity,
@@ -638,10 +650,15 @@ def translation_runtime_facts_from_dict(
                     "arithmeticRelation", "wraparoundWidthBits", "ordering"}
         required.update({"readEffectIdentity", "writeEffectIdentity"})
         allowed = required | {"addressSpaceRelationIdentity", "operandRole", "addressProjection"}
+        if raw_item.get('schemaVersion')=='riscv2x86.atomic-memory-object-runtime.v2':
+            required=required|{'schemaVersion','memoryAccessBinding'}
+            allowed=allowed|{'schemaVersion','memoryAccessBinding'}
+
         if (not required.issubset(raw_item) or not set(raw_item).issubset(allowed)
                 or not isinstance(raw_item.get("ordering"), list)):
             raise ValueError("atomic memory object authority fields are invalid")
         atomic_objects[index] = AtomicMemoryObjectRuntimeFact(
+            memory_access_binding=raw_item.get("memoryAccessBinding"),
             operand_role=raw_item.get("operandRole", "address"),
             address_projection=raw_item.get("addressProjection"),
             object_identity=raw_item["objectIdentity"],

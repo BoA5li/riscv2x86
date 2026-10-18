@@ -255,6 +255,16 @@ def test_real_atomic_expression_chain_closes_all_dimensions(tmp_path,opcode,widt
     evaluation=load_case_evaluation_result(output,case)
     fragments=read_l2_fragment_results(evaluation)
     assert fragments
+    report_path=next(output.glob('cases/*/work/translation-work/translated_report.json'))
+    production_finding=json.loads(report_path.read_text())['findings'][0]
+    assert production_finding['l2SemanticProfile']['memoryShape']['complete'] is True
+    decision=production_finding['approvalArtifact']['l2AtomicMemoryBindingDecision']
+    assert decision['complete'] is True and decision['issues']==[]
+    memory_fact=production_finding['translationRuntimeFacts']['atomicMemoryObjects']['1']
+    binding=memory_fact['memoryAccessBinding']
+    assert binding['memoryOperandIndex']==1
+    assert binding['addressOperandIndex']==(1 if memory_only else 3)
+    assert binding['widthBits']==width
     # The dedicated atomic provider must actually persist evidence, not an
     # ordinary memory provider returning a coincidentally equal final value.
     provider_files=list(output.glob('cases/*/work/replay/**/atomic-observation.json'))

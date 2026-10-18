@@ -857,6 +857,14 @@ def _output(
         output_metadata["l2SemanticProfile"] = profile.to_dict()
         if isinstance(approval, dict):
             approval["l2SemanticProfileIdentity"] = profile.profile_identity
+            from .atomic_memory_binding import model_binding_diagnostics, identity as memory_binding_identity
+            binding_issues=model_binding_diagnostics(context.fragment.id,context.sourceModel)
+            decision={'schemaVersion':'riscv2x86.atomic-memory-profile-decision.v1',
+                'profileIdentity':profile.profile_identity,'fragmentId':context.fragment.id,
+                'issues':binding_issues,'complete':not binding_issues}
+            decision['decisionIdentity']=memory_binding_identity(decision)
+            approval['l2AtomicMemoryBindingDecision']=decision
+
             approval["l2PatternKind"] = profile.pattern_kind.value
             from .l2_asm_goto import asm_goto_proof_facts
             goto_facts = asm_goto_proof_facts(context.fragment.id, context.sourceModel, approval)

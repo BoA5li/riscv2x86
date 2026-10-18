@@ -11,7 +11,7 @@ from tests.test_compiler_expression_contracts import node, ctype
 from riscv2x86_py.automatic_batch_cli import _source_range
 
 
-def authority_for_expression(*, wrong_base=False):
+def authority_for_expression(*, wrong_base=False, memory_width=64):
     authority = _compiler_authority()
     original = deepcopy(authority['candidate'])
     original.pop('closureIdentity')
@@ -21,9 +21,10 @@ def authority_for_expression(*, wrong_base=False):
     carriers[1]['operandIndex']=2
     base=carriers[1]['declarationIdentity']
     value=carriers[0]['declarationIdentity']
+    memory_type='unsigned int' if memory_width==32 else 'unsigned long'
     raw=[node(referencedDecl={'id':'value'}),
-         node('UnaryOperator',opcode='*',inner=[node(typ='unsigned long *',referencedDecl={'id':'other' if wrong_base else 'pointer'})]),
-         node(typ='unsigned long *',referencedDecl={'id':'pointer'})]
+         node('UnaryOperator',typ=memory_type,opcode='*',inner=[node(typ=memory_type+' *',referencedDecl={'id':'other' if wrong_base else 'pointer'})]),
+         node(typ=memory_type+' *',referencedDecl={'id':'pointer'})]
     expressions=[expression_from_ast(n,source_digest=authority['sourceDigest'],
         function_identity=authority['functionIdentity'],
         declaration_identity=lambda d: {'value':value,'pointer':base,'other':'sha256:'+'9'*64}[d],
@@ -37,8 +38,9 @@ def authority_for_expression(*, wrong_base=False):
         operandSlotFacts={'slots':[{'operandIndex':i,'complete':i!=1} for i in range(3)]},
         reasonCodes=['L2_FRAGMENT_DECLARATION_IDENTITY_MISSING','L2_FRAGMENT_VALUE_NODE_MISSING'])
     pointer_type=authority['compilerTypeBindings']['1']['compilerType']
+    if memory_width==32:pointer_type.update(canonicalType='unsigned int *',pointeeType='unsigned int',pointeeWidthBits=32,pointeeAlignmentBytes=4)
     fragment={'id':authority['fragmentId'],'outputs':[
-        {'constraint':'+r','compilerType':ctype()}, {'constraint':'+m','compilerType':ctype()}],
+        {'constraint':'+r','compilerType':ctype()}, {'constraint':'+m','compilerType':ctype(canonicalType=memory_type,widthBits=memory_width,alignmentBytes=memory_width//8)}],
         'inputs':[{'constraint':'r','compilerType':pointer_type}]}
     authority['candidate']=close_compiler_fragment_candidate(original,fragment,
         source_digest=authority['sourceDigest'],function_identity=authority['functionIdentity'])
@@ -104,7 +106,7 @@ def test_memory_role_and_machine_join_survive_runtime_snapshot():
 
 
 def memory_only_authority(memory_width=64):
-    authority=authority_for_expression()
+    authority=authority_for_expression(memory_width=memory_width)
     original=deepcopy(authority['candidate']['expressionClosureInputs']['candidate'])
     fragment=deepcopy(authority['candidate']['expressionClosureInputs']['fragment'])
     pointer=authority['compilerTypeBindings']['2']['compilerType']
