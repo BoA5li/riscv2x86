@@ -25,6 +25,14 @@ class PythonRunRegisterNameResolver:
     """
 
     names: Dict[Tuple[str, int, int], str]
+    registers: tuple = ()
+    language_id: str = ''
+    big_endian: bool | None = None
+
+    def register_read_view_for_varnode(self, *, space, offset, size):
+        from .register_views import database_read_view
+        return database_read_view(self.registers,space=space,offset=offset,size=size,
+            language_id=self.language_id,big_endian=self.big_endian)
 
     def register_name_for_varnode(
         self,
@@ -52,8 +60,7 @@ def _default_python_run_path() -> Path:
 
 
 def _default_register_query_script() -> Path:
-    script_path = "/root/src/poc_trans/path_b/riscv2x86/test/minimal/backend_test/riscv_register_query.py"
-    return Path(script_path)
+    return Path(__file__).resolve().parents[2] / "test/minimal/backend_test/riscv_register_query.py"
 
 def riscv_language_id_for_xlen(xlen: int) -> str:
     if xlen == 32:
@@ -188,7 +195,10 @@ def load_riscv64_register_resolver_via_pythonrun(
             "Ghidra query returned no usable RISC-V registers"
         )
 
-    return PythonRunRegisterNameResolver(names=names)
+    versioned = data.get('schemaVersion') == 'riscv2x86.ghidra-register-database.v2'
+    return PythonRunRegisterNameResolver(names=names,
+        registers=tuple(data['registers']) if versioned else (),
+        language_id=data['language_id'],big_endian=data.get('bigEndian') if versioned else None)
 
 
 

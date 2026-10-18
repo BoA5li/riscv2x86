@@ -12,6 +12,7 @@ from .csr_metadata_ingress import (
     decode_csr_privileged_operations,
 )
 from .atomic_metadata_ingress import decode_atomic_operation
+from .register_views import RegisterReadView, database_read_view
 
 
 if TYPE_CHECKING:
@@ -75,6 +76,7 @@ class AdaptedVarnode:
     offset: int
     size: int
     name: str = ""
+    register_read_view: RegisterReadView | None = None
 
 class AuthoritativeRegisterNameUnavailableError(ValueError):
     """
@@ -406,6 +408,22 @@ class GhidraLanguageRegisterResolver:
 
         return self._normalise_register_name(register)
 
+    def register_read_view_for_varnode(self, *, space, offset, size):
+        try:
+            records=[]
+            for reg in self.language.getRegisters():
+                address=reg.getAddress()
+                if str(address.getAddressSpace().getName()).lower() != 'register':continue
+                base=reg.getBaseRegister() or reg
+                records.append({'name':str(reg.getName()),'offset':int(address.getOffset()),
+                    'size':int(reg.getMinimumByteSize()),'bitLength':int(reg.getBitLength()),
+                    'isProcessorContext':bool(reg.isProcessorContext()),'baseName':str(base.getName()),
+                    'baseOffset':int(base.getAddress().getOffset()),'baseSize':int(base.getMinimumByteSize())})
+            return database_read_view(records,space=space,offset=offset,size=size,
+                language_id=str(self.language.getLanguageID()),big_endian=self.language.isBigEndian())
+        except Exception:
+            return None
+
     def register_name_for_varnode(
         self,
         *,
@@ -659,6 +677,7 @@ def adapt_raw_varnode(
     raw_varnode: Any,
     *,
     register_name_resolver: Optional[RegisterNameResolver] = None,
+    allow_read_view: bool = False,
 ) -> AdaptedVarnode:
     """
     将 pypcode raw varnode 转换为结构化 AdaptedVarnode。
@@ -709,12 +728,22 @@ def adapt_raw_varnode(
         if resolved:
             name = resolved
 
+    view = None
+    read_lookup = getattr(register_name_resolver, 'register_read_view_for_varnode', None)
+    if not name and space.lower() == 'register' and allow_read_view and callable(read_lookup):
+        view = read_lookup(space=space.lower(),offset=offset,size=size)
+        if view is not None:
+            if (not isinstance(view, RegisterReadView) or view.offset != offset or view.size != size):
+                raise ValueError('REGISTER_READ_VIEW_MISMATCH')
+            name = view.parent_name
+
     return AdaptedVarnode(
         raw=raw_varnode,
         space=space,
         offset=offset,
         size=size,
         name=name,
+        register_read_view=view,
     )
 
 
@@ -779,6 +808,7 @@ def adapt_raw_pcode_op(
         adapt_raw_varnode(
             raw_varnode,
             register_name_resolver=register_name_resolver,
+            allow_read_view=True,
         )
         for raw_varnode in raw_input_list
     ]

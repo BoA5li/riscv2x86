@@ -147,6 +147,22 @@ def _complete_non_candidate_evaluation_states(findings: List[Finding]) -> None:
             outcome = TranslationOutcome.FAILED
         else:
             outcome = TranslationOutcome.NOT_ATTEMPTED
+        if (outcome in {TranslationOutcome.UNSUPPORTED, TranslationOutcome.FAILED}
+                and finding.verificationDetail and finding.ruleName
+                and not finding.translationReasonCodes):
+            # Preserve the first pre-candidate failure before archiving its
+            # terminal state. Never reinterpret unsupported as verification.
+            code = finding.ruleName
+            detail = finding.verificationDetail
+            payload = {"ruleName": code, "detail": detail,
+                "machineCodeHex": finding.machineCodeHex,
+                "executionDisposition": "precondition_rejected",
+                "evidenceProductionDisposition": "not_produced"}
+            finding.translationReasonCodes.append(code)
+            finding.routeAuthorityDiagnostics.append(RouteAuthorityDecision(
+                "translation_precondition", _finding_experiment_identity(finding),
+                code.split('.')[0], code, detail, content_identity(payload),
+                inputs_payload=payload).to_dict())
         publication = (
             PublicationOutcome.ADMITTED
             if outcome is TranslationOutcome.EMITTED

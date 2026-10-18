@@ -29,15 +29,23 @@ def main():
         address = reg.getAddress()
         if address.getAddressSpace() != register_space:
             continue
+        base = reg.getBaseRegister()
+        if base is None:
+            base = reg
         registers.append({
             "name": str(reg.getName()),
             "offset": int(address.getOffset()),
             "size": int(reg.getMinimumByteSize()),
             "bitLength": int(reg.getBitLength()),
             "isProcessorContext": bool(reg.isProcessorContext()),
+            "baseName": str(base.getName()),
+            "baseOffset": int(base.getAddress().getOffset()),
+            "baseSize": int(base.getMinimumByteSize()),
         })
 
     result = {
+        "schemaVersion": "riscv2x86.ghidra-register-database.v2",
+        "bigEndian": bool(language.isBigEndian()),
         "ok": True,
         "language_id": LANGUAGE_ID,
         "registers": registers,

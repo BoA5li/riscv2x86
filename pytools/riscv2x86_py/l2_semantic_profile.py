@@ -286,9 +286,29 @@ def profile_from_source_model(
                           getattr(memory, "has_atomic", False)))
     reads, writes = bool(getattr(memory, "reads_memory", False)), bool(
         getattr(memory, "writes_memory", False))
-    address_bindings = [getattr(item, "address", None) for item in operands
-                        if str(getattr(getattr(item, "access", None), "value", ""))
-                        == "address"]
+    address_bindings = []
+    for item in operands:
+        access = str(getattr(getattr(item, "access", None), "value", ""))
+        kind = str(getattr(getattr(item, "kind", None), "value", ""))
+        if access == "address":
+            address_bindings.append(getattr(item, "address", None))
+        elif kind == "memory" and access in {"input", "output", "read_write"}:
+            address = getattr(item, "address", None)
+            valid = bool(address and getattr(address, "memory_object_identity", None))
+            if atomic:
+                # Memory contents keep their access mode. The distinct address
+                # projection must agree with the decoder/compiler atomic join.
+                projection = getattr(address, "address_projection", None)
+                valid = (valid and getattr(atomic_model, "complete", False)
+                    and getattr(item, "source_operand_index", None) == getattr(atomic_model, "address_operand_index", None)
+                    and getattr(address, "atomic_authority_identity", None) == getattr(atomic_model, "authority_identity", None)
+                    and bool(getattr(address, "atomic_authority_identity", None))
+                    and getattr(address, "memory_object_identity", None) == getattr(atomic_model, "memory_object_identity", None)
+                    and isinstance(projection, dict)
+                    and projection == getattr(atomic_model, "address_projection", None)
+                    and projection.get("operandIndex") == getattr(item, "source_operand_index", None)
+                    and projection.get("projectionIdentity") == _identity({k:v for k,v in projection.items() if k!='projectionIdentity'}))
+            address_bindings.append(address if valid else None)
     object_relative = bool(address_bindings) and all(
         bool(getattr(item, "address_id", ""))
         and bool(getattr(item, "provenance_known", False))

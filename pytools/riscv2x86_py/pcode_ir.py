@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from .register_views import RegisterReadView
 
 from dataclasses import dataclass, field
 from enum import Enum, IntFlag
@@ -763,6 +764,7 @@ class Var:
     offset: int
     size: int
     name: str = ""
+    register_read_view: RegisterReadView | None = None
 
     def __str__(self) -> str:
         if self.kind == VarKind.CONST:
@@ -1230,12 +1232,17 @@ def _to_var(v: Any) -> Var:
     else:
         kind = VarKind.OTHER
 
+    view = getattr(v, "register_read_view", None)
+    if view is not None and (not isinstance(view, RegisterReadView) or kind is not VarKind.REG
+            or view.offset != off or view.size != size or view.parent_name != name):
+        raise ValueError("CANONICAL_REGISTER_READ_VIEW_MISMATCH")
     return Var(
         kind=kind,
         space=space,
         offset=off,
         size=size,
         name=name,
+        register_read_view=view,
     )
 
 def _candidate_target_addr(v: Any) -> Optional[int]:

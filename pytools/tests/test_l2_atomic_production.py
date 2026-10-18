@@ -24,7 +24,7 @@ from riscv2x86_py.atomic_builtin_shell import fnv,build_atomic_builtin_shell,val
 def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_override=None):
     from tests.test_atomic_expression_consumer import authority_for_expression
     from tests.test_atomic_expression_consumer import memory_only_authority
-    compiler=memory_only_authority() if memory_only else authority_for_expression() if expression else _compiler_authority()
+    compiler=memory_only_authority(memory_width) if memory_only else authority_for_expression() if expression else _compiler_authority()
     if compiler_override is not None:compiler=compiler_override
     ranged=compiler.get('schemaVersion')=='riscv2x86.compiler-fragment-authority.v3'
     frontend_range={'beginOffset':100,'endOffset':141 if ranged else 140,
@@ -36,7 +36,7 @@ def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_o
     compiler['authorityIdentity']=identity({k:v for k,v in compiler.items() if k!='authorityIdentity'})
     pointer_type=(compiler['candidate']['expressionClosureInputs']['fragment']['outputs'][1]['compilerAddressType']
         if memory_only else compiler['compilerTypeBindings'][str(pointer_index)]['compilerType'])
-    if memory_width==32:
+    if memory_width==32 and not memory_only:
         pointer_type.update(canonicalType='unsigned int *',pointeeType='unsigned int',pointeeWidthBits=32,pointeeAlignmentBytes=4)
         compiler['authorityIdentity']=identity({k:v for k,v in compiler.items() if k!='authorityIdentity'})
     if expression:
@@ -48,7 +48,7 @@ def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_o
         source_digest=compiler['sourceDigest'],begin_offset=100,end_offset=frontend_range['endOffset'],
         frontend_fragment={'id':compiler['fragmentId'],**frontend_range},runtime_facts=runtime,atomic_operation=decoded)[pointer_index]
     fragment=AsmFragment(id=compiler['fragmentId'],**frontend_range,rawAsmText='typed decoder fixture',isVolatile=True,clobbers=['memory','cc'],
-        outputs=[AsmOperand(constraint='+r',exprText='value',isOutput=True,compilerType=value_type)]+([AsmOperand(constraint='+A' if memory_only else '+m',exprText='*ptr',isOutput=True,compilerType=value_type,compilerAddressType=pointer_type)] if expression or memory_only else []),
+        outputs=[AsmOperand(constraint='+r',exprText='value',isOutput=True,compilerType=value_type)]+([AsmOperand(constraint='+A' if memory_only else '+m',exprText='*ptr',isOutput=True,compilerType=compiler['compilerTypeBindings']['1']['compilerType'] if memory_only else value_type,compilerAddressType=pointer_type)] if expression or memory_only else []),
         inputs=[] if memory_only else [AsmOperand(constraint='r',exprText='ptr',compilerType=pointer_type)],compilerFragmentAuthority=compiler)
     model=_atomic_model();old_value,old_pointer=model.operands.operands
     address=replace(old_pointer.address,pointee_type_id=obj.pointee_type_id,memory_object_identity=obj.object_identity,

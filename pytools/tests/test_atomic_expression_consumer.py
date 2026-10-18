@@ -103,12 +103,23 @@ def test_memory_role_and_machine_join_survive_runtime_snapshot():
     assert restored.asm_goto_machine_join==facts.asm_goto_machine_join
 
 
-def memory_only_authority():
+def memory_only_authority(memory_width=64):
     authority=authority_for_expression()
     original=deepcopy(authority['candidate']['expressionClosureInputs']['candidate'])
     fragment=deepcopy(authority['candidate']['expressionClosureInputs']['fragment'])
     pointer=authority['compilerTypeBindings']['2']['compilerType']
     fragment['outputs'][1]['constraint']='+A'
+    if memory_width==32:
+        pointer=deepcopy(pointer)
+        pointer.update(canonicalType='unsigned int *',pointeeType='unsigned int',
+            pointeeWidthBits=32,pointeeAlignmentBytes=4)
+        fragment['outputs'][1]['compilerType']=ctype(canonicalType='unsigned int',widthBits=32,alignmentBytes=4)
+        base=next(iter(authority['memoryObjectBindings']))
+        expression=expression_from_ast(node('UnaryOperator',typ='unsigned int',opcode='*',
+            inner=[node(typ='unsigned int *',referencedDecl={'id':'pointer'})]),
+            source_digest=authority['sourceDigest'],function_identity=authority['functionIdentity'],
+            declaration_identity=lambda _:base,source_range=_source_range)
+        original['compilerExpressionFacts']['slots'][1]['expression']=expression
     fragment['outputs'][1]['compilerAddressType']=pointer
     fragment['inputs']=[]
     original['operandCarriers']=[x for x in original['operandCarriers'] if x['operandIndex']!=2]

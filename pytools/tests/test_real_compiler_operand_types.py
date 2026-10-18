@@ -25,7 +25,11 @@ def test_real_frontend_exports_pointer_pointee_types_and_binds_exact_value_node(
     _inject_compiler_fragment_authority(report, source, functions)
     fragment = json.loads(report.read_text())['findings'][0]['fragment']
     authority = fragment['compilerFragmentAuthority']
-    assert authority['schemaVersion'] == 'riscv2x86.compiler-fragment-authority.v2'
+    assert authority['schemaVersion'] == 'riscv2x86.compiler-fragment-authority.v3'
+    from riscv2x86_py.fragment_source_range import validate_fragment_source_range
+    validate_fragment_source_range(authority['sourceRangeBinding'],authority['fragmentBindingKey'],
+        fragment_id=fragment['id'],source_digest=authority['sourceDigest'],
+        begin_offset=fragment['beginOffset'],end_offset=fragment['endOffset'],frontend_fragment=fragment)
     pointer = authority['compilerTypeBindings']['1']
     parsed = compiler_operand_type_from_dict(pointer['compilerType'])
     assert parsed.is_pointer and parsed.pointee_is_integer
