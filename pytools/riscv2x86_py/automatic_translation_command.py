@@ -249,6 +249,7 @@ def main() -> int:
     parser.add_argument("--csr-authority-sidecar")
     parser.add_argument("--csr-target-build-contract", choices=("automatic-gcc-separate-tu-no-lto-v1",))
     parser.add_argument("--csr-architecture-profile")
+    parser.add_argument("--csr-architecture-template")
     parser.add_argument("--csr-environment-contract")
     parser.add_argument("--privileged-environment-sidecar")
     parser.add_argument("--instruction-stream-sync-registry")
@@ -329,14 +330,25 @@ def main() -> int:
                                      Path(args.atomic_authority_sidecar).resolve())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             return preflight_failure("atomic_authority_binding", exc)
+    if args.csr_architecture_template:
+        try:
+            if args.csr_architecture_profile:raise ValueError("CSR_ARCH_TEMPLATE_PROFILE_CONFLICT")
+            from .csr_architecture_profile import materialize_template
+            template=json.loads(Path(args.csr_architecture_template).read_text())
+            registry=materialize_template(template,json.loads(raw.read_text()),source=args.source)
+            materialized=raw.with_name("csr-architecture.materialized.json")
+            atomic_json(materialized,registry)
+            args.csr_architecture_profile=str(materialized)
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            return preflight_failure("csr_architecture_materialization",exc)
     if args.csr_architecture_profile:
         try:
-            from .csr_architecture_profile import load_profile
+            from .csr_architecture_profile import load_profile, profiles_from_payload
             profile = load_profile(args.csr_architecture_profile, source=args.source)
             raw_value = json.loads(raw.read_text())
             findings = raw_value if isinstance(raw_value, list) else raw_value.get("findings", [])
             ids = {item.get("fragment", {}).get("fragmentId") or item.get("fragment", {}).get("id") for item in findings}
-            if profile["fragmentId"] not in ids:
+            if set(profiles_from_payload(profile))-ids:
                 raise ValueError("CSR_ARCH_PROFILE_FRAGMENT_MISMATCH")
         except (OSError, ValueError, KeyError) as exc:
             return preflight_failure("csr_architecture_binding", exc)

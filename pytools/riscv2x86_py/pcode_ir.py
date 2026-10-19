@@ -365,6 +365,7 @@ class CanonicalCsrFieldEffect:
     warl_or_wlrl_policy_id: str | None = None
     side_effect_ids: tuple[str, ...] = ()
     complete: bool = False
+    behavior: str = "unknown"
 
 
 @dataclass(frozen=True)

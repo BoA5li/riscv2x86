@@ -72,3 +72,25 @@ def test_runner_forwards_runtime_environment_and_provider_directories(tmp_path, 
     batch_command = next(c for c in commands if 'riscv2x86_py.automatic_batch_cli' in c)
     for name in names:
         assert batch_command[batch_command.index('--'+name)+1] == str(tmp_path/name)
+
+
+@pytest.mark.parametrize('rejected',[False,True])
+def test_environment_checked_before_build_and_forwarded(tmp_path,monkeypatch,rejected):
+    module=runner();output=tmp_path/'out';commands=[]
+    manifest=tmp_path/'environment.json'
+    monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend','--clang10','clang',
+        '--suite','suite','--output',str(output),'--experiment-environment',str(manifest)])
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kw:'/tools/'+name)
+    def run(command,**kw):
+        commands.append(command);stage=Path(kw['stdout'].name).stem
+        if stage=='clang-version':kw['stdout'].write('clang version 10.0.0\n')
+        return SimpleNamespace(returncode=2 if stage=='experiment-environment' and rejected else 0)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    assert module.main()==2 # mock intentionally does not produce a batch
+    status=json.loads((output/'run-status.json').read_text())
+    if rejected:
+        assert 'experiment-environment' in status['blockers']
+        assert not any(c[0]=='cmake' for c in commands)
+    else:
+        command=next(c for c in commands if 'riscv2x86_py.automatic_batch_cli' in c)
+        assert command[command.index('--experiment-environment')+1]==str(manifest)

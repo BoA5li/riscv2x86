@@ -120,9 +120,13 @@ def canonical_csr_operations_from_decoded(*, addr: int, decoded: DecodedCsrInstr
     else:
         operation = CanonicalCsrOperationKind.UNKNOWN
     fields = () if entry is None else tuple(CanonicalCsrFieldEffect(
-        field_id=f"{entry.csr_id}.{field.field_id}", writable_mask=field.writable_mask,
+        field_id=f"{entry.csr_id}.{field.field_id}",
+        old_value_node_id=f"decoder-csr:{addr:#x}:field:{entry.csr_id}.{field.field_id}:before" if reads else None,
+        new_value_node_id=f"decoder-csr:{addr:#x}:field:{entry.csr_id}.{field.field_id}:after" if writes else None,
+        writable_mask=field.writable_mask,
         warl_or_wlrl_policy_id=field.policy_id, side_effect_ids=field.side_effect_ids,
-        complete=field.behavior.value != "wpri") for field in entry.fields)
+        complete=field.behavior.value != "wpri" and not (writes and field.behavior.value=="ro"),
+        behavior=field.behavior.value) for field in entry.fields)
     profile_has_zicsr = profile is not None and "zicsr" in {
         item.strip().lower() for item in profile.extensions
     }

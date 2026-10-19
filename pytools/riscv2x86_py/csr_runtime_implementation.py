@@ -103,6 +103,8 @@ def validate_implementation(recipe, effects, constraints):
         scratch = {'riscv.csr.mscratch': 0x340, 'riscv.csr.sscratch': 0x140}
         address = scratch.get(getattr(effect, 'csr_id', ''))
         if (kind != 'other' or address is None or recipe.csr_token != str(address)
+                or len(fields)!=1 or getattr(fields[0],'behavior','unknown')!='rw'
+                or getattr(fields[0],'writable_mask',None)!=(1<<64)-1
                 or any(getattr(x, 'warl_or_wlrl_policy_id', None)
                        or getattr(x, 'side_effect_ids', ()) for x in fields)):
             raise ValueError('CSR_RUNTIME_STATE_CONTRACT_UNSUPPORTED')

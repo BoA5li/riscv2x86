@@ -64,6 +64,9 @@ def build_csr_runtime_approval(fragment, result, *, machine_code, decoder_profil
         'compilerAuthorityIdentity':(asdict(fragment) if is_dataclass(fragment) else fragment).get('compilerFragmentAuthority',{}).get('authorityIdentity',''),
         'sourceShell':_fragment_shell(fragment), 'targetEnvironmentId':target_environment_id,
         'functionalObservability':semantic_payload(functional_observability)}
+    if result.backend_contract is not None:
+        payload['schemaVersion']='riscv2x86.csr-runtime-proof.v2'
+        payload['backendContract']=result.backend_contract
     proof_id=semantic_identity(payload)
     plan_id=semantic_identity({'family':result.route,'sourceModel':payload['fieldProof']['sourceModel']})
     constraint_id=semantic_identity(payload['fieldProof']['constraints'])
@@ -110,9 +113,12 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
     if approval.get('artifactVersion')!='phase6-csr-runtime-v1':
         raise ValueError('CSR_RUNTIME_APPROVAL_SCHEMA_INVALID')
     p=approval['proofPayload']
-    if (set(p) != {'schemaVersion','machineCodeHex','decoderProfile','planFamily','fieldProof','fieldProofIdentity','shellProof','recipe',
+    version2=p.get('schemaVersion')=='riscv2x86.csr-runtime-proof.v2'
+    expected_fields={'schemaVersion','machineCodeHex','decoderProfile','planFamily','fieldProof','fieldProofIdentity','shellProof','recipe',
                    'implementationIdentity','runtimeContractId','compilerAuthorityIdentity','sourceShell','targetEnvironmentId','functionalObservability'}
-            or p['schemaVersion']!='riscv2x86.csr-runtime-proof.v1'
+    if version2:expected_fields.add('backendContract')
+    if (set(p)!=expected_fields
+            or p['schemaVersion'] not in {'riscv2x86.csr-runtime-proof.v1','riscv2x86.csr-runtime-proof.v2'}
             or semantic_identity(p)!=approval.get('proofIdentity')
             or p['sourceShell']!=_fragment_shell(fragment)):
         raise ValueError('CSR_RUNTIME_APPROVAL_BINDING_MISMATCH')
@@ -190,6 +196,21 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
     if (implementation!=p['implementationIdentity']
             or p['runtimeContractId']!=implementation_payload['implementation'].implementation_id+'@v1'):
         raise ValueError('CSR_RUNTIME_IMPLEMENTATION_IDENTITY_MISMATCH')
+    if version2:
+        from .csr_state_contract import validate_state_contract
+        backend=p['backendContract']
+        if (not isinstance(backend,dict) or set(backend)!={'stateContract','sourceExecutionSnapshot','targetEnvironmentSnapshot'}
+                or len(f['constraints'])!=1):
+            raise ValueError('CSR_RUNTIME_BACKEND_CONTRACT_INVALID')
+        validate_state_contract(backend['stateContract'],state_object=f['constraints'][0]['target_state_object_id'],
+            source_execution=semantic_identity(backend['sourceExecutionSnapshot']),
+            target_environment=semantic_identity(backend['targetEnvironmentSnapshot']))
+        if (semantic_identity(backend['targetEnvironmentSnapshot'])!=f['targetEnvironmentId']
+                or implementation_payload['implementation'].semantic_family!='logical-csr-state'
+                or recipe.context_expression!=backend['stateContract']['contextExpression']):
+            raise ValueError('CSR_RUNTIME_BACKEND_ENVIRONMENT_MISMATCH')
+    elif implementation_payload['implementation'].semantic_family=='logical-csr-state':
+        raise ValueError('CSR_RUNTIME_STATE_ENVIRONMENT_CONTRACT_REQUIRED')
     shell=prove_runtime_shell(fragment,implementation,p['shellProof']['buildContract'],
         operand_binding=_namespace(bindings[0]))
     if shell!=p['shellProof'] or tuple(f['shellFacts'])!=(semantic_identity(shell),):

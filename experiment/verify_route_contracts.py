@@ -14,6 +14,11 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_experiment_environment.py',
+    'test_csr_architecture_registry.py',
+    'test_csr_family_environment.py',
+    'test_csr_context_lifecycle.py',
+    'test_csr_environment_contract.py',
     'test_csr_typed_result_flow.py',
     'test_csr_runtime_value_shell.py',
     'test_route_run_summary.py',
@@ -64,6 +69,7 @@ def main():
     parser.add_argument('--csr-authority-directory', type=Path)
     parser.add_argument('--csr-environment-contract-directory', type=Path)
     parser.add_argument('--instruction-stream-sync-directory', type=Path)
+    parser.add_argument('--experiment-environment',type=Path)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     output = args.output.absolute()
@@ -109,6 +115,13 @@ def main():
         status['productionTools'] = tools
         if any(value is None for value in tools.values()):
             status['blockers'].append('production-tools')
+    if args.experiment_environment is not None and not status['blockers']:
+        if args.suite is None:
+            status['blockers'].append('experiment-environment-requires-suite')
+        elif not run('experiment-environment',[sys.executable,'-m','riscv2x86_py.experiment_environment',
+                '--manifest',str(args.experiment_environment.absolute()),'--source',str(args.suite.absolute()),
+                '--output',str(output/'experiment-environment.json')],60):
+            status['blockers'].append('experiment-environment')
     if not status['blockers']:
         if not run('frontend-build',['cmake','--build','build','-j2'],600):
             status['blockers'].append('frontend-build')
@@ -121,6 +134,8 @@ def main():
             '--input',str(args.suite.absolute()), '--frontend',str(args.frontend.absolute()),
             '--output-directory',str(output/'generated-suite-strict'), '--jobs','1',
             '--timeout-seconds','120']
+        if args.experiment_environment is not None:
+            suite_command.extend(('--experiment-environment',str(args.experiment_environment.absolute())))
         for name in ('privileged_config_directory', 'l2_provider_directory',
                      'l3_provider_directory', 'harness_directory', 'atomic_authority_directory',
                      'csr_architecture_directory', 'csr_authority_directory',

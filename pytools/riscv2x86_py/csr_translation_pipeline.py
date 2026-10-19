@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping
-from .semantic_content import semantic_identity
+from .semantic_content import semantic_identity, semantic_payload
 
 from .csr_effect_constraints import (
     CsrTargetMapping,
@@ -36,6 +36,8 @@ class CsrRuntimeRegistry:
     external_state_complete: bool
     source_digest: str = ""
     fragment_id: str = ""
+    semantic_family: str = ""
+    state_contract: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class CsrTranslationPipelineResult:
     implementation_identity: str = ""
     shell_payload: dict | None = None
     recipe_payload: dict | None = None
+    backend_contract: dict | None = None
 
 
 def _facts_profile(
@@ -138,6 +141,21 @@ def run_csr_translation_pipeline(
     if fragment_id and runtime_registry.fragment_id != fragment_id:
         return CsrTranslationPipelineResult("needs_route", "csr_runtime_binding", None,
             ("CSR_RUNTIME_CONTRACT_FRAGMENT_MISMATCH",), candidates, (), None, None, False)
+    if (runtime_registry.semantic_family=="counter_observation" and
+            any(getattr(getattr(e,"csr_class",None),"value","")!="user_counter_observation" for e in source_csr_model.effects)):
+        return CsrTranslationPipelineResult("needs_route","csr_backend_family",None,
+            ("CSR_RUNTIME_SOURCE_FAMILY_MISMATCH",),candidates,(),None,None,False)
+    if runtime_registry.semantic_family=="logical_csr_state":
+        from .csr_state_contract import validate_state_contract
+        try:
+            if len(runtime_registry.mappings)!=1:raise ValueError("CSR_STATE_COMPOSITE_BACKEND_REQUIRED")
+            mapping=runtime_registry.mappings[0]
+            validate_state_contract(runtime_registry.state_contract,state_object=mapping.target_state_object_id,
+                lifetime=mapping.state_lifetime_id,source_execution=semantic_identity(privileged_execution_facts),
+                target_environment=semantic_identity(target_environment))
+        except ValueError as exc:
+            return CsrTranslationPipelineResult("needs_route","csr_state_environment",None,
+                (str(exc),),candidates,(),None,None,False)
     profile = _facts_profile(privileged_execution_facts, runtime_registry)
     constraints = derive_csr_effect_constraints(
         source_model=source_csr_model,
@@ -159,6 +177,10 @@ def run_csr_translation_pipeline(
         if proposed_recipe is not None:
             try:
                 implementation_payload, _ = validate_implementation(proposed_recipe, source_csr_model.effects, constraints)
+                if (implementation_payload["implementation"].semantic_family=="logical-csr-state"
+                        and source_fragment is not None and runtime_registry.state_contract is None):
+                    implementation_payload=None
+                    raise ValueError("CSR_RUNTIME_STATE_ENVIRONMENT_CONTRACT_REQUIRED")
             except ValueError as exc:
                 implementation_reason = str(exc)
     shell_payload = None
@@ -276,4 +298,8 @@ def run_csr_translation_pipeline(
     return CsrTranslationPipelineResult(
         "approved", selected.family.value, rendered.emitted_text, (),
         candidates, constraints, proof, rendered, True, implementation_identity, shell_payload, asdict(recipe),
+        None if runtime_registry.state_contract is None else {
+            "stateContract":runtime_registry.state_contract,
+            "sourceExecutionSnapshot":semantic_payload(privileged_execution_facts),
+            "targetEnvironmentSnapshot":semantic_payload(target_environment)},
     )

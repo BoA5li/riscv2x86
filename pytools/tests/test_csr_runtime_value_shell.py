@@ -55,7 +55,7 @@ def recipe(operation,shape):
 
 def implementation(r,operation):
     effect=NS(operation=NS(value=operation),csr_class=NS(value='other'),csr_id='riscv.csr.mscratch',
-        affected_fields=(NS(field_id='scratch.value',warl_or_wlrl_policy_id=None,side_effect_ids=()),),xlen_bits=64)
+        affected_fields=(NS(field_id='scratch.value',warl_or_wlrl_policy_id=None,side_effect_ids=(),behavior='rw',writable_mask=(1<<64)-1),),xlen_bits=64)
     return validate_implementation(r,(effect,),(NS(field_mappings=('scratch.value',)),))
 
 

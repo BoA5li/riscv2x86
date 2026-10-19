@@ -133,6 +133,7 @@ class CsrFieldEffect:
     side_effect_ids: tuple[str, ...]
     complete: bool
     missing_fact_codes: tuple[str, ...] = ()
+    behavior: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -428,13 +429,14 @@ def _field_effect(
         reasons.append(PrivilegedStateReasonCode.CSR_VALUE_FLOW_INCOMPLETE)
     if write_required and item.writable_mask is None:
         reasons.append(PrivilegedStateReasonCode.CSR_FIELD_EFFECT_INCOMPLETE)
-    if write_required and not item.warl_or_wlrl_policy_id:
+    if write_required and getattr(item,"behavior","unknown") not in {"rw"} and not item.warl_or_wlrl_policy_id:
         reasons.append(PrivilegedStateReasonCode.CSR_WARL_WLRL_POLICY_INCOMPLETE)
     if not item.complete:
         reasons.append(PrivilegedStateReasonCode.CSR_FIELD_EFFECT_INCOMPLETE)
     missing = _ordered(reasons)
     return CsrFieldEffect(
         field_id=item.field_id,
+        behavior=getattr(item,"behavior","unknown"),
         old_value_binding=item.old_value_node_id,
         new_value_binding=item.new_value_node_id,
         writable_mask=item.writable_mask,
@@ -511,7 +513,19 @@ def _typed_csr_effect(block_address, operation_index, meta, facts, *, isolated_c
         and csr_class is CsrSemanticClass.USER_COUNTER_OBSERVATION
         and operation is CsrEffectOperation.READ and meta.state_complete
         and meta.access_gate_ids and facts.csr_access_policy.complete)
-    if not meta.access_gate_evaluation_complete and not counter_access_resolved:
+    scratch_access_resolved = bool(
+        isolated_counter_access and facts.complete and permission_complete and allowed is True
+        and meta.state_complete and csr_class is CsrSemanticClass.OTHER
+        and (csr_id,meta.csr_numeric_address) in {("riscv.csr.mscratch",0x340),("riscv.csr.sscratch",0x140)}
+        and meta.xlen_bits in {32,64} and not meta.access_gate_ids
+        and meta.decoder_opcode_kind in {"csrrw","csrrs","csrrc","csrrwi","csrrsi","csrrci"}
+        and len(meta.affected_csr_fields)==1
+        and meta.affected_csr_fields[0].behavior=="rw"
+        and meta.affected_csr_fields[0].writable_mask==(1<<meta.xlen_bits)-1
+        and not meta.affected_csr_fields[0].side_effect_ids
+        and not meta.affected_csr_fields[0].warl_or_wlrl_policy_id)
+    access_resolved=counter_access_resolved or scratch_access_resolved
+    if not meta.access_gate_evaluation_complete and not access_resolved:
         reasons.append(PrivilegedStateReasonCode.CSR_ACCESS_GATE_INCOMPLETE)
 
     fields = tuple(
@@ -523,7 +537,7 @@ def _typed_csr_effect(block_address, operation_index, meta, facts, *, isolated_c
     for field in fields:
         reasons.extend(field.missing_fact_codes)
 
-    may_trap = False if counter_access_resolved else meta.may_trap
+    may_trap = False if access_resolved else meta.may_trap
     if may_trap is None and allowed is not None:
         may_trap = not allowed
     if may_trap is None:

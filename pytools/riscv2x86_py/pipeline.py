@@ -1250,10 +1250,11 @@ def run(
     validation_runner: PipelineValidationRunner | None = None,
 ) -> dict:
     findings: List[Finding] = load_report(in_json)
+    architecture_profiles={}
     if csr_architecture_profile is not None:
-        from .csr_architecture_profile import parse_profile
-        parse_profile(csr_architecture_profile, xlen_bits=xlen)
-        if csr_architecture_profile["fragmentId"] not in {f.fragment.id for f in findings}:
+        from .csr_architecture_profile import profiles_from_payload
+        architecture_profiles=profiles_from_payload(csr_architecture_profile,xlen_bits=xlen)
+        if set(architecture_profiles)-{f.fragment.id for f in findings}:
             raise ValueError("CSR_ARCH_PROFILE_FRAGMENT_MISMATCH")
 
     if csr_runtime_registry is not None and csr_runtime_registry.fragment_id:
@@ -1556,17 +1557,17 @@ def run(
             if csr_sidecar is not None:
                 csr_execution_facts = csr_sidecar.facts_for(f.fragment.id)
         csr_decoder_profile = (None if csr_execution_facts is None else profile_from_execution_facts(csr_execution_facts, xlen_bits=xlen))
-        if csr_architecture_profile is not None and csr_architecture_profile.get("fragmentId") == f.fragment.id:
+        if f.fragment.id in architecture_profiles:
             from .csr_architecture_profile import parse_profile
             try:
-                explicit_profile = parse_profile(csr_architecture_profile,
+                explicit_profile = parse_profile(architecture_profiles[f.fragment.id],
                     source_digest=getattr(f, "sourceDigest", ""), fragment_id=f.fragment.id, xlen_bits=xlen)
                 if csr_decoder_profile is not None and csr_decoder_profile.catalog_profile() != explicit_profile.catalog_profile():
                     raise ValueError("CSR_ARCH_PROFILE_EXECUTION_CONFLICT")
                 csr_decoder_profile = explicit_profile
             except ValueError as exc:
                 code = str(exc)
-                payload = {"architectureProfile":csr_architecture_profile,
+                payload = {"architectureProfile":architecture_profiles[f.fragment.id],
                            "failureStage":"csr_architecture_binding"}
                 f.routeAuthorityDiagnostics.append(RouteAuthorityDecision("csr",str(f.fragment.id),
                     "csr_architecture_binding",code,code,content_identity(payload),inputs_payload=payload).to_dict())

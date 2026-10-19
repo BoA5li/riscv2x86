@@ -31,6 +31,12 @@ uint64_t rv2x86_csr_clear_bits(struct rv2x86_csr_context *, uint16_t, uint64_t);
  * separate caller contracts. These functions are not hardware CSR emulation.
  * Invalid context/token aborts as an execution precondition failure. */
 #define RV2X86_CSR_SCRATCH_PROFILE_V1 1u
+/* Binding is explicit, thread-local and non-nestable. A context must have a
+ * single owner; source privilege/trap and initial-state relations are caller
+ * preconditions, not facts inferred by these functions. */
+void rv2x86_csr_bind_context_v1(struct rv2x86_csr_context *);
+void rv2x86_csr_unbind_context_v1(struct rv2x86_csr_context *);
+struct rv2x86_csr_context *rv2x86_csr_bound_context_v1(void);
 uint64_t rv2x86_csr_read_checked_v1(const struct rv2x86_csr_context *, uint16_t);
 uint64_t rv2x86_csr_write_checked_v1(struct rv2x86_csr_context *, uint16_t, uint64_t);
 uint64_t rv2x86_csr_set_bits_checked_v1(struct rv2x86_csr_context *, uint16_t, uint64_t);

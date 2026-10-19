@@ -928,12 +928,32 @@ def prepare_automatic_inventory(
     csr_environment_contract_directory: str | Path | None = None,
     instruction_stream_sync_directory: str | Path | None = None,
     l3_diagnostic: bool = False,
+    experiment_environment: str | Path | None = None,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
     sources = ([root] if root.is_file() else
                sorted(item for item in root.rglob("*.c")
                       if not item.name.endswith(".harness.c")))
     source_root = root.parent if root.is_file() else root
+    environment_resolution=None
+    if experiment_environment is not None:
+        from .experiment_environment import load_environment
+        resolved,environment_resolution=load_environment(experiment_environment,source=root,overrides={
+            "harness_directory":harness_directory,"privileged_config_directory":privileged_config_directory,
+            "l2_provider_directory":l2_provider_directory,"l3_provider_directory":l3_provider_directory,
+            "atomic_authority_directory":atomic_authority_directory,"csr_authority_directory":csr_authority_directory,
+            "csr_architecture_directory":csr_architecture_directory,
+            "csr_environment_contract_directory":csr_environment_contract_directory,
+            "instruction_stream_sync_directory":instruction_stream_sync_directory})
+        harness_directory=resolved.get("harness_directory")
+        privileged_config_directory=resolved.get("privileged_config_directory")
+        l2_provider_directory=resolved.get("l2_provider_directory")
+        l3_provider_directory=resolved.get("l3_provider_directory")
+        atomic_authority_directory=resolved.get("atomic_authority_directory")
+        csr_authority_directory=resolved.get("csr_authority_directory")
+        csr_architecture_directory=resolved.get("csr_architecture_directory")
+        csr_environment_contract_directory=resolved.get("csr_environment_contract_directory")
+        instruction_stream_sync_directory=resolved.get("instruction_stream_sync_directory")
     harness_root = None if harness_directory is None else Path(harness_directory).resolve()
     if harness_root is not None and not harness_root.is_dir():
         raise ValueError("explicit harness directory is unavailable")
@@ -981,6 +1001,12 @@ def prepare_automatic_inventory(
     if not frontend_path.is_file() or not frontend_path.stat().st_mode & 0o111:
         raise ValueError("riscv2x86 frontend is unavailable")
     inventory.mkdir(parents=True)
+    architecture_template_path=None
+    if environment_resolution is not None:
+        _write_json(inventory / "experiment-environment.json",environment_resolution)
+        if environment_resolution["architectureTemplate"] is not None:
+            architecture_template_path=inventory / "csr-architecture-template.json"
+            _write_json(architecture_template_path,environment_resolution["architectureTemplate"])
     privileged_environment_id = "auto-rv64gc-privileged-x86-v2"
     privileged_bindings = {
         source: _privileged_binding(source, source_root, privileged_root,
@@ -1020,6 +1046,12 @@ def prepare_automatic_inventory(
             ("instruction_stream_sync", instruction_stream_root, ".instruction-stream-sync.json"),
             ("l2_provider", provider_root, ".l2-providers.json"),
         ))
+        if architecture_template_path is not None:
+            from .route_authority import content_identity
+            record=next(x for x in contract_resolution["contracts"] if x["family"]=="csr_architecture")
+            record.update(artifactPath=str(architecture_template_path),artifactDigest=_digest(architecture_template_path),
+                disposition="template_selected_pending_frontend_binding")
+            contract_resolution["resolutionIdentity"]=content_identity({k:v for k,v in contract_resolution.items() if k!="resolutionIdentity"})
         _write_json(case_dir / "contract-resolution.json", contract_resolution)
         explicit = _explicit_harness(source, source_root, harness_root)
         privileged_binding = privileged_bindings[source]
@@ -1096,6 +1128,8 @@ def prepare_automatic_inventory(
             atomic_sidecar = atomic_root / (relative + ".atomic-authority.json")
             if atomic_sidecar.is_file():
                 translation.extend(("--atomic-authority-sidecar", str(atomic_sidecar)))
+        if architecture_template_path is not None:
+            translation.extend(("--csr-architecture-template",str(architecture_template_path)))
         if csr_architecture_root is not None:
             profile = csr_architecture_root / (relative + ".csr-architecture.json")
             if profile.is_file():
@@ -1456,6 +1490,7 @@ def prepare_automatic_inventory(
                         "validationProfile": profile})
     payload = {"schemaVersion": AUTO_INVENTORY_SCHEMA, "sourceRoot": str(source_root),
                "frontend": str(frontend_path), "programCount": len(entries), "programs": entries,
+               "experimentEnvironment":environment_resolution,
                "statisticsUnits": {"L1": "program", "L2Requirements": "fragment",
                                     "L2SemanticProfile": "fragment",
                                     "L3Intent": "fragment", "L3Execution": "program/entry/campaign",
@@ -1496,6 +1531,7 @@ def main() -> int:
                               "runtime contract registries"))
     parser.add_argument("--l3-diagnostic", action="store_true",
                         help="run explicitly bound target-only experiment diagnostics")
+    parser.add_argument("--experiment-environment",help="sealed experiment manifest; grants no semantic approval")
     args = parser.parse_args()
     output = Path(args.output_directory).resolve()
     inventory = output.with_name(output.name + "-inventory")
@@ -1512,7 +1548,8 @@ def main() -> int:
                                     csr_architecture_directory=args.csr_architecture_directory,
                                     csr_environment_contract_directory=args.csr_environment_contract_directory,
                                     instruction_stream_sync_directory=args.instruction_stream_sync_directory,
-                                    l3_diagnostic=args.l3_diagnostic)
+                                    l3_diagnostic=args.l3_diagnostic,
+                                    experiment_environment=args.experiment_environment)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
         print(json.dumps({"status": "inconclusive", "reasonCode": "automatic.configuration-error",

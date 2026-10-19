@@ -52,3 +52,18 @@ uint64_t rv2x86_csr_set_bits_checked_v1(struct rv2x86_csr_context *c, uint16_t x
 uint64_t rv2x86_csr_clear_bits_checked_v1(struct rv2x86_csr_context *c, uint16_t x, uint64_t mask) {
   checked_scratch(c, x); uint64_t old = c->values[x]; c->values[x] = old & ~mask; return old;
 }
+
+static _Thread_local struct rv2x86_csr_context *bound_scratch_context;
+void rv2x86_csr_bind_context_v1(struct rv2x86_csr_context *c) {
+  checked_scratch(c, 0x340);
+  if (bound_scratch_context) abort();
+  bound_scratch_context = c;
+}
+void rv2x86_csr_unbind_context_v1(struct rv2x86_csr_context *c) {
+  if (!c || bound_scratch_context != c) abort();
+  bound_scratch_context = NULL;
+}
+struct rv2x86_csr_context *rv2x86_csr_bound_context_v1(void) {
+  checked_scratch(bound_scratch_context, 0x340);
+  return bound_scratch_context;
+}

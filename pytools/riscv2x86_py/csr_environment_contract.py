@@ -19,6 +19,7 @@ from .csr_translation_pipeline import CsrRendererRegistry, CsrRuntimeRegistry
 
 
 CSR_ENVIRONMENT_CONTRACT_SCHEMA = "riscv2x86.csr-environment-contract.v1"
+CSR_ENVIRONMENT_FAMILY_SCHEMA = "riscv2x86.csr-environment-contract.v2"
 
 
 class CsrEnvironmentContractError(ValueError):
@@ -40,6 +41,7 @@ class CsrEnvironmentContract:
     relation_kind: str
     runtime_registry: CsrRuntimeRegistry
     renderer_registry: CsrRendererRegistry
+    semantic_family: str = "counter_observation"
 
 
 def _object(value: object, code: str, name: str) -> Mapping[str, object]:
@@ -83,11 +85,16 @@ def load_csr_environment_contract(
         "schemaVersion", "sourceDigest", "fragmentId", "relationKind",
         "runtimeRegistry", "rendererRegistry", "contractIdentity",
     }
+    version2=root.get("schemaVersion")==CSR_ENVIRONMENT_FAMILY_SCHEMA
+    if version2:expected_root.add("semanticFamily")
+    family=root.get("semanticFamily") if version2 else "counter_observation"
+    if family not in {"counter_observation","logical_csr_state"}:
+        raise CsrEnvironmentContractError("CSR_ENV_FAMILY_UNSUPPORTED", "no backend for this family")
     if set(root) != expected_root:
         raise CsrEnvironmentContractError(
             "CSR_ENV_CONTRACT_FIELDS_INVALID", "contract fields are incomplete or unknown"
         )
-    if root.get("schemaVersion") != CSR_ENVIRONMENT_CONTRACT_SCHEMA:
+    if root.get("schemaVersion") not in {CSR_ENVIRONMENT_CONTRACT_SCHEMA,CSR_ENVIRONMENT_FAMILY_SCHEMA}:
         raise CsrEnvironmentContractError("CSR_ENV_SCHEMA_UNSUPPORTED", "schemaVersion is unsupported")
     if root.get("contractIdentity") != _identity({
             key: item for key, item in root.items() if key != "contractIdentity"
@@ -112,6 +119,7 @@ def load_csr_environment_contract(
         "registryVersion", "runtimeVersion", "executionProfile", "shellTransportable",
         "externalStateComplete", "mapping", "counterContract",
     }
+    if family=="logical_csr_state":expected_runtime=(expected_runtime-{"counterContract"})|{"stateContract"}
     if set(runtime) != expected_runtime:
         raise CsrEnvironmentContractError("CSR_ENV_RUNTIME_FIELDS_INVALID", "runtime registry fields are incomplete or unknown")
     mapping = _object(runtime.get("mapping"), "CSR_ENV_MAPPING_MISSING", "mapping")
@@ -123,37 +131,48 @@ def load_csr_environment_contract(
     }
     if set(mapping) != expected_mapping:
         raise CsrEnvironmentContractError("CSR_ENV_MAPPING_FIELDS_INVALID", "mapping fields are incomplete or unknown")
-    counter = _object(runtime.get("counterContract"), "CSR_ENV_COUNTER_CONTRACT_MISSING", "counterContract")
-    expected_counter = {
-        "contractId", "relationKind", "sourceEpoch", "targetEpoch", "frequencyHz",
-        "scaleNumerator", "scaleDenominator", "monotonicity", "wraparoundBits", "scope",
-        "migrationBehavior", "serialization", "targetObservationMechanism", "errorBoundTicks",
-        "availabilityPolicy", "trapPolicy", "complete",
-    }
-    if set(counter) != expected_counter or counter.get("relationKind") != relation:
-        raise CsrEnvironmentContractError("CSR_ENV_COUNTER_RELATION_MISMATCH", "counter contract is incomplete or disagrees with route relation")
-    counter_contract = CounterObservationContract(
-        _text(counter.get("contractId"), "CSR_ENV_COUNTER_ID_MISSING", "counterContract.contractId"),
-        relation,
-        _text(counter.get("sourceEpoch"), "CSR_ENV_COUNTER_EPOCH_MISSING", "sourceEpoch"),
-        _text(counter.get("targetEpoch"), "CSR_ENV_COUNTER_EPOCH_MISSING", "targetEpoch"),
-        (None if counter.get("frequencyHz") is None else
-         _positive_int(counter.get("frequencyHz"), "CSR_ENV_COUNTER_FREQUENCY_INVALID", "frequencyHz")),
-        _positive_int(counter.get("scaleNumerator"), "CSR_ENV_COUNTER_SCALE_INVALID", "scaleNumerator"),
-        _positive_int(counter.get("scaleDenominator"), "CSR_ENV_COUNTER_SCALE_INVALID", "scaleDenominator"),
-        _text(counter.get("monotonicity"), "CSR_ENV_COUNTER_MONOTONICITY_MISSING", "monotonicity"),
-        _positive_int(counter.get("wraparoundBits"), "CSR_ENV_COUNTER_WRAPAROUND_INVALID", "wraparoundBits"),
-        _text(counter.get("scope"), "CSR_ENV_COUNTER_SCOPE_MISSING", "scope"),
-        _text(counter.get("migrationBehavior"), "CSR_ENV_COUNTER_MIGRATION_MISSING", "migrationBehavior"),
-        _text(counter.get("serialization"), "CSR_ENV_COUNTER_SERIALIZATION_MISSING", "serialization"),
-        _text(counter.get("targetObservationMechanism"), "CSR_ENV_COUNTER_MECHANISM_MISSING", "targetObservationMechanism"),
-        _positive_int(counter.get("errorBoundTicks"), "CSR_ENV_COUNTER_ERROR_BOUND_INVALID", "errorBoundTicks", allow_zero=True),
-        _text(counter.get("availabilityPolicy"), "CSR_ENV_COUNTER_AVAILABILITY_MISSING", "availabilityPolicy"),
-        _text(counter.get("trapPolicy"), "CSR_ENV_COUNTER_TRAP_POLICY_MISSING", "trapPolicy"),
-        counter.get("complete") is True,
-    )
-    if not counter_contract.complete:
-        raise CsrEnvironmentContractError("CSR_ENV_COUNTER_CONTRACT_INCOMPLETE", "counter contract is not complete")
+    counter_contract=None;state_contract=None
+    if family=="counter_observation":
+        counter = _object(runtime.get("counterContract"), "CSR_ENV_COUNTER_CONTRACT_MISSING", "counterContract")
+        expected_counter = {
+            "contractId", "relationKind", "sourceEpoch", "targetEpoch", "frequencyHz",
+            "scaleNumerator", "scaleDenominator", "monotonicity", "wraparoundBits", "scope",
+            "migrationBehavior", "serialization", "targetObservationMechanism", "errorBoundTicks",
+            "availabilityPolicy", "trapPolicy", "complete",
+        }
+        if set(counter) != expected_counter or counter.get("relationKind") != relation:
+            raise CsrEnvironmentContractError("CSR_ENV_COUNTER_RELATION_MISMATCH", "counter contract is incomplete or disagrees with route relation")
+        counter_contract = CounterObservationContract(
+            _text(counter.get("contractId"), "CSR_ENV_COUNTER_ID_MISSING", "counterContract.contractId"),
+            relation,
+            _text(counter.get("sourceEpoch"), "CSR_ENV_COUNTER_EPOCH_MISSING", "sourceEpoch"),
+            _text(counter.get("targetEpoch"), "CSR_ENV_COUNTER_EPOCH_MISSING", "targetEpoch"),
+            (None if counter.get("frequencyHz") is None else
+             _positive_int(counter.get("frequencyHz"), "CSR_ENV_COUNTER_FREQUENCY_INVALID", "frequencyHz")),
+            _positive_int(counter.get("scaleNumerator"), "CSR_ENV_COUNTER_SCALE_INVALID", "scaleNumerator"),
+            _positive_int(counter.get("scaleDenominator"), "CSR_ENV_COUNTER_SCALE_INVALID", "scaleDenominator"),
+            _text(counter.get("monotonicity"), "CSR_ENV_COUNTER_MONOTONICITY_MISSING", "monotonicity"),
+            _positive_int(counter.get("wraparoundBits"), "CSR_ENV_COUNTER_WRAPAROUND_INVALID", "wraparoundBits"),
+            _text(counter.get("scope"), "CSR_ENV_COUNTER_SCOPE_MISSING", "scope"),
+            _text(counter.get("migrationBehavior"), "CSR_ENV_COUNTER_MIGRATION_MISSING", "migrationBehavior"),
+            _text(counter.get("serialization"), "CSR_ENV_COUNTER_SERIALIZATION_MISSING", "serialization"),
+            _text(counter.get("targetObservationMechanism"), "CSR_ENV_COUNTER_MECHANISM_MISSING", "targetObservationMechanism"),
+            _positive_int(counter.get("errorBoundTicks"), "CSR_ENV_COUNTER_ERROR_BOUND_INVALID", "errorBoundTicks", allow_zero=True),
+            _text(counter.get("availabilityPolicy"), "CSR_ENV_COUNTER_AVAILABILITY_MISSING", "availabilityPolicy"),
+            _text(counter.get("trapPolicy"), "CSR_ENV_COUNTER_TRAP_POLICY_MISSING", "trapPolicy"),
+            counter.get("complete") is True,
+        )
+        if not counter_contract.complete:
+            raise CsrEnvironmentContractError("CSR_ENV_COUNTER_CONTRACT_INCOMPLETE", "counter contract is not complete")
+    else:
+        if relation!="architectural-equivalence":
+            raise CsrEnvironmentContractError("CSR_ENV_STATE_RELATION_INVALID", "logical state is not a clock fallback")
+        from .csr_state_contract import validate_state_contract
+        try:
+            state_contract=validate_state_contract(runtime.get("stateContract"),
+                state_object=mapping.get("targetStateObjectId"),lifetime=mapping.get("stateLifetimeId"))
+        except ValueError as exc:
+            raise CsrEnvironmentContractError(str(exc),"logical state domain rejected") from exc
     runtime_version = _text(runtime.get("runtimeVersion"), "CSR_ENV_RUNTIME_VERSION_MISSING", "runtimeVersion")
     execution_profile = _text(runtime.get("executionProfile"), "CSR_ENV_EXECUTION_PROFILE_MISSING", "executionProfile")
     target_operation = _text(mapping.get("targetOperationId"), "CSR_ENV_TARGET_OPERATION_MISSING", "targetOperationId")
@@ -171,8 +190,8 @@ def load_csr_environment_contract(
         denied_access_trap_mapping_id=mapping.get("deniedAccessTrapMappingId"),
         side_effect_mapping_ids=tuple(mapping.get("sideEffectMappingIds") or ()),
         ordering_relation_id=_text(mapping.get("orderingRelationId"), "CSR_ENV_ORDERING_RELATION_MISSING", "orderingRelationId"),
-        counter_contract_identity=counter_contract.contract_id,
-        counter_relation_kind=counter_contract.relation_kind,
+        counter_contract_identity=None if counter_contract is None else counter_contract.contract_id,
+        counter_relation_kind=None if counter_contract is None else counter_contract.relation_kind,
         counter_contract=counter_contract,
     )
     runtime_registry = CsrRuntimeRegistry(
@@ -180,7 +199,7 @@ def load_csr_environment_contract(
         runtime_version, execution_profile, (target_mapping,),
         runtime.get("shellTransportable") is True,
         runtime.get("externalStateComplete") is True,
-        source_digest=digest, fragment_id=fragment_id,
+        source_digest=digest, fragment_id=fragment_id, semantic_family=family, state_contract=state_contract,
     )
     if not runtime_registry.shell_transportable or not runtime_registry.external_state_complete:
         raise CsrEnvironmentContractError("CSR_ENV_RUNTIME_AUTHORITY_INCOMPLETE", "shell or external-state authority is incomplete")
@@ -212,8 +231,23 @@ def load_csr_environment_contract(
     )
     if not recipe_value.approved:
         raise CsrEnvironmentContractError("CSR_ENV_RECIPE_NOT_APPROVED", "renderer recipe is not approved")
+    if version2:
+        from .csr_runtime_implementation import IMPLEMENTATIONS
+        matches=[x for x in IMPLEMENTATIONS.values() if x.callable_identifier==recipe_value.callable_identifier]
+        if len(matches)!=1:
+            raise CsrEnvironmentContractError("CSR_ENV_IMPLEMENTATION_UNREGISTERED","no concrete backend")
+        implementation=matches[0]
+        source_csr=mapping["sourceCsrId"]
+        if family=="counter_observation":
+            if implementation.semantic_family!="functional-monotonic-observation" or source_csr not in {
+                    "riscv.csr.time","riscv.csr.cycle","riscv.csr.instret"}:
+                raise CsrEnvironmentContractError("CSR_ENV_IMPLEMENTATION_FAMILY_MISMATCH","counter backend family rejected")
+        elif (implementation.semantic_family!="logical-csr-state" or ".checked." not in implementation.implementation_id
+                or source_csr not in {"riscv.csr.mscratch","riscv.csr.sscratch"}
+                or recipe_value.context_expression!=state_contract["contextExpression"]):
+            raise CsrEnvironmentContractError("CSR_ENV_IMPLEMENTATION_FAMILY_MISMATCH","logical state backend rejected")
     renderer_registry = CsrRendererRegistry(
         _text(renderer.get("registryVersion"), "CSR_ENV_RENDERER_VERSION_MISSING", "rendererRegistry.registryVersion"),
         {target_operation: recipe_value}, {recipe_value.recipe_id: runtime_version},
     )
-    return CsrEnvironmentContract(digest, fragment_id, relation, runtime_registry, renderer_registry)
+    return CsrEnvironmentContract(digest, fragment_id, relation, runtime_registry, renderer_registry,family)
