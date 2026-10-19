@@ -1851,6 +1851,7 @@ def run(
                 csr_state_dataflow=analyze_csr_state_dataflow(
                     blocks=blocks, cfg=cfg,
                     initial_privilege_mode=execution_facts.initial_privilege_mode.value,
+                    access_effects=privileged_state.csr_effects,
                 ),
             )
             privileged_state = replace(

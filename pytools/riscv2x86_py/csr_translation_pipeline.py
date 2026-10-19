@@ -6,8 +6,9 @@ p-code, decoded instructions, or register names.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
+from .semantic_content import semantic_identity
 
 from .csr_effect_constraints import (
     CsrTargetMapping,
@@ -91,6 +92,7 @@ def run_csr_translation_pipeline(
     runtime_registry: CsrRuntimeRegistry | None,
     renderer_registry: CsrRendererRegistry | None,
     fallback_policy: CsrTranslationFallbackPolicy,
+    operand_expressions: Mapping[int, str] | None = None,
 ) -> CsrTranslationPipelineResult:
     """Run the mandatory 6A -> 6B -> 6C -> 6D -> 6E -> 6F CSR chain.
 
@@ -145,6 +147,8 @@ def run_csr_translation_pipeline(
         shell_preserved=fallback_policy.shell_preserved,
         external_state_complete=runtime_registry.external_state_complete,
         allow_functional_relations=fallback_policy.allow_functional_fallbacks,
+        registry_identity=semantic_identity(runtime_registry),
+        target_environment_id=semantic_identity(target_environment),
     )
     if not proof.approved:
         return CsrTranslationPipelineResult(
@@ -192,6 +196,21 @@ def run_csr_translation_pipeline(
             ("csr-pipeline.recipe-missing",),
             candidates, constraints, proof, None, True,
         )
+    if operand_expressions is not None:
+        binding = source_csr_model.operand_bindings[0]
+        read_index = getattr(binding, "read_result_operand_index", None)
+        write_index = getattr(binding, "write_value_operand_index", None)
+        immediate = getattr(binding, "immediate_value", None)
+        if any(type(i) is not int or i < 0 or i not in operand_expressions or not isinstance(operand_expressions[i], str)
+               or not operand_expressions[i] for i in (read_index, write_index) if i is not None):
+            return CsrTranslationPipelineResult("needs_route", "csr_renderer_binding", None,
+                ("csr-6f.compiler-operand-expression-missing",),candidates,constraints,proof,None,True)
+        # Select expressions by proved operand index. Their spelling is used
+        # only to render C, never as a semantic join key or identity.
+        recipe = replace(recipe,
+            output_expression=None if read_index is None else operand_expressions[read_index],
+            input_expression=(operand_expressions[write_index] if write_index is not None
+                              else str(immediate) if immediate is not None else None))
     rendered = render_approved_csr_recipe(
         recipe,
         approved_recipe_ids=renderer_registry.approved_recipe_ids,

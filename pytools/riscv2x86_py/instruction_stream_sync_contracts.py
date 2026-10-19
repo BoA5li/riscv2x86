@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping
+from .semantic_content import semantic_payload, semantic_identity
 
 INSTRUCTION_STREAM_SYNC_REGISTRY_SCHEMA = "riscv2x86.instruction-stream-sync-registry.v2"
 INSTRUCTION_STREAM_SYNC_REGISTRY_VERSION = "instruction-stream-sync-registry-v2"
@@ -148,6 +149,18 @@ class InstructionStreamSyncProof:
     reason_code: str
     contract: InstructionStreamSyncContract | None
     obligations: tuple[str, ...] = ()
+
+    @property
+    def proof_payload(self) -> dict:
+        return semantic_payload({
+            "schemaVersion": "riscv2x86.instruction-stream-sync-proof.v1",
+            "approved": self.approved, "reasonCode": self.reason_code,
+            "contract": self.contract, "obligations": self.obligations,
+        })
+
+    @property
+    def proof_identity(self) -> str:
+        return semantic_identity(self.proof_payload)
 
 
 def prove_instruction_stream_sync(

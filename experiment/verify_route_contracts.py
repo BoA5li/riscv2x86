@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_csr_semantic_closure.py',
     'test_csr_sync_production_contracts.py',
     'test_csr_metadata_ingress.py', 'test_csr_value_flow.py',
     'test_csr_translation_pipeline.py', 'test_instruction_stream_sync_contracts.py',

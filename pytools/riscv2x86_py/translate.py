@@ -3139,6 +3139,8 @@ def _render_instruction_stream_sync(
         "planId": "phase6b:" + contract.lowering_kind.value,
         "constraintsId": "phase6c:" + contract.semantic_contract_id,
         "proofId": "phase6d:" + contract.semantic_contract_id,
+        "proofIdentity": proof.proof_identity,
+        "proofPayload": proof.proof_payload,
         "proofObligations": list(proof.obligations),
         "targetEnvironmentId": environment_id,
         "targetCatalogVersion": registry.version,
@@ -3469,6 +3471,12 @@ def translate(
             privileged_execution_facts=context.privilegedStateFacts,
             runtime_registry=csr_runtime_registry,
             renderer_registry=csr_renderer_registry,
+            operand_expressions={
+                index: operand.exprText
+                for index, operand in enumerate(
+                    tuple(context.fragment.outputs) + tuple(context.fragment.inputs)
+                )
+            },
             fallback_policy=CsrTranslationFallbackPolicy(
                 allow_functional_fallbacks=allow_functional_fallbacks,
                 shell_preserved=not context.shell.prevents_generic_pure_c,
@@ -3506,6 +3514,8 @@ def translate(
                         "route": csr_result.route,
                         "proofInvoked": csr_result.proof_invoked,
                         "proofEvidenceCount": len(csr_result.proof.evidence),
+                        "proofIdentity": csr_result.proof.proof_identity,
+                        "proofPayload": csr_result.proof.proof_payload,
                         "rendererHeaders": csr_result.render.required_headers,
                         "rendererLibraries": csr_result.render.required_libraries,
                         "architectureSemanticsPreserved": not functional_csr,

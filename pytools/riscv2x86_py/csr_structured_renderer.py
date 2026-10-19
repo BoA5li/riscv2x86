@@ -24,7 +24,7 @@ def render_csr_recipe(recipe:CsrRuntimeRecipe,*,approved_recipe_ids:Mapping[str,
     if recipe.trap_result_policy not in {"runtime-trap-contract","no-trap-observation"}: reasons.append("csr-6f.trap-policy-invalid")
     if reasons:return CsrRenderResult(None,(),(),tuple(sorted(reasons)))
     args=[recipe.context_expression,recipe.csr_token]
-    if recipe.callable_identifier!="rv2x86_csr_read":
+    if recipe.callable_identifier not in {"rv2x86_csr_read", "rv2x86_read_counter"}:
         if recipe.input_expression is None: return CsrRenderResult(None,(),(),("csr-6f.input-missing",))
         args.append(recipe.input_expression)
     call=f"{recipe.callable_identifier}({', '.join(args)})"

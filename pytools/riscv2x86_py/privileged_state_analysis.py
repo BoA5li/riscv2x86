@@ -445,7 +445,7 @@ def _field_effect(
     )
 
 
-def _typed_csr_effect(block_address, operation_index, meta, facts) -> CsrEffect:
+def _typed_csr_effect(block_address, operation_index, meta, facts, *, isolated_counter_access=False) -> CsrEffect:
     reasons: list[str | PrivilegedStateReasonCode] = []
     csr_id = (meta.csr_id or "").strip().lower()
     csr_class = _enum_or_unknown(CsrSemanticClass, meta.csr_semantic_class)
@@ -502,7 +502,16 @@ def _typed_csr_effect(block_address, operation_index, meta, facts) -> CsrEffect:
     )
     if not permission_complete:
         reasons.append(PrivilegedStateReasonCode.CSR_ACCESS_POLICY_INCOMPLETE)
-    if not meta.access_gate_evaluation_complete:
+    # A catalogue describes potential traps, not permission in this
+    # deployment. A complete, explicit user-counter access policy can resolve
+    # that potential for a read-only access. Never infer permission from the
+    # ISA profile, host privilege or successful sample execution.
+    counter_access_resolved = bool(
+        isolated_counter_access and facts.complete and permission_complete and allowed is True
+        and csr_class is CsrSemanticClass.USER_COUNTER_OBSERVATION
+        and operation is CsrEffectOperation.READ and meta.state_complete
+        and meta.access_gate_ids and facts.csr_access_policy.complete)
+    if not meta.access_gate_evaluation_complete and not counter_access_resolved:
         reasons.append(PrivilegedStateReasonCode.CSR_ACCESS_GATE_INCOMPLETE)
 
     fields = tuple(
@@ -514,7 +523,7 @@ def _typed_csr_effect(block_address, operation_index, meta, facts) -> CsrEffect:
     for field in fields:
         reasons.extend(field.missing_fact_codes)
 
-    may_trap = meta.may_trap
+    may_trap = False if counter_access_resolved else meta.may_trap
     if may_trap is None and allowed is not None:
         may_trap = not allowed
     if may_trap is None:
@@ -844,6 +853,15 @@ def analyze_privileged_state(
     typed_sites = set(); typed_instruction_sites = set(); callother_sites = set()
     nonprivileged_intrinsic_sites = set()
 
+    # Entry permissions cannot discharge a gate after intervening state changes.
+    # Refinement is restricted to one decoded instruction and a closed CFG.
+    isolated_counter_access = bool(
+        cfg is not None and getattr(cfg, "ok", False)
+        and len(blocks) == 1
+        and sum(len(block.instructions) for block in blocks) == 1
+        and sum(len(ins.privileged_operations) for block in blocks
+                for ins in block.instructions) == 1
+    )
     for block in sorted(blocks, key=lambda item: item.addr):
         index_by_address = {}
         for index, op in enumerate(block.ops):
@@ -871,7 +889,8 @@ def analyze_privileged_state(
                 typed_instruction_sites.add((block.addr, instruction.addr))
                 if meta.kind is CanonicalPrivilegedOperationKind.CSR_ACCESS:
                     effect = _typed_csr_effect(
-                        block.addr, operation_index, meta, facts
+                        block.addr, operation_index, meta, facts,
+                        isolated_counter_access=isolated_counter_access
                     )
                     csr.append(effect)
                     typed_sites.add((block.addr, operation_index, effect.csr_id))

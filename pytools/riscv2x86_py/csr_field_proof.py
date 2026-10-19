@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
+from .semantic_content import semantic_payload, semantic_identity
 
 @dataclass(frozen=True)
 class CsrFieldProofEvidence:
@@ -11,7 +12,7 @@ class CsrFieldProofEvidence:
 
 @dataclass(frozen=True)
 class CsrFieldProofResult:
-    approved:bool; evidence:tuple[CsrFieldProofEvidence,...]; reason_codes:tuple[str,...]; proof_identity:str=""
+    approved:bool; evidence:tuple[CsrFieldProofEvidence,...]; reason_codes:tuple[str,...]; proof_identity:str=""; proof_payload:dict|None=None
 
 def _id(*parts:str)->str: return "csr-field-proof:"+sha256("|".join(parts).encode()).hexdigest()
 
@@ -20,6 +21,13 @@ def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_pro
     reasons=set(); evidence=[]; by_effect={getattr(x,"source_effect_id",""):x for x in constraints}
     ordered_bindings=tuple(getattr(source_model,"operand_bindings",()) or ())
     bindings={getattr(x,"source_effect_id",""):x for x in ordered_bindings}
+    if getattr(source_model,"complete",None) is False: reasons.add("csr-6d.source-model-incomplete")
+    if getattr(source_model,"trap_contract_required",False): reasons.add("csr-6d.trap-contract-required")
+    effect_count=len(tuple(getattr(source_model,"effects",()) or ()))
+    if (len(by_effect)!=len(constraints) or len(bindings)!=len(ordered_bindings)
+            or len(constraints)!=effect_count or len(ordered_bindings)!=effect_count
+            or set(by_effect)!=set(bindings)):
+        reasons.add("csr-6d.effect-coverage-mismatch")
     if not shell_preserved: reasons.add("csr-6d.shell-unpreserved")
     if not external_state_complete: reasons.add("csr-6d.external-state-incomplete")
     if getattr(source_model,"requires_whole_function",False): reasons.add("csr-6d.whole-function-proof-required")
@@ -49,5 +57,11 @@ def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_pro
             conclusion=("functional_relation" if relation_kind=="functional-monotonic-observation" else "field_equivalent")
             evidence.append(CsrFieldProofEvidence(eid,getattr(effect,"csr_id","") or "",fid,target,relation,conclusion,_id(eid,fid,target,relation,execution_profile)))
     approved=bool(evidence) and not reasons
-    identity=_id(getattr(source_model,"model_identity",repr(source_model)),repr(constraints),registry_identity,target_environment_id,repr(tuple(sorted(shell_facts))),repr(getattr(source_model,"exit_state_relation",())),execution_profile)
-    return CsrFieldProofResult(approved,tuple(evidence),tuple(sorted(reasons)),identity)
+    payload=semantic_payload({"schemaVersion":"riscv2x86.csr-field-proof.v2",
+        "sourceModel":source_model,"constraints":constraints,
+        "registryIdentity":registry_identity,"targetEnvironmentId":target_environment_id,
+        "shellFacts":tuple(sorted(shell_facts)),"executionProfile":execution_profile,
+        "shellPreserved":shell_preserved,"externalStateComplete":external_state_complete,
+        "functionalRelationsEnabled":allow_functional_relations,
+        "approved":approved,"evidence":tuple(evidence),"reasonCodes":tuple(sorted(reasons))})
+    return CsrFieldProofResult(approved,tuple(evidence),tuple(sorted(reasons)),semantic_identity(payload),payload)

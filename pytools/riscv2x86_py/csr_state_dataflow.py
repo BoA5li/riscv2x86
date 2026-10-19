@@ -1,15 +1,22 @@
 """Conservative cross-CFG CSR abstract interpretation."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any
 UNKNOWN="<unknown>"; ENTRY="<entry>"
+class CsrControlDisposition(str, Enum):
+ LOCAL = "local"
+ TRAP_CONTRACT_REQUIRED = "trap_contract_required"
+ WHOLE_FUNCTION_REQUIRED = "whole_function_required"
+ UNKNOWN = "unknown"
+
 @dataclass(frozen=True)
 class CsrAbstractState:
  field_values:tuple[tuple[str,str],...]=(); access_gate_state:str=UNKNOWN; privilege_mode:str=UNKNOWN; pending_trap:str=UNKNOWN; delegation_state:str=UNKNOWN; interrupt_state:str=UNKNOWN; address_space_identity:str=UNKNOWN; external_state_escape:bool=False
  def value_map(self):return dict(self.field_values)
 @dataclass(frozen=True)
 class CsrStateDataflowResult:
- entry_state:CsrAbstractState; block_in_states:tuple[tuple[int,CsrAbstractState],...]; block_out_states:tuple[tuple[int,CsrAbstractState],...]; exit_states:tuple[tuple[int,CsrAbstractState],...]; complete:bool; requires_whole_function:bool; reason_codes:tuple[str,...]
+ entry_state:CsrAbstractState; block_in_states:tuple[tuple[int,CsrAbstractState],...]; block_out_states:tuple[tuple[int,CsrAbstractState],...]; exit_states:tuple[tuple[int,CsrAbstractState],...]; complete:bool; requires_whole_function:bool; reason_codes:tuple[str,...]; control_disposition:CsrControlDisposition=CsrControlDisposition.UNKNOWN
 def _field(op:Any,f:Any)->str:
  return getattr(f,"canonical_field_id",None) or f"{getattr(op,'csr_id','')}.{getattr(f,'field_id','')}"
 def _merge(a,b):
@@ -33,7 +40,7 @@ def _apply(s,op,reasons):
  if getattr(op,"may_trap",None) is True: reasons.add("csr-dataflow.trap-edge-requires-route")
  if external: reasons.add("csr-dataflow.external-privileged-state-requires-route")
  return CsrAbstractState(tuple(sorted(v.items())),gate,s.privilege_mode,"pending" if getattr(op,"may_trap",None) is True else s.pending_trap,delegation,interrupt,asid,external)
-def analyze_csr_state_dataflow(*,blocks,cfg,initial_privilege_mode=None,max_iterations=256):
+def analyze_csr_state_dataflow(*,blocks,cfg,initial_privilege_mode=None,max_iterations=256,access_effects=()):
  by={getattr(b,"addr"):b for b in blocks}; entry=getattr(cfg,"entry",None); initial=CsrAbstractState(privilege_mode=initial_privilege_mode or UNKNOWN,pending_trap="none")
  if entry not in by:return CsrStateDataflowResult(initial,(),(),(),False,True,("csr-dataflow.cfg-entry-missing",))
  incoming={entry:initial}; outgoing={}; work=[entry]; reasons=set(); n=0
@@ -43,8 +50,18 @@ def analyze_csr_state_dataflow(*,blocks,cfg,initial_privilege_mode=None,max_iter
   a=work.pop(0); state=incoming[a]; block=by[a]
   for ins in tuple(getattr(block,"instructions",()) or ()):
    if getattr(ins,"has_unknown_call",False) or getattr(ins,"has_unknown_return",False):reasons.add("csr-dataflow.unknown-call-or-return")
+   position=next((i for i,x in enumerate(getattr(block,"ops",())) if x.addr==ins.addr),None)
    for op in tuple(getattr(ins,"privileged_operations",()) or ()):
-    if getattr(getattr(op,"kind",None),"value",None)=="csr_access":state=_apply(state,op,reasons)
+    if getattr(getattr(op,"kind",None),"value",None)=="csr_access":
+     matches=[e for e in access_effects if e.block_address==a and e.operation_index==position and e.csr_id==op.csr_id]
+     effective=op
+     if len(matches)>1:reasons.add("csr-dataflow.access-effect-ambiguous")
+     elif len(matches)==1:
+      resolved=matches[0]
+      if (resolved.complete and resolved.access_policy_complete and resolved.access_allowed is True
+          and resolved.may_trap is False and resolved.operation.value==op.csr_operation.value):
+       effective=replace(op,may_trap=False)
+     state=_apply(state,effective,reasons)
   if outgoing.get(a)==state:continue
   outgoing[a]=state
   for suc in tuple(getattr(block,"successors",()) or ()):
@@ -52,5 +69,13 @@ def analyze_csr_state_dataflow(*,blocks,cfg,initial_privilege_mode=None,max_iter
    m=state if suc not in incoming else _merge(incoming[suc],state)
    if incoming.get(suc)!=m:incoming[suc]=m;work.append(suc)
  exits=tuple(sorted((a,s) for a,s in outgoing.items() if not tuple(getattr(by[a],"successors",()) or ())))
- whole=any("requires-route" in x or "unknown-call" in x or "external-successor" in x for x in reasons)
- return CsrStateDataflowResult(initial,tuple(sorted(incoming.items())),tuple(sorted(outgoing.items())),exits,not reasons and not whole,whole,tuple(sorted(reasons)))
+ # Trap coverage is a separate obligation; it does not establish a
+ # function-level transformation requirement. Never infer granularity by
+ # substring matching a diagnostic.
+ whole=bool(reasons & {"csr-dataflow.external-privileged-state-requires-route",
+     "csr-dataflow.unknown-call-or-return", "csr-dataflow.external-successor"})
+ trap_required="csr-dataflow.trap-edge-requires-route" in reasons
+ disposition=(CsrControlDisposition.WHOLE_FUNCTION_REQUIRED if whole else
+     CsrControlDisposition.TRAP_CONTRACT_REQUIRED if trap_required else
+     CsrControlDisposition.UNKNOWN if reasons else CsrControlDisposition.LOCAL)
+ return CsrStateDataflowResult(initial,tuple(sorted(incoming.items())),tuple(sorted(outgoing.items())),exits,not reasons and not whole,whole,tuple(sorted(reasons)),disposition)

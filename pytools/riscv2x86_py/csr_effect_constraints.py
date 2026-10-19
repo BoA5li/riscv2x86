@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
+from .semantic_content import semantic_payload
 
 @dataclass(frozen=True)
 class TargetCsrEffectConstraint:
@@ -13,6 +14,7 @@ class TargetCsrEffectConstraint:
     reason_codes:tuple[str,...]=()
     counter_contract_identity:str|None=None
     counter_relation_kind:str|None=None
+    counter_contract_payload:dict|None=None
 
 @dataclass(frozen=True)
 class CsrTargetMapping:
@@ -52,9 +54,14 @@ def derive_csr_effect_constraints(*,source_model:Any,mappings:tuple[CsrTargetMap
                 if not m.counter_contract_identity: reasons.append("csr-6c.counter-contract-missing")
                 if m.counter_contract is None or getattr(m.counter_contract,"complete",False) is not True: reasons.append("csr-6c.counter-contract-incomplete")
                 if m.counter_relation_kind not in {"architectural-equivalence","functional-monotonic-observation"}: reasons.append("csr-6c.counter-relation-invalid")
+                if m.counter_contract is not None:
+                    if (getattr(m.counter_contract,"contract_id",None)!=m.counter_contract_identity
+                            or getattr(m.counter_contract,"relation_kind",None)!=m.counter_relation_kind):
+                        reasons.append("csr-6c.counter-contract-binding-mismatch")
                 if (m.counter_relation_kind!="architectural-equivalence" and
                         not (allow_functional_relations and m.counter_relation_kind=="functional-monotonic-observation")):
                     reasons.append("csr-6c.counter-functional-relation-not-approved")
         if not shell_transportable: reasons.append("csr-6c.shell-not-transportable")
-        out.append(TargetCsrEffectConstraint(eid,getattr(getattr(effect,"operation",None),"value",""),getattr(effect,"csr_id","") or "",*( (m.target_state_object_id,m.target_operation_id,m.read_result_mapping,m.write_value_mapping,m.field_mappings,m.old_new_state_relation_id,m.access_policy_mapping_id,m.denied_access_trap_mapping_id,m.side_effect_mapping_ids,m.ordering_relation_id) if m else ("","",None,None,(),None,None,None,(),None)),not reasons,tuple(sorted(set(reasons))),None if m is None else m.counter_contract_identity,None if m is None else m.counter_relation_kind))
+        out.append(TargetCsrEffectConstraint(eid,getattr(getattr(effect,"operation",None),"value",""),getattr(effect,"csr_id","") or "",*( (m.target_state_object_id,m.target_operation_id,m.read_result_mapping,m.write_value_mapping,m.field_mappings,m.old_new_state_relation_id,m.access_policy_mapping_id,m.denied_access_trap_mapping_id,m.side_effect_mapping_ids,m.ordering_relation_id) if m else ("","",None,None,(),None,None,None,(),None)),not reasons,tuple(sorted(set(reasons))),None if m is None else m.counter_contract_identity,None if m is None else m.counter_relation_kind,
+            None if m is None or m.counter_contract is None else semantic_payload(m.counter_contract)))
     return tuple(out)
