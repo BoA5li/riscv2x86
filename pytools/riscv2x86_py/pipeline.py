@@ -220,6 +220,29 @@ def _record_non_candidate_attempt(
     )
 
 
+def _record_route_precondition(finding, *, route, stage, reason_code, detail, inputs):
+    """Archive a blocked producer without manufacturing downstream failures."""
+    payload={"inputs":inputs,"executionDisposition":"precondition_rejected",
+        "evidenceProductionDisposition":"not_produced",
+        "blockedStages":["source_model","plan_selection","phase6d","rendering","l2_execution"]}
+    decision=RouteAuthorityDecision(route,finding.fragment.id,stage,reason_code,detail,
+        content_identity(payload),inputs_payload=payload).to_dict()
+    finding.routeAuthorityDiagnostics.append(decision)
+    finding.category="NeedsAsmTranslation"
+    finding.verificationStatus="needs_route"
+    finding.verificationDetail=detail
+    finding.translationKind="needs_route"
+    finding.ruleName=""
+    finding.suggestedReplacement=""
+    finding.translationReasonCodes=[reason_code]
+    result=SimpleNamespace(kind="needs_route",route=route,reasonCodes=(reason_code,),metadata={})
+    _record_non_candidate_attempt(finding,result,outcome=TranslationOutcome.NEEDS_ROUTE,
+        validation_outcome=ValidationStatus.NEEDS_ROUTE.value,
+        publication_outcome=PublicationOutcome.NOT_REQUESTED)
+    _finalize_finding_privileged_manifest(finding,status="needs_route",detail=detail,
+        accepted=True,stage=stage)
+
+
 def _run_unified_phase8_validation(
     validation_runner: PipelineValidationRunner | None, *,
     finding: Finding, lift_result: object, ir_summary: object,
@@ -1789,6 +1812,16 @@ def run(
 
         # Phase 4 privileged authority -> Phase 5 canonical semantic models.
         # No raw asm, mnemonic, or rendered p-code text is consulted here.
+        if (csr_decoder_profile is None and any(
+                getattr(ins,"decoded_csr_instruction",None) is not None for ins in lr.insns)):
+            _record_route_precondition(f,route="csr",stage="csr_architecture_binding",
+                reason_code="CSR_ARCHITECTURE_PROFILE_REQUIRED",
+                detail="Explicit source ISA specification is required before CSR semantic collection",
+                inputs={"sourceDigest":str(getattr(f,"sourceDigest","")),
+                    "machineCodeHex":ar.machine_code.hex(),
+                    "compilerAuthorityIdentity":getattr(f.fragment,"compilerFragmentAuthority",{}).get("authorityIdentity","")})
+            stats["needs_route"]+=1
+            continue
         privileged_state = (
             None if privileged_state_facts is None
             else privileged_state_facts.get(f.fragment.id)

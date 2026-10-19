@@ -184,56 +184,63 @@ def _asm_goto_authority(finding, functions, producer_digest):
         return None
 
 
-def _instruction_stream_authority(finding, functions, producer_digest):
+def _instruction_stream_authority_checked(finding, functions, producer_digest):
     fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
     if not isinstance(fragment,Mapping) or not isinstance(approval,Mapping): return None
     if approval.get("artifactVersion") != "phase6-instruction-stream-sync-v3": return None
     from .l2_instruction_stream import validate_instruction_stream_approval
+    validate_instruction_stream_approval(approval,fragment,finding.get("suggestedReplacement"),
+        source_digest=finding.get("sourceDigest"))
+    if finding.get("machineCodeHex") != approval["instructionStreamProof"]["machineCodeHex"]:
+        raise ValueError("ISS_MACHINE_CODE_BINDING_MISMATCH")
+    effects,relations,shell=_proof_effect_authority(approval,approval["sourceFragmentId"])
+    runtime=L2RuntimeContractBinding(approval["runtimeContractId"],approval["runtimeContractVersion"],
+        _identity(approval["instructionStreamProof"]),True)
+    return L2AuthoritySidecar(approval["sourceFragmentId"],L2AuthorityProducer(
+        "translation-proof-sidecar","instruction-visibility-authority","v1",producer_digest),
+        shell,(),(),effects,relations,(runtime,),(),True)
+
+def _instruction_stream_authority(finding, functions, producer_digest):
     try:
-        validate_instruction_stream_approval(approval,fragment,finding.get("suggestedReplacement"),
-            source_digest=finding.get("sourceDigest"))
-        if finding.get("machineCodeHex") != approval["instructionStreamProof"]["machineCodeHex"]:
-            raise ValueError("ISS_MACHINE_CODE_BINDING_MISMATCH")
-        effects,relations,shell=_proof_effect_authority(approval,approval["sourceFragmentId"])
-        runtime=L2RuntimeContractBinding(approval["runtimeContractId"],approval["runtimeContractVersion"],
-            _identity(approval["instructionStreamProof"]),True)
-        return L2AuthoritySidecar(approval["sourceFragmentId"],L2AuthorityProducer(
-            "translation-proof-sidecar","instruction-visibility-authority","v1",producer_digest),
-            shell,(),(),effects,relations,(runtime,),(),True)
-    except (KeyError,TypeError,ValueError,AttributeError): return None
+        return _instruction_stream_authority_checked(finding,functions,producer_digest)
+    except (KeyError,TypeError,ValueError,AttributeError):
+        return None
 
 
-def _csr_runtime_authority(finding, functions, producer_digest):
+def _csr_runtime_authority_checked(finding, functions, producer_digest):
     fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
     if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
         return None
     if approval.get("artifactVersion") != "phase6-csr-runtime-v1":
         return None
     from .csr_runtime_approval import validate_csr_runtime_approval
+    validate_csr_runtime_approval(approval, fragment, finding.get("suggestedReplacement"))
+    if finding.get("machineCodeHex") != approval["proofPayload"]["machineCodeHex"]:
+        raise ValueError("CSR_RUNTIME_MACHINE_CODE_BINDING_MISMATCH")
+    fid = str(fragment.get("id") or fragment.get("fragmentId") or "")
+    matches = [x for x in functions if x.get("name") == fragment.get("enclosingFunction")]
+    if len(matches) != 1:
+        raise ValueError("CSR_RUNTIME_FUNCTION_BOUNDARY_AMBIGUOUS_OR_MISSING")
+    boundary = approval.get("l2FragmentOperandBoundary")
+    canonical = bind_canonical_l2_operands(fragment, boundary,
+        matches[0].get("l2OperandBoundary"), approval["l2EffectProofFacts"])
+    operands = tuple(L2OperandAuthority(x.operand_id,x.operand_index,x.operand_id,
+        x.access_mode,x.type_kind,x.width_bits,x.signedness,x.tied_to_operand_id,
+        x.early_clobber,"",x.escape_kind,x.value_node_identity,
+        declaration_id=x.declaration_identity,parameter_index=x.parameter_index,
+        source_constraint=x.source_constraint) for x in canonical)
+    effects, relations, shell = _proof_effect_authority(approval, fid)
+    runtime = L2RuntimeContractBinding(approval["runtimeContractId"],
+        approval["runtimeContractVersion"],_identity(approval["proofPayload"]),True)
+    ignored = tuple(L2IgnoredStateAuthority(x,"explicit-functional-observability", "non_escaping",True)
+                    for x in approval.get("ignoredSourceState",()))
+    return L2AuthoritySidecar(fid,L2AuthorityProducer("translation-proof-sidecar",
+        "csr-runtime-authority","v1",producer_digest),shell,operands,(),effects,relations,
+        (runtime,),ignored,True)
+
+def _csr_runtime_authority(finding, functions, producer_digest):
     try:
-        validate_csr_runtime_approval(approval, fragment, finding.get("suggestedReplacement"))
-        if finding.get("machineCodeHex") != approval["proofPayload"]["machineCodeHex"]:
-            raise ValueError("CSR_RUNTIME_MACHINE_CODE_BINDING_MISMATCH")
-        fid = str(fragment.get("id") or fragment.get("fragmentId") or "")
-        matches = [x for x in functions if x.get("name") == fragment.get("enclosingFunction")]
-        if len(matches) != 1:
-            return None
-        boundary = approval.get("l2FragmentOperandBoundary")
-        canonical = bind_canonical_l2_operands(fragment, boundary,
-            matches[0].get("l2OperandBoundary"), approval["l2EffectProofFacts"])
-        operands = tuple(L2OperandAuthority(x.operand_id,x.operand_index,x.operand_id,
-            x.access_mode,x.type_kind,x.width_bits,x.signedness,x.tied_to_operand_id,
-            x.early_clobber,"",x.escape_kind,x.value_node_identity,
-            declaration_id=x.declaration_identity,parameter_index=x.parameter_index,
-            source_constraint=x.source_constraint) for x in canonical)
-        effects, relations, shell = _proof_effect_authority(approval, fid)
-        runtime = L2RuntimeContractBinding(approval["runtimeContractId"],
-            approval["runtimeContractVersion"],_identity(approval["proofPayload"]),True)
-        ignored = tuple(L2IgnoredStateAuthority(x,"explicit-functional-observability", "non_escaping",True)
-                        for x in approval.get("ignoredSourceState",()))
-        return L2AuthoritySidecar(fid,L2AuthorityProducer("translation-proof-sidecar",
-            "csr-runtime-authority","v1",producer_digest),shell,operands,(),effects,relations,
-            (runtime,),ignored,True)
+        return _csr_runtime_authority_checked(finding,functions,producer_digest)
     except (KeyError,TypeError,ValueError,AttributeError):
         return None
 
@@ -851,25 +858,36 @@ def materialize_automatic_l2_authority(
             approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
         from .l2_atomic_authority import materialize_atomic_authority
         version = approval.get("artifactVersion") if isinstance(approval, Mapping) else ""
+        if version=="phase6-instruction-stream-sync-v3" and len(function_matches)==1:
+            scope=function_matches[0].get("compilerInstructionSyncScope")
+            if scope is not None:
+                from .compiler_instruction_sync_scope import validate_scope
+                try:
+                    validate_scope(scope,raw_fragment,finding.get("sourceDigest"))
+                    approval["l2InstructionSyncFunctionScope"]=scope
+                except ValueError as exc:
+                    approval["l2InstructionSyncScopeReasonCode"]=str(exc)
         if version in {"phase6-csr-runtime-v1", "phase6-instruction-stream-sync-v3"}:
             # A failed typed runtime join must never fall through to a legacy
             # scalar/functional route with a weaker validation contract.
-            sidecar = (_csr_runtime_authority(finding,functions,producer_digest)
-                       if version == "phase6-csr-runtime-v1" else
-                       _instruction_stream_authority(finding,functions,producer_digest))
-            if sidecar is None:
-                try:
-                    if version == "phase6-csr-runtime-v1":
-                        from .csr_runtime_approval import validate_csr_runtime_approval
-                        validate_csr_runtime_approval(approval,finding["fragment"],finding.get("suggestedReplacement"))
-                        reason = "CSR_RUNTIME_CANONICAL_BOUNDARY_REQUIRED"
-                    else:
-                        from .l2_instruction_stream import validate_instruction_stream_approval
-                        validate_instruction_stream_approval(approval,finding["fragment"],finding.get("suggestedReplacement"),source_digest=finding.get("sourceDigest"))
-                        reason = "ISS_RUNTIME_AUTHORITY_BINDING_INCOMPLETE"
-                except (KeyError,TypeError,ValueError,AttributeError) as exc:
-                    reason = str(exc)
-                approval["l2RuntimeAuthorityReasonCode"] = reason
+            try:
+                sidecar = (_csr_runtime_authority_checked(finding,functions,producer_digest)
+                           if version == "phase6-csr-runtime-v1" else
+                           _instruction_stream_authority_checked(finding,functions,producer_digest))
+                if sidecar is None:
+                    raise ValueError("CSR_RUNTIME_CANONICAL_BOUNDARY_REQUIRED" if version == "phase6-csr-runtime-v1"
+                        else "ISS_RUNTIME_AUTHORITY_BINDING_INCOMPLETE")
+            except (KeyError,TypeError,ValueError,AttributeError) as exc:
+                sidecar=None
+                reason=str(exc)
+                approval["l2RuntimeAuthorityReasonCode"]=reason
+                diagnostic={"schemaVersion":"riscv2x86.runtime-authority-materialization-failure.v1",
+                    "failureStage":"canonical_l2_authority","fragmentId":(raw_fragment.get("id") or raw_fragment.get("fragmentId")) if isinstance(raw_fragment,Mapping) else "",
+                    "sourceDigest":finding.get("sourceDigest"),"proofIdentity":approval.get("proofIdentity"),
+                    "exceptionType":type(exc).__name__,"reasonCode":reason,"detail":str(exc),
+                    "evidenceProductionDisposition":"not_produced"}
+                diagnostic["failureIdentity"]=_identity(diagnostic)
+                approval["l2RuntimeAuthorityFailure"]=diagnostic
         else:
             sidecar = (_functional_relation_authority(finding, producer_digest)
                        or materialize_atomic_authority(finding, functions, producer_digest)

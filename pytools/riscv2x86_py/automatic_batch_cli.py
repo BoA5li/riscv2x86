@@ -716,6 +716,10 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                         "arity": len(params),
                         "returnType": return_type, "parameterTypes": param_types,
                         "pointerParameters": pointer_parameters}
+            from .compiler_instruction_sync_scope import instruction_sync_scope
+            sync_scope=instruction_sync_scope(node,source_digest=source_digest,
+                function_identity=function_identity,source_range=_source_range)
+            if sync_scope is not None:function['compilerInstructionSyncScope']=sync_scope
             function.update(_counter_return_semantics(node))
             from .compiler_continuation_sites import continuation_sites
             site_facts = continuation_sites(node, source_digest=source_digest,

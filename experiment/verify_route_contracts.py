@@ -14,6 +14,10 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_instruction_visibility_execution.py',
+    'test_compiler_instruction_sync_scope.py',
+    'test_route_precondition_lifecycle.py',
+    'test_route_goals_and_collection.py',
     'test_experiment_environment.py',
     'test_csr_architecture_registry.py',
     'test_csr_family_environment.py',
@@ -70,6 +74,7 @@ def main():
     parser.add_argument('--csr-environment-contract-directory', type=Path)
     parser.add_argument('--instruction-stream-sync-directory', type=Path)
     parser.add_argument('--experiment-environment',type=Path)
+    parser.add_argument('--require-verified-case',action='append',default=[])
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     output = args.output.absolute()
@@ -102,6 +107,8 @@ def main():
         print(stage + ': ' + str(step['returnCode']), flush=True)
         return step['returnCode'] == 0
 
+    if args.require_verified_case and args.suite is None:
+        status['blockers'].append('route-goals-require-suite')
     run('git-head', ['git','rev-parse','HEAD'], 30)
     run('git-branch', ['git','branch','--show-current'], 30)
     if not run('clang-version',[str(args.clang10.absolute()),'--version'],30):
@@ -152,6 +159,9 @@ def main():
                 summary = {k:data.get(k) for k in ('batchIdentity','caseCount','statusCounts',
                     'programValidationCounts','reasonCodeCounts','l2CoverageDiagnostics')}
                 (output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+                if args.require_verified_case:
+                    status['routeGoalsSatisfied']=run('route-goals',[sys.executable,'experiment/check_route_goals.py',
+                        '--results',str(batch.parent),*[a for c in args.require_verified_case for a in ('--case',c)]],60)
                 if not run('provider-audit',[sys.executable,'-m','riscv2x86_py.l2_provider_artifacts',
                         '--batch',str(batch)],120):
                     status['blockers'].append('provider-audit')
@@ -164,7 +174,7 @@ def main():
     print('run-status: '+str(output/'run-status.json'))
     if status['blockers']:
         return 2
-    return 0 if status['generatedSuiteExitCode'] in (None,0) else 1
+    return 0 if status['generatedSuiteExitCode'] in (None,0) and status.get('routeGoalsSatisfied',True) else 1
 
 
 if __name__ == '__main__':

@@ -94,3 +94,23 @@ def test_environment_checked_before_build_and_forwarded(tmp_path,monkeypatch,rej
     else:
         command=next(c for c in commands if 'riscv2x86_py.automatic_batch_cli' in c)
         assert command[command.index('--experiment-environment')+1]==str(manifest)
+
+
+def test_explicit_goal_failure_is_recorded_even_when_suite_command_succeeds(tmp_path,monkeypatch):
+    module=runner();output=tmp_path/'out'
+    monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend','--clang10','clang',
+        '--suite','suite','--output',str(output),'--require-verified-case','renamable'])
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kw:'/tools/'+name)
+    def run(command,**kw):
+        stage=Path(kw['stdout'].name).stem
+        if stage=='clang-version':kw['stdout'].write('clang version 10.0.0\n')
+        if stage=='generated-suite':
+            path=output/'generated-suite-strict/batch-evaluation.json';path.parent.mkdir()
+            path.write_text(json.dumps({'caseCount':1,'statusCounts':{'needs_route':1}}))
+        if stage=='route-goals':return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    assert module.main()==1
+    status=json.loads((output/'run-status.json').read_text())
+    assert status['routeGoalsSatisfied'] is False and not status['blockers']
+    assert status['generatedSuiteExecuted'] and status['generatedSuiteExitCode']==0
