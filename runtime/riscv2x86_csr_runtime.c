@@ -35,3 +35,20 @@ uint64_t rv2x86_csr_set_bits(struct rv2x86_csr_context *c,uint16_t x,uint64_t v)
 uint64_t rv2x86_csr_clear_bits(struct rv2x86_csr_context *c,uint16_t x,uint64_t v){return rv2x86_csr_write(c,x,rv2x86_csr_read(c,x)&~v);}
 int rv2x86_register_system_adapter(enum rv2x86_system_family f,rv2x86_system_adapter_fn fn){if((unsigned)f>=5||!fn)return -1;adapters[f]=fn;return 0;}
 int rv2x86_call_system_adapter(enum rv2x86_system_family f,void *c,uint32_t o,uint64_t v,uint64_t *r){if((unsigned)f>=5||!adapters[f])return -1;return adapters[f](c,o,v,r);}
+
+static void checked_scratch(const struct rv2x86_csr_context *c, uint16_t x) {
+  if (!c || c->version != 1 || c->profile != RV2X86_CSR_SCRATCH_PROFILE_V1
+      || (x != 0x140 && x != 0x340)) abort();
+}
+uint64_t rv2x86_csr_read_checked_v1(const struct rv2x86_csr_context *c, uint16_t x) {
+  checked_scratch(c, x); return c->values[x];
+}
+uint64_t rv2x86_csr_write_checked_v1(struct rv2x86_csr_context *c, uint16_t x, uint64_t v) {
+  checked_scratch(c, x); uint64_t old = c->values[x]; c->values[x] = v; return old;
+}
+uint64_t rv2x86_csr_set_bits_checked_v1(struct rv2x86_csr_context *c, uint16_t x, uint64_t mask) {
+  checked_scratch(c, x); uint64_t old = c->values[x]; c->values[x] = old | mask; return old;
+}
+uint64_t rv2x86_csr_clear_bits_checked_v1(struct rv2x86_csr_context *c, uint16_t x, uint64_t mask) {
+  checked_scratch(c, x); uint64_t old = c->values[x]; c->values[x] = old & ~mask; return old;
+}

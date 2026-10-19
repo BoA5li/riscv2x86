@@ -154,10 +154,33 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
     recipe=CsrRuntimeRecipe(**p['recipe'])
     bindings=f['sourceModel']['operand_bindings']
     if len(bindings)!=1: raise ValueError('CSR_RUNTIME_OPERAND_CARDINALITY_MISMATCH')
+    binding=bindings[0]
+    read_index=binding['read_result_operand_index']; write_index=binding['write_value_operand_index']
+    read_required=op.read_value_node_id is not None and op.read_result_suppressed is not True
+    write_required=(op.write_value_node_id is not None and op.immediate_mask is None
+                    and op.write_value_suppressed is not True)
+    if (read_required != (read_index is not None) or write_required != (write_index is not None)
+            or any(type(i) is not int or i<0 for i in (read_index,write_index) if i is not None)
+            or binding.get('immediate_value') != op.immediate_mask):
+        raise ValueError('CSR_RUNTIME_DECODER_OPERAND_ROLE_MISMATCH')
     ordered=raw_fragment.get('outputs',[])+raw_fragment.get('inputs',[])
+    if raw_fragment.get('compilerFragmentAuthority'):
+        from .csr_result_flow import result_flows_from_compiler
+        expected_flows=result_flows_from_compiler(p['sourceShell']['id'],
+            raw_fragment['compilerFragmentAuthority'])
+        read=bindings[0]['read_result_operand_index']
+        expected_flow=None if read is None else expected_flows.get(read)
+        if (bindings[0].get('result_value_flow')!=semantic_payload(expected_flow)
+                or (read is not None and (expected_flow is None or not expected_flow.complete))):
+            raise ValueError('CSR_RUNTIME_RESULT_VALUE_FLOW_MISMATCH')
     for field,index_key in (('output_expression','read_result_operand_index'),('input_expression','write_value_operand_index')):
         index=bindings[0][index_key]
         expected=None if index is None else ordered[index]['exprText'] if type(index) is int and 0<=index<len(ordered) else None
+        if field=='input_expression' and index is None:
+            immediate=bindings[0].get('immediate_value')
+            expected=None if immediate is None else str(immediate)
+            if recipe.input_expression!=expected:
+                raise ValueError('CSR_RUNTIME_IMMEDIATE_OR_INPUT_BINDING_MISMATCH')
         if index is not None and (expected is None or getattr(recipe,field)!=expected):
             raise ValueError('CSR_RUNTIME_RENDERER_OPERAND_BINDING_MISMATCH')
         if field=='output_expression' and index is None and recipe.output_expression is not None:
@@ -167,7 +190,8 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
     if (implementation!=p['implementationIdentity']
             or p['runtimeContractId']!=implementation_payload['implementation'].implementation_id+'@v1'):
         raise ValueError('CSR_RUNTIME_IMPLEMENTATION_IDENTITY_MISMATCH')
-    shell=prove_runtime_shell(fragment,implementation,p['shellProof']['buildContract'])
+    shell=prove_runtime_shell(fragment,implementation,p['shellProof']['buildContract'],
+        operand_binding=_namespace(bindings[0]))
     if shell!=p['shellProof'] or tuple(f['shellFacts'])!=(semantic_identity(shell),):
         raise ValueError('CSR_RUNTIME_SHELL_REPLAY_FAILED')
     from .csr_structured_renderer import render_csr_recipe

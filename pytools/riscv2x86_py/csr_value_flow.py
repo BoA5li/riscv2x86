@@ -8,6 +8,7 @@ class SourceCsrOperandBinding:
     source_effect_id:str; read_result_operand_index:int|None; write_value_operand_index:int|None
     immediate_value:int|None; source_value_width_bits:int|None; source_signedness:str|None
     complete:bool; reason_codes:tuple[str,...]=()
+    result_value_flow:Any=None
 
 @dataclass(frozen=True)
 class CsrOperandAuthorityFacts:
@@ -24,6 +25,7 @@ class CsrOperandAuthorityFacts:
     complete:bool
     effect_authority_identities:Mapping[str,str]|None=None
     effect_csr_identities:Mapping[str,str]|None=None
+    result_value_flows:Mapping[int,Any]|None=None
 
 # Compatibility alias for callers migrated incrementally.  The compatibility
 # adapter below intentionally produces incomplete authority because deriving
@@ -93,7 +95,21 @@ def join_csr_operand_bindings(*, lifted_insns:tuple[Any,...]|list[Any], authorit
         if len(signed)!=1 and len(used)>1: reasons.append("csr-join.operand-signedness-mismatch")
         if read_required:
           if authority.operand_access.get(read) not in {"output","read_write"}: reasons.append("csr-join.read-output-access-missing")
-          if authority.output_escape_facts.get(read) is not False: reasons.append("csr-join.output-escape-unproven")
+          if authority.result_value_flows is not None:
+            flow = authority.result_value_flows.get(read)
+            if flow is None:
+              reasons.append("csr-join.result-value-flow-missing")
+            else:
+              try:
+                if flow.fragment_id != authority.fragment_id or flow.operand_index != read:
+                  raise ValueError("CSR_RESULT_FLOW_OPERAND_MISMATCH")
+                if not flow.complete: reasons.append("csr-join.result-value-flow-incomplete")
+              except (ValueError, TypeError, AttributeError) as exc:
+                reasons.append(str(exc) if isinstance(exc, ValueError) else "csr-join.result-value-flow-invalid")
+          elif authority.output_escape_facts.get(read) is not False:
+            # Legacy/manual facts remain fail-closed. Production never invents
+            # a no-escape boolean; it supplies typed scalar uses instead.
+            reasons.append("csr-join.output-escape-unproven")
         if write_required and authority.operand_access.get(write) not in {"input","read_write"}: reasons.append("csr-join.write-input-access-missing")
         if read_required and write_required and read==write and (read,write) not in authority.tied_operand_pairs: reasons.append("csr-join.tied-operand-unproven")
         for x in used:
@@ -102,5 +118,6 @@ def join_csr_operand_bindings(*, lifted_insns:tuple[Any,...]|list[Any], authorit
         if read_required and read in authority.early_clobber_outputs: reasons.append("csr-join.early-clobber-requires-contract")
         if any(k not in authority.shell_facts or not isinstance(authority.shell_facts[k],bool) for k in ("volatile","memory","cc")): reasons.append("csr-join.shell-facts-incomplete")
         out.append(SourceCsrOperandBinding(eid,read if read_required else None,write if write_required else None,immediate,
-          next(iter(widths)) if len(widths)==1 else None,next(iter(signed)) if len(signed)==1 else None,not reasons,tuple(sorted(set(reasons)))))
+          next(iter(widths)) if len(widths)==1 else None,next(iter(signed)) if len(signed)==1 else None,not reasons,tuple(sorted(set(reasons))),
+          None if authority.result_value_flows is None else authority.result_value_flows.get(read)))
     return tuple(out)

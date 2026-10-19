@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from .compiler_provenance import bind_compiler_provenance
 from .csr_value_flow import CsrOperandAuthorityFacts, _effect_id
+from .csr_result_flow import result_flows_from_compiler
 from .gnu_operand_contract import parse_riscv_operand
 from .route_authority import content_identity
 from .runtime_facts import canonicalize_riscv_register_name
@@ -107,6 +108,11 @@ def bind_csr_compiler_operands(fragment, runtime_facts, lifted_insns, *, source_
                       'compilerValueNodeIdentity': b['valueNodeIdentity']})
     if set(nodes.values()) != set(by_index):
         raise CsrProductionBindingError('CSR_OPERAND_EFFECT_COVERAGE_INCOMPLETE')
+    try:
+        result_flows = result_flows_from_compiler(fragment.id, raw)
+    except ValueError as exc:
+        code = str(exc) if str(exc).startswith("CSR_RESULT_FLOW_") else "CSR_RESULT_FLOW_PRODUCER_SCHEMA_INVALID"
+        raise CsrProductionBindingError(code) from exc
     effect_id = _effect_id(insn.addr, 1, op)
     witness = {'schemaVersion':'riscv2x86.csr-compiler-decoder-join.v1',
         'fragmentId':fragment.id, 'sourceDigest':raw['sourceDigest'],
@@ -114,7 +120,7 @@ def bind_csr_compiler_operands(fragment, runtime_facts, lifted_insns, *, source_
         'architectureProfile':asdict(architecture_profile),
         'decoder':asdict(decoded), 'effect':asdict(op),
         'assemblerRegisterBindings':dict(runtime_facts.rv_to_operand_index),
-        'operandRoles':roles}
+        'operandRoles':roles, 'resultValueFlows':{str(i):flow.flow_identity for i,flow in result_flows.items()}}
     # Enum values are strings in the canonical DTOs.
     join_identity = content_identity(witness)
     return CsrOperandAuthorityFacts(fragment.id, nodes,
@@ -122,7 +128,7 @@ def bind_csr_compiler_operands(fragment, runtime_facts, lifted_insns, *, source_
         {i:b['signedness'] for i,b in by_index.items()},
         {i:b['access'] for i,b in by_index.items()},
         tuple((i,i) for i,c in contracts.items() if c.access == 'read_write'), (),
-        {i:'gnu:r' for i in by_index}, {i:False for i in by_index},
+        {i:'gnu:r' for i in by_index}, {},
         {'volatile':bool(fragment.isVolatile),'memory':'memory' in fragment.clobbers,
          'cc':'cc' in fragment.clobbers}, True, {effect_id:join_identity},
-        {effect_id:op.csr_id}), witness
+        {effect_id:op.csr_id}, result_flows), witness

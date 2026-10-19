@@ -465,7 +465,7 @@ def _typed_csr_effect(block_address, operation_index, meta, facts, *, isolated_c
         reasons.append(PrivilegedStateReasonCode.CSR_CLASS_UNKNOWN)
     if operation is CsrEffectOperation.UNKNOWN:
         reasons.append(PrivilegedStateReasonCode.CSR_OPERATION_UNKNOWN)
-    if reads and not meta.read_value_node_id:
+    if reads and not meta.read_value_node_id and meta.read_result_suppressed is not True:
         reasons.append(PrivilegedStateReasonCode.CSR_VALUE_FLOW_INCOMPLETE)
     if writes and not meta.write_value_node_id and meta.immediate_mask is None:
         reasons.append(PrivilegedStateReasonCode.CSR_VALUE_FLOW_INCOMPLETE)

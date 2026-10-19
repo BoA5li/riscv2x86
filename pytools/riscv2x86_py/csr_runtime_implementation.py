@@ -3,7 +3,7 @@
 A declaration of architectural equivalence is not an implementation. Production
 recipes must match a registered mechanism as well as the source relation.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from hashlib import sha256
 from .semantic_content import semantic_identity
@@ -30,12 +30,15 @@ _MONOTONIC = CsrRuntimeImplementation(
     ('functional-monotonic-observation',), ('RV2X86_COUNTER_MONOTONIC_NS',))
 _LOGICAL = tuple(CsrRuntimeImplementation(
     'rv2x86.logical-csr.' + op + '.v1', symbol, 'logical-csr-state',
-    'riscv2x86_csr_runtime.h', 'libriscv2x86_runtime', 64, argc, (op,),
+    'riscv2x86_csr_runtime.h', 'libriscv2x86_runtime', 64, argc, (("write", "read_write") if op == "write" else (op,)),
     ('architectural-equivalence',), ()) for op, symbol, argc in (
         ('read', 'rv2x86_csr_read', 2), ('write', 'rv2x86_csr_write', 3),
         ('set_bits', 'rv2x86_csr_set_bits', 3),
         ('clear_bits', 'rv2x86_csr_clear_bits', 3)))
-IMPLEMENTATIONS = {item.implementation_id: item for item in (_MONOTONIC, *_LOGICAL)}
+_CHECKED_LOGICAL = tuple(replace(item,
+    implementation_id=item.implementation_id.replace('.v1', '.checked.v1'),
+    callable_identifier=item.callable_identifier+'_checked_v1') for item in _LOGICAL)
+IMPLEMENTATIONS = {item.implementation_id: item for item in (_MONOTONIC, *_LOGICAL, *_CHECKED_LOGICAL)}
 
 
 def implementation_manifest(implementation_id):
@@ -92,6 +95,8 @@ def validate_implementation(recipe, effects, constraints):
     elif item.semantic_family != 'logical-csr-state':
         raise ValueError('CSR_RUNTIME_STATE_MECHANISM_MISMATCH')
     else:
+        if item not in _CHECKED_LOGICAL:
+            raise ValueError('CSR_RUNTIME_CHECKED_STATE_IMPLEMENTATION_REQUIRED')
         # The plain software array does not implement FP, interrupt, MMU,
         # WARL/WLRL or read-side-effect semantics. Only full-width scratch
         # state has the shipped bit-vector identity implementation.

@@ -170,7 +170,8 @@ def run_csr_translation_pipeline(
         from .csr_runtime_shell import prove_runtime_shell
         try:
             shell_payload = prove_runtime_shell(source_fragment,
-                semantic_identity(implementation_payload), target_build_contract)
+                semantic_identity(implementation_payload), target_build_contract,
+                operand_binding=source_csr_model.operand_bindings[0])
         except ValueError as exc:
             return CsrTranslationPipelineResult("needs_route", "csr_runtime_shell", None,
                 (str(exc),), candidates, constraints, None, None, False)

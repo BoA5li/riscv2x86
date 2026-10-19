@@ -111,6 +111,7 @@ from .privileged_functional_contracts import (
     PrivilegedFunctionalFallbackRegistry,
 )
 from .source_csr_semantic_model import adapt_source_csr_semantic_model
+from .semantic_content import semantic_payload
 from .csr_translation_pipeline import (
     CsrRendererRegistry,
     CsrRuntimeRegistry,
@@ -3578,6 +3579,8 @@ def translate(
                     "control_disposition", None), "value", "unknown"),
                 "csrDataflowReasonCodes": tuple(getattr(getattr(context.privilegedStateFacts, "csr_state_dataflow", None),
                     "reason_codes", ())),
+                "csrWholeFunctionRequirements": semantic_payload(getattr(csr_source_model, "whole_function_requirements", ())),
+                "csrSourceModelIdentity": csr_source_model.model_identity,
                 "csrPlanCandidates": tuple(
                     candidate.family.value for candidate in csr_result.plan_candidates
                 ),

@@ -26,6 +26,15 @@ uint64_t rv2x86_csr_read(const struct rv2x86_csr_context *, uint16_t);
 uint64_t rv2x86_csr_write(struct rv2x86_csr_context *, uint16_t, uint64_t);
 uint64_t rv2x86_csr_set_bits(struct rv2x86_csr_context *, uint16_t, uint64_t);
 uint64_t rv2x86_csr_clear_bits(struct rv2x86_csr_context *, uint16_t, uint64_t);
+/* Checked scratch-state ABI: version=1, profile=RV2X86_CSR_SCRATCH_PROFILE_V1.
+ * Context lifetime/ownership, source access permission and trap behavior are
+ * separate caller contracts. These functions are not hardware CSR emulation.
+ * Invalid context/token aborts as an execution precondition failure. */
+#define RV2X86_CSR_SCRATCH_PROFILE_V1 1u
+uint64_t rv2x86_csr_read_checked_v1(const struct rv2x86_csr_context *, uint16_t);
+uint64_t rv2x86_csr_write_checked_v1(struct rv2x86_csr_context *, uint16_t, uint64_t);
+uint64_t rv2x86_csr_set_bits_checked_v1(struct rv2x86_csr_context *, uint16_t, uint64_t);
+uint64_t rv2x86_csr_clear_bits_checked_v1(struct rv2x86_csr_context *, uint16_t, uint64_t);
 enum rv2x86_system_family { RV2X86_SYSTEM_MMU, RV2X86_SYSTEM_INTERRUPT, RV2X86_SYSTEM_PMP, RV2X86_SYSTEM_DEBUG, RV2X86_SYSTEM_VIRTUALIZATION };
 typedef int (*rv2x86_system_adapter_fn)(void *, uint32_t, uint64_t, uint64_t *);
 int rv2x86_register_system_adapter(enum rv2x86_system_family, rv2x86_system_adapter_fn);

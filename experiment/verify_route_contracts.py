@@ -14,6 +14,9 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_csr_typed_result_flow.py',
+    'test_csr_runtime_value_shell.py',
+    'test_route_run_summary.py',
     'test_runtime_build_provenance.py',
     'test_instruction_visibility_production.py',
     'test_runtime_contract_consumption.py',
