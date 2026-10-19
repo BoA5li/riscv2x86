@@ -908,6 +908,9 @@ def _explicit_l2_providers(
         if parsed.validator_type == "l2-explicit-harness":
             from .l2_explicit_harness import validate_explicit_l2_harness_provider
             validate_explicit_l2_harness_provider(parsed)
+        if parsed.validator_type == "l2-instruction-visibility-harness":
+            from .l2_instruction_visibility_runner import validate_provider
+            validate_provider(parsed)
         providers.append(dict(raw))
     return tuple(providers), tuple(environment_capabilities)
 
@@ -1008,6 +1011,16 @@ def prepare_automatic_inventory(
         relative = source.relative_to(source_root).as_posix()
         case_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", relative[:-2].replace("/", "--")).strip("-")
         case_dir = inventory / "cases" / case_id
+        from .contract_resolution import resolve_contract_files
+        contract_resolution = resolve_contract_files(source, relative, (
+            ("csr_architecture", csr_architecture_root, ".csr-architecture.json"),
+            ("csr_authority", csr_root, ".csr-authority.json"),
+            ("csr_environment", csr_environment_root, ".csr-environment.json"),
+            ("privileged_environment", privileged_root, ".privileged-environment.json"),
+            ("instruction_stream_sync", instruction_stream_root, ".instruction-stream-sync.json"),
+            ("l2_provider", provider_root, ".l2-providers.json"),
+        ))
+        _write_json(case_dir / "contract-resolution.json", contract_resolution)
         explicit = _explicit_harness(source, source_root, harness_root)
         privileged_binding = privileged_bindings[source]
         explicit_l2_providers, explicit_environment_capabilities = _explicit_l2_providers(
@@ -1076,6 +1089,7 @@ def prepare_automatic_inventory(
                        "--source-root", "${SOURCE_ROOT}",
                        "--report", "${TRANSLATED_REPORT}",
                        "--validation-plan", str((case_dir / "validation-plan.json").resolve())]
+        translation.extend(("--csr-target-build-contract", "automatic-gcc-separate-tu-no-lto-v1"))
         if allow_functional_fallbacks:
             translation.append("--allow-functional-fallbacks")
         if atomic_root is not None:
@@ -1435,6 +1449,7 @@ def prepare_automatic_inventory(
                                                        else privileged_binding["identity"]),
                         "privilegedBindingPath": ("" if privileged_binding is None
                                                    else privileged_binding["path"]),
+                        "translationContractResolution": contract_resolution,
                         "explicitL2ProviderCount": len(explicit_l2_providers),
                         "l3ProviderCount": len(l3_binding["providers"]) if l3_binding else 0,
                         "l3BindingDigest": _digest(binding_path) if l3_binding else "",

@@ -48,9 +48,30 @@ add_library(riscv2x86_runtime STATIC
   runtime/riscv2x86_runtime_helpers.c
   runtime/riscv2x86_csr_runtime.c
 )
-set_target_properties(riscv2x86_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(riscv2x86_runtime PROPERTIES POSITION_INDEPENDENT_CODE ON
+  INTERPROCEDURAL_OPTIMIZATION FALSE)
 target_include_directories(riscv2x86_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/runtime/include
+)
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(riscv2x86_runtime PRIVATE -fno-lto)
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+get_directory_property(_runtime_compile_definitions COMPILE_DEFINITIONS)
+set(_runtime_definition_flags "")
+foreach(_runtime_definition IN LISTS _runtime_compile_definitions)
+  string(APPEND _runtime_definition_flags " -D${_runtime_definition}")
+endforeach()
+add_custom_target(riscv2x86_runtime_provenance ALL
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/experiment/write_runtime_build_manifest.py
+    --root ${CMAKE_CURRENT_SOURCE_DIR}
+    --archive $<TARGET_FILE:riscv2x86_runtime>
+    --compiler ${CMAKE_C_COMPILER}
+    --compiler-id ${CMAKE_C_COMPILER_ID}
+    "--compiler-flags=${CMAKE_C_FLAGS} ${_runtime_definition_flags} $<$<CONFIG:Debug>:${CMAKE_C_FLAGS_DEBUG}>$<$<CONFIG:Release>:${CMAKE_C_FLAGS_RELEASE}>$<$<CONFIG:RelWithDebInfo>:${CMAKE_C_FLAGS_RELWITHDEBINFO}>$<$<CONFIG:MinSizeRel>:${CMAKE_C_FLAGS_MINSIZEREL}> -fno-lto"
+    --output ${CMAKE_CURRENT_BINARY_DIR}/riscv2x86-runtime-build.json
+  DEPENDS riscv2x86_runtime
+  VERBATIM
 )
 
 if(TARGET clang-cpp AND TARGET LLVM)

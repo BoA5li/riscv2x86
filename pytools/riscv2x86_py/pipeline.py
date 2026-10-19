@@ -848,6 +848,17 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
     # silently discarding volatile/clobber semantics from arbitrary asm.
     if kind in {"privileged_runtime", "functional_c"}:
         artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        if artifact.get("artifactVersion") == "phase6-csr-runtime-v1":
+            from .csr_runtime_approval import validate_csr_runtime_approval
+            from dataclasses import asdict
+            try:
+                validate_csr_runtime_approval(artifact, asdict(f.fragment), replacement)
+                functional = artifact["preservationMode"] == "functional_equivalence_only"
+                if functional != (kind == "functional_c"):
+                    raise ValueError("CSR_RUNTIME_KIND_SCOPE_MISMATCH")
+            except (KeyError, TypeError, ValueError) as exc:
+                reasons.append("CSR runtime approval rejected: " + str(exc))
+            return reasons
         is_registered_privileged = artifact.get("replacementKind") in {
             "privileged_runtime_adapter",
             "privileged_functional_fallback",
@@ -924,6 +935,15 @@ def _phase7_shell_semantics_blockers(f: Finding, tr) -> List[str]:
     # certificate into an approved artifact.
     if kind in {"instruction_stream_elision", "runtime_c"}:
         artifact = dict(getattr(tr, "metadata", {}).get("approvalArtifact", {}) or {})
+        if artifact.get("artifactVersion") == "phase6-instruction-stream-sync-v3":
+            from .l2_instruction_stream import validate_instruction_stream_approval
+            from dataclasses import asdict
+            try:
+                validate_instruction_stream_approval(artifact,asdict(f.fragment),replacement,
+                    source_digest=getattr(f,"sourceDigest",None))
+            except (KeyError,TypeError,ValueError) as exc:
+                reasons.append("instruction-stream approval rejected: "+str(exc))
+            return reasons
         if not (
             artifact.get("artifactVersion") == "phase6-instruction-stream-sync-v2"
             and artifact.get("proofStatus") == "approved"
@@ -1223,6 +1243,7 @@ def run(
     privileged_pipeline_inputs: PrivilegedPipelineInputs | None = None,
     csr_architecture_profile: dict | None = None,
     instruction_stream_sync_registry: InstructionStreamSyncRegistry | None = None,
+    csr_target_build_contract: str | None = None,
     csr_runtime_registry: CsrRuntimeRegistry | None = None,
     csr_renderer_registry: CsrRendererRegistry | None = None,
     allow_functional_fallbacks: bool = False,
@@ -1234,6 +1255,11 @@ def run(
         parse_profile(csr_architecture_profile, xlen_bits=xlen)
         if csr_architecture_profile["fragmentId"] not in {f.fragment.id for f in findings}:
             raise ValueError("CSR_ARCH_PROFILE_FRAGMENT_MISMATCH")
+
+    if csr_runtime_registry is not None and csr_runtime_registry.fragment_id:
+        bound = [f for f in findings if f.fragment.id == csr_runtime_registry.fragment_id]
+        if len(bound) != 1 or getattr(bound[0], "sourceDigest", "") != csr_runtime_registry.source_digest:
+            raise ValueError("CSR_RUNTIME_CONTRACT_SOURCE_BINDING_MISMATCH")
 
     # The normal CLI path supplies Phase-4 authority inputs, never prebuilt
     # Phase-5 semantic models.  Direct model mappings remain a compatibility
@@ -1939,6 +1965,7 @@ def run(
             privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
             instruction_stream_sync_registry=instruction_stream_sync_registry,
+            csr_target_build_contract=csr_target_build_contract,
             csr_runtime_registry=csr_runtime_registry,
             csr_renderer_registry=csr_renderer_registry,
             allow_functional_fallbacks=allow_functional_fallbacks,

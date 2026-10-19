@@ -73,6 +73,7 @@ class InstructionStreamSyncContract:
     preserves_cc_clobber: bool = True
     environment_noop_guarantee_id: str | None = None
     complete: bool = True
+    domain_authority: dict | None = None
 
     def __post_init__(self) -> None:
         for name in ("contract_id", "semantic_version", "source_fragment_id",
@@ -109,6 +110,10 @@ class InstructionStreamSyncContract:
         elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.helper_symbol or "") is None:
             raise ValueError("instruction-stream helper symbol must be a C identifier")
 
+        if self.domain_authority is not None:
+            from .instruction_stream_domain import freeze_domain
+            object.__setattr__(self,"domain_authority",freeze_domain(self.domain_authority))
+
     @property
     def semantic_contract_id(self) -> str:
         return f"{self.contract_id}@{self.semantic_version}"
@@ -116,7 +121,7 @@ class InstructionStreamSyncContract:
 
 class InstructionStreamSyncRegistry:
     def __init__(self, *, version: str, source_digest: str = "sha256:direct-test-authority",
-                 contracts: Iterable[InstructionStreamSyncContract] = ()) -> None:
+                 contracts: Iterable[InstructionStreamSyncContract] = (), schema_version=INSTRUCTION_STREAM_SYNC_REGISTRY_SCHEMA) -> None:
         if not isinstance(version, str) or not version.strip():
             raise TypeError("instruction-stream registry version must be non-empty")
         by_key = {}
@@ -131,7 +136,9 @@ class InstructionStreamSyncRegistry:
         if not isinstance(source_digest, str) or not source_digest.startswith("sha256:"):
             raise ValueError("instruction-stream registry requires a source digest")
         self.source_digest = source_digest
-        self.schema_version = INSTRUCTION_STREAM_SYNC_REGISTRY_SCHEMA
+        if schema_version not in {INSTRUCTION_STREAM_SYNC_REGISTRY_SCHEMA,"riscv2x86.instruction-stream-sync-registry.v3"}:
+            raise ValueError("instruction-stream registry schema unsupported")
+        self.schema_version = schema_version
         self._contracts = MappingProxyType(by_key)
 
     def resolve(self, fragment_id: str, target_environment_id: str):
@@ -152,8 +159,17 @@ class InstructionStreamSyncProof:
 
     @property
     def proof_payload(self) -> dict:
+        from .helper_runtime_manifest import get_runtime_helper_contract
+        runtime = None if self.contract is None else get_runtime_helper_contract(self.contract.runtime_adapter_identity)
+        implementation = None
+        if runtime is not None:
+            root = Path(__file__).resolve().parents[2]
+            implementation = {"runtime":runtime,
+                "sourceDigest":"sha256:"+sha256((root/"runtime/riscv2x86_runtime_helpers.c").read_bytes()).hexdigest(),
+                "headerDigest":"sha256:"+sha256((root/"runtime/include"/runtime.required_header).read_bytes()).hexdigest()}
         return semantic_payload({
-            "schemaVersion": "riscv2x86.instruction-stream-sync-proof.v1",
+            "schemaVersion": "riscv2x86.instruction-stream-sync-proof.v2",
+            "implementation": implementation,
             "approved": self.approved, "reasonCode": self.reason_code,
             "contract": self.contract, "obligations": self.obligations,
         })
@@ -169,6 +185,16 @@ def prove_instruction_stream_sync(
     """Phase-6D proof gate for the independent synchronization route."""
     if contract is None:
         return InstructionStreamSyncProof(False, "ISS_RUNTIME_CONTRACT_MISSING", None)
+    if contract.domain_authority is not None:
+        from .instruction_stream_domain import validate_domain
+        try:
+            validate_domain(contract.domain_authority,fragment_id=contract.source_fragment_id,
+                environment_id=contract.target_environment_id,cpu_profile=contract.target_cpu_profile_id)
+            if (contract.required_scope is not InstructionStreamSyncScope.LOCAL_HART
+                    or contract.lowering_kind is not InstructionStreamSyncLoweringKind.RUNTIME_HELPER):
+                raise ValueError("ISS_DOMAIN_PROTOCOL_UNSUPPORTED")
+        except ValueError as exc:
+            return InstructionStreamSyncProof(False,str(exc),contract)
     if (target_cpu_profile_id is not None
             and contract.target_cpu_profile_id != target_cpu_profile_id):
         return InstructionStreamSyncProof(False, "ISS_TARGET_CPU_PROFILE_MISMATCH", contract)
@@ -225,7 +251,7 @@ def _text(value: object, name: str) -> str:
 
 
 def instruction_stream_sync_registry_from_dict(value: object) -> InstructionStreamSyncRegistry:
-    if not isinstance(value, Mapping) or value.get("schemaVersion") != INSTRUCTION_STREAM_SYNC_REGISTRY_SCHEMA:
+    if not isinstance(value, Mapping) or value.get("schemaVersion") not in {INSTRUCTION_STREAM_SYNC_REGISTRY_SCHEMA, "riscv2x86.instruction-stream-sync-registry.v3"}:
         raise ValueError("unsupported instruction-stream synchronization registry schema")
     if set(value) != {"schemaVersion", "version", "sourceDigest", "contracts"}:
         raise ValueError("instruction-stream registry fields are incomplete or unknown")
@@ -249,6 +275,13 @@ def instruction_stream_sync_registry_from_dict(value: object) -> InstructionStre
             "preservesCompilerMemoryOrdering", "preservesVolatileExecution",
             "preservesCcClobber",
         }
+        version3 = value["schemaVersion"] == "riscv2x86.instruction-stream-sync-registry.v3"
+        if version3:
+            expected.add("domainAuthority")
+            from .instruction_stream_domain import validate_domain
+            validate_domain(item.get("domainAuthority"),fragment_id=item.get("sourceFragmentId"),
+                environment_id=item.get("targetEnvironmentId"),cpu_profile=item.get("targetCpuProfileId"),
+                source_digest=value.get("sourceDigest"))
         if set(item) != expected:
             raise ValueError("instruction-stream contract fields are incomplete or unknown")
         code_range = item["modifiedCodeRange"]
@@ -282,11 +315,12 @@ def instruction_stream_sync_registry_from_dict(value: object) -> InstructionStre
             preserves_cc_clobber=item.get("preservesCcClobber", False),
             environment_noop_guarantee_id=item.get("environmentNoopGuaranteeId"),
             complete=item.get("complete", False),
+            domain_authority=item.get("domainAuthority") if version3 else None,
         ))
     return InstructionStreamSyncRegistry(
         version=_text(value.get("version"), "version"),
         source_digest=_text(value.get("sourceDigest"), "sourceDigest"),
-        contracts=contracts,
+        contracts=contracts, schema_version=value["schemaVersion"],
     )
 
 

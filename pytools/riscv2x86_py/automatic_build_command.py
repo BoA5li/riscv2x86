@@ -27,7 +27,7 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print("runtime dependency resolution failed: " + str(exc), file=__import__("sys").stderr)
         return 2
-    flags = ["-Wall", "-Wextra", "-O0"]
+    flags = ["-Wall", "-Wextra", "-O0", "-fno-lto"]
     if args.kind == "shared_library":
         flags.append("-fPIC")
     flags.extend("-I" + item for item in dependencies.include_directories)
@@ -37,7 +37,7 @@ def main() -> int:
         return compiled.returncode
     mode = ("-shared",) if args.kind == "shared_library" else ()
     return subprocess.run(
-        ("gcc", *mode, str(obj), *dependencies.library_paths, "-o", str(output)),
+        ("gcc", "-fno-lto", *mode, str(obj), *dependencies.library_paths, "-o", str(output)),
         check=False,
     ).returncode
 

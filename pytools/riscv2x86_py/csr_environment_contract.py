@@ -180,6 +180,7 @@ def load_csr_environment_contract(
         runtime_version, execution_profile, (target_mapping,),
         runtime.get("shellTransportable") is True,
         runtime.get("externalStateComplete") is True,
+        source_digest=digest, fragment_id=fragment_id,
     )
     if not runtime_registry.shell_transportable or not runtime_registry.external_state_complete:
         raise CsrEnvironmentContractError("CSR_ENV_RUNTIME_AUTHORITY_INCOMPLETE", "shell or external-state authority is incomplete")

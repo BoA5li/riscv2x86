@@ -130,6 +130,7 @@ def main() -> int:
         default=None,
         help="Versioned independent instruction-stream synchronization registry.",
     )
+    ap.add_argument("--csr-target-build-contract", choices=("automatic-gcc-separate-tu-no-lto-v1",))
     ap.add_argument("--csr-architecture-profile")
     ap.add_argument(
         "--csr-environment-contract",
@@ -223,6 +224,7 @@ def main() -> int:
             privileged_pipeline_inputs=privileged_pipeline_inputs,
             instruction_stream_sync_registry=instruction_stream_sync_registry,
             csr_architecture_profile=csr_architecture_profile,
+            csr_target_build_contract=args.csr_target_build_contract,
             csr_runtime_registry=(None if csr_environment_contract is None
                                   else csr_environment_contract.runtime_registry),
             csr_renderer_registry=(None if csr_environment_contract is None

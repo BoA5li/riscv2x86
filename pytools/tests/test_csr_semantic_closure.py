@@ -150,7 +150,9 @@ def test_production_access_refinement_requires_an_isolated_instruction():
 
 
 @pytest.mark.parametrize("expressions,expected", [({0: "compiler_output"}, "compiler_output = rv2x86_csr_read(ctx, id);"), ({}, None)])
-def test_pipeline_consumes_proved_operand_index_for_rendering(expressions, expected):
+def test_pipeline_consumes_proved_operand_index_for_rendering(expressions, expected, monkeypatch):
+    monkeypatch.setattr("riscv2x86_py.csr_runtime_implementation.validate_implementation",
+        lambda *args: ({"unitTestImplementation": True}, "sha256:" + "1" * 64))
     from tests.test_csr_translation_pipeline import _complete_counter_model, _counter_contract
     from riscv2x86_py.csr_translation_pipeline import (CsrRuntimeRegistry,
         CsrRendererRegistry, CsrTranslationFallbackPolicy, run_csr_translation_pipeline)

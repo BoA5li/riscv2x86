@@ -506,6 +506,17 @@ def _execute(spec: PrivilegedRunnerSpec, request: Mapping[str, object], timeout:
 
 
 def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: object) -> ValidationLayerResult:
+    # State/trap traces do not constitute compiler-shell observations. Keep
+    # this provider inside its declared and implemented dimension contract.
+    provided_dimensions = tuple(kwargs.get("l2_provider_dimensions", (
+        L2Dimension.PRIVILEGED_STATE, L2Dimension.TRAP_SEMANTICS)))
+    if (not provided_dimensions or len(set(provided_dimensions)) != len(provided_dimensions)
+            or any(x not in {L2Dimension.PRIVILEGED_STATE, L2Dimension.TRAP_SEMANTICS}
+                   for x in provided_dimensions)):
+        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
+            detail=json.dumps({"reasonCode":"l2.privileged.provider-dimension-unsupported",
+                "failureStage":"provider_contract","executionDisposition":"precondition_rejected",
+                "evidenceProductionDisposition":"not_produced"},sort_keys=True))
     base = run_l2_effect_trace_differential(config.base_effect_config, **kwargs)
     if base.status is not ValidationStatus.VERIFIED: return base
     if kwargs.get("comparison_policy") != config.comparison_policy:
@@ -668,26 +679,19 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
             }),
             execution_nonce={"initialStateIdentity": initial_identity,
                              "routeContractIdentity": routes.identity},
-            dimensions=(L2Dimension.PRIVILEGED_STATE,
-                        L2Dimension.SHELL_SEMANTICS,
-                        L2Dimension.TRAP_SEMANTICS),
-            dimension_evidence={
+            dimensions=provided_dimensions,
+            dimension_evidence={key: value for key, value in {
                 L2Dimension.PRIVILEGED_STATE: L2DimensionEvidence(
                     _digest({"dimension": "privileged_state", "observation": source.__dict__}),
                     _digest({"dimension": "privileged_state", "observation": target.__dict__}),
                     ("privilege_mode", "architectural_state", "runtime_relation"),
-                ),
-                L2Dimension.SHELL_SEMANTICS: L2DimensionEvidence(
-                    _digest({"dimension": "shell_semantics", "observation": source.__dict__}),
-                    _digest({"dimension": "shell_semantics", "observation": target.__dict__}),
-                    ("clobbers", "compiler_visibility", "continuation"),
                 ),
                 L2Dimension.TRAP_SEMANTICS: L2DimensionEvidence(
                     _digest({"dimension": "trap_semantics", "observation": source.__dict__}),
                     _digest({"dimension": "trap_semantics", "observation": target.__dict__}),
                     ("trap_availability", "trap_target", "error_representation"),
                 ),
-            },
+            }.items() if key in provided_dimensions},
             execution_disposition=(
                 L2ProviderExecutionDisposition.EXECUTED_VERIFIED
                 if result.approved else

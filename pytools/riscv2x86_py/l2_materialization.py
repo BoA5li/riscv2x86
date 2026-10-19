@@ -224,7 +224,9 @@ def assess_fragment_l2_materializability(
             except ValueError:
                 reasons.append("L2_FRAGMENT_AUTHORITY_SIDECAR_INVALID")
         else:
-            reasons.append("L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING")
+            runtime_reason = approval.get("l2RuntimeAuthorityReasonCode")
+            reasons.append(runtime_reason if isinstance(runtime_reason,str) and runtime_reason
+                           else "L2_FRAGMENT_AUTHORITY_SIDECAR_MISSING")
             # Preserve the actual unsupported authority family rather than
             # presenting these routes as generic scalar/memory failures.
             if profile is not None and profile.pattern_kind is L2PatternKind.ASM_GOTO:

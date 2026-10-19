@@ -247,6 +247,7 @@ def main() -> int:
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
+    parser.add_argument("--csr-target-build-contract", choices=("automatic-gcc-separate-tu-no-lto-v1",))
     parser.add_argument("--csr-architecture-profile")
     parser.add_argument("--csr-environment-contract")
     parser.add_argument("--privileged-environment-sidecar")
@@ -408,6 +409,8 @@ def main() -> int:
         backend.append("--allow-functional-fallbacks")
     if args.csr_architecture_profile:
         backend.extend(("--csr-architecture-profile", str(Path(args.csr_architecture_profile).resolve())))
+    if args.csr_target_build_contract:
+        backend.extend(("--csr-target-build-contract", args.csr_target_build_contract))
     if args.csr_environment_contract:
         backend.extend(("--csr-environment-contract",
                         str(Path(args.csr_environment_contract).resolve())))

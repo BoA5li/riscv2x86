@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "riscv2x86_csr_runtime.h"
 #include <time.h>
+#include <stdlib.h>
 static rv2x86_system_adapter_fn adapters[5];
 uint64_t riscv2x86_rt_monotonic_time_ns_v1(void) {
   struct timespec t;
@@ -19,6 +20,13 @@ uint64_t riscv2x86_rt_tsc_ticks_v1(void) {
 uint64_t rv2x86_read_counter(const struct rv2x86_counter_context *c, enum rv2x86_counter_id id) {
   if (!c || id != RV2X86_COUNTER_MONOTONIC_NS) return 0;
   return riscv2x86_rt_monotonic_time_ns_v1();
+}
+/* Versioned fail-closed API: failure is never encoded as a counter value. */
+uint64_t rv2x86_read_counter_checked_v1(const struct rv2x86_counter_context *c, enum rv2x86_counter_id id) {
+  struct timespec t;
+  if (!c || c->version != 1 || id != RV2X86_COUNTER_MONOTONIC_NS) abort();
+  if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) abort();
+  return (uint64_t)t.tv_sec * UINT64_C(1000000000) + (uint64_t)t.tv_nsec;
 }
 static int valid(uint16_t x) { return x < 4096; }
 uint64_t rv2x86_csr_read(const struct rv2x86_csr_context *c,uint16_t x){return c&&valid(x)?c->values[x]:0;}

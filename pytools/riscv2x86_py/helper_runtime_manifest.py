@@ -5,7 +5,7 @@ runtime contract and must never become a generated ``helper_unknown`` call.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping
 
@@ -137,7 +137,21 @@ TSC_TICKS_V1 = RuntimeHelperContract(
     runtime_library="libriscv2x86_runtime",
 )
 
+# These entries register concrete ABIs, not an architectural counter-domain
+# equivalence. The separate CSR implementation gate checks that relation.
+from .csr_runtime_implementation import IMPLEMENTATIONS as _CSR_IMPLEMENTATIONS
+_CSR_HELPERS = tuple(replace(MONOTONIC_TIME_NS_V1,
+    runtime_contract_id=item.implementation_id + "@v1",
+    helper_symbol=item.callable_identifier, semantic_family=item.semantic_family,
+    parameter_type_ids=("context_pointer", "csr_or_counter_id") + (("uint64_t",) if item.argument_count == 3 else ()),
+    parameter_width_bits=(64, 32 if item.semantic_family == "functional-monotonic-observation" else 16) + ((64,) if item.argument_count == 3 else ()),
+    required_header=item.header, runtime_library=item.library,
+    required_environment_capability="runtime:"+item.implementation_id,
+    memory_effect="external_state_read" if item.semantic_family == "functional-monotonic-observation" else "reads_writes")
+    for item in _CSR_IMPLEMENTATIONS.values())
+
 DEFAULT_RUNTIME_HELPER_CONTRACTS: Mapping[str, RuntimeHelperContract] = MappingProxyType({
+    **{item.runtime_contract_id: item for item in _CSR_HELPERS},
     RV64_MULHU_U64.runtime_contract_id: RV64_MULHU_U64,
     INSTRUCTION_STREAM_SYNC_LOCAL.runtime_contract_id: INSTRUCTION_STREAM_SYNC_LOCAL,
     MONOTONIC_TIME_NS_V1.runtime_contract_id: MONOTONIC_TIME_NS_V1,

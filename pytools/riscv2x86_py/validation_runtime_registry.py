@@ -213,6 +213,8 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l2-effect-trace-differential": _l2_effect_trace_differential_factory,
     "l2-privileged-real-runner": _l2_privileged_real_runner_factory,
     "l2-explicit-harness": _explicit_l2_harness_factory,
+    "l2-instruction-visibility-harness": lambda config: __import__(
+        "riscv2x86_py.l2_instruction_visibility_runner",fromlist=["build_validator"]).build_validator(config),
     "l2-concurrency-memory-model": _l2_concurrency_memory_model_factory,
     "l3-experiment-contract": _l3_experiment_contract_factory,
 }
@@ -404,6 +406,7 @@ def _requirement_driven_l2_validator(
             if binding.provider_id not in provider_results:
                 provider_kwargs = dict(kwargs)
                 provider_kwargs["l2_provider_id"] = binding.provider_id
+                provider_kwargs["l2_provider_dimensions"] = providers_by_id[binding.provider_id].supported_dimensions
                 exception = None
                 try:
                     original = validators[binding.provider_id](**provider_kwargs)

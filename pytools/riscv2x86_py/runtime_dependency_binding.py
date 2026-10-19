@@ -86,6 +86,9 @@ def dependencies_from_translated_report(
         approval = finding.get("approvalArtifact")
         if not isinstance(approval, Mapping):
             raise ValueError("emitted finding lacks approval artifact")
+        if approval.get("artifactVersion") in {"phase6-csr-runtime-v1","phase6-instruction-stream-sync-v3"}:
+            from .runtime_build_manifest import validate_manifest
+            validate_manifest(repository_root() if root is None else root)
         contract_id = approval.get("runtimeContractId") or approval.get("helperRuntimeContractId") or ""
         if not isinstance(contract_id, str):
             raise ValueError("runtime contract id must be a string")

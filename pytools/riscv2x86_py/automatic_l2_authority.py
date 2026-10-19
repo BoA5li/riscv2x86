@@ -184,6 +184,60 @@ def _asm_goto_authority(finding, functions, producer_digest):
         return None
 
 
+def _instruction_stream_authority(finding, functions, producer_digest):
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment,Mapping) or not isinstance(approval,Mapping): return None
+    if approval.get("artifactVersion") != "phase6-instruction-stream-sync-v3": return None
+    from .l2_instruction_stream import validate_instruction_stream_approval
+    try:
+        validate_instruction_stream_approval(approval,fragment,finding.get("suggestedReplacement"),
+            source_digest=finding.get("sourceDigest"))
+        if finding.get("machineCodeHex") != approval["instructionStreamProof"]["machineCodeHex"]:
+            raise ValueError("ISS_MACHINE_CODE_BINDING_MISMATCH")
+        effects,relations,shell=_proof_effect_authority(approval,approval["sourceFragmentId"])
+        runtime=L2RuntimeContractBinding(approval["runtimeContractId"],approval["runtimeContractVersion"],
+            _identity(approval["instructionStreamProof"]),True)
+        return L2AuthoritySidecar(approval["sourceFragmentId"],L2AuthorityProducer(
+            "translation-proof-sidecar","instruction-visibility-authority","v1",producer_digest),
+            shell,(),(),effects,relations,(runtime,),(),True)
+    except (KeyError,TypeError,ValueError,AttributeError): return None
+
+
+def _csr_runtime_authority(finding, functions, producer_digest):
+    fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
+        return None
+    if approval.get("artifactVersion") != "phase6-csr-runtime-v1":
+        return None
+    from .csr_runtime_approval import validate_csr_runtime_approval
+    try:
+        validate_csr_runtime_approval(approval, fragment, finding.get("suggestedReplacement"))
+        if finding.get("machineCodeHex") != approval["proofPayload"]["machineCodeHex"]:
+            raise ValueError("CSR_RUNTIME_MACHINE_CODE_BINDING_MISMATCH")
+        fid = str(fragment.get("id") or fragment.get("fragmentId") or "")
+        matches = [x for x in functions if x.get("name") == fragment.get("enclosingFunction")]
+        if len(matches) != 1:
+            return None
+        boundary = approval.get("l2FragmentOperandBoundary")
+        canonical = bind_canonical_l2_operands(fragment, boundary,
+            matches[0].get("l2OperandBoundary"), approval["l2EffectProofFacts"])
+        operands = tuple(L2OperandAuthority(x.operand_id,x.operand_index,x.operand_id,
+            x.access_mode,x.type_kind,x.width_bits,x.signedness,x.tied_to_operand_id,
+            x.early_clobber,"",x.escape_kind,x.value_node_identity,
+            declaration_id=x.declaration_identity,parameter_index=x.parameter_index,
+            source_constraint=x.source_constraint) for x in canonical)
+        effects, relations, shell = _proof_effect_authority(approval, fid)
+        runtime = L2RuntimeContractBinding(approval["runtimeContractId"],
+            approval["runtimeContractVersion"],_identity(approval["proofPayload"]),True)
+        ignored = tuple(L2IgnoredStateAuthority(x,"explicit-functional-observability", "non_escaping",True)
+                        for x in approval.get("ignoredSourceState",()))
+        return L2AuthoritySidecar(fid,L2AuthorityProducer("translation-proof-sidecar",
+            "csr-runtime-authority","v1",producer_digest),shell,operands,(),effects,relations,
+            (runtime,),ignored,True)
+    except (KeyError,TypeError,ValueError,AttributeError):
+        return None
+
+
 def _scalar_authority(
     finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     producer_digest: str,
@@ -796,12 +850,33 @@ def materialize_automatic_l2_authority(
                 raw_boundary if isinstance(raw_boundary, Mapping) else None)
             approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
         from .l2_atomic_authority import materialize_atomic_authority
-        sidecar = (_functional_relation_authority(finding, producer_digest)
-                   or materialize_atomic_authority(finding, functions, producer_digest)
-                   or _asm_goto_authority(finding, functions, producer_digest)
-                   or _fence_authority(finding, functions, producer_digest)
-                   or _memory_authority(finding, functions, producer_digest)
-                   or _scalar_authority(finding, functions, producer_digest))
+        version = approval.get("artifactVersion") if isinstance(approval, Mapping) else ""
+        if version in {"phase6-csr-runtime-v1", "phase6-instruction-stream-sync-v3"}:
+            # A failed typed runtime join must never fall through to a legacy
+            # scalar/functional route with a weaker validation contract.
+            sidecar = (_csr_runtime_authority(finding,functions,producer_digest)
+                       if version == "phase6-csr-runtime-v1" else
+                       _instruction_stream_authority(finding,functions,producer_digest))
+            if sidecar is None:
+                try:
+                    if version == "phase6-csr-runtime-v1":
+                        from .csr_runtime_approval import validate_csr_runtime_approval
+                        validate_csr_runtime_approval(approval,finding["fragment"],finding.get("suggestedReplacement"))
+                        reason = "CSR_RUNTIME_CANONICAL_BOUNDARY_REQUIRED"
+                    else:
+                        from .l2_instruction_stream import validate_instruction_stream_approval
+                        validate_instruction_stream_approval(approval,finding["fragment"],finding.get("suggestedReplacement"),source_digest=finding.get("sourceDigest"))
+                        reason = "ISS_RUNTIME_AUTHORITY_BINDING_INCOMPLETE"
+                except (KeyError,TypeError,ValueError,AttributeError) as exc:
+                    reason = str(exc)
+                approval["l2RuntimeAuthorityReasonCode"] = reason
+        else:
+            sidecar = (_functional_relation_authority(finding, producer_digest)
+                       or materialize_atomic_authority(finding, functions, producer_digest)
+                       or _asm_goto_authority(finding, functions, producer_digest)
+                       or _fence_authority(finding, functions, producer_digest)
+                       or _memory_authority(finding, functions, producer_digest)
+                       or _scalar_authority(finding, functions, producer_digest))
         try:
             dimensions = required_dimensions_for_finding(finding)
             unified_decision = assess_fragment_l2_materializability(

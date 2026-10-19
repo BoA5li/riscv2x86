@@ -42,7 +42,7 @@ def _apply(s,op,reasons):
  return CsrAbstractState(tuple(sorted(v.items())),gate,s.privilege_mode,"pending" if getattr(op,"may_trap",None) is True else s.pending_trap,delegation,interrupt,asid,external)
 def analyze_csr_state_dataflow(*,blocks,cfg,initial_privilege_mode=None,max_iterations=256,access_effects=()):
  by={getattr(b,"addr"):b for b in blocks}; entry=getattr(cfg,"entry",None); initial=CsrAbstractState(privilege_mode=initial_privilege_mode or UNKNOWN,pending_trap="none")
- if entry not in by:return CsrStateDataflowResult(initial,(),(),(),False,True,("csr-dataflow.cfg-entry-missing",))
+ if entry not in by:return CsrStateDataflowResult(initial,(),(),(),False,False,("csr-dataflow.cfg-entry-missing",),CsrControlDisposition.UNKNOWN)
  incoming={entry:initial}; outgoing={}; work=[entry]; reasons=set(); n=0
  while work:
   n+=1
@@ -72,10 +72,12 @@ def analyze_csr_state_dataflow(*,blocks,cfg,initial_privilege_mode=None,max_iter
  # Trap coverage is a separate obligation; it does not establish a
  # function-level transformation requirement. Never infer granularity by
  # substring matching a diagnostic.
- whole=bool(reasons & {"csr-dataflow.external-privileged-state-requires-route",
-     "csr-dataflow.unknown-call-or-return", "csr-dataflow.external-successor"})
+ whole="csr-dataflow.external-privileged-state-requires-route" in reasons
+ unknown_control=bool(reasons & {"csr-dataflow.unknown-call-or-return", "csr-dataflow.external-successor",
+     "csr-dataflow.fixed-point-not-reached"})
  trap_required="csr-dataflow.trap-edge-requires-route" in reasons
  disposition=(CsrControlDisposition.WHOLE_FUNCTION_REQUIRED if whole else
+     CsrControlDisposition.UNKNOWN if unknown_control else
      CsrControlDisposition.TRAP_CONTRACT_REQUIRED if trap_required else
      CsrControlDisposition.UNKNOWN if reasons else CsrControlDisposition.LOCAL)
  return CsrStateDataflowResult(initial,tuple(sorted(incoming.items())),tuple(sorted(outgoing.items())),exits,not reasons and not whole,whole,tuple(sorted(reasons)),disposition)

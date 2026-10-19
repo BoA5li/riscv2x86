@@ -8,6 +8,9 @@ enum rv2x86_counter_id { RV2X86_COUNTER_MONOTONIC_NS, RV2X86_COUNTER_LOGICAL_CYC
 struct rv2x86_counter_context { uint32_t version; uint32_t flags; uint64_t frequency_hz; uint64_t resolution_ns; uint8_t per_thread, migration_safe, serialized, virtualized; };
 /* Domain is declared by context; this function never equates RDTSC with cycle. */
 uint64_t rv2x86_read_counter(const struct rv2x86_counter_context *, enum rv2x86_counter_id);
+/* Checked v1 requires context version 1. Invalid/unavailable execution aborts;
+ * it never silently returns zero. This is still a functional clock domain. */
+uint64_t rv2x86_read_counter_checked_v1(const struct rv2x86_counter_context *, enum rv2x86_counter_id);
 /*
  * Functional time-observation adapter v1.
  *

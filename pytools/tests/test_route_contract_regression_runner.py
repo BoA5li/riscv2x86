@@ -51,3 +51,24 @@ def test_runner_does_not_overwrite_existing_result_directory(tmp_path, monkeypat
     monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend','--clang10','clang','--output',str(output)])
     assert module.main()==2
     assert marker.read_text()=='preserve'
+
+
+def test_runner_forwards_runtime_environment_and_provider_directories(tmp_path, monkeypatch):
+    module = runner(); output = tmp_path/'out'; commands = []
+    names = ('privileged-config-directory','l2-provider-directory','l3-provider-directory',
+             'harness-directory','atomic-authority-directory','csr-architecture-directory',
+             'csr-authority-directory','csr-environment-contract-directory','instruction-stream-sync-directory')
+    argv = ['runner','--frontend','frontend','--clang10','clang','--suite','suite','--output',str(output)]
+    for name in names: argv += ['--'+name, str(tmp_path/name)]
+    monkeypatch.setattr(module.sys, 'argv', argv)
+    monkeypatch.setattr(module.shutil, 'which', lambda name, **kw: '/tools/'+name)
+    def run(command, **kw):
+        commands.append(command)
+        if Path(kw['stdout'].name).stem == 'clang-version': kw['stdout'].write('clang version 10.0.0\n')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    # No batch is produced by this mock; forwarding is what is under test.
+    assert module.main() == 2
+    batch_command = next(c for c in commands if 'riscv2x86_py.automatic_batch_cli' in c)
+    for name in names:
+        assert batch_command[batch_command.index('--'+name)+1] == str(tmp_path/name)

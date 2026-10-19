@@ -3111,6 +3111,7 @@ def _render_counter_csr_functional_fallback(
 def _render_instruction_stream_sync(
     *, context: TranslationContext, target_environment: TargetEnvironment,
     registry: InstructionStreamSyncRegistry | None,
+    machine_code: bytes = b"", target_build_contract: str | None = None,
 ) -> tuple[TranslationOutput | None, str]:
     """Resolve, prove (6D), then render an independent sync contract."""
     environment_id = instruction_stream_environment_id(target_environment)
@@ -3177,6 +3178,13 @@ def _render_instruction_stream_sync(
         "preservesVolatileExecution": contract.preserves_volatile_execution,
         "preservesCcClobber": contract.preserves_cc_clobber,
     }
+    if contract.domain_authority is not None:
+        from .l2_instruction_stream import close_instruction_stream_approval
+        try:
+            artifact, replacement = close_instruction_stream_approval(
+                artifact, proof, context.fragment, machine_code, target_build_contract)
+        except ValueError as exc:
+            return None, str(exc)
     return _output(
         kind="instruction_stream_elision" if noop else "runtime_c",
         replacement=replacement, context=context,
@@ -3212,6 +3220,7 @@ def translate(
     functional_observability: FunctionalObservabilityContract | None = None,
     privileged_runtime_registry: PrivilegedRuntimeRegistry | None = None,
     privileged_functional_registry: PrivilegedFunctionalFallbackRegistry | None = None,
+    csr_target_build_contract: str | None = None,
     csr_runtime_registry: CsrRuntimeRegistry | None = None,
     csr_renderer_registry: CsrRendererRegistry | None = None,
     instruction_stream_sync_registry: InstructionStreamSyncRegistry | None = None,
@@ -3463,7 +3472,7 @@ def translate(
         and context.privilegedStateFacts.csr_effects
     ):
         csr_source_model = adapt_source_csr_semantic_model(
-            context.privilegedStateFacts
+            context.privilegedStateFacts, observability=context.functionalObservability
         )
         csr_result = run_csr_translation_pipeline(
             source_csr_model=csr_source_model,
@@ -3471,6 +3480,9 @@ def translate(
             privileged_execution_facts=context.privilegedStateFacts,
             runtime_registry=csr_runtime_registry,
             renderer_registry=csr_renderer_registry,
+            fragment_id=context.fragment.id,
+            source_fragment=context.fragment,
+            target_build_contract=csr_target_build_contract,
             operand_expressions={
                 index: operand.exprText
                 for index, operand in enumerate(
@@ -3499,6 +3511,14 @@ def translate(
                     reason_code="TR_CSR_PIPELINE_APPROVAL_BYPASS",
                 )
             functional_csr = csr_result.route == "csr_functional_fallback"
+            from .csr_runtime_approval import build_csr_runtime_approval
+            csr_approval = build_csr_runtime_approval(context.fragment, csr_result,
+                machine_code=machine_code, decoder_profile={
+                    "privilege_spec_version":context.privilegedStateFacts.source_privilege_spec_version,
+                    "xlen_bits":xlen,
+                    "extensions":list(context.privilegedStateFacts.source_isa_extensions)},
+                target_environment_id=instruction_stream_environment_id(target_environment),
+                functional_observability=context.functionalObservability)
             return _output(
                 kind="functional_c" if functional_csr else "privileged_runtime",
                 replacement=csr_result.suggested_replacement,
@@ -3510,12 +3530,16 @@ def translate(
                 build_family="csr_runtime",
                 requires_build_check=True,
                 metadata={
+                    "approvalArtifact": csr_approval,
                     "csrPipeline": {
                         "route": csr_result.route,
                         "proofInvoked": csr_result.proof_invoked,
                         "proofEvidenceCount": len(csr_result.proof.evidence),
                         "proofIdentity": csr_result.proof.proof_identity,
                         "proofPayload": csr_result.proof.proof_payload,
+                        "runtimeImplementationIdentity": csr_result.implementation_identity,
+                        "runtimeShellProof": csr_result.shell_payload,
+                        "requiredBuildContract": csr_target_build_contract,
                         "rendererHeaders": csr_result.render.required_headers,
                         "rendererLibraries": csr_result.render.required_libraries,
                         "architectureSemanticsPreserved": not functional_csr,
@@ -3550,6 +3574,10 @@ def translate(
             metadata={
                 "csrPipelineReasonCodes": csr_result.reason_codes,
                 "csrProofInvoked": csr_result.proof_invoked,
+                "csrControlDisposition": getattr(getattr(getattr(context.privilegedStateFacts, "csr_state_dataflow", None),
+                    "control_disposition", None), "value", "unknown"),
+                "csrDataflowReasonCodes": tuple(getattr(getattr(context.privilegedStateFacts, "csr_state_dataflow", None),
+                    "reason_codes", ())),
                 "csrPlanCandidates": tuple(
                     candidate.family.value for candidate in csr_result.plan_candidates
                 ),
@@ -3651,6 +3679,7 @@ def translate(
             context=context,
             target_environment=target_environment,
             registry=instruction_stream_sync_registry,
+            machine_code=machine_code, target_build_contract=csr_target_build_contract,
         )
         if rendered is not None:
             return rendered

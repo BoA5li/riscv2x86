@@ -14,6 +14,10 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_runtime_build_provenance.py',
+    'test_instruction_visibility_production.py',
+    'test_runtime_contract_consumption.py',
+    'test_route_contract_regression_runner.py',
     'test_csr_semantic_closure.py',
     'test_csr_sync_production_contracts.py',
     'test_csr_metadata_ingress.py', 'test_csr_value_flow.py',
@@ -48,6 +52,11 @@ def main():
     parser.add_argument('--clang10', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--suite', type=Path)
+    parser.add_argument('--privileged-config-directory', type=Path)
+    parser.add_argument('--l2-provider-directory', type=Path)
+    parser.add_argument('--l3-provider-directory', type=Path)
+    parser.add_argument('--harness-directory', type=Path)
+    parser.add_argument('--atomic-authority-directory', type=Path)
     parser.add_argument('--csr-architecture-directory', type=Path)
     parser.add_argument('--csr-authority-directory', type=Path)
     parser.add_argument('--csr-environment-contract-directory', type=Path)
@@ -109,7 +118,9 @@ def main():
             '--input',str(args.suite.absolute()), '--frontend',str(args.frontend.absolute()),
             '--output-directory',str(output/'generated-suite-strict'), '--jobs','1',
             '--timeout-seconds','120']
-        for name in ('csr_architecture_directory', 'csr_authority_directory',
+        for name in ('privileged_config_directory', 'l2_provider_directory',
+                     'l3_provider_directory', 'harness_directory', 'atomic_authority_directory',
+                     'csr_architecture_directory', 'csr_authority_directory',
                      'csr_environment_contract_directory', 'instruction_stream_sync_directory'):
             value = getattr(args, name)
             if value is not None:
