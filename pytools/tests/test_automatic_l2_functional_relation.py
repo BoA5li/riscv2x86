@@ -1,4 +1,5 @@
 import json
+import pytest
 from hashlib import sha256
 import subprocess
 
@@ -18,7 +19,9 @@ from riscv2x86_py.translation_validation import (
 from riscv2x86_py.validation_status import PreservationMode, ValidationStatus
 
 
-def test_counter_functional_relation_is_l2_but_not_architectural(tmp_path, monkeypatch):
+@pytest.mark.parametrize("runtime_id", ["riscv2x86_rt_monotonic_time_ns@v1",
+    "rv2x86.read-counter.monotonic.checked.v1@v1"])
+def test_counter_functional_relation_is_l2_but_not_architectural(tmp_path, monkeypatch, runtime_id):
     source = tmp_path / "source.c"; source.write_text("source")
     target = tmp_path / "target.c"; target.write_text("target")
     digest = lambda path: "sha256:" + sha256(path.read_bytes()).hexdigest()
@@ -62,9 +65,9 @@ def test_counter_functional_relation_is_l2_but_not_architectural(tmp_path, monke
         (ApprovedEffectRelation(
             "relation:functional:privileged-state", "functional:privileged-state",
             ("target:functional:privileged-state",), "runtime_mediated",
-            ("csr_value",), (), "riscv2x86_rt_monotonic_time_ns@v1", True),),
+            ("csr_value",), (), runtime_id, True),),
         (L2RuntimeContractBinding(
-            "riscv2x86_rt_monotonic_time_ns@v1", "v1", contract_identity, True),),
+            runtime_id, "v1", contract_identity, True),),
         (L2IgnoredStateAuthority("csr:time:absolute-value", "test",
                                  "non_escaping", True),), True,
     )
@@ -76,7 +79,7 @@ def test_counter_functional_relation_is_l2_but_not_architectural(tmp_path, monke
     artifact = TranslationArtifact(
         "fragment", "model", "plan", "constraint", "proof",
         PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY, "sha256:" + "4" * 64,
-        "riscv2x86_rt_monotonic_time_ns@v1", "v1", "recipe", (),
+        runtime_id, "v1", "recipe", (),
         "counter", "runtime-helper", sidecar.authority_identity,
         sidecar.effect_relation_set_identity, True,
         l2_pattern_kind="privileged_read",

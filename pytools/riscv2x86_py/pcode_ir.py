@@ -188,6 +188,14 @@ def canonicalize_lifted_instruction(
             )
         )
 
+    from .csr_pcode_normalization import normalize
+    ops,normalization_facts=normalize(ops,addr=addr,size=size,privileged_operations=privileged_operations)
+    if normalization_facts is not None:
+        has_branch_op=any(op.opcode.upper() in _BRANCH_OPS for op in ops)
+        has_call_or_return_op=any(op.opcode.upper() in _CALLRET_OPS for op in ops)
+        if not has_branch_op and not has_call_or_return_op:
+            terminator_kind=None;direct_target=None
+
     # raw p-code 有 barrier opcode，但 asm / decoder 无法恢复具体 RISC-V
     # barrier 类型时，必须保守地保留 unknown barrier。
     has_unknown_barrier = raw_has_barrier and barrier_info is None
@@ -225,6 +233,7 @@ def canonicalize_lifted_instruction(
         semantic_tags=semantic_tags,
         privileged_operations=privileged_operations,
         privileged_metadata_invalid=privileged_metadata_invalid,
+        csr_normalization_facts=normalization_facts,
         asm_mnem=asm_mnem,
         asm_body=asm_body,
     )
@@ -437,6 +446,7 @@ class CanonicalPrivilegedOperation:
     debug_kind: str | None = None
     may_trap: bool | None = None
     state_complete: bool = False
+    csr_register_alias_ids: tuple[str, ...] = ()
 
 
 _FENCE_TEXT_TO_BIT = {
@@ -850,6 +860,7 @@ class CanonicalInsn:
     privileged_operations: tuple[CanonicalPrivilegedOperation, ...] = ()
     privileged_metadata_invalid: bool = False
     atomic_operation: CanonicalAtomicOperation | None = None
+    csr_normalization_facts: dict | None = None
 
 @dataclass
 class IRSummary:
@@ -2229,6 +2240,8 @@ def _summarize_instructions(
     barrier_infos: List[BarrierInfo] = []
 
     for ins in insns:
+        from .csr_pcode_normalization import architectural_state_reads
+        csr_state_vars=architectural_state_reads(ins.ops,ins.privileged_operations)
         term = ins.terminator_kind
 
         if term in _BRANCH_OPS or ins.has_branch_op:
@@ -2276,7 +2289,8 @@ def _summarize_instructions(
                 if var.kind == VarKind.REG:
                     if not (var.name or "").strip():
                         has_unresolved_register_identity = True
-                    reads_regs.add(_summary_register_key(var))
+                    if var not in csr_state_vars:
+                        reads_regs.add(_summary_register_key(var))
 
             if op.output is not None and op.output.kind == VarKind.REG:
                 if not (op.output.name or "").strip():

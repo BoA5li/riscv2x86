@@ -26,31 +26,7 @@ from .validation_status import PreservationMode, ValidationStatus
 
 SCHEMA = "riscv2x86.auto-l2-functional-relation-runner.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
-_CONTRACTS = {
-    "riscv2x86_rt_monotonic_time_ns@v1": {
-        "patterns": ("privileged_read",),
-        "observationContracts": ("riscv2x86.time.monotonic-observation.v1",
-                                 "riscv2x86.time.monotonic-relation-result.v1"),
-        "verifiedProperties": ("declared-return-relation", "monotonicity", "progress"),
-        "notClaimedProperties": ("absolute-value-equivalence", "epoch-equivalence",
-                                 "frequency-equivalence", "resolution-equivalence"),
-    },
-    "riscv2x86_rt_tsc_ticks@v1": {
-        "patterns": ("privileged_read",),
-        "observationContracts": ("riscv2x86.cycle.tsc-observation.v1",
-                                 "riscv2x86.cycle.tsc-relation-result.v1"),
-        "verifiedProperties": ("declared-return-relation", "monotonicity", "progress"),
-        "notClaimedProperties": ("absolute-value-equivalence", "epoch-equivalence",
-                                 "frequency-equivalence", "resolution-equivalence"),
-    },
-    "riscv2x86_rt_instruction_stream_sync_local@v1": {
-        "patterns": ("instruction_visibility_fence",),
-        "observationContracts": ("process-and-declared-return-values-v1",),
-        "verifiedProperties": ("normal-termination", "registered-local-thread-runtime-contract"),
-        "notClaimedProperties": ("architectural-instruction-visibility-equivalence",
-                                 "cross-thread-code-publication"),
-    },
-}
+from .runtime_observation_contracts import FUNCTIONAL_OBSERVATION_CONTRACTS as _CONTRACTS
 
 
 def _identity(value: object) -> str:

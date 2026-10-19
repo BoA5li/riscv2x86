@@ -3519,7 +3519,9 @@ def translate(
                     "xlen_bits":xlen,
                     "extensions":list(context.privilegedStateFacts.source_isa_extensions)},
                 target_environment_id=instruction_stream_environment_id(target_environment),
-                functional_observability=context.functionalObservability)
+                functional_observability=context.functionalObservability,
+                normalization_facts=tuple(ins.csr_normalization_facts for block in context.blocks
+                    for ins in block.instructions if ins.csr_normalization_facts is not None))
             return _output(
                 kind="functional_c" if functional_csr else "privileged_runtime",
                 replacement=csr_result.suggested_replacement,

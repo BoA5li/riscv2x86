@@ -14,6 +14,8 @@ import subprocess
 import sys
 
 TESTS = (
+    'test_csr_pcode_normalization.py',
+    'test_automatic_l2_functional_relation.py',
     'test_instruction_visibility_execution.py',
     'test_compiler_instruction_sync_scope.py',
     'test_route_precondition_lifecycle.py',

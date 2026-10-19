@@ -149,7 +149,9 @@ def canonical_csr_operations_from_decoded(*, addr: int, decoded: DecodedCsrInstr
         access_gate_ids=() if entry is None else entry.access_gates,
         access_gate_evaluation_complete=False,
         required_privilege_mode=None if entry is None else entry.minimum_privilege_mode,
-        may_trap=True, state_complete=complete),)
+        may_trap=True, state_complete=complete,
+        csr_register_alias_ids=() if entry is None else tuple(sorted(x.alias_id for x in entry.aliases_and_views
+            if x.target_csr_id==entry.csr_id and x.view_kind=="alias" and not x.field_identities))),)
 
 
 def decode_csr_privileged_operations(*, addr: int, machine_bytes: bytes, xlen_bits: int,

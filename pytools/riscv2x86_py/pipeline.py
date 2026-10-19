@@ -1774,6 +1774,8 @@ def run(
         # 特意放在 from_lifted() 和 CFG 构建之后，明确 canonical semantic
         # IR 的优先级高于任何 rendered p-code text。
         f.pcodeText = _render_lifted_pcode_for_diagnostics(lr)
+        f.csrNormalizationFacts=[ins.csr_normalization_facts for block in blocks
+            for ins in block.instructions if ins.csr_normalization_facts is not None]
 
         # Phase 6: translate
         if f.translationRuntimeFacts is None:

@@ -55,7 +55,7 @@ def bind_csr_compiler_operands(fragment, runtime_facts, lifted_insns, *, source_
                   'read_value_node_id','write_value_node_id','immediate_mask',
                   'read_result_suppressed','write_value_suppressed','read_modify_write',
                   'csr_id','csr_semantic_class','required_privilege_mode',
-                  'affected_csr_fields','access_gate_ids','state_complete'):
+                  'affected_csr_fields','access_gate_ids','state_complete','csr_register_alias_ids'):
         if getattr(op,field) != getattr(structural,field):
             raise CsrProductionBindingError('CSR_DECODER_EFFECT_MISMATCH')
     if not op.csr_id or not op.state_complete:

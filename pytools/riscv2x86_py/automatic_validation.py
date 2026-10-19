@@ -13,19 +13,14 @@ from .l0_build_matrix import run_l0_build_matrix
 from .l0_manifest_builder import build_l0_reference_manifest
 from .runtime_dependency_binding import resolve_runtime_contracts
 from .translation_validation import ValidationLayerResult, ValidationLevel
-from .validation_status import ValidationStatus
+from .validation_status import ValidationStatus, PreservationMode
 
 AUTO_L0_SCHEMA = "riscv2x86.auto-l0-runner.v1"
 AUTO_L1_SCHEMA = "riscv2x86.auto-l1-runner.v1"
 AUTO_L1_SCHEMA_V2 = "riscv2x86.auto-l1-runner.v2"
 AUTO_L1_SCHEMA_V3 = "riscv2x86.auto-l1-runner.v3"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
-_COUNTER_DOMAIN_CONTRACTS = {
-    "riscv2x86_rt_monotonic_time_ns@v1":
-        "riscv2x86.time.monotonic-observation.v1",
-    "riscv2x86_rt_tsc_ticks@v1":
-        "riscv2x86.cycle.tsc-observation.v1",
-}
+from .runtime_observation_contracts import COUNTER_OBSERVATION_CONTRACTS as _COUNTER_DOMAIN_CONTRACTS
 
 
 def _evidence(payload: Mapping[str, object]) -> str:
@@ -490,6 +485,9 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             counter_contract = _COUNTER_DOMAIN_CONTRACTS.get(
                 translation.runtime_contract_id
             )
+            if (counter_contract is not None and translation.preservation_mode
+                    is not PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY):
+                counter_contract = None
             counter_function: Mapping[str, object] | None = None
             counter_return_semantics = ""
             if counter_contract is not None:

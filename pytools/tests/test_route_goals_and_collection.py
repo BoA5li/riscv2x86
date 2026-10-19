@@ -32,10 +32,14 @@ def test_collection_preserves_exact_sources_and_rejects_stale_files(tmp_path,mon
     resolution.parent.mkdir(parents=True)
     from hashlib import sha256
     resolution.write_text(json.dumps({'sourceDigest':'sha256:'+sha256(source.read_bytes()).hexdigest()}))
+    (root/'run-status.json').write_text('{"experiment":"original"}')
     output=tmp_path/'evidence.zip';manifest=collect(root,output)
+    assert manifest['toolProvenanceScope']=='collection-time-only'
+    assert manifest['experimentProvenanceFiles']==['run/run-status.json']
     assert manifest['semanticApproval'] is False
     with zipfile.ZipFile(output) as archive:
         assert archive.read('cases/renamable/source.c')==source.read_bytes()
+        assert archive.read('run/run-status.json')==(root/'run-status.json').read_bytes()
     with pytest.raises(ValueError,match='OUTPUT_EXISTS'):collect(root,output)
     source.write_text('changed')
     with pytest.raises(ValueError,match='SOURCE_CHANGED'):collect(root,tmp_path/'stale.zip')

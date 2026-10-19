@@ -49,7 +49,7 @@ def _effect_facts(payload, proof_id, plan_id, constraint_id, renderer_id):
         constraint_id, renderer_id, tuple(source), tuple(target), tuple(relations), shell_fact, True)
 
 
-def build_csr_runtime_approval(fragment, result, *, machine_code, decoder_profile, target_environment_id, functional_observability=None):
+def build_csr_runtime_approval(fragment, result, *, machine_code, decoder_profile, target_environment_id, functional_observability=None, normalization_facts=()):
     if (result.status != 'approved' or result.proof is None or not result.proof.approved
             or not result.shell_payload or not result.recipe_payload or not result.implementation_identity):
         raise ValueError('CSR_RUNTIME_APPROVAL_PRECONDITION_MISSING')
@@ -67,6 +67,10 @@ def build_csr_runtime_approval(fragment, result, *, machine_code, decoder_profil
     if result.backend_contract is not None:
         payload['schemaVersion']='riscv2x86.csr-runtime-proof.v2'
         payload['backendContract']=result.backend_contract
+    if normalization_facts:
+        payload['schemaVersion']='riscv2x86.csr-runtime-proof.v3'
+        payload['backendContract']=result.backend_contract
+        payload['normalizationFacts']=semantic_payload(normalization_facts)
     proof_id=semantic_identity(payload)
     plan_id=semantic_identity({'family':result.route,'sourceModel':payload['fieldProof']['sourceModel']})
     constraint_id=semantic_identity(payload['fieldProof']['constraints'])
@@ -75,7 +79,7 @@ def build_csr_runtime_approval(fragment, result, *, machine_code, decoder_profil
     ignored = [] if functional_observability is None else sorted({x.state_id for x in functional_observability.ignored_states})
     if functional and not ignored: raise ValueError('CSR_RUNTIME_FUNCTIONAL_OBSERVABILITY_REQUIRED')
     facts=_effect_facts(payload,proof_id,plan_id,constraint_id,renderer_id)
-    return {'artifactVersion':'phase6-csr-runtime-v1', 'sourceFragmentId':payload['sourceShell']['id'],
+    approval = {'artifactVersion':'phase6-csr-runtime-v1', 'sourceFragmentId':payload['sourceShell']['id'],
         'proofStatus':'functional_approved' if functional else 'approved',
         'preservationMode':'functional_equivalence_only' if functional else 'architecture_equivalent',
         'architectureSemanticsPreserved':not functional,'shellSemanticsPreserved':True,
@@ -107,18 +111,23 @@ def build_csr_runtime_approval(fragment, result, *, machine_code, decoder_profil
         'requiredLibraries':list(result.render.required_libraries),
         'replacementDigest':semantic_identity({'replacement':result.suggested_replacement}),
         'l2EffectProofFacts':facts.to_dict()}
+    if normalization_facts:
+        validate_csr_runtime_approval(approval, fragment, result.suggested_replacement)
+    return approval
 
 
 def validate_csr_runtime_approval(approval, fragment, replacement=None):
     if approval.get('artifactVersion')!='phase6-csr-runtime-v1':
         raise ValueError('CSR_RUNTIME_APPROVAL_SCHEMA_INVALID')
     p=approval['proofPayload']
-    version2=p.get('schemaVersion')=='riscv2x86.csr-runtime-proof.v2'
+    version3=p.get('schemaVersion')=='riscv2x86.csr-runtime-proof.v3'
+    version2=p.get('schemaVersion')=='riscv2x86.csr-runtime-proof.v2' or (version3 and p.get('backendContract') is not None)
     expected_fields={'schemaVersion','machineCodeHex','decoderProfile','planFamily','fieldProof','fieldProofIdentity','shellProof','recipe',
                    'implementationIdentity','runtimeContractId','compilerAuthorityIdentity','sourceShell','targetEnvironmentId','functionalObservability'}
-    if version2:expected_fields.add('backendContract')
+    if version2 or version3:expected_fields.add('backendContract')
+    if version3:expected_fields.add('normalizationFacts')
     if (set(p)!=expected_fields
-            or p['schemaVersion'] not in {'riscv2x86.csr-runtime-proof.v1','riscv2x86.csr-runtime-proof.v2'}
+            or p['schemaVersion'] not in {'riscv2x86.csr-runtime-proof.v1','riscv2x86.csr-runtime-proof.v2','riscv2x86.csr-runtime-proof.v3'}
             or semantic_identity(p)!=approval.get('proofIdentity')
             or p['sourceShell']!=_fragment_shell(fragment)):
         raise ValueError('CSR_RUNTIME_APPROVAL_BINDING_MISMATCH')
@@ -144,6 +153,13 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
     if decoded is None: raise ValueError('CSR_RUNTIME_DECODER_INSTRUCTION_INVALID')
     op=canonical_csr_operations_from_decoded(addr=effect['block_address'],
         decoded=decoded,xlen_bits=effect['xlen_bits'],profile=profile)[0]
+    if version3:
+        from .csr_pcode_normalization import replay
+        records=p['normalizationFacts']
+        if (not isinstance(records,list) or len(records)!=1 or records[0].get('address')!=effect['block_address']
+                or records[0].get('instructionSize')!=len(code)):
+            raise ValueError('CSR_NORMALIZATION_REGION_BINDING_MISMATCH')
+        replay(records[0],privileged_operations=(op,))
     writes=op.csr_operation.value in {'write','read_write','set_bits','clear_bits'}
     fields=semantic_payload(tuple(_field_effect(x,write_required=writes) for x in op.affected_csr_fields))
     if (not op.state_complete or op.csr_id!=effect['csr_id']

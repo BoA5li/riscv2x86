@@ -416,6 +416,7 @@ class Finding:
 
     # Phase 5：lifting 结果。
     pcodeText: str = ""
+    csrNormalizationFacts: List[Dict[str, Any]] = field(default_factory=list)
 
     # Phase 6 / 7：翻译结果。
     translationKind: str = ""

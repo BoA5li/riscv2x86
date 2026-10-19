@@ -22,6 +22,12 @@ def collect(results,output):
     root=results/'generated-suite-strict';inventory=results/'generated-suite-strict-inventory'
     batch=json.loads((root/'batch-evaluation.json').read_text())
     files={};cases=[]
+    # Preserve experiment-time records separately from collection-time tools.
+    for name in ('run-status.json','git-head.log','git-branch.log','clang-version.log',
+                 'production-tools.log','experiment-environment.json','summary.json',
+                 'route-goals.json','provider-audit.log'):
+        artifact=results/name
+        if artifact.is_file():files['run/'+name]=artifact.read_bytes()
     for path in sorted((root/'cases').glob('*/evaluation-result.json')):
         case=json.loads(path.read_text());case_id=path.parent.name
         if case.get('status')=='verified':continue
@@ -57,7 +63,9 @@ def collect(results,output):
         except (OSError,subprocess.TimeoutExpired) as exc:version={'exceptionType':type(exc).__name__,'detail':str(exc)}
         tools[tool]={'path':str(Path(executable).resolve()),'digest':digest(data),'version':version}
     manifest={'schemaVersion':'riscv2x86.route-evidence-bundle.v1','batchIdentity':batch.get('batchIdentity'),
-        'cases':cases,'tools':tools,'semanticApproval':False,
+        'cases':cases,'tools':tools,'toolProvenanceScope':'collection-time-only',
+        'experimentProvenanceFiles':sorted(name for name in files if name.startswith('run/')),
+        'semanticApproval':False,
         'files':{name:digest(data) for name,data in files.items()}}
     files['manifest.json']=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()
     # Exclusive create; an error leaves a clearly unsuccessful archive rather
