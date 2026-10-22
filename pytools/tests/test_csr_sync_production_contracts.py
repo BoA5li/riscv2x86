@@ -48,11 +48,11 @@ def test_profile_identity_mutation():
     with pytest.raises(ValueError,match='IDENTITY'):parse_profile(p)
 
 
-def compiler_fragment(constraint="=r"):
+def compiler_fragment(constraint="=r", *, source_digest=None):
     from tests.test_production_route_authority import _compiler_authority
     from riscv2x86_py.schema import AsmFragment, AsmOperand
     from riscv2x86_py.compiler_fragment_closure import close_compiler_fragment_candidate
-    a=_compiler_authority();c=deepcopy(a['candidate'])
+    a=_compiler_authority(source_digest=source_digest);c=deepcopy(a['candidate'])
     # Independently close an output-only compiler candidate; no join helper
     # constructs the expected decoder role or expected value node.
     c.pop('closureIdentity');c.pop('closureProvenance')

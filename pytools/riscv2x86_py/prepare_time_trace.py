@@ -5,7 +5,6 @@ selection. Provider binding consumes a real approved production report. Neither
 step fabricates an approval or changes a verdict. No case/function-name rules.
 """
 import argparse
-from dataclasses import asdict
 import json
 from pathlib import Path
 import shutil
@@ -20,32 +19,17 @@ def seal(payload,key):return {**payload,key:semantic_identity(payload)}
 
 
 def finding(source,report,fragment_id):
-    source=Path(source);report=Path(report)
-    data=json.loads(report.read_text());matches=[f for f in data['findings']
-        if (f['fragment'].get('id') or f['fragment'].get('fragmentId'))==fragment_id]
-    if len(matches)!=1:raise ValueError('TIME_PREPARATION_FRAGMENT_AMBIGUOUS')
-    f=matches[0]
-    if f.get('sourceDigest')!=digest(source):raise ValueError('TIME_PREPARATION_SOURCE_STALE')
-    candidates=json.loads(report.with_name('compiler-candidates.json').read_text())
-    if (candidates['sourceDigest']!=digest(source) or candidates['manifestIdentity']!=semantic_identity(
-            {k:v for k,v in candidates.items() if k!='manifestIdentity'})):
-        raise ValueError('TIME_COMPILER_SNAPSHOT_INVALID')
-    functions=candidates['functions']
-    if len(functions)!=1 or functions[0]['name']!=f['fragment']['enclosingFunction']:
-        raise ValueError('TIME_PROGRAM_OBSERVATION_SCOPE_UNSUPPORTED')
-    from .compiler_time_scope import validate_scope
-    scope=validate_scope(functions[0].get('compilerTimeReturnScope'),f['fragment'],digest(source))
-    return f,scope
+    from .mechanism_route_checks import preparation_inputs
+    return preparation_inputs(source, report, fragment_id, family='time')
 
 
-def prepare_contract(*,source,report,fragment_id,backend,architecture,review):
+def validate_static_join(f, architecture, *, source):
+    """Replay ISA and compiler carrier joins; this does not permit execution."""
     from .csr_architecture_profile import profiles_from_payload,parse_profile
     from .csr_metadata_ingress import decode_csr_instruction,canonical_csr_operations_from_decoded
     from .csr_value_flow import _effect_id
-    from .phase6c_constraints import FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
     from .route_authority import validate_route_decision
-    f,scope=finding(source,report,fragment_id)
-    validate_backend(backend)
+    fragment_id=f['fragment'].get('id') or f['fragment'].get('fragmentId')
     profiles=profiles_from_payload(architecture,source_digest=digest(source),xlen_bits=64)
     profile=parse_profile(profiles.get(fragment_id))
     joins=[d for d in f.get('routeAuthorityDiagnostics',[]) if d.get('reasonCode')=='CSR_COMPILER_JOIN_COMPLETE' and d.get('accepted')]
@@ -56,11 +40,39 @@ def prepare_contract(*,source,report,fragment_id,backend,architecture,review):
     operation=canonical_csr_operations_from_decoded(addr=w['instructionAddress'],decoded=decoded,
         xlen_bits=64,profile=profile)[0]
     eid=_effect_id(w['instructionAddress'],1,operation)
-    if (w['sourceDigest']!=digest(source) or w['fragmentId']!=fragment_id
+    from .csr_production_binding import bind_csr_compiler_operands
+    from .runtime_facts import TranslationRuntimeFacts, canonicalize_riscv_register_name
+    from .schema import AsmFragment, AsmOperand
+    from types import SimpleNamespace
+    raw=dict(f['fragment'])
+    # Only the GNU operands need reconstruction; all authority payloads remain
+    # the original structured compiler records.
+    raw['outputs']=[AsmOperand(**x) for x in raw.get('outputs',[])]
+    raw['inputs']=[AsmOperand(**x) for x in raw.get('inputs',[])]
+    fragment=AsmFragment(**raw)
+    registers=w['assemblerRegisterBindings']
+    if (not isinstance(registers,dict) or len(registers)!=1 or any(
+            type(index) is not int or index!=0 or not canonicalize_riscv_register_name(reg)
+            or canonicalize_riscv_register_name(reg)!=canonicalize_riscv_register_name(decoded.rd_register_id)
+            for reg,index in registers.items())):
+        raise ValueError('TIME_PREPARATION_REGISTER_BINDING_MISMATCH')
+    runtime=TranslationRuntimeFacts(rv_to_operand_index=registers,operand_width_bits={0:64})
+    _,expected=bind_csr_compiler_operands(fragment,runtime,
+        [SimpleNamespace(addr=w['instructionAddress'],decoded_csr_instruction=decoded,privileged_operations=(operation,))],
+        source_digest=digest(source),architecture_profile=profile)
+    if (w!=semantic_payload(expected) or w['sourceDigest']!=digest(source) or w['fragmentId']!=fragment_id
             or w['sourceEffectId']!=eid or w['effect']!=semantic_payload(operation)
             or w['decoder']!=semantic_payload(decoded) or operation.csr_id!='riscv.csr.time'
             or operation.csr_operation.value!='read'):
         raise ValueError('TIME_PREPARATION_DECODER_BINDING_MISMATCH')
+    return operation,eid,profile
+
+
+def prepare_contract(*,source,report,fragment_id,backend,architecture,review):
+    from .phase6c_constraints import FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
+    f,scope=finding(source,report,fragment_id)
+    validate_backend(backend)
+    operation,eid,profile=validate_static_join(f,architecture,source=source)
     facts=controlled_execution_facts(fragment_id=fragment_id,backend=backend,
         privilege_spec=profile.privilege_spec_version.removeprefix('riscv-privileged-'),extensions=profile.extensions)
     trace=seal({'schemaVersion':SCHEMA,'sourceDigest':digest(source),'fragmentId':fragment_id,

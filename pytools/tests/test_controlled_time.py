@@ -47,7 +47,7 @@ def counter(trace):
         'explicit-controlled-backend-required','execution-failure-not-counter-value',True,trace)
 
 
-def pipeline_fixture():
+def pipeline_fixture(*, source_digest=None, environment=None, registry_override=None, renderer_override=None):
     from tests.test_csr_sync_production_contracts import compiler_fragment,profile
     from tests.test_privileged_state_analysis import _cfg
     from riscv2x86_py.csr_architecture_profile import parse_profile
@@ -64,7 +64,7 @@ def pipeline_fixture():
         CsrTranslationFallbackPolicy,run_csr_translation_pipeline)
     from riscv2x86_py.csr_structured_renderer import CsrRuntimeRecipe
     from riscv2x86_py.csr_runtime_approval import build_csr_runtime_approval
-    f=compiler_fragment();f.outputs[0].exprText='out'
+    f=compiler_fragment(source_digest=source_digest);f.outputs[0].exprText='out'
     f.enclosingFunction='probe'
     key=f.compilerFragmentAuthority['fragmentBindingKey']
     f.compilerTimeReturnScope=seal({'schemaVersion':'riscv2x86.compiler-time-return-scope.v1',
@@ -73,8 +73,12 @@ def pipeline_fixture():
         'asmBegin':key['beginOffset'],'asmEnd':key['endOffset'],
         'scope':'u64-no-parameters-one-local-one-asm-direct-return'},'scopeIdentity')
 
-    environment=NS(environment_id='controlled-test')
+    environment=environment or NS(environment_id='controlled-test')
     trace,facts=trace_contract(f.id,f.compilerFragmentAuthority['sourceDigest'],environment)
+    if registry_override is not None:
+        trace=semantic_payload(registry_override.mappings[0].counter_contract.trace_relation)
+        facts=controlled_execution_facts(fragment_id=f.id,backend=trace['sourceBackend'],
+            privilege_spec='1.12',extensions=('zicsr',))
     code=((0xc01<<20)|(2<<12)|(10<<7)|0x73).to_bytes(4,'little')
     decoder=parse_profile(profile());decoded=decode_csr_instruction(code)
     op=canonical_csr_operations_from_decoded(addr=0x10000,decoded=decoded,xlen_bits=64,profile=decoder)[0]
@@ -97,6 +101,8 @@ def pipeline_fixture():
     recipe=CsrRuntimeRecipe('controlled-read','rv2x86_read_time_trace_checked_v1','RV2X86_COUNTER_CONTROLLED_TIME',
         '((const struct rv2x86_counter_context *)0)',None,None,'riscv2x86_csr_runtime.h','libriscv2x86_runtime','v1','no-trap-observation',True)
     renderer=CsrRendererRegistry('controlled-time.v1',{'controlled-read':recipe},{'controlled-read':'v1'})
+    registry=registry_override or registry
+    renderer=renderer_override or renderer
     result=run_csr_translation_pipeline(model,environment,state,registry,renderer,CsrTranslationFallbackPolicy(),
         operand_expressions={0:'out'},fragment_id=f.id,source_fragment=f,target_build_contract='automatic-gcc-separate-tu-no-lto-v1')
     assert result.status=='approved',result.reason_codes
@@ -165,11 +171,16 @@ def test_rehashed_foreign_source_implementation_is_not_a_supported_backend():
     with pytest.raises(ValueError,match='IMPLEMENTATION'):validate_backend(value)
 
 
-def test_receipt_matches_consumed_registry_not_file_existence(tmp_path):
+def test_receipt_matches_consumed_registry_not_file_existence(tmp_path,monkeypatch):
+    from riscv2x86_py import contract_consumption as module
     from riscv2x86_py.contract_consumption import consumption_receipt
     f,result,a,registry,renderer=pipeline_fixture();source=tmp_path/'source.c';source.write_text('fixture')
     r=NS(fragment_id=f.id,runtime_registry=registry,renderer_registry=renderer)
-    report={'findings':[{'fragment':asdict(f),'approvalArtifact':a,'suggestedReplacement':result.suggested_replacement}]}
+    report={'findings':[{'fragment':asdict(f),'sourceDigest':f.compilerFragmentAuthority['sourceDigest'],
+        'approvalArtifact':a,'suggestedReplacement':result.suggested_replacement}]}
+    assert consumption_receipt(source,report,csr=r)['records'][0]['disposition']=='validated_not_consumed'
+    # This test uses a synthetic compiler authority, not a real source file.
+    monkeypatch.setattr(module,'digest',lambda p:f.compilerFragmentAuthority['sourceDigest'])
     receipt=consumption_receipt(source,report,csr=r)
     assert receipt['records'][0]['disposition']=='consumed'
     r.runtime_registry=NS(other='not-the-consumed-registry')

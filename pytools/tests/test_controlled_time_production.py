@@ -32,11 +32,12 @@ def test_real_controlled_time_production_and_central_provider_audit(tmp_path):
     completed=subprocess.run([sys.executable,str(root/'experiment/run_mechanism_routes.py'),
         '--frontend',frontend,'--output',str(output),'--architecture-template',str(architecture),
         '--time-source',str(source),'--time-review',str(review),'--time-backend',manifest,
-        '--time-runner-json',runner],capture_output=True,text=True,timeout=1200,check=False)
+        '--time-runner-json',runner,'--time-mode','controlled'],capture_output=True,text=True,timeout=1200,check=False)
     logs={p.name:p.read_text()[-10000:] for p in output.glob('*.log')}
     assert completed.returncode==0,completed.stdout+completed.stderr+json.dumps(logs)
     status=json.loads((output/'run-status.json').read_text())
     assert status['completedRoutes']==['time'] and not status['blockers']
+    assert status['productionAcceptanceComplete']
     assert status['originalNativeTimeEquivalent'] is False
     audit=json.loads((output/'time-provider-audit.log').read_text())
     assert not audit['failures'] and audit['providerInvocations']>0

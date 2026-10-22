@@ -20,6 +20,8 @@ def consumption_receipt(source,report,*,csr=None,sync=None,paths=None):
             fragment=finding['fragment'];fid=fragment.get('id') or fragment.get('fragmentId')
             approval=finding.get('approvalArtifact') or {};p=approval.get('proofPayload') or {}
             consumed=False
+            if finding.get('sourceDigest') != record['sourceDigest']:
+                continue
             if family=='csr_environment' and fid==registry.fragment_id and p:
                 from .csr_runtime_approval import validate_csr_runtime_approval,_namespace
                 from .csr_runtime_implementation import validate_implementation

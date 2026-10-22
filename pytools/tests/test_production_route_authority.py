@@ -24,8 +24,8 @@ def _identity(value):
     return "sha256:" + sha256(encoded).hexdigest()
 
 
-def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer"):
-    digest = "sha256:" + "1" * 64
+def _compiler_authority(*, fragment_id="source.c:7:3", carrier_kind="pointer", source_digest=None):
+    digest = source_digest or "sha256:" + "1" * 64
     declaration = "sha256:" + "2" * 64
     node = "sha256:" + "3" * 64
     key = {"sourceDigest": digest, "sourceFile": "/tmp/source.c",

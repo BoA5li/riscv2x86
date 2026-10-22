@@ -12,7 +12,6 @@ from .semantic_content import semantic_identity
 from .mechanism_evidence import validate as validate_evidence
 from .time_trace_harness import digest
 from .prepare_instruction_visibility import commands
-from .compiler_instruction_sync_scope import validate_scope
 from .instruction_stream_sync_contracts import instruction_stream_sync_registry_from_dict
 from .phase6c_constraints import FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
 from .instruction_stream_sync_contracts import instruction_stream_environment_id
@@ -28,20 +27,10 @@ def prepare(*,source,report,fragment_id,evidence,declaration,provider_output,
         raise ValueError('ISS_EXPLICIT_CPU_SELECTION_REQUIRED')
     if declaration['modifiedCodeRange']!={'objectIdentity':'probe-code-object','offsetBytes':0,'lengthBytes':4096,'addressSpaceIdentity':'observer.private.anonymous'}:
         raise ValueError('ISS_OBSERVER_RANGE_BINDING_MISMATCH')
-    report=Path(report);data=json.loads(report.read_text())
-    matches=[f for f in data['findings'] if (f['fragment'].get('id') or f['fragment'].get('fragmentId'))==fragment_id]
-    if len(matches)!=1:raise ValueError('ISS_PREPARATION_FRAGMENT_AMBIGUOUS')
-    f=matches[0]
+    from .mechanism_route_checks import preparation_inputs
+    f,scope=preparation_inputs(source,report,fragment_id,family='sync')
     if f['sourceDigest']!=digest(source) or f.get('machineCodeHex')!='0f100000':
         raise ValueError('ISS_PREPARATION_SOURCE_OR_ENCODING_MISMATCH')
-    snapshot=json.loads(report.with_name('compiler-candidates.json').read_text())
-    if (snapshot['sourceDigest']!=digest(source) or snapshot['manifestIdentity']!=semantic_identity(
-            {k:v for k,v in snapshot.items() if k!='manifestIdentity'})):
-        raise ValueError('ISS_COMPILER_SNAPSHOT_INVALID')
-    scopes=[x['compilerInstructionSyncScope'] for x in snapshot['functions']
-        if x.get('name')==f['fragment'].get('enclosingFunction') and x.get('compilerInstructionSyncScope')]
-    if len(scopes)!=1:raise ValueError('ISS_FUNCTION_SCOPE_UNSUPPORTED')
-    scope=validate_scope(scopes[0],f['fragment'],digest(source))
     plan=commands(approval_path=Path(provider_output).resolve()/'approval.json',symbol=scope['functionSymbol'],
         source_compiler=source_compiler,target_compiler=target_compiler,source_runner=source_runner)
     from shutil import which

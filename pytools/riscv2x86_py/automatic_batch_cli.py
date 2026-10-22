@@ -1489,9 +1489,10 @@ def prepare_automatic_inventory(
         if any(p['validatorType'] in {'controlled-time-validation','l2-instruction-visibility-harness'} for p in explicit_l2_providers):
             if link_kind != 'shared_library':
                 raise ValueError('OBSERVATION_SHARED_LIBRARY_BUILD_REQUIRED')
+            from .mechanism_route_checks import source_build_compiler
             request['sourceBuild']={'artifactId':'source-'+case_id,'artifactKind':'shared_library',
                 'outputRelativePath':'build/source.rv64.so',
-                'command':['riscv64-linux-gnu-gcc','-std=gnu11','-O0','-Wall','-Wextra','-Werror',
+                'command':[source_build_compiler(explicit_l2_providers),'-std=gnu11','-O0','-Wall','-Wextra','-Werror',
                     '-march=rv64gc','-mabi=lp64d','-fPIC','-shared','${SOURCE_PATH}','-o','${OUTPUT}']}
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,

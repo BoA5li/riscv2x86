@@ -1883,6 +1883,10 @@ def run(
                 cfg=cfg,
                 execution_facts=execution_facts,
             )
+            if any(getattr(ins, 'decoded_csr_instruction', None) is not None for ins in lr.insns):
+                from .mechanism_route_checks import execution_checkpoint
+                f.routeAuthorityDiagnostics.append(execution_checkpoint(
+                    f.fragment.id, architecture_profiles.get(f.fragment.id), execution_facts, privileged_state))
             raw_csr_authority = getattr(f.fragment, "csrAuthorityBundle", {})
             if raw_csr_authority:
                 try:
