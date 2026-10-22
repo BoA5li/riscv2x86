@@ -12,8 +12,13 @@ import re
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_route_acceptance.py',
+    'test_route_input_preparation.py',
+    'test_visibility_provider_preparation.py',
+    'test_l2_blocked_materialization.py',
     'test_csr_pcode_normalization.py',
     'test_automatic_l2_functional_relation.py',
     'test_instruction_visibility_execution.py',
@@ -77,6 +82,8 @@ def main():
     parser.add_argument('--instruction-stream-sync-directory', type=Path)
     parser.add_argument('--experiment-environment',type=Path)
     parser.add_argument('--require-verified-case',action='append',default=[])
+    parser.add_argument('--acceptance-matrix', type=Path)
+    parser.add_argument('--require-no-regression-skips', action='store_true')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     output = args.output.absolute()
@@ -109,6 +116,8 @@ def main():
         print(stage + ': ' + str(step['returnCode']), flush=True)
         return step['returnCode'] == 0
 
+    if args.acceptance_matrix is not None and args.suite is None:
+        status['blockers'].append('acceptance-matrix-requires-suite')
     if args.require_verified_case and args.suite is None:
         status['blockers'].append('route-goals-require-suite')
     run('git-head', ['git','rev-parse','HEAD'], 30)
@@ -135,8 +144,23 @@ def main():
         if not run('frontend-build',['cmake','--build','build','-j2'],600):
             status['blockers'].append('frontend-build')
         if not status['blockers'] and not run('regression', [sys.executable,'-m','pytest','-q',
+                '--junitxml='+str(output/'regression.xml'),
                 *['pytools/tests/'+name for name in TESTS]],1800):
             status['blockers'].append('regression')
+    regression_xml = output/'regression.xml'
+    if regression_xml.is_file():
+        try:
+            suites = list(ET.parse(regression_xml).getroot().iter('testsuite'))
+            coverage = {key:sum(int(x.get(key, '0')) for x in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+            status['regressionCoverage'] = coverage
+            if args.require_no_regression_skips and coverage['skipped']:
+                status['blockers'].append('regression-skipped')
+        except (OSError, ValueError, ET.ParseError) as exc:
+            status['blockers'].append('regression-report-invalid')
+            status['regressionReportFailure'] = str(exc)
+    elif args.require_no_regression_skips and not status['blockers']:
+        status['blockers'].append('regression-report-missing')
     if args.suite is not None and not status['blockers']:
         status['generatedSuiteExecuted'] = True
         suite_command = [sys.executable,'-m','riscv2x86_py.automatic_batch_cli',
@@ -164,6 +188,10 @@ def main():
                 if args.require_verified_case:
                     status['routeGoalsSatisfied']=run('route-goals',[sys.executable,'experiment/check_route_goals.py',
                         '--results',str(batch.parent),*[a for c in args.require_verified_case for a in ('--case',c)]],60)
+                if args.acceptance_matrix is not None:
+                    status['acceptanceMatrixSatisfied']=run('acceptance-matrix', [sys.executable,
+                        '-m', 'riscv2x86_py.route_acceptance', '--matrix', str(args.acceptance_matrix.absolute()),
+                        '--results', str(batch.parent), '--source-root', str(args.suite.absolute())],60)
                 if not run('provider-audit',[sys.executable,'-m','riscv2x86_py.l2_provider_artifacts',
                         '--batch',str(batch)],120):
                     status['blockers'].append('provider-audit')
@@ -176,7 +204,7 @@ def main():
     print('run-status: '+str(output/'run-status.json'))
     if status['blockers']:
         return 2
-    return 0 if status['generatedSuiteExitCode'] in (None,0) and status.get('routeGoalsSatisfied',True) else 1
+    return 0 if status['generatedSuiteExitCode'] in (None,0) and status.get('routeGoalsSatisfied',True) and status.get('acceptanceMatrixSatisfied',True) else 1
 
 
 if __name__ == '__main__':

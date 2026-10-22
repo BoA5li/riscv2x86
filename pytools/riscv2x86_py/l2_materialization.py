@@ -205,6 +205,25 @@ def assess_fragment_l2_materializability(
                    if isinstance(fragment, Mapping) else "")
     dimensions = (tuple(required_dimensions) if required_dimensions is not None
                   else required_dimensions_for_finding(finding))
+    # A validated upstream refusal is the root cause. Retain dimensions, but
+    # do not manufacture downstream missing-proof/identity diagnostics.
+    approval = finding.get("approvalArtifact")
+    approval = approval if isinstance(approval, Mapping) else {}
+    if (sidecar is None and not approval.get("l2AuthoritySidecar") and not approval.get("proofIdentity")
+            and not approval.get("l2EffectProofFacts")
+            and finding.get("verificationStatus") == "needs_route"):
+        from .route_authority import validate_route_decision
+        for decision in finding.get("routeAuthorityDiagnostics", ()):
+            try:
+                validate_route_decision(decision)
+            except (ValueError, TypeError):
+                continue
+            payload=decision["inputsPayload"]
+            if (decision["fragmentIdentity"]==fragment_id and not decision["accepted"]
+                    and payload.get("executionDisposition")=="precondition_rejected"
+                    and payload.get("evidenceProductionDisposition")=="not_produced"):
+                return FragmentL2MaterializationDecision(fragment_id,dimensions,False,False,
+                    False,False,(decision["reasonCode"],))
     reasons: list[str] = []
     try:
         profile = profile_from_finding(finding)

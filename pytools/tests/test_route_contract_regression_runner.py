@@ -114,3 +114,41 @@ def test_explicit_goal_failure_is_recorded_even_when_suite_command_succeeds(tmp_
     status=json.loads((output/'run-status.json').read_text())
     assert status['routeGoalsSatisfied'] is False and not status['blockers']
     assert status['generatedSuiteExecuted'] and status['generatedSuiteExitCode']==0
+
+
+def test_no_skip_mode_blocks_suite_and_records_coverage(tmp_path,monkeypatch):
+    module=runner();output=tmp_path/'out';calls=[]
+    monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend','--clang10','clang',
+        '--suite','suite','--output',str(output),'--require-no-regression-skips'])
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kw:'/tools/'+name)
+    def run(command,**kw):
+        stage=Path(kw['stdout'].name).stem;calls.append(stage)
+        if stage=='clang-version':kw['stdout'].write('clang version 10.0.0\n')
+        if stage=='regression':
+            assert '--junitxml='+str(output/'regression.xml') in command
+            (output/'regression.xml').write_text('<testsuites><testsuite tests="4" failures="0" errors="0" skipped="1"/></testsuites>')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    assert module.main()==2
+    status=json.loads((output/'run-status.json').read_text())
+    assert status['regressionCoverage']=={'tests':4,'failures':0,'errors':0,'skipped':1}
+    assert 'regression-skipped' in status['blockers'] and 'generated-suite' not in calls
+
+
+def test_matrix_failure_is_distinct_from_provider_audit(tmp_path,monkeypatch):
+    module=runner();output=tmp_path/'out';calls=[]
+    monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend','--clang10','clang',
+        '--suite','suite','--output',str(output),'--acceptance-matrix',str(tmp_path/'goals.json')])
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kw:'/tools/'+name)
+    def run(command,**kw):
+        stage=Path(kw['stdout'].name).stem;calls.append(stage)
+        if stage=='clang-version':kw['stdout'].write('clang version 10.0.0\n')
+        if stage=='generated-suite':
+            batch=output/'generated-suite-strict/batch-evaluation.json';batch.parent.mkdir()
+            batch.write_text('{"statusCounts":{"verified":1}}')
+        return SimpleNamespace(returncode=1 if stage=='acceptance-matrix' else 0)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    assert module.main()==1
+    status=json.loads((output/'run-status.json').read_text())
+    assert status['acceptanceMatrixSatisfied'] is False
+    assert 'provider-audit' in calls

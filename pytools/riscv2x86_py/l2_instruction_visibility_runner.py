@@ -52,8 +52,25 @@ def validate_provider(provider):
 
 def runner_identity(command,harness_digest):
     executable=Path(shutil.which(command[0]) or command[0])
-    return semantic_identity({'command':list(command),'harnessDigest':harness_digest,
-        'executableDigest':_file_digest(executable)})
+    payload={'command':list(command),'harnessDigest':harness_digest,
+        'executableDigest':_file_digest(executable)}
+    # The shipped observer launches a compiler and, on the source side, a
+    # guest runner. Bind those executables too, rather than just their paths.
+    if tuple(command[1:3])==('-m','riscv2x86_py.instruction_visibility_harness'):
+        if command.count('--compiler')!=1:
+            raise ValueError('ISS_OBSERVER_COMPILER_BINDING_INVALID')
+        index=command.index('--compiler')+1
+        if index>=len(command):raise ValueError('ISS_OBSERVER_COMPILER_BINDING_INVALID')
+        compiler=Path(shutil.which(command[index]) or command[index])
+        payload.update(schemaVersion='riscv2x86.instruction-observer-command.v2',
+            compilerDigest=_file_digest(compiler))
+        if '--runner' in command:
+            index=command.index('--runner')+1
+            if command.count('--runner')!=1 or index>=len(command):
+                raise ValueError('ISS_OBSERVER_RUNNER_BINDING_INVALID')
+            runner=Path(shutil.which(command[index]) or command[index])
+            payload['guestRunnerDigest']=_file_digest(runner)
+    return semantic_identity(payload)
 
 
 def decode_probe(code_hex,side):
@@ -179,8 +196,12 @@ def run(config,approval_path,**kwargs):
         for side,command in (('source',config.source_command),('target',config.target_command)):
             cpu=domain[side+'Execution']['pinnedCpu']
             executed_command=(affinity_tool,'--cpu-list',str(cpu),*command)
+            expected=domain[side+'Execution']['runnerIdentity']
+            hd=manifest.source_harness_digest if side=='source' else manifest.target_harness_digest
+            if runner_identity(command,hd)!=expected:raise ValueError('ISS_OBSERVER_TOOL_IDENTITY_CHANGED')
             result=subprocess.run(executed_command,input=json.dumps({**request,'side':side}),capture_output=True,text=True,
                 timeout=config.timeout_seconds,check=False)
+            if runner_identity(command,hd)!=expected:raise ValueError('ISS_OBSERVER_TOOL_IDENTITY_CHANGED')
             executions[side]={'command':list(executed_command),'returnCode':result.returncode,'stdout':result.stdout,'stderr':result.stderr}
             if result.returncode: raise ValueError('ISS_RUNNER_EXECUTION_FAILED')
             observations[side]=json.loads(result.stdout)
