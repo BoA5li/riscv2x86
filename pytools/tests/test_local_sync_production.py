@@ -17,7 +17,8 @@ def test_real_local_sync_contract_production_and_audit(tmp_path):
     if not all(values.values()):
         pytest.skip('explicit reviewed local-sync declaration/source/build/runner not selected')
     root=Path(__file__).resolve().parents[2]
-    source=tmp_path/'renamed_visibility.c'
+    inputs=tmp_path/'inputs';inputs.mkdir()
+    source=inputs/'renamed_visibility.c'
     source.write_text('void renamed_visibility(void){__asm__ volatile("fence.i" ::: "memory");}\n')
     template={'schemaVersion':'riscv2x86.csr-architecture-template.v1',
         'privilegeSpecVersion':'riscv-privileged-1.12','xlenBits':64,'extensions':['i','zicsr','zifencei']}

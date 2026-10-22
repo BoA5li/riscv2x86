@@ -22,6 +22,56 @@ from riscv2x86_py.mechanism_evidence import collect
 from riscv2x86_py.mechanism_route_checks import checkpoints, require_consumed_approval, require_suite_preserved
 
 
+class MechanismRunError(ValueError):
+    """A withheld production run with the original batch evidence attached."""
+    def __init__(self, reason, diagnostic):
+        super().__init__(reason)
+        self.diagnostic = diagnostic
+
+
+def require_disjoint_output(output, sources, suite=None):
+    """Use the same resolved source-root boundary as automatic_batch_cli."""
+    output = Path(output).resolve()
+    inputs = [Path(source).resolve().parent for source in sources if source is not None]
+    if suite is not None:
+        inputs.append(Path(suite).resolve())
+    for source_root in inputs:
+        if (output == source_root or source_root in output.parents
+                or output in source_root.parents):
+            raise MechanismRunError('MECHANISM_INPUT_OUTPUT_OVERLAP', {
+                'failureStage': 'input_validation', 'sourceRoot': str(source_root),
+                'outputDirectory': str(output),
+                'detail': 'evaluation work directory and source root must not overlap'})
+
+
+def report_in(result):
+    """Find the real report, retaining upstream failures when none was produced."""
+    result = Path(result).resolve()
+    paths = sorted(result.glob('cases/*/work/translation-work/translated_report.json'))
+    if len(paths) == 1:
+        return paths[0]
+    reason = ('BOOTSTRAP_TRANSLATION_REPORT_MISSING' if not paths
+              else 'BOOTSTRAP_TRANSLATION_REPORT_AMBIGUOUS')
+    diagnostic = {'failureStage': 'translation_report_lookup',
+                  'batchDirectory': str(result), 'reportCount': len(paths), 'cases': []}
+    batch_path = result/'batch-evaluation.json'
+    if batch_path.is_file():
+        batch = json.loads(batch_path.read_text())
+        for case in batch.get('cases', []):
+            entry = {key: case.get(key) for key in ('caseId', 'status', 'reasonCodes', 'resultPath')}
+            relative = case.get('resultPath')
+            if relative:
+                evaluation = (result/relative).resolve()
+                if not evaluation.is_relative_to(result):
+                    entry['diagnosticError'] = 'RESULT_PATH_OUTSIDE_BATCH'
+                elif evaluation.is_file():
+                    data = json.loads(evaluation.read_text())
+                    entry.update({key: data[key] for key in
+                                  ('detail', 'orchestrationFailure', 'reasonCodes') if key in data})
+            diagnostic['cases'].append(entry)
+    raise MechanismRunError(reason+':'+str(result), diagnostic)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--frontend',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
@@ -92,6 +142,7 @@ def main():
             for selected in (a.sync_source,a.time_source):
                 if selected is not None and selected.resolve().parent!=a.suite.resolve():
                     raise ValueError('SUITE_SELECTED_SOURCE_MUST_BE_DIRECT_CHILD')
+        require_disjoint_output(out, (a.sync_source, a.time_source), a.suite)
         template=json.loads(a.architecture_template.read_text())
         from riscv2x86_py.csr_architecture_profile import validate_template
         validate_template(template)
@@ -112,10 +163,6 @@ def main():
             for key,value in directories.items():cmd+=['--'+key.replace('_','-'),str(value)]
             run(name,cmd,allowed=(0,1))
             return out/name
-        def report_in(result):
-            paths=list(result.glob('cases/*/work/translation-work/translated_report.json'))
-            if len(paths)!=1:raise ValueError('BOOTSTRAP_TRANSLATION_REPORT_MISSING:'+str(result))
-            return paths[0]
         def check_final(name,result):
             batch_result=json.loads((result/'batch-evaluation.json').read_text())
             if batch_result.get('statusCounts')!={'verified':1}:

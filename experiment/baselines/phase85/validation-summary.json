@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "riscv2x86.phase85-validation.v1",
+  "baseCommit": "502afb9d7c157470293b6d21e50e1c1a6fe7d649",
+  "selectedRegression": {
+    "passed": 982,
+    "failed": 0,
+    "skipped": 41,
+    "total": 1023
+  },
+  "focusedTests": {
+    "passed": 62,
+    "skipped": 2
+  },
+  "newTests": 9,
+  "productionAcceptanceComplete": false,
+  "productionLimitation": "Real LLVM frontend, clang, llvm-mc, riscv64-linux-gnu-gcc and QEMU unavailable on this host; actual renamed production routes must be rerun on the experiment host. Skipped tests are not production passes.",
+  "scope": "Input/output isolation and upstream diagnostics; no semantic approval or evaluation rules relaxed.",
+  "logDigests": {
+    "regression.log": "sha256:6f08b61dd44a0afa78b4448d73ab1f90ffa46e9e67d2ec13a60bcf135b7bbf4f",
+    "regression.xml": "sha256:8b7792808dcfbf91a1adc31645f4b266508018dd0668150aacd4ea1161f43bc1"
+  }
+}

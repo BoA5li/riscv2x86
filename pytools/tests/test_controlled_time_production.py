@@ -20,7 +20,9 @@ def test_real_controlled_time_production_and_central_provider_audit(tmp_path):
     if not manifest or not runner:
         pytest.skip('explicit controlled QEMU manifest/runner not selected')
     if not Path(manifest).is_file():pytest.fail('selected controlled backend manifest is missing')
-    root=Path(__file__).resolve().parents[2];source=tmp_path/'renamed_counter.c'
+    root=Path(__file__).resolve().parents[2]
+    inputs=tmp_path/'inputs';inputs.mkdir()
+    source=inputs/'renamed_counter.c'
     source.write_text('#include <stdint.h>\nuint64_t renamed_counter(void){uint64_t tick;__asm__ volatile("rdtime %0":"=r"(tick));return tick;}\n')
     template={'schemaVersion':'riscv2x86.csr-architecture-template.v1',
         'privilegeSpecVersion':'riscv-privileged-1.12','xlenBits':64,'extensions':['i','zicsr']}
