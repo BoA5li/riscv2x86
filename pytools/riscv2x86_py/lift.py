@@ -1171,6 +1171,9 @@ def lift(
             xlen_bits=xlen,
             profile=csr_decoder_profile,
         )
+        if not privileged_operations:
+            from .system_instruction_ingress import intrinsic_operations
+            privileged_operations = intrinsic_operations(instruction_bytes)
 
         insns.append(
             LiftedInsn(

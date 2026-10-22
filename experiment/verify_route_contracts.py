@@ -15,6 +15,16 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_controlled_system.py',
+    'test_controlled_system_scope.py',
+    'test_controlled_system_production.py',
+    'test_system_instruction_ingress.py',
+    'test_system_deployment.py',
+    'test_l2_system_routes.py',
+    'test_system_preparation.py',
+    'test_privileged_environment_manifest.py',
+    'test_privileged_environment_routes.py',
+    'test_phase8_privileged_differential_validation.py',
     'test_csr_access_coverage.py',
     'test_privileged_state_analysis.py',
     'test_csr_state_dataflow.py',

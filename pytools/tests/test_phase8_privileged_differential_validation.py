@@ -75,8 +75,8 @@ def test_strict_validation_compares_complete_privileged_state_relation():
     assert result.approved
     assert result.engineering_matrix_complete
     assert result.compared_effect_ids == (
-        "continuation", "csr", "interrupt", "memory", "mmu-tlb",
-        "privilege-mode", "runtime-old-new", "termination", "trap",
+        "continuation", "csr", "external-events", "interrupt", "memory", "mmu-tlb",
+        "observable-effects", "privilege-mode", "runtime-old-new", "termination", "trap",
     )
     assert result.validation_identity.startswith("sha256:")
 
@@ -150,3 +150,33 @@ def test_validation_identity_is_reproducible_and_change_sensitive():
     )
     assert first.validation_identity == second.validation_identity
     assert first.validation_identity != changed.validation_identity
+
+
+def test_strict_rejects_same_final_state_with_different_event_order_or_count():
+    source=replace(_observation(),external_events=('enter','handler','resume'))
+    for events in (('enter','resume','handler'),('enter','handler','handler','resume'),()):
+        target=replace(source,runner_id='target',external_events=events)
+        result=validate_privileged_differential(source=source,target=target,
+            manifest=_strict_manifest(),engineering_records=_engineering())
+        assert not result.approved
+        assert 'phase8.privileged.strict-external-events-mismatch' in result.mismatch_codes
+
+
+def test_strict_compares_outputs_errors_and_observation_identity_binds_values():
+    source=_observation();target=replace(source,runner_id='target')
+    first=validate_privileged_differential(source=source,target=target,
+        manifest=_strict_manifest(),engineering_records=_engineering())
+    changed=replace(source,observable_effects=(('output:0','another'),))
+    mismatch=validate_privileged_differential(source=source,target=replace(changed,runner_id='target'),
+        manifest=_strict_manifest(),engineering_records=_engineering())
+    assert not mismatch.approved
+    both=validate_privileged_differential(source=changed,target=replace(changed,runner_id='target'),
+        manifest=_strict_manifest(),engineering_records=_engineering())
+    assert both.approved and both.validation_identity!=first.validation_identity
+
+
+def test_engineering_record_for_another_proof_cannot_complete_this_validation():
+    result=validate_privileged_differential(source=_observation(),target=_observation('target'),
+        manifest=_strict_manifest(),engineering_records=_engineering(proof='sha256:'+'2'*64))
+    assert not result.approved
+    assert 'phase8.privileged.engineering-proof-mismatch' in result.mismatch_codes

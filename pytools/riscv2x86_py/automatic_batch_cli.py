@@ -919,6 +919,9 @@ def _explicit_l2_providers(
         if parsed.validator_type == "l2-instruction-visibility-harness":
             from .l2_instruction_visibility_runner import validate_provider
             validate_provider(parsed)
+        if parsed.validator_type == "controlled-system-validation":
+            from .controlled_system_runner import validate_provider as validate_system_provider
+            validate_system_provider(parsed)
         if parsed.validator_type == "controlled-time-validation":
             from .time_trace_runner import validate_provider
             validate_provider(parsed)
@@ -1529,6 +1532,34 @@ def prepare_automatic_inventory(
             l1.update(schemaVersion='riscv2x86.auto-l1-runner.v4',executionEnvironment=execution_environment,
                 qemuBinary=execution_environment['sourceRunnerCommand'][0])
             plan['sourceRunner']='custom'
+            _write_json(case_dir/'validation-plan.json',plan)
+        system_providers=[p for p in explicit_l2_providers if p['validatorType']=='controlled-system-validation']
+        if system_providers:
+            if len(system_providers)!=1 or time_providers or sync_providers or l3_binding is not None:
+                raise ValueError('SYSTEM_EXECUTION_ENVIRONMENT_AMBIGUOUS')
+            from .controlled_system_runner import environment as system_environment, environment_id as system_environment_id, EXECUTION_PROFILE
+            config=system_providers[0]['config']
+            execution_environment=system_environment(config)
+            case_environment=dict(environment,environmentId=system_environment_id(execution_environment),
+                sourceIsa='rv64i_zicsr',sourceAbi='lp64',sourceRunnerCapabilities=['custom','qemu-system'],
+                targetRunnerCapabilities=['logical-csr-runtime'],sanitizerCapabilities=['none'],
+                runtimeIdentity='controlled-system-v1',loaderIdentity='qemu-virt-bare-kernel-and-native-elf')
+            environment_path=case_dir/'target-environment.json'
+            _write_json(environment_path,case_environment)
+            _write_json(case_dir/'execution-environment.json',execution_environment)
+            request['targetEnvironment']=str(environment_path.resolve())
+            for level in ('L0','L1'):
+                validators[level]={'type':'controlled-system-validation','config':config}
+            l2=validators['L2']['config']
+            l2['environmentExecutionProfiles']=[EXECUTION_PROFILE]
+            l2['executionProfile']=EXECUTION_PROFILE
+            for side,token in (('source','${SOURCE_PATH}'),('target','${TARGET_PATH}')):
+                request[side+'Build']={'artifactId':side+'-'+case_id,'artifactKind':'executable',
+                    'outputRelativePath':'build/'+side+'-system.elf','command':[
+                        sys.executable,'-m','riscv2x86_py.controlled_system_backend','program',
+                        '--backend',config['backendPath'],'--side',side,'--source',token,
+                        '--symbol',config['scope']['functionSymbol'],'--operation',config['operation'],'--output','${OUTPUT}']}
+            plan['sourceRunner']='custom';plan['targetRunner']='logical-csr-runtime'
             _write_json(case_dir/'validation-plan.json',plan)
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,

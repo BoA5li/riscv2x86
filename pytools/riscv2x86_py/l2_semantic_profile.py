@@ -255,6 +255,13 @@ def profile_from_source_model(
     execution_profile: str = "rv64gc-user-to-x86_64-user",
 ) -> L2FragmentSemanticProfile:
     """Derive a profile solely from normalized Phase-6A semantic fields."""
+    state = getattr(getattr(source_model, 'privileged_state', None), 'state', None)
+    from .privileged_runtime_contracts import privileged_environment_route_kind
+    if (execution_profile == 'rv64gc-user-to-x86_64-user' and state is not None
+            and getattr(getattr(state,'execution_profile',None), 'value', '') == 'riscv_machine_firmware'
+            and getattr(getattr(state,'target_execution_mode',None), 'value', '') == 'virtualized_runtime'
+            and privileged_environment_route_kind(source_model.privileged_state).value in ('ecall','wfi')):
+        execution_profile = 'rv64i-m-to-x86-logical-system-v1'
     operands = getattr(getattr(source_model, "operands", None), "operands", ())
     accesses = [str(getattr(getattr(item, "access", None), "value", "")) for item in operands]
     operand_shape = L2OperandShape(

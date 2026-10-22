@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "riscv2x86.phase86-validation.v1",
+  "baseCommit": "36426b1c7611df1d897a0ac2471c032b48302dce",
+  "selectedRegression": {
+    "passed": 1143,
+    "failed": 0,
+    "error": 0,
+    "skipped": 43,
+    "total": 1186
+  },
+  "selectedBaselineComparison": {
+    "baseline": {
+      "passed": 982,
+      "failed": 0,
+      "error": 0,
+      "skipped": 41
+    },
+    "commonTests": 1023,
+    "changedExistingOutcomes": {},
+    "newTests": 163
+  },
+  "expandedSemanticCheck": {
+    "comparisonBaseline": "phase84 retained semantic-baseline.xml",
+    "baseline": {
+      "passed": 409,
+      "failed": 10,
+      "error": 0,
+      "skipped": 2
+    },
+    "revision": {
+      "passed": 412,
+      "failed": 10,
+      "error": 0,
+      "skipped": 2
+    },
+    "changedExistingOutcomes": {},
+    "existingFailures": [
+      "tests.test_phase4_privileged_cli_ingress::test_registry_loaders_require_versioned_schema_and_reject_duplicates",
+      "tests.test_phase4_privileged_cli_ingress::test_cli_constructs_privileged_pipeline_inputs",
+      "tests.test_phase6_pytest::test_build_cfg_any_uses_lifted_cfg_without_machine_code",
+      "tests.test_phase6_pytest::test_cfg_from_lifted_cond_branch_has_target_and_fallthrough",
+      "tests.test_phase6_pytest::test_translate_lrsc_cas_does_not_require_machine_code",
+      "tests.test_phase6_pytest::test_translate_lrsc_rmw_does_not_require_machine_code",
+      "tests.test_phase6_pytest::test_translate_pic_then_intblock_bridge",
+      "tests.test_phase6_rv64_add_contract::test_rv64_counter_csr_read_is_a_structured_runtime_route",
+      "tests.test_phase9_privileged_output_manifest::test_strict_output_manifest_contains_contract_proof_and_dependencies",
+      "tests.test_phase9_privileged_output_manifest::test_functional_output_manifest_records_downgrade_and_ignored_state"
+    ]
+  },
+  "nativeRuntime": {
+    "actualNativeExecutions": 10,
+    "operations": [
+      "ecall",
+      "wfi"
+    ],
+    "optimizationLevels": [
+      "O0",
+      "O2",
+      "O3"
+    ],
+    "independentArchiveRebuild": true,
+    "executionBreakdown": {
+      "optimizationMatrix": 6,
+      "nativeTargetInExplicitSimulatedSourceProtocolTests": 4
+    }
+  },
+  "productionAcceptanceComplete": false,
+  "productionLimitation": "Real frontend, clang, llvm-mc, RISC-V cross GCC and QEMU unavailable here. Actual source-system production and the no-skip final regression must run on the experiment host; protocol fixtures are not production acceptance.",
+  "supportDomains": {
+    "ecall": "single-hart-QEMU7.2-M-bare-integer-save-restore-handler-next-PC",
+    "wfi": "same-domain-local-MTIP-already-pending-MTIE-on-global-MIE-off",
+    "functionScope": "single-void-no-operand-volatile-memory-asm"
+  },
+  "notClaimed": [
+    "native-Linux-user-equivalence",
+    "arbitrary-service-ABI",
+    "future-event-arrival",
+    "unbounded-liveness",
+    "cross-hart-publication",
+    "native-strict-time",
+    "full-time-clock",
+    "L3-equivalence"
+  ],
+  "logDigests": {
+    "regression.log": "sha256:ce97407c34f5069745d88a55057c7a340fff921e8ab0955696557c72838acf21",
+    "semantic-regression.log": "sha256:faa8999b791e64c37fd4692009f3ecab7eabc88a1f2d2c9f72c74c9de1f4b05d",
+    "regression.xml": "sha256:1e429fbda22a902d5cbb2f4ff5eeeb616e7eb9ed669bc5374cda4e7e75849b51",
+    "semantic-regression.xml": "sha256:6a2d8fb7d12fce5aedbe23c18bcfcc17415086168e5220090bae5ddeb1f17762"
+  }
+}

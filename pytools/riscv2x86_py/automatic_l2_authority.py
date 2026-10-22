@@ -208,6 +208,38 @@ def _instruction_stream_authority(finding, functions, producer_digest):
         return None
 
 
+
+def _system_runtime_authority_checked(finding, functions, producer_digest):
+    fragment, approval = finding.get('fragment'), finding.get('approvalArtifact')
+    if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping): return None
+    kind=approval.get('systemOperation')
+    if approval.get('artifactVersion')!='phase6-approval-v2' or kind not in ('ecall','wfi'): return None
+    if (approval.get('proofStatus')!='approved' or approval.get('architectureSemanticsPreserved') is not True
+            or approval.get('shellSemanticsPreserved') is not True
+            or approval.get('planId')!='privileged-runtime.'+kind+'-environment.v1'
+            or fragment.get('inputs') or fragment.get('outputs')):
+        raise ValueError('SYSTEM_RUNTIME_APPROVAL_INCOMPLETE')
+    from .system_instruction_ingress import decode_system_instruction
+    if decode_system_instruction(bytes.fromhex(finding['machineCodeHex']))!=kind:
+        raise ValueError('SYSTEM_RUNTIME_DECODER_MISMATCH')
+    from .privileged_emitted_audit import audit_privileged_emitted_text
+    if audit_privileged_emitted_text(approved_replacement(finding), expected_callable_identifier=approval['privilegedCallableIdentifier']):
+        raise ValueError('SYSTEM_RUNTIME_RENDERER_MISMATCH')
+    fid=fragment.get('id') or fragment.get('fragmentId')
+    matches=[f for f in functions if f.get('name')==fragment.get('enclosingFunction')]
+    if len(matches)!=1: raise ValueError('SYSTEM_RUNTIME_FUNCTION_AMBIGUOUS')
+    boundary=approval.get('l2FragmentOperandBoundary')
+    canonical=bind_canonical_l2_operands(fragment,boundary,matches[0].get('l2OperandBoundary'),approval['l2EffectProofFacts'])
+    if canonical: raise ValueError('SYSTEM_RUNTIME_OPERAND_SCOPE_UNSUPPORTED')
+    proved=_proof_effect_authority(approval,fid)
+    if proved is None: raise ValueError('SYSTEM_RUNTIME_EFFECT_PROOF_REQUIRED')
+    effects,relations,shell=proved
+    runtime=L2RuntimeContractBinding(approval['runtimeContractId'],approval['runtimeContractVersion'],
+        _identity({'contractId':approval['runtimeContractId'],'rendererContractIdentity':approval['rendererContractIdentity']}),True)
+    return L2AuthoritySidecar(fid,L2AuthorityProducer('translation-proof-sidecar',
+        'system-runtime-authority','v1',producer_digest),shell,(),(),effects,relations,(runtime,),(),True)
+
+
 def _csr_runtime_authority_checked(finding, functions, producer_digest):
     fragment, approval = finding.get("fragment"), finding.get("approvalArtifact")
     if not isinstance(fragment, Mapping) or not isinstance(approval, Mapping):
@@ -874,11 +906,13 @@ def materialize_automatic_l2_authority(
                     approval["l2InstructionSyncFunctionScope"]=scope
                 except ValueError as exc:
                     approval["l2InstructionSyncScopeReasonCode"]=str(exc)
-        if version in {"phase6-csr-runtime-v1", "phase6-instruction-stream-sync-v3"}:
+        is_system = version=='phase6-approval-v2' and approval.get('systemOperation') in ('ecall','wfi')
+        if is_system or version in {"phase6-csr-runtime-v1", "phase6-instruction-stream-sync-v3"}:
             # A failed typed runtime join must never fall through to a legacy
             # scalar/functional route with a weaker validation contract.
             try:
-                sidecar = (_csr_runtime_authority_checked(finding,functions,producer_digest)
+                sidecar = (_system_runtime_authority_checked(finding,functions,producer_digest) if is_system else
+                           _csr_runtime_authority_checked(finding,functions,producer_digest)
                            if version == "phase6-csr-runtime-v1" else
                            _instruction_stream_authority_checked(finding,functions,producer_digest))
                 if sidecar is None:

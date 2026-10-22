@@ -294,7 +294,10 @@ def validate_runner_environment(
 
 def load_csr_route_contract(path: str | Path) -> CsrRouteContract:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, Mapping): raise ValueError("CSR route contract must be an object")
+    if not isinstance(value, Mapping): raise ValueError("privileged route contract must be an object")
+    from .l2_system_routes import SCHEMA as SYSTEM_SCHEMA, load_system_route
+    if value.get('schemaVersion') == SYSTEM_SCHEMA:
+        return load_system_route(value)
     _fields(value, {"schemaVersion", "routes"}, "CSR route contract")
     schema = value.get("schemaVersion")
     if schema not in {CSR_ROUTE_CONTRACT_SCHEMA, CSR_ROUTE_CONTRACT_SCHEMA_V2}:
@@ -499,6 +502,11 @@ def _execute(spec: PrivilegedRunnerSpec, request: Mapping[str, object], timeout:
     try:
         value = json.loads(result.stdout)
         if not isinstance(value, Mapping): raise ValueError("observation root must be an object")
+        if request.get('executionBindingIdentity') is not None:
+            value = dict(value)
+            if (value.pop('executionBindingIdentity', None) != request['executionBindingIdentity']
+                    or value.pop('programArtifactDigest', None) != request['programArtifact']['artifact_digest']):
+                raise ValueError('SYSTEM_ROUTE_OBSERVATION_EXECUTION_BINDING_MISMATCH')
         observation = parse_privileged_observation(value, spec, str(request["initialStateIdentity"]))
     except (ValueError, json.JSONDecodeError) as exc:
         return None, "runner observation invalid: " + str(exc), ValidationStatus.FAILED
@@ -565,6 +573,12 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
             (manifest.runtime_contract_id, manifest.runtime_contract_version) !=
             (getattr(artifact, "runtime_contract_id", ""), getattr(artifact, "runtime_contract_version", ""))):
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C manifest identity mismatch")
+    from .l2_system_routes import SystemRouteContract, validate_system_route, validate_system_events
+    if isinstance(routes, SystemRouteContract):
+        try:
+            validate_system_route(routes, config, artifact, initial_identity, manifest.preservation_mode)
+        except (OSError, ValueError) as exc:
+            return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail=str(exc))
     selections = _typed_route_selection(
         routes, target_mode=config.target_runner.target_execution_mode,
         environment=kwargs.get("target_environment"),
@@ -613,13 +627,42 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
                "ignoredState": list(manifest.ignored_source_state),
                "runtimeContractId": manifest.runtime_contract_id,
                "runtimeContractVersion": manifest.runtime_contract_version}
+    if isinstance(routes, SystemRouteContract):
+        request.update(systemOperation=routes.payload['operation'], expectedEvents=routes.payload['expectedEvents'])
     command_runner = kwargs.get("privileged_command_runner", _run)
     if not callable(command_runner):
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C command runner invalid")
-    source, detail, status = _execute(config.source_runner, request, config.timeout_seconds, command_runner)
+    execution_bindings = {}
+    def request_for(side):
+        if not isinstance(routes, SystemRouteContract): return request
+        from dataclasses import asdict
+        from .semantic_content import semantic_identity
+        from .translation_validation import ProgramArtifact
+        program = kwargs.get(side+'_program_artifact')
+        if not isinstance(program, ProgramArtifact):
+            raise ValueError('SYSTEM_ROUTE_PROGRAM_ARTIFACT_REQUIRED:'+side)
+        path = Path(program.artifact_path)
+        if not path.is_file() or 'sha256:'+sha256(path.read_bytes()).hexdigest()!=program.artifact_digest:
+            raise ValueError('SYSTEM_ROUTE_PROGRAM_ARTIFACT_DIGEST_MISMATCH:'+side)
+        payload = {**request, 'programArtifact': asdict(program), 'proofIdentity': manifest.proof_identity,
+            'sourceModelIdentity': routes.payload['sourceModelIdentity'],
+            'fragmentId': routes.payload['fragmentId'], 'runnerIdentity': semantic_identity(getattr(config,side+'_runner'))}
+        payload['executionBindingIdentity'] = semantic_identity(payload)
+        execution_bindings[side] = payload['executionBindingIdentity']
+        return payload
+    try:
+        source_request, target_request = request_for('source'), request_for('target')
+    except (OSError, ValueError) as exc:
+        return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail=str(exc))
+    source, detail, status = _execute(config.source_runner, source_request, config.timeout_seconds, command_runner)
     if source is None: return ValidationLayerResult(ValidationLevel.L2, status, detail=detail)
-    target, detail, status = _execute(config.target_runner, request, config.timeout_seconds, command_runner)
+    target, detail, status = _execute(config.target_runner, target_request, config.timeout_seconds, command_runner)
     if target is None: return ValidationLayerResult(ValidationLevel.L2, status, detail=detail)
+    if isinstance(routes, SystemRouteContract):
+        try:
+            validate_system_events(routes, source, target)
+        except ValueError as exc:
+            return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail=str(exc))
     old_new_id = _digest(source.runtime_state_relation)
     if manifest.preservation_mode is DifferentialPreservationMode.STRICT and old_new_id != manifest.runtime_old_new_relation_id:
         return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="L2-C runtime old/new relation identity mismatch")
@@ -645,7 +688,9 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
                         else "approved_functional_relation")),
         "routeDispositions": ([] if selections is None else [item.route_kind.value for item in selections]),
         "routeSelectionIdentities": ([] if selections is None else [item.selection_identity for item in selections]),
+        "executionBindings": execution_bindings,
         "claimBoundary": (
+            "bounded-system-events-and-logical-state" if isinstance(routes, SystemRouteContract) else
             "architectural-privileged-state-equivalence"
             if manifest.preservation_mode is DifferentialPreservationMode.STRICT
             else "functional-privileged-observable-projection"
@@ -656,7 +701,8 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
         "targetRunner": config.target_runner.__dict__,
         "requiredEnvironmentId": config.required_environment_id,
         "routeContractIdentity": routes.identity,
-        "routeCategories": sorted(set(item.category for item in routes.routes)),
+        "routeCategories": ([routes.payload['operation']] if isinstance(routes, SystemRouteContract)
+                            else sorted(set(item.category for item in routes.routes))),
         "initialStateIdentity": initial_identity,
         "runtimeContractId": manifest.runtime_contract_id,
         "runtimeContractVersion": manifest.runtime_contract_version,
@@ -678,7 +724,8 @@ def run_l2_privileged_differential(config: L2PrivilegedRunnerConfig, **kwargs: o
                 "targetRunner": config.target_runner.__dict__,
             }),
             execution_nonce={"initialStateIdentity": initial_identity,
-                             "routeContractIdentity": routes.identity},
+                             "routeContractIdentity": routes.identity,
+                             **({'executionBindings': execution_bindings} if execution_bindings else {})},
             dimensions=provided_dimensions,
             dimension_evidence={key: value for key, value in {
                 L2Dimension.PRIVILEGED_STATE: L2DimensionEvidence(

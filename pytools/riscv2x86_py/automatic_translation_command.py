@@ -411,6 +411,10 @@ def main() -> int:
                     "functional route requires --allow-functional-fallbacks",
                 )
             backend.extend(("--privileged-execution-sidecar", str(environment.execution_sidecar)))
+            if environment.system_instruction_authority is not None:
+                backend.extend(('--system-instruction-authority', str(environment.system_instruction_authority)))
+            if environment.deployment is not None:
+                backend.extend(('--privileged-deployment', str(environment.deployment)))
             if environment.runtime_registry is not None:
                 backend.extend(("--privileged-runtime-registry",
                                 str(environment.runtime_registry)))

@@ -113,10 +113,11 @@ def replay(payload,*,privileged_operations=None):
 
 def architectural_state_reads(ops,metadata):
     """Prove a sole read-only CSR -> GPR COPY, allowing pure temporary ops."""
-    from .pcode_ir import VarKind
+    from .pcode_ir import VarKind, CanonicalPrivilegedOperationKind
     if len(metadata)!=1:return ()
     effect=metadata[0]
-    if (not effect.state_complete or effect.csr_operation.value!='read' or not effect.write_value_suppressed
+    if (effect.kind is not CanonicalPrivilegedOperationKind.CSR_ACCESS
+            or effect.csr_operation is None or not effect.state_complete or effect.csr_operation.value!='read' or not effect.write_value_suppressed
             or effect.read_result_suppressed or not effect.read_value_node_id):return ()
     expected=effect.read_value_node_id.rsplit(':',1)[-1]
     copies=[]

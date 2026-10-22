@@ -100,6 +100,8 @@ def main() -> int:
         default=None,
         help="Versioned frontend whole-function facts and registered renderer contracts.",
     )
+    ap.add_argument("--system-instruction-authority")
+    ap.add_argument("--privileged-deployment")
     ap.add_argument(
         "--privileged-execution-sidecar",
         default=None,
@@ -186,6 +188,8 @@ def main() -> int:
         )
         privileged_pipeline_inputs = load_privileged_pipeline_inputs(
             execution_sidecar_path=args.privileged_execution_sidecar,
+            system_instruction_authority_path=args.system_instruction_authority,
+            deployment_path=args.privileged_deployment,
             runtime_registry_path=args.privileged_runtime_registry,
             functional_registry_path=args.privileged_functional_registry,
             observability_sidecar_path=args.privileged_observability_sidecar,

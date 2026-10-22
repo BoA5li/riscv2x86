@@ -188,6 +188,8 @@ class PrivilegedPipelineInputs:
     observability_sidecar: PrivilegedObservabilitySidecar | None
     ignored_state_declarations: PrivilegedIgnoredStateSidecar | None
     preservation_policy: PrivilegedPreservationPolicy
+    system_instruction_authority: object | None = None
+    deployment: object | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -204,6 +206,9 @@ class PrivilegedPipelineInputs:
     ) -> tuple[str, ...]:
         known = frozenset(fragment_ids)
         reasons: list[str] = []
+        if (self.system_instruction_authority is not None
+                and self.system_instruction_authority.fragment_id not in known):
+            reasons.append('privileged-ingress.system-authority-fragment-not-in-translation-unit')
         sources = (
             (
                 "execution",
@@ -621,8 +626,18 @@ def load_privileged_pipeline_inputs(
     observability_sidecar_path: str | Path | None,
     ignored_state_declarations_path: str | Path | None,
     allow_functional_fallbacks: bool,
+    system_instruction_authority_path: str | Path | None = None,
+    deployment_path: str | Path | None = None,
 ) -> PrivilegedPipelineInputs:
+    from .system_instruction_ingress import load_system_instruction_authority
+    from .privileged_deployment import load_privileged_deployment
+    if deployment_path is not None and runtime_registry_path is None:
+        raise ValueError('PRIV_DEPLOYMENT_RUNTIME_REGISTRY_REQUIRED')
     return PrivilegedPipelineInputs(
+        deployment=(None if deployment_path is None else load_privileged_deployment(
+            deployment_path, runtime_registry_path=runtime_registry_path)),
+        system_instruction_authority=(None if system_instruction_authority_path is None
+            else load_system_instruction_authority(system_instruction_authority_path)),
         execution_sidecar=(
             None if execution_sidecar_path is None
             else load_privileged_execution_sidecar(execution_sidecar_path)

@@ -14,7 +14,7 @@ from typing import Mapping, Sequence
 
 
 PRIVILEGED_DIFFERENTIAL_VALIDATION_VERSION = (
-    "privileged-differential-validation.v1"
+    "privileged-differential-validation.v2"
 )
 
 
@@ -184,6 +184,8 @@ def validate_privileged_differential(
             "termination": (
                 source.termination_class == target.termination_class
             ),
+            "external-events": source.external_events == target.external_events,
+            "observable-effects": source.observable_effects == target.observable_effects,
             "runtime-old-new": (
                 source.runtime_state_relation == target.runtime_state_relation
             ),
@@ -215,6 +217,9 @@ def validate_privileged_differential(
                 reasons.append(
                     "phase8.privileged.observable-effect-mismatch:" + effect_id
                 )
+        if {'external-event', 'external-events'} & set(observable):
+            if source.external_events != target.external_events:
+                reasons.append('phase8.privileged.observable-external-events-mismatch')
         if not ignored:
             reasons.append("phase8.privileged.ignored-state-manifest-missing")
         if source.ignored_state != ignored or target.ignored_state != ignored:
@@ -234,10 +239,15 @@ def validate_privileged_differential(
         if require_engineering_matrix else ([], True)
     )
     reasons.extend(engineering_reasons)
+    if any(record.proof_identity != proof_identity for record in engineering_records):
+        reasons.append('phase8.privileged.engineering-proof-mismatch')
+    from .semantic_content import semantic_identity
     unique_reasons = tuple(sorted(set(reasons)))
     payload = {
         "version": PRIVILEGED_DIFFERENTIAL_VALIDATION_VERSION,
         "mode": mode.value,
+        "sourceObservationIdentity": semantic_identity(source),
+        "targetObservationIdentity": semantic_identity(target),
         "sourceRunner": source.runner_id,
         "sourceRuntime": source.runtime_version,
         "targetRunner": target.runner_id,

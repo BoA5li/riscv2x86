@@ -16,6 +16,7 @@ from typing import Mapping
 
 
 PRIVILEGED_ENVIRONMENT_SCHEMA = "riscv2x86.privileged-environment.v1"
+PRIVILEGED_ENVIRONMENT_SCHEMA_V2 = "riscv2x86.privileged-environment.v2"
 
 
 class EnvironmentRelationKind(str, Enum):
@@ -67,6 +68,9 @@ class PrivilegedEnvironmentManifest:
     functional_registry: Path | None
     observability_sidecar: Path | None
     ignored_state_sidecar: Path | None
+    system_instruction_authority: Path | None = None
+    schema_version: str = PRIVILEGED_ENVIRONMENT_SCHEMA
+    deployment: Path | None = None
 
 
 _COMMON_SOURCE = {
@@ -135,7 +139,7 @@ def load_privileged_environment_manifest(
         raise PrivilegedEnvironmentError("PRIV_ENV_MANIFEST_UNREADABLE", str(exc)) from exc
     if not isinstance(value, Mapping):
         raise PrivilegedEnvironmentError("PRIV_ENV_MANIFEST_MALFORMED", "root must be an object")
-    if value.get("schemaVersion") != PRIVILEGED_ENVIRONMENT_SCHEMA:
+    if value.get("schemaVersion") not in (PRIVILEGED_ENVIRONMENT_SCHEMA, PRIVILEGED_ENVIRONMENT_SCHEMA_V2):
         raise PrivilegedEnvironmentError("PRIV_ENV_SCHEMA_UNSUPPORTED", "schemaVersion is unsupported")
     source_digest = _text(value.get("sourceDigest"), "PRIV_ENV_SOURCE_DIGEST_MISSING", "sourceDigest")
     actual_digest = "sha256:" + sha256(Path(source).read_bytes()).hexdigest()
@@ -165,11 +169,20 @@ def load_privileged_environment_manifest(
         if not isinstance(item, Mapping):
             raise PrivilegedEnvironmentError(code, name + " must be an object")
     _require_fields(source_profile, _COMMON_SOURCE)
+    if value['schemaVersion'] == PRIVILEGED_ENVIRONMENT_SCHEMA_V2:
+        _require_fields(source_profile, {'virtualMemoryModel': 'PRIV_ENV_VIRTUAL_MEMORY_MODEL_MISSING'})
     _require_fields(target_profile, {
         "os": "PRIV_ENV_TARGET_OS_MISSING", "abi": "PRIV_ENV_TARGET_ABI_MISSING",
         "cpuProfile": "PRIV_ENV_TARGET_CPU_PROFILE_MISSING",
     })
-    _require_fields(route, _ECALL if operation is EnvironmentOperationKind.ECALL else _WFI)
+    if value['schemaVersion'] == PRIVILEGED_ENVIRONMENT_SCHEMA_V2 and operation is EnvironmentOperationKind.ECALL:
+        if route.get('serviceModel') != 'trap-only':
+            raise PrivilegedEnvironmentError('PRIV_ENV_SERVICE_ABI_BACKEND_UNAVAILABLE',
+                'the initial SYSTEM profile models a trap handler, not a Linux service ABI')
+        _require_fields(route, {key: _ECALL[key] for key in (
+            'trapHandlerIdentity', 'memoryEffects', 'clobbers', 'continuation', 'addressSpaceRelation')})
+    else:
+        _require_fields(route, _ECALL if operation is EnvironmentOperationKind.ECALL else _WFI)
     adapter = _text(route.get("runtimeAdapterIdentity"), "PRIV_ENV_RUNTIME_ADAPTER_MISSING", "runtimeAdapterIdentity")
     if route.get("targetMechanism") == "direct-x86-syscall":
         raise PrivilegedEnvironmentError(
@@ -207,6 +220,12 @@ def load_privileged_environment_manifest(
          else optional_path("runtimeRegistry")),
         optional_path("functionalRegistry"), optional_path("observabilitySidecar"),
         optional_path("ignoredStateDeclarations"),
+        (_resolve_file(root, inputs.get('systemInstructionAuthority'),
+            'PRIV_ENV_SYSTEM_AUTHORITY_REQUIRED', 'systemInstructionAuthority')
+         if value['schemaVersion'] == PRIVILEGED_ENVIRONMENT_SCHEMA_V2 else None),
+        value['schemaVersion'],
+        (_resolve_file(root, inputs.get('deployment'), 'PRIV_ENV_DEPLOYMENT_REQUIRED', 'deployment')
+         if value['schemaVersion'] == PRIVILEGED_ENVIRONMENT_SCHEMA_V2 else None),
     )
 
 
@@ -228,7 +247,46 @@ def validate_privileged_environment_pipeline_authority(
     if not facts.complete:
         detail = ",".join(facts.missing_fact_codes) or "execution facts incomplete"
         raise PrivilegedEnvironmentError("PRIV_ENV_EXECUTION_FACTS_INCOMPLETE", detail)
+    # V1 remains inspectable, but its ambiguous virtualization field and lack
+    # of a machine-bound SYSTEM authority cannot authorize production lowering.
+    if manifest.schema_version != PRIVILEGED_ENVIRONMENT_SCHEMA_V2 or manifest.system_instruction_authority is None:
+        raise PrivilegedEnvironmentError('PRIV_ENV_V2_SYSTEM_AUTHORITY_REQUIRED',
+            'migrate the reviewed environment; legacy manifest inspection is not production approval')
+    from .system_instruction_ingress import load_system_instruction_authority
+    from .semantic_content import semantic_identity
+    system = load_system_instruction_authority(manifest.system_instruction_authority)
+    if (system.source_digest != manifest.source_digest or system.fragment_id != manifest.fragment_id
+            or system.execution_identity != semantic_identity(facts)
+            or any(binding.operation != manifest.operation.value for binding in system.bindings)):
+        raise PrivilegedEnvironmentError('PRIV_ENV_SYSTEM_AUTHORITY_MISMATCH',
+            'SYSTEM authority disagrees with source, fragment, execution, or operation')
     expected = manifest.source_profile
+    if (expected.get('virtualizationModel') != 'none'
+            or facts.initial_privilege_mode.value != 'm'
+            or facts.source_execution_profile.value != 'riscv_machine_firmware'):
+        raise PrivilegedEnvironmentError('PRIV_ENV_SYSTEM_EXECUTION_DOMAIN_UNSUPPORTED',
+            'the initial SYSTEM binding profile requires explicit nonvirtualized M-mode')
+    if manifest.operation is EnvironmentOperationKind.ECALL:
+        handler = facts.trap_handler_binding
+        if (manifest.route_contract.get('trapHandlerIdentity') != handler.handler_identity
+                or manifest.route_contract.get('continuation') != handler.continuation_model_id
+                or manifest.route_contract.get('clobbers') != 'all-gprs-preserved'):
+            raise PrivilegedEnvironmentError('PRIV_ENV_TRAP_HANDLER_MISMATCH',
+                'trap-only route must bind the actual handler, continuation and register-preservation scope')
+    if manifest.operation is EnvironmentOperationKind.WFI:
+        transition = dict(system.bindings[0].transition)
+        if (len(system.bindings) != 1
+                or manifest.route_contract.get('interruptEnableState') != transition['interruptEnableState']
+                or manifest.route_contract.get('pendingInterruptModel') != facts.interrupt_model_id
+                or manifest.route_contract.get('delegationRelation') != facts.delegation_model_id
+                or manifest.route_contract.get('virtualizationRelation') != 'none'
+                or manifest.route_contract.get('spuriousWakeupPolicy') != 'permitted'
+                or manifest.route_contract.get('targetWaitAdapter') != manifest.runtime_adapter_identity
+                or manifest.route_contract.get('trapWakeupContinuation') != transition['waitWakeupRelationId']):
+            raise PrivilegedEnvironmentError('PRIV_ENV_WAIT_RELATION_MISMATCH',
+                'wait route disagrees with the bound interrupt environment')
+    if manifest.target_profile.get('abi') != 'sysv_amd64':
+        raise PrivilegedEnvironmentError('PRIV_ENV_TARGET_ABI_MISMATCH', 'the deployed target ABI must be sysv_amd64')
     comparisons = (
         (facts.source_privilege_spec_version, expected.get("privilegeSpecVersion"),
          "PRIV_ENV_PRIVILEGE_SPEC_MISMATCH"),
@@ -240,8 +298,8 @@ def validate_privileged_environment_pipeline_authority(
          "PRIV_ENV_INTERRUPT_MODEL_MISMATCH"),
         (facts.delegation_model_id, expected.get("delegationModel"),
          "PRIV_ENV_DELEGATION_MODEL_MISMATCH"),
-        (facts.virtual_memory_model_id, expected.get("virtualizationModel"),
-         "PRIV_ENV_VIRTUALIZATION_MODEL_MISMATCH"),
+        (facts.virtual_memory_model_id, expected.get("virtualMemoryModel"),
+         "PRIV_ENV_VIRTUAL_MEMORY_MODEL_MISMATCH"),
         (facts.address_space_identity, expected.get("addressSpaceIdentity"),
          "PRIV_ENV_ADDRESS_SPACE_MISMATCH"),
         (facts.csr_access_policy_id, expected.get("csrAccessPolicy"),
@@ -259,13 +317,8 @@ def validate_privileged_environment_pipeline_authority(
             raise PrivilegedEnvironmentError(code, "environment envelope disagrees with execution authority")
 
     if manifest.relation is EnvironmentRelationKind.FUNCTIONAL:
-        if not all((manifest.functional_registry, manifest.observability_sidecar,
-                    manifest.ignored_state_sidecar)):
-            raise PrivilegedEnvironmentError(
-                "PRIV_ENV_FUNCTIONAL_AUTHORITIES_MISSING",
-                "functional route requires registry, observability, and ignored-state authorities",
-            )
-        return
+        raise PrivilegedEnvironmentError('PRIV_ENV_V2_FUNCTIONAL_BACKEND_UNAVAILABLE',
+            'this bounded SYSTEM profile does not register a functional fallback')
     if manifest.runtime_registry is None:
         raise PrivilegedEnvironmentError(
             "PRIV_ENV_RUNTIME_REGISTRY_MISSING",
@@ -286,3 +339,18 @@ def validate_privileged_environment_pipeline_authority(
             "PRIV_ENV_RUNTIME_CONTRACT_NOT_REGISTERED",
             "exactly one route/runtime adapter contract must be registered",
         )
+
+    contract = matching[0]
+    if (contract.environment_contract_id != semantic_identity(manifest.route_contract)
+            or contract.preserved_environment_semantics != tuple(manifest.route_contract['preservedSemantics'])
+            or contract.not_preserved_environment_semantics):
+        raise PrivilegedEnvironmentError('PRIV_ENV_ROUTE_CONTRACT_MISMATCH',
+            'the strict runtime must bind the entire reviewed route contract and preservation scope')
+
+    if manifest.deployment is None:
+        raise PrivilegedEnvironmentError('PRIV_ENV_DEPLOYMENT_REQUIRED', 'explicit runtime deployment is required')
+    from .privileged_deployment import load_privileged_deployment
+    deployment = load_privileged_deployment(manifest.deployment, runtime_registry_path=manifest.runtime_registry)
+    if deployment.mechanism_identity != system.mechanism_identity:
+        raise PrivilegedEnvironmentError('PRIV_ENV_DEPLOYMENT_MECHANISM_MISMATCH',
+            'runtime deployment belongs to a different source/target mechanism')

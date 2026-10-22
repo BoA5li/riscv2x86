@@ -2079,6 +2079,31 @@ def _is_proven_instruction_fence_control_closure(insns: list[CanonicalInsn]) -> 
         for op in semantic for var in tuple(op.inputs) + (() if op.output is None else (op.output,)))
 
 
+
+def _is_proven_system_intrinsic_control_closure(insns: list[CanonicalInsn]) -> bool:
+    """One fully bound trap/wait carrier has no unmodelled local branch.
+
+    Handler/wakeup transitions remain privileged effects. This does not claim
+    absence of cache, timing, speculation, or other environment effects.
+    """
+    if len(insns) != 1:
+        return False
+    ins = insns[0]
+    if (ins.terminator_kind or ins.has_branch_op or ins.has_call_or_return_op
+            or ins.has_atomic or ins.has_unknown_barrier or ins.barrier_info is not None
+            or len(ins.privileged_operations) != 1):
+        return False
+    effect = ins.privileged_operations[0]
+    if (not effect.state_complete or not (
+            (effect.kind is CanonicalPrivilegedOperationKind.TRAP and effect.trap_kind == 'environment_call')
+            or (effect.kind is CanonicalPrivilegedOperationKind.INTERRUPT_STATE and effect.interrupt_kind == 'wait'))):
+        return False
+    semantic = [op for op in ins.ops if op.opcode.upper() not in _NON_SEMANTIC_CANONICAL_OPCODES]
+    return (len(semantic) == 1 and semantic[0].opcode.upper() == 'CALLOTHER'
+            and semantic[0].output is None and len(semantic[0].inputs) == 1
+            and semantic[0].inputs[0].kind is VarKind.CONST)
+
+
 def _is_proven_straight_line_direct_memory_fragment(
     insns: list[CanonicalInsn],
 ) -> bool:
@@ -2320,7 +2345,8 @@ def _summarize_instructions(
         else None
     )
 
-    control_absent = (False if _is_proven_instruction_fence_control_closure(insns)
+    control_absent = (False if (_is_proven_instruction_fence_control_closure(insns)
+                                or _is_proven_system_intrinsic_control_closure(insns))
                       else proven_false)
 
     return IRSummary(

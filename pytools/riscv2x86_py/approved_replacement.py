@@ -32,9 +32,17 @@ def approved_replacement(finding):
     else:
         text=published
     if not isinstance(text,str) or not text.strip():raise ValueError('CANDIDATE_APPROVAL_TEXT_MISMATCH')
-    expected_digest=(semantic_identity({'replacement':text})
-        if approval.get('artifactVersion')=='phase6-csr-runtime-v1'
-        else 'sha256:'+sha256(text.encode()).hexdigest())
+    version=approval.get('artifactVersion')
+    if version=='phase6-csr-runtime-v1':
+        expected_digest=semantic_identity({'replacement':text})
+    elif version=='phase6-approval-v2':
+        # The generic cross-language Phase-6 artifact uses FNV-1a-64, just
+        # as its producer and apply-side replay do. Do not accept arbitrary
+        # digest algorithms based on the supplied string prefix.
+        from .translate import _approval_digest
+        expected_digest=_approval_digest(text)
+    else:
+        expected_digest='sha256:'+sha256(text.encode()).hexdigest()
     if (approval.get('sourceFragmentId')!=fid or approval.get('replacementDigest')!=expected_digest):
         raise ValueError('CANDIDATE_APPROVAL_TEXT_MISMATCH')
     return text

@@ -51,6 +51,10 @@ def _identity(value: object) -> str:
 def required_dimensions_for_finding(finding: Mapping[str, object]) -> tuple[L2Dimension, ...]:
     profile = profile_from_finding(finding)
     dimensions = set(_PROFILE_DIMENSIONS.get(profile.pattern_kind, ()))
+    approval = finding.get('approvalArtifact') or {}
+    if (approval.get('artifactVersion') == 'phase6-approval-v2'
+            and approval.get('systemOperation') in ('ecall','wfi')):
+        dimensions.update((L2Dimension.PRIVILEGED_STATE,L2Dimension.TRAP_SEMANTICS,L2Dimension.SHELL_SEMANTICS))
     if profile.pattern_kind is L2PatternKind.ASM_GOTO:
         if not (profile.operand_shape.input_count or profile.operand_shape.output_count):
             dimensions.discard(L2Dimension.LOGICAL_OPERANDS)

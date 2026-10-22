@@ -213,6 +213,8 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l2-effect-trace-differential": _l2_effect_trace_differential_factory,
     "l2-privileged-real-runner": _l2_privileged_real_runner_factory,
     "l2-explicit-harness": _explicit_l2_harness_factory,
+    "controlled-system-validation": lambda config: __import__(
+        "riscv2x86_py.controlled_system_runner",fromlist=["build_validator"]).build_validator(config),
     "controlled-time-validation": lambda config: __import__(
         "riscv2x86_py.time_trace_runner",fromlist=["build_validator"]).build_validator(config),
     "l2-instruction-visibility-harness": lambda config: __import__(

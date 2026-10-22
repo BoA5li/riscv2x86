@@ -62,6 +62,8 @@ def audit_case_environment(case, records=()):
     import json
     from .local_sync_environment import audit_case_environment as audit_local_sync
     audit_local_sync(case,records)
+    from .controlled_system_runner import audit_case_environment as audit_system
+    audit_system(case,records)
     from .time_trace_runner import RESULT, validate_persisted_result
     outer = (case.get('targetEnvironment') or {}).get('environmentId')
     for attempt in case.get('attempts', []):

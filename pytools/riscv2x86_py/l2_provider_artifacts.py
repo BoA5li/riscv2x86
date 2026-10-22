@@ -259,6 +259,9 @@ def capture_observation_artifact(result, definition):
 
 
 def validate_observation_snapshot(snapshot, detail):
+    if detail.get('schemaVersion') == 'riscv2x86.controlled-system-result.v1':
+        from .controlled_system_runner import validate_persisted_result as validate_system
+        validate_system(detail)
     if detail.get('schemaVersion') == 'riscv2x86.controlled-time-result.v1':
         from .time_trace_runner import validate_persisted_result as validate_time
         validate_time(detail)

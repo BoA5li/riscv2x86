@@ -4024,7 +4024,10 @@ def _translate_phase6_proof_pipeline(
         ignored_source_state = (
             [] if not is_fallback else list(semantic.ignored_state_ids)
         )
+        from .privileged_runtime_contracts import privileged_environment_route_kind
+        system_kind = privileged_environment_route_kind(source_model.privileged_state).value
         artifact.update({
+            **({'systemOperation': system_kind} if system_kind in ('ecall','wfi') else {}),
             "artifactVersion": "phase6-approval-v2",
             "privilegedRendererManifestId": rendered.runtime_manifest_id,
             "privilegedRendererManifestVersion": rendered.runtime_manifest_version,

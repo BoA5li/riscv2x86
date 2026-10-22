@@ -98,7 +98,7 @@ def require_suite_preserved(baseline, configured, selected_sources):
         'selectedCases':selected,'sameSourceInventory':True}
 
 
-def preparation_inputs(source, report, fragment_id, *, family):
+def compiler_bound_finding(source, report, fragment_id):
     """Replay compiler provenance before using a snapshot to prepare a contract."""
     from .compiler_provenance import validate_compiler_snapshot, bind_compiler_provenance
     report = Path(report)
@@ -148,6 +148,13 @@ def preparation_inputs(source, report, fragment_id, *, family):
         for b in candidate.get('operandBindings', [])]
     bind_compiler_provenance(fragment, SimpleNamespace(fragment_id=fragment_id,
         operands=operands, authority_identity=authority.get('authorityIdentity')))
+    return finding, snapshot
+
+
+def preparation_inputs(source, report, fragment_id, *, family):
+    finding, snapshot = compiler_bound_finding(source, report, fragment_id)
+    fragment = finding['fragment']
+    source_digest = digest(source)
     key = 'compilerTimeReturnScope' if family == 'time' else 'compilerInstructionSyncScope'
     if family not in {'time', 'sync'}:
         raise ValueError('MECHANISM_FAMILY_UNSUPPORTED')

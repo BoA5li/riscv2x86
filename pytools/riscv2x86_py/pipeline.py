@@ -1339,7 +1339,17 @@ def run(
         allow_functional_fallbacks=allow_functional_fallbacks,
         runtime_registry=privileged_runtime_registry,
         functional_registry=privileged_functional_registry,
+        deployment=(None if privileged_pipeline_inputs is None else privileged_pipeline_inputs.deployment),
     )
+    renderer_registry = None
+    if privileged_pipeline_inputs is not None and privileged_pipeline_inputs.deployment is not None:
+        from .phase6f_contract_registry import GPR_INTEGER_RENDERER_CONTRACT_REGISTRY, register_privileged_renderer_manifest
+        renderer_registry = register_privileged_renderer_manifest(GPR_INTEGER_RENDERER_CONTRACT_REGISTRY,
+            privileged_pipeline_inputs.deployment.renderer_manifest)
+        if (privileged_pipeline_inputs.system_instruction_authority is None
+                or privileged_pipeline_inputs.system_instruction_authority.mechanism_identity
+                   != privileged_pipeline_inputs.deployment.mechanism_identity):
+            raise ValueError('PRIV_DEPLOYMENT_SYSTEM_MECHANISM_MISMATCH')
     stats = {
         "total": 0,
         "already_rule": 0,
@@ -1661,6 +1671,19 @@ def run(
         # memory space 等语义；不得通过 str(op)、pcodeText 或 regex
         # 重新解析 p-code 文本。
         try:
+            system_authority = (None if privileged_pipeline_inputs is None else
+                privileged_pipeline_inputs.system_instruction_authority)
+            if system_authority is not None and system_authority.fragment_id == f.fragment.id:
+                from .system_instruction_ingress import bind_system_instructions
+                binding = bind_system_instructions(lr,
+                    machine_code=ar.machine_code, base_addr=lift_base,
+                    source_digest=str(getattr(f, "sourceDigest", "")), fragment_id=f.fragment.id,
+                    facts=csr_execution_facts, authority=system_authority)
+                from .semantic_content import semantic_identity
+                f.routeAuthorityDiagnostics.append(RouteAuthorityDecision('system', f.fragment.id,
+                    'system_instruction_binding', binding['reasonCode'],
+                    'Decoded SYSTEM sites bound to explicit execution authority; not semantic approval',
+                    semantic_identity(binding), True, binding).to_dict())
             blocks, summary = from_lifted(lr.insns)
         except Exception as exc:
             detail = (
@@ -2003,6 +2026,7 @@ def run(
             functional_observability=functional_observability,
             privileged_runtime_registry=privileged_runtime_registry,
             privileged_functional_registry=privileged_functional_registry,
+            **({} if renderer_registry is None else {'renderer_contract_registry': renderer_registry}),
             instruction_stream_sync_registry=instruction_stream_sync_registry,
             csr_target_build_contract=csr_target_build_contract,
             csr_runtime_registry=csr_runtime_registry,
