@@ -116,6 +116,7 @@ def bind_csr_compiler_operands(fragment, runtime_facts, lifted_insns, *, source_
     effect_id = _effect_id(insn.addr, 1, op)
     witness = {'schemaVersion':'riscv2x86.csr-compiler-decoder-join.v1',
         'fragmentId':fragment.id, 'sourceDigest':raw['sourceDigest'],
+        'sourceEffectId':effect_id, 'instructionAddress':insn.addr,
         'compilerAuthorityIdentity':raw['authorityIdentity'],
         'architectureProfile':asdict(architecture_profile),
         'decoder':asdict(decoded), 'effect':asdict(op),

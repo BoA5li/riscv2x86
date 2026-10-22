@@ -58,6 +58,9 @@ def bind(*, source, source_root, report, fragment_id, output, execution_profile,
     plan=commands(approval_path=output/'approval.json',symbol=scope['functionSymbol'],
         source_compiler=source_compiler,target_compiler=target_compiler,source_runner=source_runner,python=python)
     domain=approval['instructionStreamProof']['phase6Proof']['contract']['domain_authority']
+    if domain.get('schemaVersion')=='riscv2x86.instruction-stream-domain.v2':
+        if digest(source_runner[0])!=domain['mechanismEvidence']['binaryDigest']:
+            raise ValueError('ISS_MECHANISM_SOURCE_BINARY_MISMATCH')
     if (domain['sourceExecution']['runnerIdentity']!=plan['sourceRunnerIdentity']
             or domain['targetExecution']['runnerIdentity']!=plan['targetRunnerIdentity']):
         raise ValueError('ISS_PREPARATION_DOMAIN_RUNNER_MISMATCH')

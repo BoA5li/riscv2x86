@@ -230,8 +230,12 @@ def prove_instruction_stream_sync(
                 and (runtime.semantic_family.endswith(".local")
                      or runtime.barrier_effect.endswith("_local"))):
             return InstructionStreamSyncProof(False, "ISS_RUNTIME_ADAPTER_SCOPE_MISMATCH", contract)
+    mechanism_domain = contract.domain_authority is not None and contract.domain_authority.get('schemaVersion')=='riscv2x86.instruction-stream-domain.v2'
+    if mechanism_domain and contract.modified_code_range != ModifiedCodeRange('probe-code-object',0,4096,'observer.private.anonymous'):
+        return InstructionStreamSyncProof(False,'ISS_OBSERVER_RANGE_BINDING_MISMATCH',contract)
     return InstructionStreamSyncProof(True, "ISS_PROOF_APPROVED", contract, tuple(sorted((
-        "cache-coherence.model", "code-range.identity-and-bounds",
+        "cache-coherence.model",
+        *( ("observation-range.identity-and-bounds", "code-domain.reviewed-mechanism") if mechanism_domain else ("code-range.identity-and-bounds",) ),
         "completion.acknowledgement", "cross-core.invalidation-if-required",
         "data-write.publication", "instruction-fetch.visibility",
         "runtime-adapter.identity", "scope.local-or-multi-hart", "target-cpu.profile",

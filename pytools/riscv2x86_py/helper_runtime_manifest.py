@@ -144,8 +144,9 @@ _CSR_HELPERS = tuple(replace(MONOTONIC_TIME_NS_V1,
     runtime_contract_id=item.implementation_id + "@v1",
     helper_symbol=item.callable_identifier, semantic_family=item.semantic_family,
     parameter_type_ids=("context_pointer", "csr_or_counter_id") + (("uint64_t",) if item.argument_count == 3 else ()),
-    parameter_width_bits=(64, 32 if item.semantic_family == "functional-monotonic-observation" else 16) + ((64,) if item.argument_count == 3 else ()),
+    parameter_width_bits=(64, 32 if item.semantic_family in {"functional-monotonic-observation", "controlled-time-trace"} else 16) + ((64,) if item.argument_count == 3 else ()),
     required_header=item.header, runtime_library=item.library,
+    tls_errno_global_effect="preserves-errno-reserved-trace-files" if item.semantic_family=="controlled-time-trace" else MONOTONIC_TIME_NS_V1.tls_errno_global_effect,
     required_environment_capability="runtime:"+item.implementation_id,
     memory_effect="external_state_read" if item.semantic_family == "functional-monotonic-observation" else "reads_writes")
     for item in _CSR_IMPLEMENTATIONS.values())

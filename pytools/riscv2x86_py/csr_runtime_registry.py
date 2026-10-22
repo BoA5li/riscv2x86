@@ -13,7 +13,11 @@ class CounterObservationContract:
  monotonicity:str; wraparound_bits:int; scope:str; migration_behavior:str
  serialization:str; target_observation_mechanism:str; error_bound_ticks:int
  availability_policy:str; trap_policy:str; complete:bool=True
+ trace_relation:dict|None=None
  def __post_init__(self):
+  if self.trace_relation is not None:
+   from .time_trace_contract import validate_time_contract
+   object.__setattr__(self,"trace_relation",validate_time_contract(self.trace_relation))
   if self.relation_kind not in {"architectural-equivalence","functional-monotonic-observation"}:raise ValueError("counter relation kind is unsupported")
   if not all(isinstance(x,str) and x for x in (self.contract_id,self.source_epoch,self.target_epoch,self.monotonicity,self.scope,self.migration_behavior,self.serialization,self.target_observation_mechanism,self.availability_policy,self.trap_policy)):raise ValueError("counter observation contract identities are incomplete")
   if (self.wraparound_bits not in {32,64} or isinstance(self.scale_numerator,bool) or

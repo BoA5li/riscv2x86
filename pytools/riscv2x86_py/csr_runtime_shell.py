@@ -5,7 +5,7 @@ from .semantic_content import semantic_identity
 AUTOMATIC_RUNTIME_BUILD_CONTRACT = 'automatic-gcc-separate-tu-no-lto-v1'
 
 
-def prove_runtime_shell(fragment, implementation_identity, build_contract, *, operand_binding=None):
+def prove_runtime_shell(fragment, implementation_identity, build_contract, *, operand_binding=None, time_contract=None):
     raw = asdict(fragment) if is_dataclass(fragment) else dict(fragment)
     if build_contract != AUTOMATIC_RUNTIME_BUILD_CONTRACT:
         raise ValueError('CSR_RUNTIME_SHELL_BUILD_CONTRACT_REQUIRED')
@@ -25,6 +25,14 @@ def prove_runtime_shell(fragment, implementation_identity, build_contract, *, op
         raise ValueError('CSR_RUNTIME_SHELL_CLOBBER_UNSUPPORTED')
     if not implementation_identity:
         raise ValueError('CSR_RUNTIME_SHELL_IMPLEMENTATION_REQUIRED')
+    if time_contract is not None:
+        from .compiler_time_scope import validate_scope as validate_time_scope
+        validate_time_scope(raw.get('compilerTimeReturnScope'),raw,(raw.get('compilerFragmentAuthority') or {}).get('sourceDigest'))
+        from .time_trace_contract import validate_time_contract
+        validate_time_contract(time_contract, fragment_id=raw.get('id') or raw.get('fragmentId'),
+            source_digest=(raw.get('compilerFragmentAuthority') or {}).get('sourceDigest'))
+        if (not raw.get('isVolatile') or inputs or len(outputs) != 1 or clobbers):
+            raise ValueError('TIME_SHELL_SHAPE_UNSUPPORTED')
     payload = {'schemaVersion': 'riscv2x86.csr-runtime-shell.v1',
                'fragmentId': raw.get('id') or raw.get('fragmentId'),
                'outputConstraints': [x['constraint'] for x in outputs],
@@ -35,6 +43,10 @@ def prove_runtime_shell(fragment, implementation_identity, build_contract, *, op
                'invocation': 'one-opaque-external-call-at-source-statement',
                'continuation': 'fallthrough',
                'barrierPlacement': 'before-and-after-call', 'complete': True}
+    if time_contract is not None:
+        payload.update(timeContractIdentity=time_contract['contractIdentity'],
+            timeScopeIdentity=raw['compilerTimeReturnScope']['scopeIdentity'],
+            claimBoundary='logical-read-events-no-wall-time-no-memory-order-claim')
     return {**payload, 'shellIdentity': semantic_identity(payload)}
 
 

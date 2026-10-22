@@ -139,122 +139,364 @@ def _inject_compiler_fragment_authority(
                 candidate, fragment, source_digest=str(function["sourceDigest"]),
                 function_identity=str(function["functionId"]))
         except ValueError as exc:
-            if isinst…93379 tokens truncated…omplete = _bool(data.get("complete"), "complete", False)
-    complete = (
-        schema_version == PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2
-        and declared_complete
-        and not missing
-    )
-    if declared_complete and not complete:
-        missing.add("privileged-execution.declared-complete-inconsistent")
-
-    return PrivilegedExecutionFacts(
-        fragment_id=_text(data.get("fragmentId"), "fragmentId"),
-        source_execution_profile=source,
-        target_execution_mode=target,
-        source_privilege_spec_version=spec,
-        source_isa_extensions=extensions,
-        initial_privilege_mode=mode,
-        csr_access_policy=policy,
-        target_runtime_contract_set_id=runtime_set,
-        complete=complete,
-        missing_fact_codes=tuple(sorted(missing)),
-        provenance=_text(data.get("provenance", sidecar_provenance),
-                         "provenance"),
-        delegation_model=delegation,
-        interrupt_model=interrupt,
-        virtual_memory_model=virtual_memory,
-        trap_handler_binding=trap_handler,
-        address_space=address_space,
-        os_or_runtime_identity=os_identity,
-        kernel_or_vmm_version=runtime_version,
-        target_cpu_feature_profile_id=target_cpu_profile,
-        schema_version=schema_version,
-    )
-
-
-def privileged_execution_sidecar_from_dict(
-    value: object,
-) -> PrivilegedExecutionSidecar:
-    data = _obj(value, "privileged execution sidecar")
-    schema_version = data.get("schemaVersion")
-    if schema_version not in _SUPPORTED_SCHEMAS:
-        raise ValueError("unsupported privileged execution schemaVersion")
-    provenance = _text(data.get("provenance"), "provenance")
-    default_source = _enum(
-        SourceExecutionProfile,
-        data.get("defaultSourceExecutionProfile",
-                 SourceExecutionProfile.RISCV_USER_PROCESS.value),
-        "defaultSourceExecutionProfile",
-    )
-    default_target = _enum(
-        TargetExecutionMode,
-        data.get("defaultTargetExecutionMode",
-                 TargetExecutionMode.X86_USER_PROCESS.value),
-        "defaultTargetExecutionMode",
-    )
-    fragments = data.get("fragments")
-    if not isinstance(fragments, list):
-        raise ValueError("privileged execution fragments must be an array")
-    facts = tuple(sorted((
-        _fragment_facts(
-            item, schema_version=schema_version,
-            sidecar_provenance=provenance,
-            default_source=default_source, default_target=default_target,
-        )
-        for item in fragments
-    ), key=lambda item: item.fragment_id))
-    return PrivilegedExecutionSidecar(
-        schema_version, facts, provenance, default_source, default_target
-    )
+            if isinstance(exc, CompilerOperandClosureError):
+                if not exc.incomplete:
+                    raise
+            elif candidate.get("compilerStructureComplete") is True:
+                raise
+            record = {"fragmentId": fragment_id, "disposition": "rejected",
+                      "reasonCode": getattr(exc, "reason_code", "COMPILER_FRAGMENT_CLOSURE_REJECTED"),
+                      "detail": str(exc), "failureStage": getattr(exc,"failure_stage","compiler_fragment_closure"),
+                      "diagnostics": getattr(exc, "diagnostics", {})}
+            fragment["compilerFragmentJoin"] = record
+            joins.append(record)
+            continue
+        payload = {
+            "schemaVersion": COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
+            "sourceDigest": function["sourceDigest"], "fragmentId": fragment_id,
+            "targetTriple": "riscv64-linux-gnu", "functionIdentity": function["functionId"],
+            "fragmentBindingKey": candidate["fragmentBindingKey"], "candidate": closed,
+            "memoryObjectBindings": function["l2OperandBoundary"].get("memoryObjectBindings", {}),
+        }
+        typed = {}
+        for index, operand in enumerate(fragment.get("outputs", []) + fragment.get("inputs", [])):
+            raw_type = operand.get("compilerType")
+            if isinstance(raw_type, dict) and raw_type:
+                typed[str(index)] = {"operandIndex": index,
+                    "valueNodeIdentity": closed["operandBindings"][index]["valueNodeIdentity"],
+                    "compilerType": raw_type}
+        if typed:
+            payload["schemaVersion"] = "riscv2x86.compiler-fragment-authority.v2"
+            payload["compilerTypeBindings"] = typed
+        # New frontends export an AST token range independently of replacement.
+        # Legacy artifacts retain their old exact-range contract; no migration by guess.
+        if "astBeginOffset" in fragment or "astEndOffset" in fragment:
+            from .fragment_source_range import bind_fragment_source_range, FragmentRangeError, AUTHORITY_SCHEMA
+            try:
+                payload["sourceRangeBinding"] = bind_fragment_source_range(
+                    fragment, candidate["fragmentBindingKey"], source.read_bytes())
+            except FragmentRangeError as exc:
+                record = {"fragmentId": fragment_id, "disposition": "rejected",
+                    "reasonCode": exc.reason_code, "detail": str(exc),
+                    "failureStage": exc.failure_stage, "diagnostics": exc.diagnostics}
+                fragment["compilerFragmentJoin"] = record
+                joins.append(record)
+                continue
+            payload["schemaVersion"] = AUTHORITY_SCHEMA
+            payload.setdefault("compilerTypeBindings", {})
+        payload["authorityIdentity"] = _identity(payload)
+        fragment["compilerFragmentAuthority"] = payload
+        matches=[fn for fn in functions if fn.get("name")==fragment.get("enclosingFunction")]
+        if len(matches)==1 and matches[0].get("compilerTimeReturnScope"):
+            fragment["compilerTimeReturnScope"]=matches[0]["compilerTimeReturnScope"]
+        fragment["compilerFragmentBinding"] = {
+            "candidateIdentity": candidate["candidateIdentity"]}
+        finding["sourceDigest"] = payload["sourceDigest"]
+        record = {"fragmentId": fragment_id, "disposition": "matched",
+                  "candidateIdentity": candidate["candidateIdentity"],
+                  "closureIdentity": closed["closureIdentity"]}
+        fragment["compilerFragmentJoin"] = record
+        joins.append(record)
+    atomic_json(raw_report.with_name("compiler-fragment-joins.json"), {
+        "schemaVersion": "riscv2x86.compiler-fragment-joins.v1", "joins": joins})
+    raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
 
 
-def default_user_process_execution_facts(
-    fragment_id: str,
-    *,
-    provenance: str = "phase4-default-user-process.v2",
-) -> PrivilegedExecutionFacts:
-    """Declare only the default user-process execution boundary.
-
-    This object deliberately lacks all privileged environment authorities.
-    Ordinary non-privileged fragments are unaffected because Phase 5 observes
-    no privileged state.  A detected privileged effect remains incomplete.
-    """
-    reasons = (
-        "privileged-execution.address-space-identity-missing",
-        "privileged-execution.csr-access-policy-incomplete",
-        "privileged-execution.delegation-model-missing",
-        "privileged-execution.interrupt-model-missing",
-        "privileged-execution.isa-extensions-missing",
-        "privileged-execution.privilege-spec-version-missing",
-        "privileged-execution.runtime-contract-set-missing",
-        "privileged-execution.runtime-version-missing",
-        "privileged-execution.target-cpu-profile-missing",
-        "privileged-execution.trap-handler-missing",
-        "privileged-execution.virtual-memory-model-missing",
-    )
-    return PrivilegedExecutionFacts(
-        fragment_id=fragment_id,
-        source_execution_profile=SourceExecutionProfile.RISCV_USER_PROCESS,
-        target_execution_mode=TargetExecutionMode.X86_USER_PROCESS,
-        source_privilege_spec_version=None,
-        source_isa_extensions=(),
-        initial_privilege_mode=SourcePrivilegeMode.U,
-        csr_access_policy=CsrAccessPolicyFacts(
-            "riscv.user.default-deny-privileged.v1", (), (),
-            UnknownCsrAccessDisposition.TRAP, False,
-        ),
-        target_runtime_contract_set_id=None,
-        complete=False,
-        missing_fact_codes=reasons,
-        provenance=provenance,
-        schema_version=PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
-    )
+def _inject_csr_authority(raw_report: Path, source: Path, sidecar: Path) -> None:
+    """Bind frontend CSR/operand facts to the exact source and fragments."""
+    report = json.loads(raw_report.read_text(encoding="utf-8"))
+    binding = json.loads(sidecar.read_text(encoding="utf-8"))
+    digest = "sha256:" + sha256(source.read_bytes()).hexdigest()
+    required = {"schemaVersion", "sourceDigest", "bundles", "manifestIdentity"}
+    if (not isinstance(binding, dict) or set(binding) != required or
+            binding["schemaVersion"] != "riscv2x86.csr-authority-binding.v1" or
+            binding["sourceDigest"] != digest or
+            binding["manifestIdentity"] != _identity({
+                key: value for key, value in binding.items() if key != "manifestIdentity"
+            }) or not isinstance(binding["bundles"], list)):
+        raise ValueError("CSR authority binding is stale or malformed")
+    bundles = {}
+    for bundle in binding["bundles"]:
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("fragmentId"), str):
+            raise ValueError("CSR authority bundle is malformed")
+        if bundle["fragmentId"] in bundles:
+            raise ValueError("duplicate CSR authority fragment binding")
+        bundles[bundle["fragmentId"]] = bundle
+    findings = report if isinstance(report, list) else report.get("findings")
+    if not isinstance(findings, list):
+        raise ValueError("frontend report has no findings")
+    seen = set()
+    for finding in findings:
+        fragment = finding.get("fragment") if isinstance(finding, dict) else None
+        fragment_id = fragment.get("fragmentId") if isinstance(fragment, dict) else None
+        if fragment_id in bundles:
+            fragment["csrAuthorityBundle"] = bundles[fragment_id]
+            finding["sourceDigest"] = digest
+            seen.add(fragment_id)
+    if seen != set(bundles):
+        raise ValueError("CSR authority references a nonexistent frontend fragment")
+    raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                          encoding="utf-8")
 
 
-def load_privileged_execution_sidecar(
-    path: str | Path,
-) -> PrivilegedExecutionSidecar:
-    return privileged_execution_sidecar_from_dict(
-        json.loads(Path(path).read_text(encoding="utf-8"))
-    )
+def main() -> int:
+    parser = argparse.ArgumentParser("riscv2x86-automatic-translation")
+    parser.add_argument("--frontend", required=True)
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--report", required=True)
+    parser.add_argument("--validation-plan")
+    parser.add_argument("--allow-functional-fallbacks", action="store_true")
+    parser.add_argument("--atomic-authority-sidecar")
+    parser.add_argument("--csr-authority-sidecar")
+    parser.add_argument("--csr-target-build-contract", choices=("automatic-gcc-separate-tu-no-lto-v1",))
+    parser.add_argument("--csr-architecture-profile")
+    parser.add_argument("--csr-architecture-template")
+    parser.add_argument("--csr-environment-contract")
+    parser.add_argument("--privileged-environment-sidecar")
+    parser.add_argument("--instruction-stream-sync-registry")
+    args = parser.parse_args()
+    report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
+    def preflight_failure(stage, exc, reason="evaluation.translation-preflight-failed", code=2):
+        command = [sys.executable, "-m", "riscv2x86_py.automatic_translation_command", *sys.argv[1:]]
+        write_preflight_failure(report, args.source, command, stage=stage,
+                                reason_code=reason, exc=exc, returncode=code)
+        print(stage + ": " + str(exc), file=sys.stderr)
+        return code
+
+    if any(Path(str(report) + suffix).exists() for suffix in (
+            "", ".attempts.json", ".requirement-staging.json", ".requirement-failure.json",
+            ".l2-requirements.json", ".l3-requirements.json", ".preflight.json")):
+        if Path(str(report) + ".preflight.json").exists():
+            print("Preflight artifact already exists; use a fresh work directory", file=sys.stderr)
+            return 2
+        return preflight_failure("output_freshness", FileExistsError(
+            "Translation output already exists; use a fresh work directory"))
+    raw = report.with_name("raw_report.json")
+    if any(report.with_name(name).exists() for name in (
+            "raw_report.json", "frontend-report.json", "compiler-candidates.json",
+            "compiler-fragment-joins.json")):
+        return preflight_failure("output_freshness", FileExistsError(
+            "Compiler input artifacts already exist; use a fresh work directory"))
+
+    try:
+        sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
+                                        text=True, capture_output=True, check=False)
+    except OSError as exc:
+        return preflight_failure("sysroot_inspection", exc)
+    if sysroot_result.returncode:
+        return preflight_failure("sysroot_inspection", PreflightToolFailure(sysroot_result))
+    sysroot = sysroot_result.stdout.strip()
+    if sysroot == "/" and Path("/usr/riscv64-linux-gnu/include").is_dir():
+        sysroot = "/usr/riscv64-linux-gnu"
+    try:
+        front = subprocess.run((args.frontend, "--analysis-only", "-o", str(report.with_name("dummy")),
+                            "--src-root", str(Path(args.source_root).resolve()),
+                            "--report-json", str(raw), str(Path(args.source).resolve()), "--",
+                            "--target=riscv64-linux-gnu", "--sysroot=" + sysroot,
+                            "-std=gnu11", "-march=rv64gc", "-mabi=lp64d"),
+                               text=True, capture_output=True, check=False)
+    except OSError as exc:
+        return preflight_failure("frontend_execution", exc)
+    (report.parent / "frontend.stdout").write_text(front.stdout, encoding="utf-8")
+    (report.parent / "frontend.stderr").write_text(front.stderr, encoding="utf-8")
+    if front.returncode or not raw.is_file():
+        # Nonzero frontend is a failed command; do not infer source validity by stderr text.
+        return preflight_failure("frontend_execution", PreflightToolFailure(front),
+                                 "evaluation.translation-frontend-crashed" if front.returncode < 0
+                                 else "evaluation.translation-frontend-failed",
+                                 front.returncode if front.returncode > 0 else 2)
+    preflight_stage = "compiler_inspection"
+    try:
+        # Preserve both independent compiler inputs before any enrichment.
+        atomic_json(raw.with_name("frontend-report.json"),
+                    json.loads(raw.read_text(encoding="utf-8")))
+        _, compiler_functions = inspect_entry_points(Path(args.source).resolve())
+        snapshot = {
+            "schemaVersion": "riscv2x86.compiler-candidates.v1",
+            "sourceDigest": "sha256:" + sha256(Path(args.source).read_bytes()).hexdigest(),
+            "frontendReportIdentity": _identity(json.loads(raw.read_text(encoding="utf-8"))),
+            "functions": list(compiler_functions),
+        }
+        snapshot["manifestIdentity"] = _identity(snapshot)
+        atomic_json(raw.with_name("compiler-candidates.json"), snapshot)
+        preflight_stage = "compiler_fragment_closure"
+        _inject_compiler_fragment_authority(raw, Path(args.source).resolve(),
+                                            compiler_functions)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return preflight_failure(preflight_stage, exc,
+                                 getattr(exc, "reason_code", "evaluation.translation-compiler-authority-invalid"))
+    if args.atomic_authority_sidecar:
+        try:
+            _inject_atomic_authority(raw, Path(args.source).resolve(),
+                                     Path(args.atomic_authority_sidecar).resolve())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return preflight_failure("atomic_authority_binding", exc)
+    if args.csr_architecture_template:
+        try:
+            if args.csr_architecture_profile:raise ValueError("CSR_ARCH_TEMPLATE_PROFILE_CONFLICT")
+            from .csr_architecture_profile import materialize_template
+            template=json.loads(Path(args.csr_architecture_template).read_text())
+            registry=materialize_template(template,json.loads(raw.read_text()),source=args.source)
+            materialized=raw.with_name("csr-architecture.materialized.json")
+            atomic_json(materialized,registry)
+            args.csr_architecture_profile=str(materialized)
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            return preflight_failure("csr_architecture_materialization",exc)
+    if args.csr_architecture_profile:
+        try:
+            from .csr_architecture_profile import load_profile, profiles_from_payload
+            profile = load_profile(args.csr_architecture_profile, source=args.source)
+            raw_value = json.loads(raw.read_text())
+            findings = raw_value if isinstance(raw_value, list) else raw_value.get("findings", [])
+            ids = {item.get("fragment", {}).get("fragmentId") or item.get("fragment", {}).get("id") for item in findings}
+            if set(profiles_from_payload(profile))-ids:
+                raise ValueError("CSR_ARCH_PROFILE_FRAGMENT_MISMATCH")
+        except (OSError, ValueError, KeyError) as exc:
+            return preflight_failure("csr_architecture_binding", exc)
+    if args.csr_authority_sidecar:
+        try:
+            _inject_csr_authority(raw, Path(args.source).resolve(),
+                                  Path(args.csr_authority_sidecar).resolve())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return preflight_failure("csr_authority_binding", exc)
+    csr_environment = None
+    sync_registry = None
+    if args.csr_environment_contract:
+        try:
+            csr_environment = load_csr_environment_contract(
+                args.csr_environment_contract, source=args.source,
+            )
+            raw_value = json.loads(raw.read_text(encoding="utf-8"))
+            raw_findings = (raw_value if isinstance(raw_value, list)
+                            else raw_value.get("findings", []))
+            fragment_ids = {
+                str(item.get("fragment", {}).get("fragmentId") or
+                    item.get("fragment", {}).get("id"))
+                for item in raw_findings if isinstance(item, dict)
+            }
+            if csr_environment.fragment_id not in fragment_ids:
+                raise ValueError("CSR environment contract references a nonexistent frontend fragment")
+            if (csr_environment.relation_kind == "functional-monotonic-observation"
+                    and not args.allow_functional_fallbacks):
+                raise ValueError("functional CSR relation requires --allow-functional-fallbacks")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return preflight_failure("csr_environment_binding", exc)
+    backend = [sys.executable, "-m", "riscv2x86_py.cli", "--in", str(raw),
+               "--out", str(report), "--xlen", "64", "--skip-verify"]
+    if args.privileged_environment_sidecar:
+        try:
+            environment = load_privileged_environment_manifest(
+                args.privileged_environment_sidecar, source=args.source,
+            )
+            validate_privileged_environment_pipeline_authority(environment)
+            raw_value = json.loads(raw.read_text(encoding="utf-8"))
+            raw_findings = (raw_value if isinstance(raw_value, list)
+                            else raw_value.get("findings", []))
+            fragment_ids = {
+                str(item.get("fragment", {}).get("fragmentId") or
+                    item.get("fragment", {}).get("id"))
+                for item in raw_findings if isinstance(item, dict)
+            }
+            if environment.fragment_id not in fragment_ids:
+                raise PrivilegedEnvironmentError(
+                    "PRIV_ENV_FRAGMENT_ID_MISMATCH",
+                    "configured fragment is absent from the frontend report",
+                )
+            if (environment.relation is EnvironmentRelationKind.FUNCTIONAL
+                    and not args.allow_functional_fallbacks):
+                raise PrivilegedEnvironmentError(
+                    "PRIV_ENV_FUNCTIONAL_POLICY_DISABLED",
+                    "functional route requires --allow-functional-fallbacks",
+                )
+            backend.extend(("--privileged-execution-sidecar", str(environment.execution_sidecar)))
+            if environment.runtime_registry is not None:
+                backend.extend(("--privileged-runtime-registry",
+                                str(environment.runtime_registry)))
+            if environment.functional_registry is not None:
+                backend.extend(("--privileged-functional-registry", str(environment.functional_registry)))
+            if environment.observability_sidecar is not None:
+                backend.extend(("--privileged-observability-sidecar", str(environment.observability_sidecar)))
+            if environment.ignored_state_sidecar is not None:
+                backend.extend(("--privileged-ignored-state-declarations", str(environment.ignored_state_sidecar)))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return preflight_failure("privileged_environment_binding", exc)
+    if args.allow_functional_fallbacks:
+        backend.append("--allow-functional-fallbacks")
+    if args.csr_architecture_profile:
+        backend.extend(("--csr-architecture-profile", str(Path(args.csr_architecture_profile).resolve())))
+    if args.csr_target_build_contract:
+        backend.extend(("--csr-target-build-contract", args.csr_target_build_contract))
+    if args.csr_environment_contract:
+        backend.extend(("--csr-environment-contract",
+                        str(Path(args.csr_environment_contract).resolve())))
+    if args.instruction_stream_sync_registry:
+        try:
+            sync_registry = load_instruction_stream_sync_registry(
+                args.instruction_stream_sync_registry, source_path=args.source,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return preflight_failure("instruction_stream_sync_binding", exc)
+        backend.extend(("--instruction-stream-sync-registry",
+                        str(Path(args.instruction_stream_sync_registry).resolve())))
+    try:
+        back = subprocess.run(backend, text=True, capture_output=True, check=False)
+    except OSError as exc:
+        return preflight_failure("backend_launch", exc, "evaluation.translation-backend-launch-failed")
+    (report.parent / "backend.stdout").write_text(back.stdout, encoding="utf-8")
+    (report.parent / "backend.stderr").write_text(back.stderr, encoding="utf-8")
+    if back.returncode:
+        print(back.stderr, file=sys.stderr)
+    # Positive backend exit codes include semantic terminal/withheld outcomes.
+    # Classify authenticated artifacts before deciding the command exit code.
+    if back.returncode >= 0 and report.is_file():
+        failure_stage = "authority_materialization"
+        try:
+            load_translation_attempt_archive(str(report) + ".attempts.json")
+            translated = json.loads(report.read_text(encoding="utf-8"))
+            if not isinstance(translated, dict):
+                raise ValueError("translated report root must be an object")
+            materialize_automatic_l2_authority(
+                translated, tuple(item for item in compiler_functions
+                                  if isinstance(item, dict)),
+                args.frontend,
+            )
+            from .contract_consumption import consumption_receipt
+            atomic_json(report.with_name('contract-consumption.json'),consumption_receipt(
+                args.source,translated,csr=csr_environment,sync=sync_registry,
+                paths={'csr_environment':args.csr_environment_contract,
+                       'instruction_stream_sync':args.instruction_stream_sync_registry}))
+            atomic_json(report, translated)
+            # Authority changes attempt and candidate identities, so the
+            # archive must be regenerated before candidate staging.
+            findings = load_report(str(report))
+            save_translation_attempt_archive(
+                tuple(terminal_attempt_from_finding(item, index)
+                      for index, item in enumerate(findings)),
+                str(report) + ".attempts.json",
+            )
+            failure_stage = "requirement_classification"
+            manifest = classify_l2_requirements(translated)
+            atomic_json(str(report) + ".l2-requirements.json", manifest)
+            l3 = classify_l3_requirements(translated)
+            atomic_json(str(report) + ".l3-requirements.json", l3.to_dict())
+            failure_stage = "requirement_staging"
+            write_requirement_staging(report, returncode=back.returncode,
+                                      validation_plan=args.validation_plan)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            try:
+                write_requirement_failure(report, exc, failure_stage)
+            except (OSError, ValueError) as diagnostic_error:
+                print("Requirement failure diagnostic could not be saved: " +
+                      str(diagnostic_error), file=sys.stderr)
+            print("Requirement classification failed: " + str(exc), file=sys.stderr)
+            return 2
+    elif back.returncode == 0:
+        print("Translation completed without a translated report", file=sys.stderr)
+        return 2
+    return back.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

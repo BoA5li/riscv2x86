@@ -85,16 +85,19 @@ def load_csr_environment_contract(
         "schemaVersion", "sourceDigest", "fragmentId", "relationKind",
         "runtimeRegistry", "rendererRegistry", "contractIdentity",
     }
-    version2=root.get("schemaVersion")==CSR_ENVIRONMENT_FAMILY_SCHEMA
+    version3=root.get("schemaVersion")=="riscv2x86.csr-environment-contract.v3"
+    version2=root.get("schemaVersion")==CSR_ENVIRONMENT_FAMILY_SCHEMA or version3
     if version2:expected_root.add("semanticFamily")
     family=root.get("semanticFamily") if version2 else "counter_observation"
+    if version3 and family != "counter_observation":
+        raise CsrEnvironmentContractError("TIME_ENV_FAMILY_INVALID", "v3 is the controlled time environment")
     if family not in {"counter_observation","logical_csr_state"}:
         raise CsrEnvironmentContractError("CSR_ENV_FAMILY_UNSUPPORTED", "no backend for this family")
     if set(root) != expected_root:
         raise CsrEnvironmentContractError(
             "CSR_ENV_CONTRACT_FIELDS_INVALID", "contract fields are incomplete or unknown"
         )
-    if root.get("schemaVersion") not in {CSR_ENVIRONMENT_CONTRACT_SCHEMA,CSR_ENVIRONMENT_FAMILY_SCHEMA}:
+    if root.get("schemaVersion") not in {CSR_ENVIRONMENT_CONTRACT_SCHEMA,CSR_ENVIRONMENT_FAMILY_SCHEMA,"riscv2x86.csr-environment-contract.v3"}:
         raise CsrEnvironmentContractError("CSR_ENV_SCHEMA_UNSUPPORTED", "schemaVersion is unsupported")
     if root.get("contractIdentity") != _identity({
             key: item for key, item in root.items() if key != "contractIdentity"
@@ -140,6 +143,7 @@ def load_csr_environment_contract(
             "migrationBehavior", "serialization", "targetObservationMechanism", "errorBoundTicks",
             "availabilityPolicy", "trapPolicy", "complete",
         }
+        if version3: expected_counter.add("traceRelation")
         if set(counter) != expected_counter or counter.get("relationKind") != relation:
             raise CsrEnvironmentContractError("CSR_ENV_COUNTER_RELATION_MISMATCH", "counter contract is incomplete or disagrees with route relation")
         counter_contract = CounterObservationContract(
@@ -161,7 +165,14 @@ def load_csr_environment_contract(
             _text(counter.get("availabilityPolicy"), "CSR_ENV_COUNTER_AVAILABILITY_MISSING", "availabilityPolicy"),
             _text(counter.get("trapPolicy"), "CSR_ENV_COUNTER_TRAP_POLICY_MISSING", "trapPolicy"),
             counter.get("complete") is True,
+            trace_relation=counter.get("traceRelation") if version3 else None,
         )
+        if version3:
+            from .time_trace_contract import validate_counter_payload
+            from .semantic_content import semantic_payload
+            validate_counter_payload(semantic_payload(counter_contract))
+            from .time_trace_contract import validate_time_contract
+            validate_time_contract(counter_contract.trace_relation, source_digest=digest, fragment_id=fragment_id)
         if not counter_contract.complete:
             raise CsrEnvironmentContractError("CSR_ENV_COUNTER_CONTRACT_INCOMPLETE", "counter contract is not complete")
     else:
@@ -239,7 +250,7 @@ def load_csr_environment_contract(
         implementation=matches[0]
         source_csr=mapping["sourceCsrId"]
         if family=="counter_observation":
-            if implementation.semantic_family!="functional-monotonic-observation" or source_csr not in {
+            if implementation.semantic_family not in ({"controlled-time-trace"} if version3 else {"functional-monotonic-observation"}) or source_csr not in {
                     "riscv.csr.time","riscv.csr.cycle","riscv.csr.instret"}:
                 raise CsrEnvironmentContractError("CSR_ENV_IMPLEMENTATION_FAMILY_MISMATCH","counter backend family rejected")
         elif (implementation.semantic_family!="logical-csr-state" or ".checked." not in implementation.implementation_id

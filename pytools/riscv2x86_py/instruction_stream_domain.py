@@ -19,7 +19,9 @@ SHA = re.compile(r'sha256:[0-9a-f]{64}')
 
 
 def validate_domain(value, *, fragment_id, environment_id, cpu_profile, source_digest=None):
-    if not isinstance(value, Mapping) or set(value)!=FIELDS or value['schemaVersion']!=SCHEMA:
+    version2=isinstance(value,Mapping) and value.get('schemaVersion')=='riscv2x86.instruction-stream-domain.v2'
+    fields=FIELDS|{'mechanismEvidence','reviewedAssumptions'} if version2 else FIELDS
+    if not isinstance(value, Mapping) or set(value)!=fields or value['schemaVersion'] not in {SCHEMA,'riscv2x86.instruction-stream-domain.v2'}:
         raise ValueError('ISS_DOMAIN_SCHEMA_INVALID')
     if value['domainIdentity']!=semantic_identity({k:v for k,v in value.items() if k!='domainIdentity'}):
         raise ValueError('ISS_DOMAIN_IDENTITY_MISMATCH')
@@ -30,6 +32,20 @@ def validate_domain(value, *, fragment_id, environment_id, cpu_profile, source_d
         raise ValueError('ISS_DOMAIN_SOURCE_INVALID')
     if source_digest is not None and source_digest!=value['sourceDigest']:
         raise ValueError('ISS_DOMAIN_SOURCE_MISMATCH')
+    if version2:
+        from .mechanism_evidence import validate
+        validate(value['mechanismEvidence'])
+        assumptions=value['reviewedAssumptions']
+        expected={'writerPolicy':'one-thread-same-mapping-no-external-writers',
+            'mappingPolicy':'private-anonymous-no-alias-no-mmio',
+            'executionPolicy':'local-pinned-hart-no-active-code-overwrite',
+            'targetProtocolBasis':'x86-local-serializing-smc-v1',
+            'rangeRole':'observer-probe-only-domain-guarantee-from-reviewed-mechanism'}
+        if (not isinstance(assumptions,Mapping) or set(assumptions)!=set(expected)|{'reviewer','basisIdentity'}
+                or any(assumptions[k]!=v for k,v in expected.items())
+                or not isinstance(assumptions['reviewer'],str) or not assumptions['reviewer'].strip()
+                or not isinstance(assumptions['basisIdentity'],str) or SHA.fullmatch(assumptions['basisIdentity']) is None):
+            raise ValueError('ISS_MECHANISM_ASSUMPTIONS_UNSUPPORTED')
     if value['coverage']!='all_prior_visible_instruction_stores_on_bound_hart':
         raise ValueError('ISS_DOMAIN_COVERAGE_UNSUPPORTED')
     for side in ('sourceExecution','targetExecution'):

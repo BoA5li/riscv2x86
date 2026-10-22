@@ -1285,6 +1285,27 @@ def run(
         if len(bound) != 1 or getattr(bound[0], "sourceDigest", "") != csr_runtime_registry.source_digest:
             raise ValueError("CSR_RUNTIME_CONTRACT_SOURCE_BINDING_MISMATCH")
 
+    if csr_runtime_registry is not None:
+        traces=[getattr(m.counter_contract,'trace_relation',None) for m in csr_runtime_registry.mappings]
+        traces=[t for t in traces if t is not None]
+        if traces:
+            if len(traces)!=1 or privileged_pipeline_inputs is None or privileged_pipeline_inputs.execution_sidecar is not None:
+                raise ValueError('TIME_EXECUTION_AUTHORITY_CONFLICT')
+            trace=traces[0]
+            from .time_trace_contract import validate_time_contract, controlled_execution_facts
+            validate_time_contract(trace,source_digest=csr_runtime_registry.source_digest,fragment_id=csr_runtime_registry.fragment_id)
+            from .csr_architecture_profile import parse_profile
+            profile=parse_profile(architecture_profiles.get(csr_runtime_registry.fragment_id),
+                source_digest=csr_runtime_registry.source_digest,fragment_id=csr_runtime_registry.fragment_id,xlen_bits=xlen)
+            facts=controlled_execution_facts(fragment_id=csr_runtime_registry.fragment_id,backend=trace['sourceBackend'],
+                privilege_spec=profile.privilege_spec_version,extensions=profile.extensions)
+            from .semantic_content import semantic_identity
+            if semantic_identity(facts)!=trace['sourceExecutionIdentity']:
+                raise ValueError('TIME_EXECUTION_SNAPSHOT_MISMATCH')
+            from .privileged_execution_sidecar import PrivilegedExecutionSidecar, USER_COUNTER_EXECUTION_SCHEMA
+            privileged_pipeline_inputs=replace(privileged_pipeline_inputs,execution_sidecar=PrivilegedExecutionSidecar(
+                USER_COUNTER_EXECUTION_SCHEMA,(facts,),'explicit-controlled-time-backend'))
+
     # The normal CLI path supplies Phase-4 authority inputs, never prebuilt
     # Phase-5 semantic models.  Direct model mappings remain a compatibility
     # hook for unit tests and embedders, but mixing both paths is ambiguous.

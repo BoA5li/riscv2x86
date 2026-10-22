@@ -117,6 +117,9 @@ def run_csr_translation_pipeline(
             ("csr-pipeline.source-model-missing",), (), (), None, None, False,
         )
 
+    privileged_execution_facts = (getattr(privileged_execution_facts, 'controlled_execution_facts', None)
+                                  or privileged_execution_facts)
+
     candidates = derive_csr_plan_candidates(
         source_csr_model,
         allow_functional_fallbacks=fallback_policy.allow_functional_fallbacks,
@@ -156,6 +159,19 @@ def run_csr_translation_pipeline(
         except ValueError as exc:
             return CsrTranslationPipelineResult("needs_route","csr_state_environment",None,
                 (str(exc),),candidates,(),None,None,False)
+    if runtime_registry.semantic_family == 'counter_observation':
+        try:
+            for mapping in runtime_registry.mappings:
+                trace = getattr(mapping.counter_contract, 'trace_relation', None)
+                if trace is not None:
+                    from .time_trace_contract import validate_time_contract
+                    validate_time_contract(trace, source_digest=runtime_registry.source_digest,
+                        fragment_id=fragment_id,
+                        source_execution=semantic_identity(privileged_execution_facts),
+                        target_environment=semantic_identity(target_environment))
+        except ValueError as exc:
+            return CsrTranslationPipelineResult('needs_route','csr_time_environment',None,
+                (str(exc),),candidates,(),None,None,False)
     profile = _facts_profile(privileged_execution_facts, runtime_registry)
     constraints = derive_csr_effect_constraints(
         source_model=source_csr_model,
@@ -193,7 +209,9 @@ def run_csr_translation_pipeline(
         try:
             shell_payload = prove_runtime_shell(source_fragment,
                 semantic_identity(implementation_payload), target_build_contract,
-                operand_binding=source_csr_model.operand_bindings[0])
+                operand_binding=source_csr_model.operand_bindings[0],
+                time_contract=(None if not constraints else
+                    (constraints[0].counter_contract_payload or {}).get("trace_relation")))
         except ValueError as exc:
             return CsrTranslationPipelineResult("needs_route", "csr_runtime_shell", None,
                 (str(exc),), candidates, constraints, None, None, False)
@@ -298,8 +316,12 @@ def run_csr_translation_pipeline(
     return CsrTranslationPipelineResult(
         "approved", selected.family.value, rendered.emitted_text, (),
         candidates, constraints, proof, rendered, True, implementation_identity, shell_payload, asdict(recipe),
-        None if runtime_registry.state_contract is None else {
+        ({'timeContract':semantic_payload(constraints[0].counter_contract_payload['trace_relation']),
+          'sourceExecutionSnapshot':semantic_payload(privileged_execution_facts),
+          'targetEnvironmentSnapshot':semantic_payload(target_environment)}
+         if constraints and (constraints[0].counter_contract_payload or {}).get('trace_relation') is not None else
+         None if runtime_registry.state_contract is None else {
             "stateContract":runtime_registry.state_contract,
             "sourceExecutionSnapshot":semantic_payload(privileged_execution_facts),
-            "targetEnvironmentSnapshot":semantic_payload(target_environment)},
+            "targetEnvironmentSnapshot":semantic_payload(target_environment)}),
     )

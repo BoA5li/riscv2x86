@@ -38,7 +38,11 @@ _LOGICAL = tuple(CsrRuntimeImplementation(
 _CHECKED_LOGICAL = tuple(replace(item,
     implementation_id=item.implementation_id.replace('.v1', '.checked.v1'),
     callable_identifier=item.callable_identifier+'_checked_v1') for item in _LOGICAL)
-IMPLEMENTATIONS = {item.implementation_id: item for item in (_MONOTONIC, *_LOGICAL, *_CHECKED_LOGICAL)}
+_TRACE_TIME = CsrRuntimeImplementation(
+    'rv2x86.controlled-time.checked.v1', 'rv2x86_read_time_trace_checked_v1',
+    'controlled-time-trace', 'riscv2x86_csr_runtime.h', 'libriscv2x86_runtime',
+    64, 2, ('read',), ('architectural-equivalence',), ('RV2X86_COUNTER_CONTROLLED_TIME',))
+IMPLEMENTATIONS = {item.implementation_id: item for item in (_MONOTONIC, _TRACE_TIME, *_LOGICAL, *_CHECKED_LOGICAL)}
 
 
 def implementation_manifest(implementation_id):
@@ -52,6 +56,9 @@ def implementation_manifest(implementation_id):
                'implementation': item,
                'sourceDigest': 'sha256:' + sha256(source.read_bytes()).hexdigest(),
                'headerDigest': 'sha256:' + sha256(header.read_bytes()).hexdigest()}
+    if item is _TRACE_TIME:
+        trace_header = root / 'runtime/include/riscv2x86_time_trace.h'
+        payload['traceHeaderDigest'] = 'sha256:' + sha256(trace_header.read_bytes()).hexdigest()
     return payload, semantic_identity(payload)
 
 
@@ -79,7 +86,15 @@ def validate_implementation(recipe, effects, constraints):
         raise ValueError('CSR_RUNTIME_CARRIER_WIDTH_UNSUPPORTED')
     if operation not in item.supported_operations:
         raise ValueError('CSR_RUNTIME_OPERATION_MISMATCH')
-    if kind == 'user_counter_observation':
+    if kind == 'user_counter_observation' and item is _TRACE_TIME:
+        from .time_trace_contract import validate_counter_payload
+        from .semantic_content import semantic_payload
+        validate_counter_payload(semantic_payload(constraint.counter_contract_payload or {}))
+        if (getattr(effect, 'csr_id', '') != 'riscv.csr.time'
+                or recipe.context_expression != '((const struct rv2x86_counter_context *)0)'
+                or recipe.input_expression is not None):
+            raise ValueError('TIME_RUNTIME_BINDING_MISMATCH')
+    elif kind == 'user_counter_observation':
         if (item.semantic_family != 'functional-monotonic-observation'
                 or constraint.counter_relation_kind not in item.supported_relations):
             raise ValueError('CSR_RUNTIME_COUNTER_DOMAIN_UNSUPPORTED')

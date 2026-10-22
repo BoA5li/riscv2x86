@@ -212,7 +212,21 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
     if (implementation!=p['implementationIdentity']
             or p['runtimeContractId']!=implementation_payload['implementation'].implementation_id+'@v1'):
         raise ValueError('CSR_RUNTIME_IMPLEMENTATION_IDENTITY_MISMATCH')
-    if version2:
+    time_backend = version2 and 'timeContract' in p['backendContract']
+    if time_backend:
+        backend = p['backendContract']
+        from .time_trace_contract import validate_time_contract
+        if set(backend) != {'timeContract','sourceExecutionSnapshot','targetEnvironmentSnapshot'}:
+            raise ValueError('TIME_BACKEND_SNAPSHOT_INVALID')
+        validate_time_contract(backend['timeContract'], fragment_id=p['sourceShell']['id'],
+            source_digest=(raw_fragment.get('compilerFragmentAuthority') or {}).get('sourceDigest'),
+            source_execution=semantic_identity(backend['sourceExecutionSnapshot']),
+            target_environment=semantic_identity(backend['targetEnvironmentSnapshot']))
+        if (semantic_identity(backend['targetEnvironmentSnapshot']) != f['targetEnvironmentId']
+                or backend['timeContract'] != (f['constraints'][0].get('counter_contract_payload') or {}).get('trace_relation')
+                or implementation_payload['implementation'].semantic_family != 'controlled-time-trace'):
+            raise ValueError('TIME_BACKEND_SNAPSHOT_MISMATCH')
+    elif version2:
         from .csr_state_contract import validate_state_contract
         backend=p['backendContract']
         if (not isinstance(backend,dict) or set(backend)!={'stateContract','sourceExecutionSnapshot','targetEnvironmentSnapshot'}
@@ -225,10 +239,19 @@ def validate_csr_runtime_approval(approval, fragment, replacement=None):
                 or implementation_payload['implementation'].semantic_family!='logical-csr-state'
                 or recipe.context_expression!=backend['stateContract']['contextExpression']):
             raise ValueError('CSR_RUNTIME_BACKEND_ENVIRONMENT_MISMATCH')
+    elif implementation_payload['implementation'].semantic_family=='controlled-time-trace':
+        raise ValueError('TIME_BACKEND_SNAPSHOT_REQUIRED')
     elif implementation_payload['implementation'].semantic_family=='logical-csr-state':
         raise ValueError('CSR_RUNTIME_STATE_ENVIRONMENT_CONTRACT_REQUIRED')
+    trace = (f['constraints'][0].get('counter_contract_payload') or {}).get('trace_relation')
+    if trace is not None:
+        from .time_trace_contract import validate_time_contract
+        validate_time_contract(trace, fragment_id=p['sourceShell']['id'],
+            source_digest=(raw_fragment.get('compilerFragmentAuthority') or {}).get('sourceDigest'),
+            target_environment=f['targetEnvironmentId'])
     shell=prove_runtime_shell(fragment,implementation,p['shellProof']['buildContract'],
-        operand_binding=_namespace(bindings[0]))
+        operand_binding=_namespace(bindings[0]),
+        time_contract=(f['constraints'][0].get('counter_contract_payload') or {}).get('trace_relation'))
     if shell!=p['shellProof'] or tuple(f['shellFacts'])!=(semantic_identity(shell),):
         raise ValueError('CSR_RUNTIME_SHELL_REPLAY_FAILED')
     from .csr_structured_renderer import render_csr_recipe

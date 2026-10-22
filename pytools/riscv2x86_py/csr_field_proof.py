@@ -43,6 +43,13 @@ def prove_csr_fields(*,source_model:Any,constraints:tuple[Any,...],execution_pro
         relation_kind=getattr(c,"counter_relation_kind",None)
         if (relation_kind=="functional-monotonic-observation" and
                 not allow_functional_relations): reasons.add("csr-6d.functional-counter-relation-not-approved")
+        counter = semantic_payload(getattr(c, 'counter_contract_payload', None) or {})
+        if counter.get('trace_relation') is not None:
+            try:
+                from .time_trace_contract import validate_counter_payload
+                validate_counter_payload(counter)
+            except ValueError as exc:
+                reasons.add(str(exc))
         fields=tuple(getattr(effect,"affected_fields",()) or ())
         if not fields: reasons.add("csr-6d.field-proof-missing")
         for field in fields:

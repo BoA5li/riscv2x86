@@ -113,6 +113,8 @@ def validate_observation(value,request,side,domain):
                 raise ValueError('ISS_OBSERVATION_EVENT_ORDER_INVALID')
             if not isinstance(event['objectIdentity'],str) or not event['objectIdentity']:
                 raise ValueError('ISS_OBSERVATION_OBJECT_INVALID')
+            if domain.get('schemaVersion')=='riscv2x86.instruction-stream-domain.v2' and event['objectIdentity']!='probe-code-object':
+                raise ValueError('ISS_OBSERVER_RANGE_BINDING_MISMATCH')
             object_id=event['objectIdentity']; current=decode_probe(event['codeHex'],side); synchronized=False
             projection.append(('code_write',current))
         elif kind=='synchronize':
@@ -148,8 +150,10 @@ def run(config,approval_path,**kwargs):
     try:
         manifest=load_explicit_l2_harness_manifest(config.manifest_path)
         environment=kwargs.get('target_environment')
-        if (environment is None or getattr(environment,'target_isa','')!='x86_64'
-                or not getattr(environment,'source_isa','').startswith('rv64')
+        target_isa=environment.get('targetIsa','') if isinstance(environment,dict) else getattr(environment,'target_isa','')
+        source_isa=environment.get('sourceIsa','') if isinstance(environment,dict) else getattr(environment,'source_isa','')
+        if (target_isa!='x86_64'
+                or not source_isa.startswith('rv64')
                 or tuple(kwargs.get('l2_provider_dimensions',DIMENSIONS))!=DIMENSIONS):
             raise ValueError('ISS_PROVIDER_ENVIRONMENT_OR_DIMENSIONS_UNSUPPORTED')
         artifact=kwargs['translation_artifact']; fid=artifact.fragment_id
@@ -175,6 +179,11 @@ def run(config,approval_path,**kwargs):
             if (_file_digest(path)!=program.artifact_digest or re.fullmatch(r'sha256:[0-9a-f]{64}',program.build_identity) is None):
                 raise ValueError('ISS_PROGRAM_IDENTITY_MISMATCH')
             programs[side+'Program']={'path':str(path),'digest':program.artifact_digest,'buildIdentity':program.build_identity}
+            if side=='source' and domain.get('schemaVersion')=='riscv2x86.instruction-stream-domain.v2':
+                if '--runner' not in command:raise ValueError('ISS_MECHANISM_SOURCE_RUNNER_REQUIRED')
+                runner_index=command.index('--runner')+1
+                if runner_index>=len(command) or _file_digest(Path(shutil.which(command[runner_index]) or command[runner_index]))!=domain['mechanismEvidence']['binaryDigest']:
+                    raise ValueError('ISS_MECHANISM_SOURCE_BINARY_MISMATCH')
             if runner_identity(command,digest)!=domain[side+'Execution']['runnerIdentity']:
                 raise ValueError('ISS_RUNNER_DOMAIN_MISMATCH')
             if not hasattr(os,'sched_getaffinity') or domain[side+'Execution']['pinnedCpu'] not in os.sched_getaffinity(0):

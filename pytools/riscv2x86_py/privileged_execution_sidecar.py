@@ -22,7 +22,9 @@ PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2 = (
 )
 # Compatibility alias: callers creating legacy fixtures keep producing V1.
 PRIVILEGED_EXECUTION_SIDECAR_SCHEMA = PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V1
+USER_COUNTER_EXECUTION_SCHEMA = "riscv2x86.user-counter-execution.v1"
 _SUPPORTED_SCHEMAS = frozenset({
+    USER_COUNTER_EXECUTION_SCHEMA,
     PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V1,
     PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
 })
@@ -178,6 +180,8 @@ class PrivilegedExecutionFacts:
     target_cpu_feature_profile_id: str | None = None
     schema_version: str = PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V1
 
+    user_counter_backend_identity: str | None = None
+
     def __post_init__(self) -> None:
         _identity(self.fragment_id, "fragmentId")
         _identity(self.provenance, "provenance")
@@ -187,6 +191,24 @@ class PrivilegedExecutionFacts:
         _stable_unique(self.missing_fact_codes, "missing fact codes")
         if self.complete and self.missing_fact_codes:
             raise ValueError("complete privileged facts cannot have missing facts")
+        if self.schema_version == USER_COUNTER_EXECUTION_SCHEMA:
+            from .time_trace_contract import digest_ok
+            if (not self.complete or self.source_execution_profile is not SourceExecutionProfile.RISCV_USER_PROCESS
+                    or self.initial_privilege_mode is not SourcePrivilegeMode.U
+                    or self.target_execution_mode is not TargetExecutionMode.X86_USER_PROCESS
+                    or not digest_ok(self.user_counter_backend_identity)
+                    or not self.csr_access_policy.complete
+                    or self.csr_access_policy.readable_csr_ids != ('riscv.csr.time',)
+                    or self.csr_access_policy.writable_csr_ids
+                    or self.csr_access_policy.unknown_access is not UnknownCsrAccessDisposition.TRAP
+                    or self.source_privilege_spec_version != '1.12'
+                    or 'zicsr' not in self.source_isa_extensions
+                    or any((self.delegation_model,self.interrupt_model,self.virtual_memory_model,
+                            self.trap_handler_binding,self.address_space))):
+                raise ValueError('TIME_USER_EXECUTION_CONTRACT_INVALID')
+            return
+        if self.user_counter_backend_identity is not None:
+            raise ValueError('TIME_USER_EXECUTION_SCHEMA_REQUIRED')
         if self.complete and self.schema_version != PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2:
             raise ValueError("only V2 privileged execution facts may be complete")
         if self.complete and not all((
