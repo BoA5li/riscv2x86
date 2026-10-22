@@ -15,6 +15,10 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_csr_access_coverage.py',
+    'test_privileged_state_analysis.py',
+    'test_csr_state_dataflow.py',
+    'test_source_csr_semantic_model.py',
     'test_execution_environment_closure.py',
     'test_mechanism_source_dso_l0.py',
     'test_mechanism_retained_execution.py',

@@ -47,7 +47,8 @@ def counter(trace):
         'explicit-controlled-backend-required','execution-failure-not-counter-value',True,trace)
 
 
-def pipeline_fixture(*, source_digest=None, environment=None, registry_override=None, renderer_override=None):
+def pipeline_fixture(*, source_digest=None, environment=None, registry_override=None, renderer_override=None,
+                     canonical_ops=None):
     from tests.test_csr_sync_production_contracts import compiler_fragment,profile
     from tests.test_privileged_state_analysis import _cfg
     from riscv2x86_py.csr_architecture_profile import parse_profile
@@ -82,8 +83,9 @@ def pipeline_fixture(*, source_digest=None, environment=None, registry_override=
     code=((0xc01<<20)|(2<<12)|(10<<7)|0x73).to_bytes(4,'little')
     decoder=parse_profile(profile());decoded=decode_csr_instruction(code)
     op=canonical_csr_operations_from_decoded(addr=0x10000,decoded=decoded,xlen_bits=64,profile=decoder)[0]
-    ins=CanonicalInsn(0x10000,4,privileged_operations=(op,));ins.decoded_csr_instruction=decoded
-    block=Block(0x10000,ops=[Op(0x10000,'COPY',None,[])],instructions=[ins]);cfg=_cfg(block)
+    ops=canonical_ops if canonical_ops is not None else [Op(0x10000,'COPY',None,[])]
+    ins=CanonicalInsn(0x10000,4,ops=ops,privileged_operations=(op,));ins.decoded_csr_instruction=decoded
+    block=Block(0x10000,ops=ops,instructions=[ins]);cfg=_cfg(block)
     authority,_=bind_csr_compiler_operands(f,TranslationRuntimeFacts(rv_to_operand_index={'a0':0},operand_width_bits={0:64}),
         [ins],source_digest=f.compilerFragmentAuthority['sourceDigest'],architecture_profile=decoder)
     binding=join_csr_operand_bindings(lifted_insns=[ins],authority=authority)[0]

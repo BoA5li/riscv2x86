@@ -6,6 +6,14 @@ from .semantic_content import semantic_identity
 from .time_trace_harness import digest
 
 
+class MechanismApprovalError(ValueError):
+    """A blocking cause with reviewable diagnostics, never an approval."""
+
+    def __init__(self, code, diagnostic):
+        super().__init__(code)
+        self.diagnostic = diagnostic
+
+
 def source_build_compiler(providers):
     """Build the observed source DSO with the explicitly bound source compiler."""
     import shutil
@@ -37,13 +45,17 @@ def execution_checkpoint(fragment_id, architecture, facts, state):
         'sourceExecutionFactsIdentity':semantic_identity(facts),
         'sourceExecutionSchema':facts.schema_version,
         'executionFactsComplete':facts.complete,
+        'privilegedStateComplete':state.complete,
         'accessPermissionsComplete':state.access_permissions_complete,
         'executionPrivilegeSpecVersion':facts.source_privilege_spec_version,
         'executionIsaExtensions':list(facts.source_isa_extensions),
         'controlledBackendIdentity':facts.user_counter_backend_identity,
         'accessEffects':[{'csrId':e.csr_id,'accessAllowed':e.access_allowed,
-            'mayTrap':e.may_trap,'complete':e.complete} for e in state.csr_effects],
-        'missingExecutionFactCodes':list(state.missing_fact_codes),
+            'blockAddress':e.block_address,'operationIndex':e.operation_index,
+            'operation':e.operation.value,'mayTrap':e.may_trap,'complete':e.complete,
+            'missingFactCodes':list(e.missing_fact_codes)} for e in state.csr_effects],
+        'missingExecutionFactCodes':list(facts.missing_fact_codes),
+        'missingPrivilegedStateCodes':list(state.missing_fact_codes),
         'semanticApproval':False}
     return RouteAuthorityDecision('csr',fragment_id,'csr_execution_facts',
         'CSR_EXECUTION_FACTS_VALIDATED' if accepted else 'CSR_EXECUTION_FACTS_INCOMPLETE',
@@ -157,6 +169,22 @@ def require_consumed_approval(source, report, fragment_id, *, family, contract_p
     source = Path(source)
     report = Path(report)
     raw = json.loads(report.read_text())
+    findings = [f for f in raw.get('findings', [])
+                if (f['fragment'].get('id') or f['fragment'].get('fragmentId')) == fragment_id]
+    if len(findings) != 1:
+        raise ValueError('MECHANISM_APPROVAL_FRAGMENT_AMBIGUOUS')
+    finding = findings[0]
+    approval = finding.get('approvalArtifact') or {}
+    if approval.get('proofStatus') != 'approved':
+        raise MechanismApprovalError('MECHANISM_TRANSLATION_NOT_APPROVED', {
+            'reportPath': str(report), 'fragmentId': fragment_id,
+            'translationOutcome': finding.get('translationOutcome'),
+            'translationReasonCodes': finding.get('translationReasonCodes', []),
+            'blockingDecisions': [
+                {'failureStage': d.get('failureStage'), 'reasonCode': d.get('reasonCode'),
+                 'inputsPayload': d.get('inputsPayload')}
+                for d in finding.get('routeAuthorityDiagnostics', []) if not d.get('accepted')],
+            'semanticApproval': False})
     name = 'csr_environment' if family == 'time' else 'instruction_stream_sync'
     if family == 'time':
         from .csr_environment_contract import load_csr_environment_contract
@@ -178,7 +206,12 @@ def require_consumed_approval(source, report, fragment_id, *, family, contract_p
     if (len(matches) != 1 or matches[0] != expected or expected['disposition'] != 'consumed'
             or len(expected['consumptions']) != 1
             or expected['consumptions'][0]['fragmentId'] != fragment_id):
-        raise ValueError('MECHANISM_APPROVAL_CONTRACT_NOT_CONSUMED')
+        raise MechanismApprovalError('MECHANISM_APPROVAL_CONTRACT_NOT_CONSUMED', {
+            'reportPath': str(report), 'fragmentId': fragment_id,
+            'matchingRecordCount': len(matches),
+            'persistedMatchesReplayed': len(matches) == 1 and matches[0] == expected,
+            'replayedDisposition': expected['disposition'],
+            'replayedConsumptions': expected['consumptions'], 'semanticApproval': False})
     return expected
 
 

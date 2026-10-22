@@ -59,6 +59,35 @@ def main():
                 raise ValueError('SYNC_EXPLICIT_INPUTS_REQUIRED')
             if a.time_source and any(x is None for x in (a.time_review,a.time_backend,a.time_runner_json)):
                 raise ValueError('TIME_EXPLICIT_INPUTS_REQUIRED')
+            # Reject absent/invalid prerequisites before any bootstrap or
+            # previously successful route is executed. These checks select an
+            # environment; they never grant translation or execution approval.
+            for label, path in (
+                ('SYNC_DECLARATION', a.sync_declaration if a.sync_source else None),
+                ('TIME_REVIEW', a.time_review if a.time_source else None),
+                ('TIME_BACKEND', a.time_backend if a.time_source else None)):
+                if path is not None:
+                    if not path.is_file(): raise ValueError(label+'_FILE_MISSING:'+str(path))
+                    json.loads(path.read_text())
+            for label, raw_runner in (
+                ('SYNC', a.native_runner_json if a.sync_source else None),
+                ('TIME', a.time_runner_json if a.time_source else None)):
+                if raw_runner is not None:
+                    command=json.loads(raw_runner)
+                    if (not isinstance(command,list) or not command
+                            or any(not isinstance(x,str) or not x or '\0' in x for x in command)):
+                        raise ValueError(label+'_RUNNER_COMMAND_INVALID')
+                    binary=Path(shutil.which(command[0]) or command[0])
+                    if not binary.is_file() or not os.access(binary,os.X_OK):
+                        raise ValueError(label+'_RUNNER_EXECUTABLE_MISSING:'+str(binary))
+            if a.time_source:
+                if a.time_mode!='controlled': raise ValueError('TIME_EXPLICIT_MODE_REQUIRED')
+                from riscv2x86_py.time_trace_contract import validate_backend
+                from riscv2x86_py.time_trace_harness import digest
+                backend=json.loads(a.time_backend.read_text());validate_backend(backend)
+                runner=json.loads(a.time_runner_json)
+                if digest(shutil.which(runner[0]) or runner[0])!=backend['binaryDigest']:
+                    raise ValueError('TIME_SOURCE_BINARY_MISMATCH')
         if a.suite:
             for selected in (a.sync_source,a.time_source):
                 if selected is not None and selected.resolve().parent!=a.suite.resolve():
@@ -195,6 +224,8 @@ def main():
         save();return 0
     except (OSError,ValueError,TypeError,KeyError,IndexError,ImportError,AttributeError) as exc:
         if owned and out.is_dir():
+            if getattr(exc,'diagnostic',None) is not None:
+                status['failureDiagnostics']=exc.diagnostic
             status['blockers'].append(str(exc));save()
         print(json.dumps({'failureStage':'mechanism_production_run','detail':str(exc),'output':str(out)}));return 2
 

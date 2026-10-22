@@ -580,6 +580,37 @@ def _typed_csr_effect(block_address, operation_index, meta, facts, *, isolated_c
 
 def _derived_csr_effects(blocks, facts, typed_sites):
     """Inventory untyped canonical CSR data flow, always incomplete in V2."""
+    from .csr_pcode_normalization import architectural_state_reads
+
+    # A typed effect is anchored at the first operation of its machine
+    # instruction. The CSR COPY may occur later, after pure temporary work.
+    # Join by instruction ownership AND complete read coverage, never by the
+    # coincidence of these two operation indexes. A mere typed declaration
+    # must not hide an extra write, foreign result, or unknown side effect.
+    read_claims = set()
+    covered_reads = set()
+    for block in blocks:
+        for instruction in block.instructions:
+            metadata = instruction.privileged_operations
+            # Decoder-owned reads carry a concrete instruction shape. Require
+            # coverage even at matching indexes; retain the existing explicit
+            # metadata path for other effects and legacy authority consumers.
+            for meta in metadata:
+                if (meta.kind is CanonicalPrivilegedOperationKind.CSR_ACCESS
+                        and _csr_operation(meta.csr_operation) is CsrEffectOperation.READ
+                        and meta.decoder_opcode_kind is not None):
+                    read_claims.add((block.addr, instruction.addr, meta.csr_id))
+            if (len(metadata) != 1
+                    or metadata[0].kind is not CanonicalPrivilegedOperationKind.CSR_ACCESS
+                    or _csr_operation(metadata[0].csr_operation) is not CsrEffectOperation.READ):
+                continue
+            region = [op for op in block.ops if op.addr == instruction.addr]
+            reads = architectural_state_reads(region, metadata)
+            if (len(reads) == 1
+                    and _canonical_csr_id(reads[0].name, facts) == metadata[0].csr_id
+                    and sum(ins.addr == instruction.addr for ins in block.instructions) == 1):
+                covered_reads.add((block.addr, instruction.addr, metadata[0].csr_id))
+
     grouped = {}
     for block in blocks:
         for index, op in enumerate(block.ops):
@@ -602,9 +633,12 @@ def _derived_csr_effects(blocks, facts, typed_sites):
                 entry["read"] = bool(entry["read"] or csr_id in input_ids)
                 entry["write"] = bool(entry["write"] or csr_id == output_id)
     result = []
-    for (block_address, _addr, csr_id), item in grouped.items():
+    for (block_address, address, csr_id), item in grouped.items():
         site = (block_address, item["index"], csr_id)
-        if site in typed_sites:
+        owner = (block_address, address, csr_id)
+        if owner in covered_reads:
+            continue
+        if site in typed_sites and owner not in read_claims:
             continue
         operation = (
             CsrEffectOperation.READ_WRITE

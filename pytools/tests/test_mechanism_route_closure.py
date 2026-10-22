@@ -44,6 +44,27 @@ def write_fixture(tmp_path):
     return source,report,f,approval,registry,renderer,p
 
 
+def test_unapproved_translation_preserves_upstream_cause_in_consumption_gate(tmp_path):
+    from riscv2x86_py.mechanism_route_checks import require_consumed_approval, MechanismApprovalError
+    source, report, fragment, *_ = write_fixture(tmp_path)
+    raw = json.loads(report.read_text())
+    finding = raw['findings'][0]
+    finding['approvalArtifact'] = None
+    finding['translationOutcome'] = 'needs_route'
+    finding['translationReasonCodes'] = ['TIME_USER_EXECUTION_SCOPE_UNSUPPORTED']
+    finding['routeAuthorityDiagnostics'] = [{
+        'failureStage': 'csr_execution_facts', 'reasonCode': 'CSR_EXECUTION_FACTS_INCOMPLETE',
+        'accepted': False, 'inputsPayload': {'privilegedStateComplete': False}}]
+    report.write_text(json.dumps(raw))
+    with pytest.raises(MechanismApprovalError, match='TRANSLATION_NOT_APPROVED') as error:
+        require_consumed_approval(source, report, fragment.id,
+            family='time', contract_path=tmp_path/'not-read-before-approval.json')
+    detail = error.value.diagnostic
+    assert detail['translationReasonCodes'] == ['TIME_USER_EXECUTION_SCOPE_UNSUPPORTED']
+    assert detail['blockingDecisions'][0]['failureStage'] == 'csr_execution_facts'
+    assert detail['semanticApproval'] is False
+
+
 def test_static_checkpoint_closes_join_without_inventing_access_or_approval(tmp_path):
     from riscv2x86_py.mechanism_route_checks import checkpoints
     source,report,*_=write_fixture(tmp_path)

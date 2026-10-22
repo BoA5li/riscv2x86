@@ -85,3 +85,32 @@ def test_suite_acceptance_uses_same_inventory_and_actual_selected_case(tmp_path,
         result=require_suite_preserved(before,after,[source])
         assert result['selectedCases']==['inventory-owned-id']
         assert result['sameSourceInventory']
+
+
+@pytest.mark.parametrize('mutation,reason', [
+    ('missing', 'TIME_BACKEND_FILE_MISSING'),
+    ('manifest', 'TIME_SOURCE_BACKEND_INVALID'),
+    ('runner', 'TIME_RUNNER_COMMAND_INVALID'),
+    ('binary', 'TIME_SOURCE_BINARY_MISMATCH'),
+])
+def test_time_prerequisites_are_checked_before_any_bootstrap(tmp_path, monkeypatch, mutation, reason):
+    from tests.test_controlled_time import backend
+    module = driver()
+    source = tmp_path/'renamed.c'; source.write_text('unsigned long renamed(void);')
+    review = tmp_path/'review.json'; review.write_text('{}')
+    manifest = tmp_path/'backend.json'
+    value = {} if mutation == 'manifest' else backend()
+    if mutation != 'missing': manifest.write_text(json.dumps(value))
+    command = {} if mutation == 'runner' else [sys.executable]
+    def forbidden(*args, **kwargs): pytest.fail('prerequisites must precede subprocess execution')
+    monkeypatch.setattr(module.subprocess, 'run', forbidden)
+    out = tmp_path/'run'
+    monkeypatch.setattr(sys, 'argv', ['driver', '--frontend', 'unexecuted',
+        '--output', str(out), '--architecture-template', str(architecture(tmp_path)),
+        '--time-source', str(source), '--time-mode', 'controlled',
+        '--time-review', str(review), '--time-backend', str(manifest),
+        '--time-runner-json', json.dumps(command)])
+    assert module.main() == 2
+    status = json.loads((out/'run-status.json').read_text())
+    assert status['blockers'][0].startswith(reason)
+    assert status['steps'] == [] and not status['productionAcceptanceComplete']

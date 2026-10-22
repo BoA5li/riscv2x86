@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "riscv2x86.phase84-validation.v1",
+  "baseCommit": "506a0ddb2c56ad355b6f0ed3f6ecc948ec8f5c11",
+  "python": "3.12",
+  "pytest": "8.4.2",
+  "pypcode": "4.0.1",
+  "selectedRegression": {
+    "passed": 973,
+    "skipped": 41
+  },
+  "expandedSemanticBaseline": {
+    "failed": 10,
+    "passed": 409,
+    "skipped": 2
+  },
+  "expandedSemanticRevision": {
+    "failed": 10,
+    "passed": 439,
+    "skipped": 2
+  },
+  "changedExistingSemanticTests": [],
+  "existingBaselineFailures": [
+    "tests.test_phase4_privileged_cli_ingress::test_registry_loaders_require_versioned_schema_and_reject_duplicates",
+    "tests.test_phase4_privileged_cli_ingress::test_cli_constructs_privileged_pipeline_inputs",
+    "tests.test_phase6_pytest::test_build_cfg_any_uses_lifted_cfg_without_machine_code",
+    "tests.test_phase6_pytest::test_cfg_from_lifted_cond_branch_has_target_and_fallthrough",
+    "tests.test_phase6_pytest::test_translate_lrsc_cas_does_not_require_machine_code",
+    "tests.test_phase6_pytest::test_translate_lrsc_rmw_does_not_require_machine_code",
+    "tests.test_phase6_pytest::test_translate_pic_then_intblock_bridge",
+    "tests.test_phase6_rv64_add_contract::test_rv64_counter_csr_read_is_a_structured_runtime_route",
+    "tests.test_phase9_privileged_output_manifest::test_strict_output_manifest_contains_contract_proof_and_dependencies",
+    "tests.test_phase9_privileged_output_manifest::test_functional_output_manifest_records_downgrade_and_ignored_state"
+  ],
+  "newSemanticTests": {
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[10-a0-0]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[10-a0-1]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[10-a0-3]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[11-a1-0]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[11-a1-1]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[11-a1-3]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[7-t2-0]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[7-t2-1]": "passed",
+    "tests.test_csr_access_coverage::test_pure_prefix_does_not_duplicate_one_decoded_read[7-t2-3]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[write-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[write-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[write-before-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[write-before-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[extra-read-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[extra-read-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[foreign-csr-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[foreign-csr-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[result-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[result-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[width-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[width-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[unknown-effect-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[unknown-effect-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[control-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[control-1]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[metadata-0]": "passed",
+    "tests.test_csr_access_coverage::test_typed_read_never_hides_uncovered_or_contradictory_operations[metadata-1]": "passed",
+    "tests.test_csr_access_coverage::test_read_coverage_does_not_grant_missing_access_permission": "passed",
+    "tests.test_csr_access_coverage::test_real_lifter_read_passes_complete_privileged_analysis": "passed",
+    "tests.test_csr_access_coverage::test_normalized_old_sleigh_region_reaches_proof_replay_and_contract_consumption": "passed"
+  },
+  "productionAcceptanceComplete": false,
+  "productionLimitation": "No usable LLVM frontend, cross compiler or QEMU on this execution host; external production tests are skipped, not passed. User must run the mandatory configured production and no-skip regression commands.",
+  "claims": {
+    "nativeStrictTime": false,
+    "fullTimeClock": false,
+    "L3Equivalent": false
+  },
+  "logDigests": {
+    "semantic-regression.log": "sha256:e0af73f629cc4fa258863a398d5c9cb0c5c91d0f722524b6eb541453befb43db",
+    "regression.log": "sha256:92e48ac7929460fe1f71f2b034c92daa240022a71cd9dc56bfcfd7b7997362e6",
+    "semantic-baseline.log": "sha256:31d99e8804524d9b8fda495d095d0d62a410c11b1e39fb67151db37bd3fbd6d9"
+  }
+}
