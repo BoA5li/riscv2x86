@@ -858,6 +858,12 @@ def materialize_automatic_l2_authority(
             approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
         from .l2_atomic_authority import materialize_atomic_authority
         version = approval.get("artifactVersion") if isinstance(approval, Mapping) else ""
+        if version=='phase6-csr-runtime-v1' and len(function_matches)==1:
+            time_scope=function_matches[0].get('compilerTimeReturnScope')
+            if time_scope is not None:
+                from .compiler_time_scope import validate_scope as validate_time_scope
+                validate_time_scope(time_scope,raw_fragment,finding.get('sourceDigest'))
+                approval['l2TimeReturnScope']=time_scope
         if version=="phase6-instruction-stream-sync-v3" and len(function_matches)==1:
             scope=function_matches[0].get("compilerInstructionSyncScope")
             if scope is not None:

@@ -364,6 +364,7 @@ class AsmFragment:
     compilerExpressionJoin: Dict[str, Any] = field(default_factory=dict)
     compilerExpressionEvaluation: Dict[str, Any] = field(default_factory=dict)
     csrAuthorityBundle: Dict[str, Any] = field(default_factory=dict)
+    compilerTimeReturnScope: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.fragmentId and not self.id:

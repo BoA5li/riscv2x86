@@ -2,7 +2,16 @@
 #include "riscv2x86_csr_runtime.h"
 #include <time.h>
 #include <stdlib.h>
+#include <errno.h>
+#include "riscv2x86_time_trace.h"
 static rv2x86_system_adapter_fn adapters[5];
+uint64_t rv2x86_read_time_trace_checked_v1(const struct rv2x86_counter_context *c, enum rv2x86_counter_id id) {
+  if (c || id != RV2X86_COUNTER_CONTROLLED_TIME) abort();
+  int saved_errno = errno;
+  uint64_t value = rv2x86_time_trace_read_v1(0);
+  errno = saved_errno;
+  return value;
+}
 uint64_t riscv2x86_rt_monotonic_time_ns_v1(void) {
   struct timespec t;
   if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0;

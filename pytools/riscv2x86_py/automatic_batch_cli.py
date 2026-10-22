@@ -720,6 +720,10 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             sync_scope=instruction_sync_scope(node,source_digest=source_digest,
                 function_identity=function_identity,source_range=_source_range)
             if sync_scope is not None:function['compilerInstructionSyncScope']=sync_scope
+            from .compiler_time_scope import time_return_scope
+            time_scope=time_return_scope(node,source_digest=source_digest,
+                function_identity=function_identity,source_range=_source_range)
+            if time_scope is not None:function['compilerTimeReturnScope']=time_scope
             function.update(_counter_return_semantics(node))
             from .compiler_continuation_sites import continuation_sites
             site_facts = continuation_sites(node, source_digest=source_digest,
@@ -914,6 +918,9 @@ def _explicit_l2_providers(
             validate_explicit_l2_harness_provider(parsed)
         if parsed.validator_type == "l2-instruction-visibility-harness":
             from .l2_instruction_visibility_runner import validate_provider
+            validate_provider(parsed)
+        if parsed.validator_type == "controlled-time-validation":
+            from .time_trace_runner import validate_provider
             validate_provider(parsed)
         providers.append(dict(raw))
     return tuple(providers), tuple(environment_capabilities)
@@ -1408,6 +1415,11 @@ def prepare_automatic_inventory(
                     functional_relation_config,
                     binding_kind="runtime_adapter",
                 ))
+            time_providers=[p for p in explicit_l2_providers if p['validatorType']=='controlled-time-validation']
+            if time_providers:
+                if len(time_providers)!=1 or len(functions)!=1:
+                    raise ValueError('TIME_PROGRAM_OBSERVATION_SCOPE_UNSUPPORTED')
+                validators['L1']={'type':'controlled-time-validation','config':time_providers[0]['config']}
             l2_providers.extend(explicit_l2_providers)
             l2_providers.sort(key=lambda item: str(item["providerId"]))
             validators["L2"] = {
@@ -1474,6 +1486,13 @@ def prepare_automatic_inventory(
                        if "L2" in validators else "riscv2x86.l1-observable-comparison.v1"
                    ),
                    "validationUnit": "program", "validationGroupId": "", "selectedAttemptIds": []}
+        if any(p['validatorType'] in {'controlled-time-validation','l2-instruction-visibility-harness'} for p in explicit_l2_providers):
+            if link_kind != 'shared_library':
+                raise ValueError('OBSERVATION_SHARED_LIBRARY_BUILD_REQUIRED')
+            request['sourceBuild']={'artifactId':'source-'+case_id,'artifactKind':'shared_library',
+                'outputRelativePath':'build/source.rv64.so',
+                'command':['riscv64-linux-gnu-gcc','-std=gnu11','-O0','-Wall','-Wextra','-Werror',
+                    '-march=rv64gc','-mabi=lp64d','-fPIC','-shared','${SOURCE_PATH}','-o','${OUTPUT}']}
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,
                      "category": "automatic", "request": request})

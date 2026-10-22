@@ -18,7 +18,8 @@ def unsupported_flags(flags):
 
 SCHEMA='riscv2x86.runtime-build.v1'
 SOURCES=('runtime/riscv2x86_runtime_helpers.c','runtime/riscv2x86_csr_runtime.c',
-         'runtime/include/riscv2x86_runtime_helpers.h','runtime/include/riscv2x86_csr_runtime.h')
+         'runtime/include/riscv2x86_runtime_helpers.h','runtime/include/riscv2x86_csr_runtime.h',
+         'runtime/include/riscv2x86_time_trace.h')
 BUILD_CONTRACT='automatic-gcc-separate-tu-no-lto-v1'
 
 

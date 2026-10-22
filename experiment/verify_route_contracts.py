@@ -15,6 +15,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_controlled_time.py',
+    'test_mechanism_preparation.py',
+    'test_controlled_time_production.py',
     'test_route_acceptance.py',
     'test_route_input_preparation.py',
     'test_visibility_provider_preparation.py',

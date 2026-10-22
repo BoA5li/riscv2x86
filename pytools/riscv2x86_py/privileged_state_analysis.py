@@ -278,6 +278,7 @@ class SourcePrivilegedStateModel:
     csr_operand_bindings: tuple[object, ...] = ()
     csr_state_dataflow: object | None = None
     source_csr_semantic_model: object | None = None
+    controlled_execution_facts: object | None = None
 
     def __post_init__(self) -> None:
         for values in (
@@ -971,6 +972,10 @@ def analyze_privileged_state(
     ):
         present = True
         reasons.append(PrivilegedStateReasonCode.RETURN_KIND_UNCLASSIFIED)
+    if facts.user_counter_backend_identity is not None and (not isolated_counter_access
+            or len(csr)!=1 or csr[0].csr_id!='riscv.csr.time' or csr[0].operation is not CsrEffectOperation.READ
+            or traps or returns or interrupts or mmu or virt or debug):
+        reasons.append('TIME_USER_EXECUTION_SCOPE_UNSUPPORTED')
     if present and not facts.complete:
         reasons.append(PrivilegedStateReasonCode.EXECUTION_FACTS_INCOMPLETE)
         reasons.extend(facts.missing_fact_codes)
@@ -1017,6 +1022,7 @@ def analyze_privileged_state(
     reason_codes = _ordered(reasons)
     complete = not present or not reason_codes
     return SourcePrivilegedStateModel(
+        controlled_execution_facts=facts if facts.user_counter_backend_identity is not None else None,
         execution_profile=facts.source_execution_profile,
         target_execution_mode=facts.target_execution_mode,
         initial_privilege_mode=facts.initial_privilege_mode,
