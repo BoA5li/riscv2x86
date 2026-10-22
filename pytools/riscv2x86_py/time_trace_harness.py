@@ -99,6 +99,8 @@ def observe(*,side,program,symbol,values,compiler,runner,contract,timeout):
                 'stdout':text(exc.stdout),'stderr':text(exc.stderr),
                 'events':events.read_text() if events.is_file() else ''}) from exc
         record={'side':side,'programDigest':program['digest'],'observerSource':source.read_text(),
+            'runnerCommand':list(runner),
+            'runnerBinaryDigest':digest(shutil.which(runner[0]) or runner[0]) if runner else None,
             'observerDigest':digest(binary),'compilerDigest':digest(compiler),'buildCommand':command,
             'returnCode':completed.returncode,'stdout':completed.stdout,'stderr':completed.stderr,
             'events':events.read_text() if events.is_file() else '', 'functionSize':extent}

@@ -69,7 +69,7 @@ def validate_static_join(f, architecture, *, source):
 
 
 def prepare_contract(*,source,report,fragment_id,backend,architecture,review):
-    from .phase6c_constraints import FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
+    from .production_target_environment import production_target_environment
     f,scope=finding(source,report,fragment_id)
     validate_backend(backend)
     operation,eid,profile=validate_static_join(f,architecture,source=source)
@@ -77,7 +77,7 @@ def prepare_contract(*,source,report,fragment_id,backend,architecture,review):
         privilege_spec=profile.privilege_spec_version.removeprefix('riscv-privileged-'),extensions=profile.extensions)
     trace=seal({'schemaVersion':SCHEMA,'sourceDigest':digest(source),'fragmentId':fragment_id,
         'sourceExecutionIdentity':semantic_identity(facts),
-        'targetEnvironmentIdentity':semantic_identity(FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT),
+        'targetEnvironmentIdentity':semantic_identity(production_target_environment()),
         'sourceBackend':backend,'targetMechanism':TARGET,'unit':'opaque-64-bit-time-ticks',
         'readRelation':'same-index-same-external-value-modulo-2^64',
         'concurrency':'single-thread-no-asynchronous-readers',

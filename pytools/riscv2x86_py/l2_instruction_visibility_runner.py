@@ -12,6 +12,7 @@ import re
 import subprocess
 from types import SimpleNamespace
 from uuid import uuid4
+from .approved_replacement import approved_replacement
 from .semantic_content import semantic_identity
 from .l2_explicit_harness import (load_explicit_l2_harness_runner_config,
     load_explicit_l2_harness_manifest, validate_explicit_l2_harness_provider, _file_digest)
@@ -169,10 +170,16 @@ def run(config,approval_path,**kwargs):
         matches=[f for f in report['findings'] if (f['fragment'].get('id') or f['fragment'].get('fragmentId'))==fid]
         if len(matches)!=1: raise ValueError('ISS_PROVIDER_APPROVAL_AMBIGUOUS')
         finding=matches[0]; approval=finding['approvalArtifact']
-        validate_instruction_stream_approval(approval,finding['fragment'],finding.get('suggestedReplacement'),source_digest=finding.get('sourceDigest'))
+        validate_instruction_stream_approval(approval,finding['fragment'],approved_replacement(finding),source_digest=finding.get('sourceDigest'))
         if approval['proofIdentity']!=artifact.proof_identity:
             raise ValueError('ISS_PROVIDER_APPROVAL_IDENTITY_MISMATCH')
         domain=approval['instructionStreamProof']['phase6Proof']['contract']['domain_authority']
+        binding=None
+        if domain['schemaVersion']=='riscv2x86.instruction-stream-domain.v2':
+            from .local_sync_environment import environment_binding,environment_id
+            binding=environment_binding(config,domain)
+            actual_id=environment.get('environmentId') if isinstance(environment,dict) else getattr(environment,'environment_id',None)
+            if actual_id!=environment_id(binding):raise ValueError('ISS_EXECUTION_ENVIRONMENT_IDENTITY_MISMATCH')
         programs={}
         for side,command,digest in (('source',config.source_command,manifest.source_harness_digest),('target',config.target_command,manifest.target_harness_digest)):
             program=kwargs[side+'_program_artifact']; path=Path(program.artifact_path).resolve()
@@ -233,6 +240,7 @@ def run(config,approval_path,**kwargs):
         'verifiedSemanticProperties':['completion','data_write_publication','instruction_fetch_visibility','required_scope'] if matched else [],
         'observationCoverage':'finite_return_u32_self_modifying_code_probes',
         'request':request,'domainAuthority':domain,'executions':executions,'observations':observations,**evidence}
+    if binding is not None:detail.update(executionEnvironment=binding,environmentId=environment_id(binding))
     identity=semantic_identity(detail);detail['evidenceIdentity']=identity
     return ValidationLayerResult(ValidationLevel.L2,status,identity,json.dumps(detail,sort_keys=True,separators=(',',':')))
 
@@ -245,6 +253,17 @@ def build_validator(raw):
 def validate_persisted_result(detail):
     """Audit inline raw observations without needing mutable external files."""
     request=detail['request']; domain=detail['domainAuthority']
+    if domain.get('schemaVersion')=='riscv2x86.instruction-stream-domain.v2':
+        from .local_sync_environment import environment_binding,environment_id
+        binding=detail.get('executionEnvironment') or {}
+        expected=environment_binding({'sourceCommand':detail['executions']['source']['command'][3:],
+            'targetCommand':detail['executions']['target']['command'][3:]},domain,
+            compiler_digest=binding.get('sourceCompilerDigest'))
+        if binding!=expected or detail.get('environmentId')!=environment_id(expected):
+            raise ValueError('ISS_PERSISTED_EXECUTION_ENVIRONMENT_MISMATCH')
+        for event in detail['observations']['source']['events']:
+            if event['kind']=='synchronize' and event['traceRecord']['recordPayload']['compilerDigest']!=binding['sourceCompilerDigest']:
+                raise ValueError('ISS_PERSISTED_COMPILER_IDENTITY_MISMATCH')
     if (request['domainAuthority']!=domain or request['executionIdentity']!=detail['executionIdentity']
             or request['executionPlanIdentity']!=detail['executionPlanIdentity']
             or detail['executionPayload']['executionNonce']['domainIdentity']!=domain['domainIdentity']):

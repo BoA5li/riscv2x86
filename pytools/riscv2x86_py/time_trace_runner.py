@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import struct
 from uuid import uuid4
+from .approved_replacement import approved_replacement
 from .semantic_content import semantic_identity
 from .time_trace_contract import validate_time_contract, digest_ok
 from .time_trace_harness import observe, validate_observation, digest, ObserverExecutionError
@@ -24,14 +25,16 @@ RESULT='riscv2x86.controlled-time-result.v1'
 DIMENSIONS=(L2Dimension.PRIVILEGED_STATE,L2Dimension.SHELL_SEMANTICS)
 PROPERTIES={L2Dimension.PRIVILEGED_STATE:('csr_value','privilege_state','subject','value'),
     L2Dimension.SHELL_SEMANTICS:('clobbers','compiler_visibility','continuation','volatile_placement')}
-LIMITATIONS=['native-qemu-tsc-equivalence','wall-time-preservation','microarchitecture-equivalence','arbitrary-function-observation']
+LIMITATIONS=['native-qemu-tsc-equivalence','wall-time-preservation','microarchitecture-equivalence','arbitrary-function-observation',
+    'full-architectural-time-clock-model','constant-frequency','inter-hart-clock-synchronization']
 FIELDS={'schemaVersion','approvalPath','sourceCompiler','targetCompiler','sourceRunner',
     'sourceCompilerDigest','targetCompilerDigest','observerDigest','trajectory','timeoutSeconds'}
 
 
 def observer_digest():
     return semantic_identity({name:digest(Path(__file__).with_name(name)) for name in
-        ('time_trace_harness.py','time_trace_runner.py','compiler_time_scope.py','time_trace_contract.py')})
+        ('time_trace_harness.py','time_trace_runner.py','compiler_time_scope.py','time_trace_contract.py',
+         'approved_replacement.py','controlled_time_environment.py')})
 
 
 def load_config(raw):
@@ -72,7 +75,7 @@ def load_finding(path, artifact):
     matches=[f for f in report['findings'] if (f['fragment'].get('id') or f['fragment'].get('fragmentId'))==artifact.fragment_id]
     if len(matches)!=1:raise ValueError('TIME_APPROVAL_FRAGMENT_AMBIGUOUS')
     f=matches[0];a=f['approvalArtifact']
-    validate_csr_runtime_approval(a,f['fragment'],f.get('suggestedReplacement'))
+    validate_csr_runtime_approval(a,f['fragment'],approved_replacement(f))
     if a['proofIdentity']!=artifact.proof_identity or a['proofPayload']['machineCodeHex']!=f.get('machineCodeHex'):
         raise ValueError('TIME_APPROVAL_BINDING_MISMATCH')
     scope=validate_scope(a.get('l2TimeReturnScope'),f['fragment'],f.get('sourceDigest'))
@@ -110,7 +113,12 @@ def run(raw,**kwargs):
     try:
         config=load_config(raw);artifact=kwargs['translation_artifact']
         finding,scope,trace=load_finding(config['approvalPath'],artifact)
+        from .controlled_time_environment import environment_binding, environment_id
+        binding=environment_binding(config,trace)
         environment=kwargs.get('target_environment')
+        actual_environment_id=environment.get('environmentId') if isinstance(environment,dict) else getattr(environment,'environment_id',None)
+        if actual_environment_id!=environment_id(binding):
+            raise ValueError('TIME_EXECUTION_ENVIRONMENT_IDENTITY_MISMATCH')
         target_isa=environment.get('targetIsa','') if isinstance(environment,dict) else getattr(environment,'target_isa','')
         source_isa=environment.get('sourceIsa','') if isinstance(environment,dict) else getattr(environment,'source_isa','')
         if target_isa!='x86_64' or not source_isa.startswith('rv64'):
@@ -133,12 +141,16 @@ def run(raw,**kwargs):
                 runner=config['sourceRunner'] if side=='source' else [],contract=trace,
                 timeout=config['timeoutSeconds'])
             load_config(config)
+        if (executions['source'].get('runnerCommand') != config['sourceRunner']
+                or executions['source'].get('runnerBinaryDigest') != trace['sourceBackend']['binaryDigest']):
+            raise ValueError('TIME_ACTUAL_RUNNER_IDENTITY_MISMATCH')
         source_valid,target_valid,equal=compare_observations(executions,programs,config['trajectory'])
         matched=source_valid and target_valid and equal
         status=ValidationStatus.VERIFIED if matched else ValidationStatus.FAILED if source_valid else ValidationStatus.INCONCLUSIVE
         detail={'schemaVersion':RESULT,'level':level.value,'status':status.value,
             'claimScope':'architectural','environmentKind':'explicit-controlled-time',
             'claimBoundary':'same-logical-read-events-in-declared-external-trajectory',
+            'executionEnvironment':binding,'environmentId':actual_environment_id,
             'notClaimedProperties':LIMITATIONS,
             'fragmentId':artifact.fragment_id,'proofIdentity':artifact.proof_identity,
             'timeContract':trace,'scope':scope,'nonce':nonce,'executions':executions,
@@ -164,6 +176,15 @@ def run(raw,**kwargs):
 
 def validate_persisted_result(detail):
     validate_time_contract(detail['timeContract'],fragment_id=detail['fragmentId'])
+    from .controlled_time_environment import environment_binding, environment_id
+    binding=detail.get('executionEnvironment') or {}
+    expected=environment_binding({'sourceRunner':binding.get('sourceRunner',[]),
+        'observerDigest':detail['nonce']['observerIdentity']},detail['timeContract'])
+    if binding!=expected or detail.get('environmentId')!=environment_id(expected):
+        raise ValueError('TIME_PERSISTED_ENVIRONMENT_IDENTITY_MISMATCH')
+    if (detail['executions']['source'].get('runnerCommand') != binding['sourceRunner']
+            or detail['executions']['source'].get('runnerBinaryDigest') != binding['sourceBinaryDigest']):
+        raise ValueError('TIME_PERSISTED_ACTUAL_RUNNER_MISMATCH')
     if (detail.get('claimScope')!='architectural' or detail.get('environmentKind')!='explicit-controlled-time'
             or detail.get('claimBoundary')!='same-logical-read-events-in-declared-external-trajectory'
             or detail.get('notClaimedProperties')!=LIMITATIONS

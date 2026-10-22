@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from .approved_replacement import approved_replacement
 from .instruction_stream_domain import validate_domain
 from .l2_instruction_visibility_runner import OBSERVATION, SCHEMA, decode_probe
 from .semantic_content import semantic_identity
@@ -81,7 +82,7 @@ def observe(request,*,side,symbol,approval_path,compiler,runner=(),values=(1,7),
     if len(matches)!=1:raise ValueError('ISS_HARNESS_FRAGMENT_AMBIGUOUS')
     finding=matches[0];fragment=finding['fragment']
     from .l2_instruction_stream import validate_instruction_stream_approval
-    validate_instruction_stream_approval(finding['approvalArtifact'],fragment,finding.get('suggestedReplacement'),
+    validate_instruction_stream_approval(finding['approvalArtifact'],fragment,approved_replacement(finding),
         source_digest=finding.get('sourceDigest'))
     from .compiler_instruction_sync_scope import validate_scope
     validate_scope(finding['approvalArtifact'].get('l2InstructionSyncFunctionScope'),fragment,finding.get('sourceDigest'))

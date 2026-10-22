@@ -4,6 +4,7 @@ The stages are a dependency graph: proof approval and provider binding are
 separate. This receipt never grants semantics and cannot replace proof replay.
 """
 from pathlib import Path
+from .approved_replacement import approved_replacement
 from .semantic_content import semantic_identity,semantic_payload
 from .time_trace_harness import digest
 
@@ -26,7 +27,7 @@ def consumption_receipt(source,report,*,csr=None,sync=None,paths=None):
                 from .csr_runtime_approval import validate_csr_runtime_approval,_namespace
                 from .csr_runtime_implementation import validate_implementation
                 from .csr_structured_renderer import CsrRuntimeRecipe
-                validate_csr_runtime_approval(approval,fragment,finding.get('suggestedReplacement'))
+                validate_csr_runtime_approval(approval,fragment,approved_replacement(finding))
                 implementation,_=validate_implementation(CsrRuntimeRecipe(**p['recipe']),
                     _namespace(p['fieldProof']['sourceModel']).effects,
                     tuple(_namespace(x) for x in p['fieldProof']['constraints']))
@@ -35,7 +36,7 @@ def consumption_receipt(source,report,*,csr=None,sync=None,paths=None):
                 consumed=p['fieldProof']['registryIdentity']==expected
             elif family=='instruction_stream_sync' and approval.get('artifactVersion')=='phase6-instruction-stream-sync-v3':
                 from .l2_instruction_stream import validate_instruction_stream_approval
-                validate_instruction_stream_approval(approval,fragment,finding.get('suggestedReplacement'),source_digest=digest(source))
+                validate_instruction_stream_approval(approval,fragment,approved_replacement(finding),source_digest=digest(source))
                 selected=registry.resolve(fid,approval['targetEnvironmentId'])
                 consumed=selected is not None and semantic_payload(selected)==approval['instructionStreamProof']['phase6Proof']['contract']
             if consumed:

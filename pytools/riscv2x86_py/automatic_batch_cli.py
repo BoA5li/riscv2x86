@@ -1494,6 +1494,42 @@ def prepare_automatic_inventory(
                 'outputRelativePath':'build/source.rv64.so',
                 'command':[source_build_compiler(explicit_l2_providers),'-std=gnu11','-O0','-Wall','-Wextra','-Werror',
                     '-march=rv64gc','-mabi=lp64d','-fPIC','-shared','${SOURCE_PATH}','-o','${OUTPUT}']}
+            validators['L0']['config'].update(schemaVersion='riscv2x86.auto-l0-runner.v2',
+                sourceCompiler=source_build_compiler(explicit_l2_providers),
+                sourceCompilerDigest=_digest(Path(source_build_compiler(explicit_l2_providers))))
+        execution_environment = None
+        time_providers = [p for p in explicit_l2_providers if p['validatorType'] == 'controlled-time-validation']
+        if time_providers:
+            if len(time_providers) != 1:
+                raise ValueError('TIME_EXECUTION_ENVIRONMENT_AMBIGUOUS')
+            from .controlled_time_environment import provider_environment, environment_id as time_environment_id
+            execution_environment = provider_environment(time_providers[0])
+            case_environment = dict(environment, environmentId=time_environment_id(execution_environment),
+                sourceRunnerCapabilities=['custom'], runtimeIdentity=execution_environment['targetMechanism'])
+            environment_path = case_dir / 'target-environment.json'
+            _write_json(environment_path, case_environment)
+            _write_json(case_dir / 'execution-environment.json', execution_environment)
+            request['targetEnvironment'] = str(environment_path.resolve())
+            plan['sourceRunner'] = 'custom'
+            _write_json(case_dir / 'validation-plan.json', plan)
+        sync_providers=[p for p in explicit_l2_providers if p['validatorType']=='l2-instruction-visibility-harness']
+        if sync_providers:
+            if len(sync_providers)!=1 or time_providers:
+                raise ValueError('ISS_EXECUTION_ENVIRONMENT_AMBIGUOUS')
+            from .local_sync_environment import provider_environment,environment_id as sync_environment_id
+            execution_environment=provider_environment(sync_providers[0])
+            case_environment=dict(environment,environmentId=sync_environment_id(execution_environment),sourceRunnerCapabilities=['custom'])
+            environment_path=case_dir/'target-environment.json'
+            _write_json(environment_path,case_environment)
+            _write_json(case_dir/'execution-environment.json',execution_environment)
+            request['targetEnvironment']=str(environment_path.resolve())
+            l1=validators['L1']['config']
+            if validators['L1']['type']!='automatic-l1-functional-differential':
+                raise ValueError('ISS_FUNCTIONAL_L1_RUNNER_REQUIRED')
+            l1.update(schemaVersion='riscv2x86.auto-l1-runner.v4',executionEnvironment=execution_environment,
+                qemuBinary=execution_environment['sourceRunnerCommand'][0])
+            plan['sourceRunner']='custom'
+            _write_json(case_dir/'validation-plan.json',plan)
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,
                      "category": "automatic", "request": request})
@@ -1508,6 +1544,7 @@ def prepare_automatic_inventory(
                         "privilegedBindingPath": ("" if privileged_binding is None
                                                    else privileged_binding["path"]),
                         "translationContractResolution": contract_resolution,
+                        "executionEnvironment": execution_environment,
                         "explicitL2ProviderCount": len(explicit_l2_providers),
                         "l3ProviderCount": len(l3_binding["providers"]) if l3_binding else 0,
                         "l3BindingDigest": _digest(binding_path) if l3_binding else "",

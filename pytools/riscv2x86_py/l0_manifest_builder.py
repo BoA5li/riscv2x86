@@ -55,6 +55,7 @@ def _artifact_dict(value: ExpectedArtifact) -> dict[str, object]:
 def build_l0_reference_manifest(
     *, source_path: Path, target_path: Path, output_directory: Path,
     translation: TranslationArtifact, link_kind: str, timeout: int = 60,
+    source_compiler: str = 'riscv64-linux-gnu-gcc',
 ) -> tuple[L0BuildMatrix, ProgramArtifact, ProgramArtifact]:
     """Build all declared cells first, then freeze their hashes as the oracle."""
     output_directory.mkdir(parents=True, exist_ok=False)
@@ -62,7 +63,6 @@ def build_l0_reference_manifest(
     includes = tuple("-I" + item for item in dependencies.include_directories)
     libdirs = tuple("-L" + item for item in dependencies.library_directories)
     libs = tuple("-l" + item for item in dependencies.libraries)
-    source_compiler = "riscv64-linux-gnu-gcc"
     source_flags = ("-march=rv64gc", "-mabi=lp64d")
     target_flags = ("-Wall", "-Wextra")
     source_obj = output_directory / "source.rv64.o"

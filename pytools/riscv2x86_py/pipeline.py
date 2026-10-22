@@ -1334,33 +1334,11 @@ def run(
         )
         if membership_reasons:
             raise ValueError("; ".join(membership_reasons))
-    default_features = {"x86:gpr_inline_asm", "x86:atomic", "x86:hardware_fence", "compiler:atomic-builtin", "compiler:barrier-builtin", "runtime:" + RV64_MULHU_U64.runtime_contract_id}
-    default_builtins = {"c_builtin:atomic", "c_builtin:compiler_barrier"}
-    if allow_functional_fallbacks:
-        default_features.add("runtime:" + MONOTONIC_TIME_NS_V1.runtime_contract_id)
-        default_features.add("runtime:" + TSC_TICKS_V1.runtime_contract_id)
-    if privileged_runtime_registry is not None:
-        default_features.update(
-            privileged_runtime_registry.required_target_capabilities
-        )
-    if privileged_functional_registry is not None:
-        default_features.update(
-            privileged_functional_registry.required_target_capabilities
-        )
-    public_environment = target_environment or TargetEnvironment.fixed_sysv_amd64_gnu_att(
-        available_features=default_features,
-        builtin_capabilities=default_builtins,
-        supports_gnu_asm_goto=True,
-        helper_contract_capabilities={
-            RV64_MULHU_U64.runtime_contract_id,
-            RV64_MULHU_U64.required_environment_capability,
-            *({
-                MONOTONIC_TIME_NS_V1.runtime_contract_id,
-                MONOTONIC_TIME_NS_V1.required_environment_capability,
-                TSC_TICKS_V1.runtime_contract_id,
-                TSC_TICKS_V1.required_environment_capability,
-            } if allow_functional_fallbacks else set()),
-        },
+    from .production_target_environment import production_target_environment
+    public_environment = target_environment or production_target_environment(
+        allow_functional_fallbacks=allow_functional_fallbacks,
+        runtime_registry=privileged_runtime_registry,
+        functional_registry=privileged_functional_registry,
     )
     stats = {
         "total": 0,

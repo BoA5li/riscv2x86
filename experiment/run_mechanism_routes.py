@@ -41,7 +41,10 @@ def main():
     status={'schemaVersion':'riscv2x86.mechanism-production-run.v1','steps':[],
         'selectedRoutes':[],'completedRoutes':[],'blockers':[],'originalNativeTimeEquivalent':False,
         'stopAfter':a.stop_after,'preparedRoutes':[],'checkpoints':[],'currentStage':'input_validation',
-        'productionAcceptanceComplete':False}
+        'productionAcceptanceComplete':False,'productionAcceptance':[],
+        'supportDomains':{'sync':'local-single-thread-private-ordinary-coherent-memory',
+            'time':'controlled-time-read-trace-only',
+            'excluded':['cross-hart-publication','native-strict-time','full-time-clock-model','L3-equivalence']}}
     def save(): (out/'run-status.json').write_text(json.dumps(status,indent=2)+'\n')
     owned=False
     try:
@@ -90,13 +93,25 @@ def main():
                 raise ValueError('ROUTE_NOT_VERIFIED:'+name)
             run(name+'-provider-audit',[sys.executable,'-m','riscv2x86_py.l2_provider_artifacts',
                 '--batch',str(result/'batch-evaluation.json')])
-            from riscv2x86_py.l2_evidence_reader import load_case_evaluation_result,read_l2_fragment_results
+            from riscv2x86_py.l2_evidence_reader import load_case_evaluation_result,read_l2_fragment_results,read_l2_provider_results
             cases=batch_result.get('cases',[])
             if len(cases)!=1:raise ValueError('ROUTE_EVALUATION_MISSING')
             if any(cases[0].get('programValidationLevels',{}).get(level)!='verified' for level in ('L0','L1','L2')):
                 raise ValueError('ROUTE_PROGRAM_LEVELS_NOT_VERIFIED:'+name)
-            typed=read_l2_fragment_results(load_case_evaluation_result(result,cases[0]))
+            evaluation=load_case_evaluation_result(result,cases[0])
+            typed=read_l2_fragment_results(evaluation)
             if not typed or any(not r.architectural_verified for _,r in typed):raise ValueError('ROUTE_TYPED_L2_NOT_VERIFIED')
+            records=read_l2_provider_results(evaluation,result/'cases'/cases[0]['caseId'])
+            if not records:raise ValueError('ROUTE_EXECUTION_EVIDENCE_MISSING')
+            acceptance={'route':name,'supportDomain':status['supportDomains'][name],
+                'evaluationIdentity':evaluation['evaluationIdentity'],
+                'environment':evaluation['targetEnvironment'],
+                'programArtifacts':{side:evaluation[side+'ProgramArtifact'] for side in ('source','target')},
+                'programValidationLevels':cases[0]['programValidationLevels'],
+                'providerInvocationIdentities':[r['envelope']['invocationIdentity'] for r in records],
+                'centralAudit':'complete','fullTimeClockVerified':False,'L3Equivalent':False}
+            status['productionAcceptance'].append(acceptance)
+            (out/'production-acceptance.json').write_text(json.dumps(status['productionAcceptance'],indent=2)+'\n')
         for name,source in (('sync',a.sync_source),('time',a.time_source)):
             if source is None:continue
             source=source.resolve();status['selectedRoutes'].append(name)

@@ -220,10 +220,15 @@ def test_provider_lifecycle_and_persisted_event_audit_with_mocked_execution(tmp_
         side=kwargs['side'];values=kwargs['values'];program=kwargs['program']
         output='site 1000\n'+''.join(f'{i} {v if not wrong_target or side=="source" else 1:016x}\n' for i,v in enumerate(values))
         events=''.join(f'{i} {v:016x} {0x1004 if side=="source" else 0:016x}\n' for i,v in enumerate(values))
-        return {'side':side,'programDigest':program['digest'],'returnCode':0,'stdout':output,'stderr':'','events':events,'functionSize':16}
+        return {'side':side,'programDigest':program['digest'],'returnCode':0,'stdout':output,'stderr':'','events':events,'functionSize':16,
+            'runnerCommand':kwargs['runner'], 'runnerBinaryDigest':kwargs['contract']['sourceBackend']['binaryDigest'] if side=='source' else None}
     monkeypatch.setattr(runner,'observe',execute)
+    from riscv2x86_py.controlled_time_environment import environment_binding, environment_id
+    trace=a['proofPayload']['fieldProof']['constraints'][0]['counter_contract_payload']['trace_relation']
+    environment={'targetIsa':'x86_64','sourceIsa':'rv64gc',
+        'environmentId':environment_id(environment_binding(config,trace))}
     value=runner.run(config,level=ValidationLevel(level),translation_artifact=artifact,
-        target_environment={'targetIsa':'x86_64','sourceIsa':'rv64gc'},l2_provider_id='time-protocol',**programs)
+        target_environment=environment,l2_provider_id='time-protocol',**programs)
     assert value.status.value==('failed' if wrong_target else 'verified'),value.detail
     detail=json.loads(value.detail);runner.validate_persisted_result(detail)
     detail['notClaimedProperties']=[];detail['evidenceIdentity']=semantic_identity({k:v for k,v in detail.items() if k!='evidenceIdentity'})

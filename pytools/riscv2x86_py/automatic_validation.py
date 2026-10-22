@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import os
+import shutil
 from typing import Mapping, Sequence
 
 from .l0_build_matrix import run_l0_build_matrix
@@ -19,6 +21,7 @@ AUTO_L0_SCHEMA = "riscv2x86.auto-l0-runner.v1"
 AUTO_L1_SCHEMA = "riscv2x86.auto-l1-runner.v1"
 AUTO_L1_SCHEMA_V2 = "riscv2x86.auto-l1-runner.v2"
 AUTO_L1_SCHEMA_V3 = "riscv2x86.auto-l1-runner.v3"
+AUTO_L1_SCHEMA_V4 = "riscv2x86.auto-l1-runner.v4"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 from .runtime_observation_contracts import COUNTER_OBSERVATION_CONTRACTS as _COUNTER_DOMAIN_CONTRACTS
 
@@ -31,8 +34,13 @@ def _evidence(payload: Mapping[str, object]) -> str:
 def build_auto_l0_validator(config: Mapping[str, object]):
     expected = {"schemaVersion", "sourcePath", "sourceDigest", "targetPath",
                 "targetDigest", "workDirectory", "linkKind", "timeoutSeconds"}
-    if set(config) != expected or config.get("schemaVersion") != AUTO_L0_SCHEMA:
+    shared_source=config.get('schemaVersion')=='riscv2x86.auto-l0-runner.v2'
+    if (set(config) != expected | ({'sourceCompiler','sourceCompilerDigest'} if shared_source else set())
+            or config.get('schemaVersion') not in {AUTO_L0_SCHEMA,'riscv2x86.auto-l0-runner.v2'}):
         raise ValueError("automatic L0 config fields/schema are invalid")
+    if shared_source and (not isinstance(config['sourceCompiler'],str) or not config['sourceCompiler']
+            or not isinstance(config['sourceCompilerDigest'],str) or _SHA.fullmatch(config['sourceCompilerDigest']) is None):
+        raise ValueError('L0_SOURCE_COMPILER_BINDING_INVALID')
     for name in ("sourcePath", "targetPath", "workDirectory", "linkKind"):
         if not isinstance(config.get(name), str) or not config[name]:
             raise ValueError("automatic L0 " + name + " is invalid")
@@ -55,24 +63,55 @@ def build_auto_l0_validator(config: Mapping[str, object]):
             return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.FAILED,
                                          detail="automatic L0 source/target digest mismatch")
         try:
+            compiler='riscv64-linux-gnu-gcc'
+            if shared_source:
+                from .time_trace_harness import digest
+                compiler=config['sourceCompiler']
+                if digest(compiler)!=config['sourceCompilerDigest']:
+                    raise ValueError('L0_SOURCE_COMPILER_IDENTITY_MISMATCH')
             matrix, reference_source, reference_target = build_l0_reference_manifest(
                 source_path=source, target_path=target,
                 output_directory=Path(str(config["workDirectory"])),
                 translation=kwargs["translation_artifact"],
                 link_kind=str(config["linkKind"]), timeout=timeout,
+                source_compiler=compiler,
             )
             # Evaluation build artifacts are an independent binding.  Their bytes
             # must equal the oracle build before the matrix is replayed.
             supplied_source = kwargs["source_program_artifact"]
             supplied_target = kwargs["target_program_artifact"]
-            if (supplied_source.artifact_digest != reference_source.artifact_digest or
+            source_digest=reference_source.artifact_digest
+            if shared_source:
+                from .l0_build_matrix import _inspect_elf,_source_elf_abi_error,_run as matrix_run
+                if supplied_source.artifact_kind!='shared_library':
+                    raise ValueError('L0_SOURCE_SHARED_LIBRARY_REQUIRED')
+                oracle=Path(str(config['workDirectory']))/'source.rv64.so'
+                built=_run((compiler,'-std=gnu11','-O0','-Wall','-Wextra','-Werror',
+                    '-march=rv64gc','-mabi=lp64d','-fPIC','-shared',str(source),'-o',str(oracle)),oracle.parent,timeout)
+                elf,detail=_inspect_elf(oracle,oracle.parent,matrix_run,timeout)
+                if built.returncode or elf is None or _source_elf_abi_error(elf,artifact_kind='shared_library'):
+                    raise ValueError('L0_SOURCE_SHARED_LIBRARY_ORACLE_FAILED:'+built.stderr+detail)
+                source_digest=digest(oracle)
+                if (digest(supplied_source.artifact_path)!=supplied_source.artifact_digest
+                        or digest(compiler)!=config['sourceCompilerDigest']):
+                    raise ValueError('L0_SOURCE_SHARED_LIBRARY_OR_COMPILER_CHANGED')
+            if (supplied_source.artifact_digest != source_digest or
                     supplied_target.artifact_digest != reference_target.artifact_digest):
                 return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.FAILED,
                                              detail="evaluation/reference artifact mismatch")
-            return run_l0_build_matrix(
-                matrix, kwargs["translation_artifact"], supplied_source, supplied_target,
+            result=run_l0_build_matrix(
+                matrix, kwargs["translation_artifact"], reference_source if shared_source else supplied_source, supplied_target,
                 target_environment=kwargs.get("target_environment"),
             )
+            if shared_source:
+                from .l0_build_matrix import _finish
+                cells=json.loads(result.detail)
+                cells.insert(0,{'id':'source-rv64-shared-library','status':'verified',
+                    'detail':'independent shared-library rebuild and RV64 LP64D ELF ABI check',
+                    'artifactDigest':supplied_source.artifact_digest,'oracleDigest':source_digest,
+                    'objectDigest':reference_source.artifact_digest,'compilerDigest':config['sourceCompilerDigest']})
+                return _finish(matrix,cells)
+            return result
         except OSError as exc:
             return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.INCONCLUSIVE,
                                          detail=f"automatic L0 unavailable: {type(exc).__name__}: {exc}")
@@ -423,9 +462,13 @@ def build_auto_l1_validator(config: Mapping[str, object]):
     if not ((schema == AUTO_L1_SCHEMA and set(config) == legacy)
             or (schema == AUTO_L1_SCHEMA_V2 and set(config) == legacy | additions)
             or (schema == AUTO_L1_SCHEMA_V3
-                and set(config) == legacy | additions | claim_fields)):
+                and set(config) == legacy | additions | claim_fields)
+            or (schema == AUTO_L1_SCHEMA_V4
+                and set(config) == legacy | additions | claim_fields | {'executionEnvironment'})):
         raise ValueError("automatic L1 config fields/schema are invalid")
     mode = config.get("mode")
+    if schema==AUTO_L1_SCHEMA_V4 and not isinstance(config.get('executionEnvironment'),Mapping):
+        raise ValueError('ISS_L1_EXECUTION_ENVIRONMENT_REQUIRED')
     if mode not in {"main", "scalar-functions", "memory-object-functions",
                     "branch-domain-functions",
                     "explicit-common-harness"}:
@@ -464,7 +507,7 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 or _SHA.fullmatch(harness_digest) is None
                 or _SHA.fullmatch(harness_manifest_digest) is None or not input_domain_id):
             raise ValueError("explicit common harness binding is incomplete")
-    elif schema in {AUTO_L1_SCHEMA_V2, AUTO_L1_SCHEMA_V3} and any((
+    elif schema in {AUTO_L1_SCHEMA_V2, AUTO_L1_SCHEMA_V3, AUTO_L1_SCHEMA_V4} and any((
             harness_path, harness_digest, harness_manifest_path,
             harness_manifest_digest)):
         raise ValueError("automatic L1 mode cannot carry an explicit harness")
@@ -585,7 +628,22 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             dependencies = resolve_runtime_contracts((translation.runtime_contract_id,))
             runtime_includes = tuple("-I" + item for item in dependencies.include_directories)
             source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
-            source_build = _run(("riscv64-linux-gnu-gcc", "-std=gnu11", "-O2", "-Wall",
+            binding=config.get('executionEnvironment')
+            source_compiler='riscv64-linux-gnu-gcc'
+            if binding is not None:
+                from .semantic_content import semantic_identity
+                from .time_trace_harness import digest
+                from .local_sync_environment import environment_id
+                environment=kwargs.get('target_environment')
+                actual_id=environment.get('environmentId') if isinstance(environment,dict) else getattr(environment,'environment_id',None)
+                if (binding.get('environmentProfileIdentity')!=semantic_identity({k:v for k,v in binding.items() if k!='environmentProfileIdentity'})
+                        or actual_id!=environment_id(binding)
+                        or config['qemuBinary']!=binding['sourceRunnerCommand'][0]
+                        or digest(binding['sourceRunnerCommand'][0])!=binding['sourceBinaryDigest']
+                        or digest(binding['sourceCompiler'])!=binding['sourceCompilerDigest']):
+                    raise ValueError('ISS_L1_EXECUTION_ENVIRONMENT_MISMATCH')
+                source_compiler=binding['sourceCompiler']
+            source_build = _run((source_compiler, "-std=gnu11", "-O2", "-Wall",
                                  "-Wextra", "-Werror", "-march=rv64gc", "-mabi=lp64d",
                                  "-static", *(str(item) for item in source_units),
                                  "-o", str(source_exe)), work, timeout)
@@ -597,8 +655,19 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                 detail = {"sourceBuild": source_build.stderr, "targetBuild": target_build.stderr}
                 return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,
                                              _evidence(detail), json.dumps(detail, sort_keys=True))
-            left = _run((str(config["qemuBinary"]), str(source_exe)), work, timeout)
-            right = _run((str(target_exe),), work, timeout)
+            source_command=(str(config['qemuBinary']),str(source_exe))
+            target_command=(str(target_exe),)
+            if binding is not None:
+                taskset=shutil.which('taskset')
+                if not taskset or any(binding[side+'Cpu'] not in os.sched_getaffinity(0) for side in ('source','target')):
+                    raise ValueError('ISS_L1_AFFINITY_UNAVAILABLE')
+                source_command=(taskset,'--cpu-list',str(binding['sourceCpu']),*binding['sourceRunnerCommand'],str(source_exe))
+                target_command=(taskset,'--cpu-list',str(binding['targetCpu']),str(target_exe))
+            left = _run(source_command, work, timeout)
+            right = _run(target_command, work, timeout)
+            if binding is not None and (digest(binding['sourceRunnerCommand'][0])!=binding['sourceBinaryDigest']
+                    or digest(binding['sourceCompiler'])!=binding['sourceCompilerDigest']):
+                raise ValueError('ISS_L1_EXECUTION_TOOL_CHANGED')
             source_observation = {"exitCode": left.returncode,
                                   "stdout": left.stdout, "stderr": left.stderr}
             target_observation = {"exitCode": right.returncode,
@@ -647,6 +716,10 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                            "harnessManifestDigest": effective_manifest_digest,
                            "source": source_observation,
                            "target": target_observation}
+            if binding is not None:
+                observation.update(executionEnvironment=binding,environmentId=environment_id(binding),
+                    actualCommands={'source':list(source_command),'target':list(target_command)},
+                    executableDigests={'source':digest(source_exe),'target':digest(target_exe)})
             (replay / "l1-observation.json").write_text(
                 json.dumps(observation, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             generated_harness_completed = (

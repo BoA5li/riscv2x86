@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import shutil
 import sys
+from .approved_replacement import approved_replacement
 from .semantic_content import semantic_identity
 from .compiler_instruction_sync_scope import validate_scope
 from .l2_instruction_stream import validate_instruction_stream_approval
@@ -51,7 +52,7 @@ def bind(*, source, source_root, report, fragment_id, output, execution_profile,
     if len(matches)!=1:raise ValueError('ISS_PREPARATION_FRAGMENT_AMBIGUOUS')
     finding=matches[0];fragment=finding['fragment'];approval=finding.get('approvalArtifact') or {}
     if finding.get('sourceDigest')!=digest(source):raise ValueError('ISS_PREPARATION_SOURCE_STALE')
-    validate_instruction_stream_approval(approval,fragment,finding.get('suggestedReplacement'),source_digest=digest(source))
+    validate_instruction_stream_approval(approval,fragment,approved_replacement(finding),source_digest=digest(source))
     if finding.get('machineCodeHex')!=approval['instructionStreamProof']['machineCodeHex']:
         raise ValueError('ISS_PREPARATION_MACHINE_BINDING_MISMATCH')
     scope=validate_scope(approval.get('l2InstructionSyncFunctionScope'),fragment,digest(source))

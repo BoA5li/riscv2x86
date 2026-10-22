@@ -36,6 +36,8 @@ def load_case_evaluation_result(batch_root, case):
         raise ValueError('evaluation.result-identity-mismatch')
     if value.get('status') != case.get('status') or not isinstance(value.get('attempts'), list):
         raise ValueError('evaluation.result-summary-mismatch')
+    from .controlled_time_environment import audit_case_environment
+    audit_case_environment(value)
     return value
 
 
@@ -105,6 +107,8 @@ def read_l2_provider_results(case_result, case_root, requirements=None):
                 translation_artifact=attempts[attempt_id].get('translationArtifact')):
             records.append({'attemptArtifactId':attempt_id,'fragmentId':result.fragment_id,
                             'envelope':envelope})
+    from .controlled_time_environment import audit_case_environment
+    audit_case_environment(case_result, records)
     return tuple(records)
 
 
@@ -130,4 +134,6 @@ def audit_provider_references(case_result, case_root):
                 continue
             records.extend(read_provider_evidence(result,case_root=case_root,
                 translation_artifact=attempt.get('translationArtifact')))
+    from .controlled_time_environment import audit_case_environment
+    audit_case_environment(case_result, records)
     return tuple(records)

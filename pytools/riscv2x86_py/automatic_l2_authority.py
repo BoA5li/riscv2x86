@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from typing import Mapping, Sequence
 
+from .approved_replacement import approved_replacement
 from .compiler_provenance import bind_compiler_provenance
 
 from .l2_authority import (
@@ -189,7 +190,7 @@ def _instruction_stream_authority_checked(finding, functions, producer_digest):
     if not isinstance(fragment,Mapping) or not isinstance(approval,Mapping): return None
     if approval.get("artifactVersion") != "phase6-instruction-stream-sync-v3": return None
     from .l2_instruction_stream import validate_instruction_stream_approval
-    validate_instruction_stream_approval(approval,fragment,finding.get("suggestedReplacement"),
+    validate_instruction_stream_approval(approval,fragment,approved_replacement(finding),
         source_digest=finding.get("sourceDigest"))
     if finding.get("machineCodeHex") != approval["instructionStreamProof"]["machineCodeHex"]:
         raise ValueError("ISS_MACHINE_CODE_BINDING_MISMATCH")
@@ -214,7 +215,7 @@ def _csr_runtime_authority_checked(finding, functions, producer_digest):
     if approval.get("artifactVersion") != "phase6-csr-runtime-v1":
         return None
     from .csr_runtime_approval import validate_csr_runtime_approval
-    validate_csr_runtime_approval(approval, fragment, finding.get("suggestedReplacement"))
+    validate_csr_runtime_approval(approval, fragment, approved_replacement(finding))
     if finding.get("machineCodeHex") != approval["proofPayload"]["machineCodeHex"]:
         raise ValueError("CSR_RUNTIME_MACHINE_CODE_BINDING_MISMATCH")
     fid = str(fragment.get("id") or fragment.get("fragmentId") or "")

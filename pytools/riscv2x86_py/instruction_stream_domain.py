@@ -35,6 +35,8 @@ def validate_domain(value, *, fragment_id, environment_id, cpu_profile, source_d
     if version2:
         from .mechanism_evidence import validate
         validate(value['mechanismEvidence'])
+        from .local_sync_mechanism import require_reviewed_implementation
+        require_reviewed_implementation(value['mechanismEvidence'])
         assumptions=value['reviewedAssumptions']
         expected={'writerPolicy':'one-thread-same-mapping-no-external-writers',
             'mappingPolicy':'private-anonymous-no-alias-no-mmio',

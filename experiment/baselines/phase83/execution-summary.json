@@ -1,0 +1,345 @@
+{
+  "schemaVersion": "riscv2x86.phase83-execution-record.v1",
+  "productionAcceptanceComplete": false,
+  "sourceFileProvenance": "Original source bytes recreated from supplied snippets; exact SHA-256 matches supplied original sources.",
+  "routes": {
+    "sync": {
+      "sourceDigest": "sha256:315ef350f8695c907b062dd294a98c6e20603a542cef0db5a1992c056447c03e",
+      "programVerdict": "failed",
+      "programReasonCodes": [
+        "validation.layer-not-verified:L0"
+      ],
+      "independentL1": "verified",
+      "independentRequiredL2": "verified",
+      "centralProviderAudit": "passed",
+      "retainedRecords": {
+        "L1": {
+          "path": "sync-L1.json",
+          "digest": "sha256:12bfad84886064a922c7715e423d515db35127d2b4017cb02af69be3b50b2a4a"
+        },
+        "L2": {
+          "path": "sync-L2.json",
+          "digest": "sha256:cb8c4919a5d487cce5a809927f69a79369303c7b7521c6606d84f8d13ef07bf9"
+        }
+      },
+      "L0Cells": [
+        {
+          "artifactDigest": "sha256:033b7dd751f09ce5063479bcc8efc9e2f586c129665c48c2f8ad793b4370c23f",
+          "compilerDigest": "sha256:0c2a199ea3ae14d39b008fd4080d4b18d675b07daa17976c7d9755e8ea67310b",
+          "detail": "independent shared-library rebuild and RV64 LP64D ELF ABI check",
+          "id": "source-rv64-shared-library",
+          "objectDigest": "sha256:eb5a7f48f4691bec47d2fa519c2ab0fe8366de574d4229d26fd15676157c04c8",
+          "oracleDigest": "sha256:033b7dd751f09ce5063479bcc8efc9e2f586c129665c48c2f8ad793b4370c23f",
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:eb5a7f48f4691bec47d2fa519c2ab0fe8366de574d4229d26fd15676157c04c8",
+          "compilerTriple": "riscv64-linux-gnu",
+          "detail": "",
+          "id": "source-rv64",
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:e4695805084c90e8a296afb18e30893dc2e50734ae5959bf39d8188e938197b9",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O0-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==351==Can't open /proc/350/task for reading.\n==350==LeakSanitizer has encountered a fatal error.\n==350==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==350==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "gcc-O0-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:c433d912c49826cc79c94d086e55748d71ee7413f14d708e23821ddfc12f0e9c",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O0-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:6a035c0d48560625755196a60d48d7ab868dbc24ac7b316af3476accf6329b64",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O2-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==430==Can't open /proc/429/task for reading.\n==429==LeakSanitizer has encountered a fatal error.\n==429==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==429==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "gcc-O2-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:03e2ae13e00c4f9933923a91620b426aa301861e54a9dfd1b5f49b0060e6b453",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O2-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:6a035c0d48560625755196a60d48d7ab868dbc24ac7b316af3476accf6329b64",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O3-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==509==Can't open /proc/508/task for reading.\n==508==LeakSanitizer has encountered a fatal error.\n==508==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==508==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "gcc-O3-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:03e2ae13e00c4f9933923a91620b426aa301861e54a9dfd1b5f49b0060e6b453",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O3-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:3076e51fe4810826af4d313606fd528abe65df20c22c12c08cd39780930253b6",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O0-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==575==Can't open /proc/574/task for reading.\n==574==LeakSanitizer has encountered a fatal error.\n==574==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==574==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "clang-O0-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:3076e51fe4810826af4d313606fd528abe65df20c22c12c08cd39780930253b6",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O0-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:479180b3d9cc6cfa142e5051275fb2feeb812d0806fab8106accd5f2f4e764e8",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O2-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==633==Can't open /proc/632/task for reading.\n==632==LeakSanitizer has encountered a fatal error.\n==632==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==632==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "clang-O2-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:479180b3d9cc6cfa142e5051275fb2feeb812d0806fab8106accd5f2f4e764e8",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O2-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:479180b3d9cc6cfa142e5051275fb2feeb812d0806fab8106accd5f2f4e764e8",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O3-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==691==Can't open /proc/690/task for reading.\n==690==LeakSanitizer has encountered a fatal error.\n==690==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==690==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "clang-O3-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:479180b3d9cc6cfa142e5051275fb2feeb812d0806fab8106accd5f2f4e764e8",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O3-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        }
+      ]
+    },
+    "time": {
+      "sourceDigest": "sha256:4cb7c5ce66f60438b43737985d1f305d5869fc4df577f3a4b4f7561c9817907a",
+      "programVerdict": "failed",
+      "programReasonCodes": [
+        "validation.layer-not-verified:L0"
+      ],
+      "independentL1": "verified",
+      "independentRequiredL2": "verified",
+      "centralProviderAudit": "passed",
+      "retainedRecords": {
+        "L1": {
+          "path": "time-L1.json",
+          "digest": "sha256:3a4886f11762187d767c271f116c30f4015c06b0e62a2e8618c674a9286d1f06"
+        },
+        "L2": {
+          "path": "time-L2.json",
+          "digest": "sha256:a52aa2389f877ad040e89c80975878ba1e9e68665f98d8fb4b4d1345a4754d77"
+        }
+      },
+      "L0Cells": [
+        {
+          "artifactDigest": "sha256:75f0fd68883e8395015f9bb1e2434813527097fb396bb0e39967b94d5dda014e",
+          "compilerDigest": "sha256:0c2a199ea3ae14d39b008fd4080d4b18d675b07daa17976c7d9755e8ea67310b",
+          "detail": "independent shared-library rebuild and RV64 LP64D ELF ABI check",
+          "id": "source-rv64-shared-library",
+          "objectDigest": "sha256:8daffedfde8713ce48dd1ee0f51ed4fa43005c7c68fe80a82ec2c6cc4fbf2295",
+          "oracleDigest": "sha256:75f0fd68883e8395015f9bb1e2434813527097fb396bb0e39967b94d5dda014e",
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:8daffedfde8713ce48dd1ee0f51ed4fa43005c7c68fe80a82ec2c6cc4fbf2295",
+          "compilerTriple": "riscv64-linux-gnu",
+          "detail": "",
+          "id": "source-rv64",
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:768a4fe82ebdf7ecf99fd5cd20639d6dd79851c8f2c15bea72bc62e23c441ae9",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O0-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==350==Can't open /proc/349/task for reading.\n==349==LeakSanitizer has encountered a fatal error.\n==349==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==349==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "gcc-O0-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:084889d6005c3035a2525e4e8fc3355d623f5df4a1f095b0c08a058ae6cabc52",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O0-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:63302889d85f5b2e875949e0dcb2b4b0e252c724ec97cf32dd2d85de1973783c",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O2-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==429==Can't open /proc/428/task for reading.\n==428==LeakSanitizer has encountered a fatal error.\n==428==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==428==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "gcc-O2-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:17de2a84ad52e20a6d895d9a92d7cf65dd3ec16c885c6b27f47d4d9657764f96",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O2-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:63302889d85f5b2e875949e0dcb2b4b0e252c724ec97cf32dd2d85de1973783c",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O3-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==508==Can't open /proc/507/task for reading.\n==507==LeakSanitizer has encountered a fatal error.\n==507==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==507==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "gcc-O3-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:17de2a84ad52e20a6d895d9a92d7cf65dd3ec16c885c6b27f47d4d9657764f96",
+          "compilerTriple": "x86_64-linux-gnu",
+          "detail": "",
+          "id": "gcc-O3-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:5d9364e3818267d5c220e88e61acbed85ca974984776f5ecd54fefe0ed61d988",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O0-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==574==Can't open /proc/573/task for reading.\n==573==LeakSanitizer has encountered a fatal error.\n==573==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==573==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "clang-O0-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:5d9364e3818267d5c220e88e61acbed85ca974984776f5ecd54fefe0ed61d988",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O0-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:4c59ce7b89b84f4d954d57ca385cca5117b150e8328e6012bdcb6df3c593ced2",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O2-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==632==Can't open /proc/631/task for reading.\n==631==LeakSanitizer has encountered a fatal error.\n==631==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==631==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "clang-O2-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:4c59ce7b89b84f4d954d57ca385cca5117b150e8328e6012bdcb6df3c593ced2",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O2-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "artifactDigest": "sha256:4c59ce7b89b84f4d954d57ca385cca5117b150e8328e6012bdcb6df3c593ced2",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O3-none",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        },
+        {
+          "detail": "runtime-load exit code 1: ==690==Can't open /proc/689/task for reading.\n==689==LeakSanitizer has encountered a fatal error.\n==689==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1\n==689==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)\n",
+          "id": "clang-O3-asan",
+          "status": "failed"
+        },
+        {
+          "artifactDigest": "sha256:4c59ce7b89b84f4d954d57ca385cca5117b150e8328e6012bdcb6df3c593ced2",
+          "compilerTriple": "x86_64-pc-linux-gnu",
+          "detail": "",
+          "id": "clang-O3-ubsan",
+          "runtimeExitCode": 0,
+          "status": "verified"
+        }
+      ]
+    }
+  },
+  "environmentLimitations": [
+    "host LSan task enumeration fails",
+    "Clang 10 ASan runtime incompatible with host glibc"
+  ],
+  "notClaimed": [
+    "complete production acceptance",
+    "full architectural TIME clock",
+    "native strict TIME",
+    "L3 equivalence"
+  ]
+}

@@ -46,8 +46,14 @@ def close_instruction_stream_approval(approval, proof, fragment, machine_code, b
     value['rendererContractId']=value['rendererContractIdentity']
     value['rendererRegistryId']=semantic_identity(implementation)
     value['rendererRegistryVersion']='instruction-stream-domain-v1'
-    value['shellFactsIdentity']=semantic_identity(shell)
     value['l2EffectProofFacts']=_facts(value)
+    # The runtime shell proof and the L2 shell relation are different records.
+    # Use the same canonical L2 identity as authority materialization from the
+    # start, so adding a sidecar cannot invalidate independent approval replay.
+    value['shellFactsIdentity']=semantic_identity({
+        'schemaVersion':'riscv2x86.shell-relation-binding.v1',
+        'fragmentId':value['sourceFragmentId'],'proofIdentity':value['proofIdentity'],
+        'shellRelation':value['l2EffectProofFacts']['shellRelation']})
     return value,replacement
 
 

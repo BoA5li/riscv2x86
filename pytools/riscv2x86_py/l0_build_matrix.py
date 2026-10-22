@@ -218,12 +218,13 @@ def _common_elf64_error(elf: ExpectedElf) -> str:
     return ""
 
 
-def _source_elf_abi_error(elf: ExpectedElf) -> str:
+def _source_elf_abi_error(elf: ExpectedElf, *, artifact_kind='object') -> str:
     reason = _common_elf64_error(elf)
     if reason:
         return reason
-    if elf.elf_type != "REL" or elf.machine.strip() != "RISC-V":
-        return "RV64 source artifact must be an EM_RISCV relocatable object"
+    expected_type={'object':'REL','shared_library':'DYN'}.get(artifact_kind)
+    if expected_type is None or elf.elf_type != expected_type or elf.machine.strip() != "RISC-V":
+        return "RV64 source artifact has an incompatible ELF type or machine"
     flags = _numeric_elf_flags(elf.abi_flags)
     if flags is None:
         return "RV64 ELF e_flags are not parseable"
@@ -233,7 +234,7 @@ def _source_elf_abi_error(elf: ExpectedElf) -> str:
         return "RV64GC ELF does not declare the compressed-instruction extension"
     if flags & 0x8:
         return "RV64 ELF incorrectly declares the RV32E ABI"
-    if elf.interpreter or elf.needed or elf.soname:
+    if elf.interpreter or (artifact_kind=='object' and (elf.needed or elf.soname)):
         return "RV64 source object unexpectedly contains dynamic-link metadata"
     if any(not item.startswith("R_RISCV_") for item in elf.relocation_types):
         return "RV64 source object contains a non-RISC-V relocation"

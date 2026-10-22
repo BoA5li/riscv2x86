@@ -7,9 +7,10 @@ from riscv2x86_py.semantic_content import semantic_identity
 
 def evidence():
     from riscv2x86_py.mechanism_evidence import FILES,SCHEMA
+    from riscv2x86_py.local_sync_mechanism import SOURCE_DIGESTS
     from riscv2x86_py.time_trace_contract import QEMU_BASE
     value={'schemaVersion':SCHEMA,'sourceCommit':QEMU_BASE,'binaryDigest':'sha256:'+'1'*64,
-        'buildConfigDigest':'sha256:'+'2'*64,'sourceDigests':{p:'sha256:'+'3'*64 for p in FILES},
+        'buildConfigDigest':'sha256:'+'2'*64,'sourceDigests':dict(SOURCE_DIGESTS),
         'sourceTimeMechanism':'qemu-7.2-linux-user-x86_64-rdtsc',
         'sourceSyncMechanism':'qemu-7.2-linux-user-write-protect-invalidate-and-tb-exit','semanticApproval':False}
     value['evidenceIdentity']=semantic_identity(value);return value

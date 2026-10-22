@@ -55,7 +55,8 @@ def test_static_checkpoint_closes_join_without_inventing_access_or_approval(tmp_
     assert value['semanticApproval'] is False
 
 
-def test_contract_preparation_consumes_replayed_static_join(tmp_path):
+@pytest.mark.parametrize('withheld',[False,True])
+def test_contract_preparation_consumes_replayed_static_join(tmp_path,withheld):
     from tests.test_controlled_time import backend
     from riscv2x86_py.prepare_time_trace import prepare_contract
     from riscv2x86_py.csr_environment_contract import load_csr_environment_contract
@@ -68,14 +69,17 @@ def test_contract_preparation_consumes_replayed_static_join(tmp_path):
     assert value['runtimeRegistry']['mapping']['sourceEffectId']=='csr-effect:0x10000:1:riscv.csr.time'
     # Prepared registry -> isolated source semantics -> proof -> consumed receipt.
     from tests.test_controlled_time import pipeline_fixture
-    from riscv2x86_py.phase6c_constraints import FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT
+    from riscv2x86_py.production_target_environment import production_target_environment
     from riscv2x86_py.contract_consumption import consumption_receipt
     from riscv2x86_py.mechanism_route_checks import require_consumed_approval
     f,result,approval,_,_=pipeline_fixture(source_digest=digest(source),
-        environment=FIXED_SYSV_AMD64_GNU_ATT_ENVIRONMENT,
+        environment=production_target_environment(),
         registry_override=loaded.runtime_registry,renderer_override=loaded.renderer_registry)
     raw=json.loads(report.read_text());finding=raw['findings'][0]
     finding.update(approvalArtifact=approval,suggestedReplacement=result.suggested_replacement)
+    if withheld:
+        from tests.test_execution_environment_closure import withhold
+        withhold(finding)
     report.write_text(json.dumps(raw))
     receipt=consumption_receipt(source,raw,csr=loaded,paths={'csr_environment':path})
     report.with_name('contract-consumption.json').write_text(json.dumps(receipt))
@@ -117,7 +121,8 @@ def test_observation_source_build_uses_bound_compiler_and_rejects_conflict(tmp_p
     with pytest.raises(ValueError,match='CONFLICT'):source_build_compiler([a,b])
 
 
-def test_sync_preparation_proof_and_consumption_replay(tmp_path):
+@pytest.mark.parametrize('withheld',[False,True])
+def test_sync_preparation_proof_and_consumption_replay(tmp_path,withheld):
     from tests.test_production_route_authority import _compiler_authority
     from tests.test_mechanism_preparation import evidence,domain
     from riscv2x86_py.schema import AsmFragment
@@ -165,6 +170,9 @@ def test_sync_preparation_proof_and_consumption_replay(tmp_path):
         'requiredHeaders':[contract.required_header],'requiredLibraries':[contract.runtime_library],'requiredScope':'local_hart'}
     approved,text=close_instruction_stream_approval(base,proof,fragment,bytes.fromhex('0f100000'),'automatic-gcc-separate-tu-no-lto-v1')
     finding.update(approvalArtifact=approved,suggestedReplacement=text)
+    if withheld:
+        from tests.test_execution_environment_closure import withhold
+        withhold(finding)
     report.write_text(json.dumps({'findings':[finding]}))
     path=tmp_path/'sync.json';path.write_text(json.dumps(raw))
     receipt=consumption_receipt(source,{'findings':[finding]},sync=registry,paths={'instruction_stream_sync':path})
