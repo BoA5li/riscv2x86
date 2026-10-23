@@ -53,6 +53,29 @@ def test_runner_does_not_overwrite_existing_result_directory(tmp_path, monkeypat
     assert marker.read_text()=='preserve'
 
 
+@pytest.mark.parametrize('position',['first','later','absent'])
+def test_runner_keeps_selected_build_search_environment(tmp_path,monkeypatch,position):
+    module=runner();output=tmp_path/'out'
+    directory=str(tmp_path/'toolchain')
+    initial={'first':directory+':/usr/bin:/bin',
+             'later':'/usr/bin:'+directory+':/bin','absent':'/usr/bin:/bin'}[position]
+    monkeypatch.setenv('PATH',initial)
+    monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend',
+        '--clang10',directory+'/clang','--output',str(output)])
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kw:'/tools/'+name)
+    expected=initial if position=='first' else directory+':'+initial
+    calls=[]
+    def run(command,**kw):
+        calls.append(command)
+        assert kw['env']['PATH']==expected
+        stage=Path(kw['stdout'].name).stem
+        if stage=='clang-version':kw['stdout'].write('clang version 10.0.0\n')
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    assert module.main()==0
+    assert any('pytest' in c for c in calls)
+
+
 def test_runner_forwards_runtime_environment_and_provider_directories(tmp_path, monkeypatch):
     module = runner(); output = tmp_path/'out'; commands = []
     names = ('privileged-config-directory','l2-provider-directory','l3-provider-directory',

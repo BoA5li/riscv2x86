@@ -119,7 +119,11 @@ def main():
         return 2
     env = dict(os.environ)
     env['PYTHONPATH'] = str(repo/'pytools') + os.pathsep + env.get('PYTHONPATH','')
-    env['PATH'] = str(args.clang10.absolute().parent) + os.pathsep + env.get('PATH','')
+    clang_directory = str(args.clang10.absolute().parent)
+    # Preserve an already selected search environment exactly. Backend build
+    # profiles bind PATH; duplicating its first directory invalidates them.
+    if env.get('PATH', '').split(os.pathsep)[0] != clang_directory:
+        env['PATH'] = clang_directory + os.pathsep + env.get('PATH','')
     env['RISCV2X86_TEST_FRONTEND'] = str(args.frontend.absolute())
     status = {'schemaVersion':'riscv2x86.route-contract-regression.v1',
         'steps':[], 'generatedSuiteExecuted':False, 'generatedSuiteExitCode':None,

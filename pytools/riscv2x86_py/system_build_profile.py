@@ -1,7 +1,8 @@
 """Bounded, probed compiler/assembler/linker configurations for M-mode builds.
 
-Capability records never approve translation. Only two audited no-relaxation
-configurations are candidates; unsupported configurations fail closed.
+Capability records never approve translation. Each candidate retains linker
+no-relaxation, the reviewed boot's local gp protection, and final ELF checks.
+Assembler relaxation metadata is not a claim that a final image was relaxed.
 """
 import json
 import os
@@ -14,12 +15,32 @@ from .semantic_content import semantic_identity
 from .system_instruction_ingress import digest
 
 SCHEMA = 'riscv2x86.system-build-profile.v1'
-POLICY = 'rv64i-lp64-bare-no-relax.v1'
+POLICY = 'rv64i-lp64-bare-no-relax.v2'
 OPTIMIZATIONS = ('-O0', '-O2', '-O3')
 RELAX_FLAGS = {
     'driver-norelax': ('-mno-relax', '-Wl,--no-relax'),
     'assembler-norelax': ('-Wa,-mno-relax', '-Wl,--no-relax'),
+    # Older assemblers accept .option norelax in the reviewed boot but do not
+    # expose -mno-relax. Keep linker relaxation disabled; never retry an actual
+    # production build with fewer flags. Select only after the full matrix.
+    'linker-norelax': ('-Wl,--no-relax',),
 }
+
+
+def check_build_implementation(value):
+    """Bind every strategy to the reviewed boot/kernel/linker implementation.
+
+    In particular linker-norelax relies on the boot's .option norelax around
+    gp initialization. The source review, full builds and final gp check are
+    complementary obligations, not replaceable by a caller-supplied hash.
+    """
+    from .controlled_system_backend import FILES, ROOT, implementation_identity
+    if (value['implementationIdentity'] != implementation_identity()
+            or value['sourceMarch'] not in ('rv64i', 'rv64i_zicsr')):
+        raise ValueError('SYSTEM_BUILD_IMPLEMENTATION_POLICY_MISMATCH')
+    implementation = Path(value['implementationDirectory'])
+    if any((implementation/name).read_bytes() != (ROOT/name).read_bytes() for name in FILES):
+        raise ValueError('SYSTEM_BUILD_IMPLEMENTATION_COPY_CHANGED')
 
 
 class SystemBuildError(ValueError):
@@ -216,6 +237,7 @@ def probe_source_text(operation, side):
 
 def probe_profile(value, output):
     output = Path(output); output.mkdir(parents=True,exist_ok=True)
+    check_build_implementation(value)
     tools = {side:toolchain(value[side+'Compiler']) for side in ('source','target')}
     attempts = []
     for mode in RELAX_FLAGS:
@@ -256,6 +278,7 @@ def _validate_profile(profile, value):
     if profile['recipeDigest']!=digest(Path(__file__).read_bytes()): raise ValueError('SYSTEM_BUILD_RECIPE_CHANGED:reprobe-required')
     if profile['relaxMode'] not in RELAX_FLAGS or profile['sourceMarch']!=value['sourceMarch'] or profile['implementationIdentity']!=value['implementationIdentity']:
         raise ValueError('SYSTEM_BUILD_PROFILE_POLICY_MISMATCH')
+    check_build_implementation(value)
     if profile['searchEnvironment']!=compiler_environment(): raise ValueError('SYSTEM_BUILD_SEARCH_ENVIRONMENT_CHANGED:reprobe-required')
     for side in ('source','target'):
         if profile['toolchains'][side]!=toolchain(value[side+'Compiler']):
