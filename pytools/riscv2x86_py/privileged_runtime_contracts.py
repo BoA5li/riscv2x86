@@ -514,13 +514,13 @@ class PrivilegedRuntimeRegistry:
             contract.runtime_identity, contract.runtime_contract_version,
         )
 
-    def resolve(
+    def resolve_with_diagnostics(
         self,
         source: SourcePrivilegedSemanticModel,
         target_environment: object,
-    ) -> PrivilegedRuntimeContract | None:
+    ) -> tuple[PrivilegedRuntimeContract | None, dict[str, str]]:
         if source.state is None or len(source.semantic_classes) != 1:
-            return None
+            return None, {"resolutionReason": "source_shape_invalid"}
         source_contract_id, source_contract_version = source_semantic_contract_identity(source)
         runtime_identity, runtime_version = target_runtime_identity(source)
         key = (
@@ -533,7 +533,27 @@ class PrivilegedRuntimeRegistry:
             runtime_identity, runtime_version,
         )
         contract = self._contracts.get(key)
-        return contract if contract is not None and contract.source_privileged_identity == privileged_source_identity(source) else None
+        import json
+        details = {"registryVersion": self.version,
+                   "requestedKey": json.dumps(key, separators=(",", ":")),
+                   "actualSourceIdentity": privileged_source_identity(source)}
+        if contract is None:
+            details.update(resolutionReason="registry_key_not_found",
+                           registeredKeys=json.dumps(sorted(self._contracts), separators=(",", ":")))
+            return None, details
+        details.update(contractId=contract.contract_id,
+                       expectedSourceIdentity=contract.source_privileged_identity)
+        if contract.source_privileged_identity != details["actualSourceIdentity"]:
+            details["resolutionReason"] = "source_identity_mismatch"
+            return None, details
+        details["resolutionReason"] = "matched" if contract.complete else "contract_incomplete"
+        return contract, details
+
+    def resolve(
+        self, source: SourcePrivilegedSemanticModel, target_environment: object,
+    ) -> PrivilegedRuntimeContract | None:
+        # Compatibility entry point: diagnostics never weaken applicability.
+        return self.resolve_with_diagnostics(source, target_environment)[0]
 
     @property
     def semantic_contract_ids(self) -> frozenset[str]:

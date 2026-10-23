@@ -50,10 +50,9 @@ from .privileged_execution_sidecar import (
 from .privileged_pipeline_inputs import PrivilegedPipelineInputs
 from .instruction_stream_sync_contracts import InstructionStreamSyncRegistry
 from .csr_metadata_ingress import profile_from_execution_facts
-from .csr_value_flow import authority_from_phase4_facts, join_csr_operand_bindings
+from .csr_value_flow import authority_from_phase4_facts
 from .csr_authority import csr_operand_authority_from_bundle
-from .csr_state_dataflow import analyze_csr_state_dataflow
-from .source_csr_semantic_model import adapt_source_csr_semantic_model
+from .privileged_source_state import complete_privileged_source_state
 from .csr_translation_pipeline import CsrRendererRegistry, CsrRuntimeRegistry
 from .shell_model import SourceShellModel
 from .privileged_emitted_audit import (
@@ -1930,23 +1929,10 @@ def run(
                     f.routeAuthorityDiagnostics.append(RouteAuthorityDecision(
                         "csr", str(f.fragment.id), "csr_compiler_join", code, detail,
                         content_identity(witness), accepted, witness).to_dict())
-            privileged_state = replace(
-                privileged_state,
-                csr_operand_bindings=join_csr_operand_bindings(
-                    lifted_insns=lr.insns, authority=csr_authority,
-                    fragment_shell=f.fragment,
-                ),
-                csr_state_dataflow=analyze_csr_state_dataflow(
-                    blocks=blocks, cfg=cfg,
-                    initial_privilege_mode=execution_facts.initial_privilege_mode.value,
-                    access_effects=privileged_state.csr_effects,
-                ),
-            )
-            privileged_state = replace(
-                privileged_state,
-                source_csr_semantic_model=adapt_source_csr_semantic_model(
-                    privileged_state
-                ),
+            privileged_state = complete_privileged_source_state(
+                state=privileged_state, fragment=f.fragment, lifted_insns=lr.insns,
+                blocks=blocks, cfg=cfg, execution_facts=execution_facts,
+                csr_operand_authority=csr_authority,
             )
             ignored_sidecar = (
                 privileged_pipeline_inputs.ignored_state_declarations
@@ -2064,6 +2050,7 @@ def run(
                 "planId": str(item.get("planId", "")),
                 "stage": str(item.get("stage", "")),
                 "reasonCodes": list(item.get("reasonCodes", ())),
+                **({"details": dict(item["details"])} if isinstance(item.get("details"), dict) and item["details"] else {}),
             }
             for item in raw_plan_attempts
             if isinstance(item, dict)

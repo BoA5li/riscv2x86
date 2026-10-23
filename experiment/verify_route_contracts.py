@@ -15,6 +15,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_privileged_source_completion.py',
     'test_controlled_system.py',
     'test_controlled_system_scope.py',
     'test_controlled_system_production.py',

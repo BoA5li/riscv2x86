@@ -415,12 +415,13 @@ class TargetLoweringAttempt:
     plan_id: str
     stage: str
     reason_codes: tuple[str, ...]
+    details: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_constraint_failure(
         cls, plan: TargetLoweringPlan, result: TargetConstraintDerivationResult
     ) -> "TargetLoweringAttempt":
-        return cls(plan.plan_id, "phase6c", tuple(x.value for x in result.reason_codes))
+        return cls(plan.plan_id, "phase6c", tuple(x.value for x in result.reason_codes), dict(result.details))
 
     @classmethod
     def from_proof_failure(
@@ -3869,7 +3870,7 @@ def _translate_phase6_proof_pipeline(
         privileged_functional_policy_identity=privileged_functional_policy.identity,
         selection_policy=selection_policy,
     ))
-    attempt_metadata = tuple({"planId": item.plan_id, "stage": item.stage, "reasonCodes": item.reason_codes} for item in rejected_attempts)
+    attempt_metadata = tuple({"planId": item.plan_id, "stage": item.stage, "reasonCodes": item.reason_codes, **({"details": dict(item.details)} if item.details else {})} for item in rejected_attempts)
     if selection.kind is FinalSelectionKind.NEEDS_ROUTE:
         return _needs_route(context, route=selection.route_target or "registered_route", reason="no local proven lowering; Phase 6E selected registered route", reason_code="TR_PHASE6E_NEEDS_ROUTE", metadata={"attempts": attempt_metadata, "candidatePlanCount": len(candidate_plans)})
     if selection.kind is FinalSelectionKind.INVARIANT_VIOLATION:

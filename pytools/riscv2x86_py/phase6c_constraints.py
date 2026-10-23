@@ -1873,13 +1873,14 @@ def _derive_privileged_runtime_0(
                 TargetConstraintReasonCode.PRIVILEGED_RUNTIME_REGISTRY_MISSING,
             ),
         )
-    contract = privileged_runtime_registry.resolve(source, target_environment)
+    contract, resolution_details = privileged_runtime_registry.resolve_with_diagnostics(source, target_environment)
     if contract is None or not contract.complete:
         return TargetConstraintDerivationResult.failure(
             plan_id=candidate_plan.plan_id,
             reason_codes=(
                 TargetConstraintReasonCode.PRIVILEGED_RUNTIME_CONTRACT_MISSING,
             ),
+            details=resolution_details,
         )
     state = source.state
     if (

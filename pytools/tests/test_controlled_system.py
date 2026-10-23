@@ -4,7 +4,7 @@ The /bin/true backend fixture is NOT a QEMU production acceptance result.
 Actual source execution lives in test_controlled_system_production.py.
 """
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import shutil
@@ -124,8 +124,56 @@ def test_registered_contract_real_pcode_proof_renderer_and_loader(backend,tmp_pa
         source_digest=finding['sourceDigest'],fragment_id=fragment.id,facts=facts,authority=loaded.system_instruction_authority)
     blocks,summary=from_lifted(result.insns);cfg=build_cfg_from_blocks(blocks)
     state=analyze_privileged_state(fragment_id=fragment.id,blocks=blocks,cfg=cfg,execution_facts=facts)
+    from riscv2x86_py.privileged_source_state import complete_privileged_source_state
+    from riscv2x86_py.csr_value_flow import authority_from_phase4_facts
+    from riscv2x86_py.source_model import build_source_semantic_model
+    from riscv2x86_py.privileged_runtime_contracts import privileged_source_identity
+    legacy_state=state
+    state=complete_privileged_source_state(state=state,fragment=fragment,lifted_insns=result.insns,
+        blocks=blocks,cfg=cfg,execution_facts=facts,
+        csr_operand_authority=authority_from_phase4_facts(lifted_insns=result.insns,runtime_facts=TranslationRuntimeFacts()))
+    prepared_model=contracts.source_model(finding,facts,loaded.system_instruction_authority)
+    actual=build_source_semantic_model(fragment=fragment,blocks=blocks,cfg=cfg,summary=summary,
+        runtime_facts=TranslationRuntimeFacts(),xlen=64,privileged_state=state)
+    legacy=build_source_semantic_model(fragment=fragment,blocks=blocks,cfg=cfg,summary=summary,
+        runtime_facts=TranslationRuntimeFacts(),xlen=64,privileged_state=legacy_state)
+    assert prepared_model.privileged_state.state==actual.privileged_state.state
+    assert privileged_source_identity(prepared_model.privileged_state)==privileged_source_identity(actual.privileged_state)
+    assert privileged_source_identity(legacy.privileged_state)!=privileged_source_identity(actual.privileged_state)
     target=production_target_environment(runtime_registry=loaded.runtime_registry,deployment=loaded.deployment)
     renderer=register_privileged_renderer_manifest(EMPTY_RENDERER_CONTRACT_REGISTRY,loaded.deployment.renderer_manifest)
+    # Exercise pipeline.run's actual model completion, not a second hand-built
+    # Phase-6 model. Only the external assembler is supplied as a protocol fixture.
+    from riscv2x86_py import pipeline
+    from riscv2x86_py.assemble import AssembleResult
+    from riscv2x86_py.schema import Finding, save_report, load_report
+    monkeypatch.setattr(pipeline,'assemble',lambda *_a,**_k:AssembleResult(
+        True,word.to_bytes(4,'little'),[],translation_runtime_facts=TranslationRuntimeFacts()))
+    pipeline_input=tmp_path/'pipeline-in.json';pipeline_output=tmp_path/'pipeline-out.json'
+    save_report([Finding(fragment=fragment,sourceDigest=finding['sourceDigest'])],str(pipeline_input))
+    pipeline.run(str(pipeline_input),str(pipeline_output),verify_enabled=False,privileged_pipeline_inputs=loaded)
+    actual_finding=load_report(str(pipeline_output))[0]
+    assert actual_finding.approvalArtifact.get('proofStatus')=='approved',(
+        actual_finding.verificationDetail,actual_finding.translationPlanAttempts)
+    assert actual_finding.approvalArtifact['systemOperation']==operation
+    assert actual_finding.translationOutcome=='emitted'
+    assert actual_finding.publicationOutcome=='withheld'
+    assert 'rv2x86_m_' in actual_finding.translationAttemptArtifact['candidateReplacement']
+    # A legacy/incomplete-state contract must still fail in pipeline.run, and
+    # its actual expected/observed identities must survive report serialization.
+    from riscv2x86_py.privileged_runtime_contracts import PrivilegedRuntimeRegistry
+    current_contract=loaded.runtime_registry.resolve(actual.privileged_state,target)
+    assert current_contract is not None
+    stale=replace(current_contract,source_privileged_identity=privileged_source_identity(legacy.privileged_state))
+    stale_registry=PrivilegedRuntimeRegistry(version=loaded.runtime_registry.version,contracts=(stale,),
+        mapping_registries=loaded.runtime_registry.mapping_registries)
+    stale_output=tmp_path/'pipeline-stale.json'
+    pipeline.run(str(pipeline_input),str(stale_output),verify_enabled=False,
+        privileged_pipeline_inputs=replace(loaded,runtime_registry=stale_registry))
+    rejected=load_report(str(stale_output))[0]
+    assert rejected.translationOutcome=='unsupported'
+    assert rejected.translationPlanAttempts[0]['details']['resolutionReason']=='source_identity_mismatch'
+    assert rejected.translationPlanAttempts[0]['details']['expectedSourceIdentity']==stale.source_privileged_identity
     translated=translate(fragment,result,summary,word.to_bytes(4,'little'),64,blocks=blocks,cfg=cfg,
         runtime_facts=TranslationRuntimeFacts(),target_environment=target,privileged_state=state,
         privileged_runtime_registry=loaded.runtime_registry,renderer_contract_registry=renderer)

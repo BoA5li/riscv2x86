@@ -65,6 +65,8 @@ def source_model(finding,facts,authority):
     from .source_model import build_source_semantic_model
     from .runtime_facts import TranslationRuntimeFacts
     from .privileged_state_analysis import analyze_privileged_state
+    from .privileged_source_state import complete_privileged_source_state
+    from .csr_value_flow import authority_from_phase4_facts
     code=bytes.fromhex(finding['machineCodeHex']);result=lift(code,xlen=64,base_addr=0x10000,require_authoritative_register_names=True)
     if not result.ok:raise ValueError('SYSTEM_CONTRACT_LIFT_FAILED:'+result.error)
     bind_system_instructions(result,machine_code=code,base_addr=0x10000,source_digest=finding['sourceDigest'],
@@ -72,8 +74,14 @@ def source_model(finding,facts,authority):
     blocks,summary=from_lifted(result.insns);cfg=build_cfg_from_blocks(blocks)
     state=analyze_privileged_state(fragment_id=facts.fragment_id,blocks=blocks,cfg=cfg,execution_facts=facts)
     fragment=AsmFragment(**{k:v for k,v in finding['fragment'].items() if k in {f.name for f in fields(AsmFragment)}})
+    runtime_facts=TranslationRuntimeFacts()
+    # This bounded no-operand route has no compiler CSR authority to invent.
+    # Consume the same Phase-4 facts and completion as the production pipeline.
+    csr_authority=authority_from_phase4_facts(lifted_insns=result.insns,runtime_facts=runtime_facts)
+    state=complete_privileged_source_state(state=state,fragment=fragment,lifted_insns=result.insns,
+        blocks=blocks,cfg=cfg,execution_facts=facts,csr_operand_authority=csr_authority)
     model=build_source_semantic_model(fragment=fragment,blocks=blocks,cfg=cfg,summary=summary,
-        runtime_facts=TranslationRuntimeFacts(),xlen=64,privileged_state=state)
+        runtime_facts=runtime_facts,xlen=64,privileged_state=state)
     if not model.privileged_state.strict_translation_eligible:raise ValueError('SYSTEM_SOURCE_MODEL_INCOMPLETE')
     return model
 
@@ -137,6 +145,13 @@ def prepare(*,source,report,fragment_id,backend_path,clang,output):
     output.mkdir(parents=True)
     def write(name,value):
         p=output/name;p.write_text(json.dumps(value,indent=2)+'\n');return p
+    # Audit witness only: production must independently reconstruct and match.
+    witness={'schemaVersion':'riscv2x86.privileged-source-binding.v1',
+        'sourceDigest':authority['sourceDigest'],'fragmentId':fragment_id,
+        'sourcePrivilegedIdentity':contract.source_privileged_identity,
+        'state':semantic_payload(state),'semanticApproval':False}
+    witness['bindingIdentity']=semantic_identity(witness)
+    write('source-binding.json',witness)
     execution=write('execution.json',execution_payload(facts));write('system.json',authority)
     runtime=write('runtime.json',runtime_payload(contract,registry));write('scope.json',shape)
     def copy(path):

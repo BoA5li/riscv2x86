@@ -81,6 +81,14 @@ def main():
             approval=finding.get('approvalArtifact') or {}
             if (approval.get('proofStatus')!='approved' or approval.get('systemOperation')!=contract['operation']
                     or not (approval.get('l2AuthoritySidecar') or {}).get('complete')):
+                status['failureDiagnostics']={'reportPath':str(approved_report),
+                    'proofStatus':approval.get('proofStatus'),
+                    'expectedOperation':contract['operation'],'actualOperation':approval.get('systemOperation'),
+                    'l2AuthorityComplete':(approval.get('l2AuthoritySidecar') or {}).get('complete',False),
+                    'verificationDetail':finding.get('verificationDetail'),
+                    'translationPlanAttempts':finding.get('translationPlanAttempts',[]),
+                    'routeAuthorityDiagnostics':finding.get('routeAuthorityDiagnostics',[])}
+                save()
                 raise ValueError('SYSTEM_RUN_APPROVAL_OR_AUTHORITY_INCOMPLETE:'+json.dumps(finding.get('translationReasonCodes',[])))
             config={'schemaVersion':SCHEMA,'backendPath':str(a.backend.resolve()),'approvalPath':str(approved_report),
                 'environmentPath':str(env_path),'sourcePath':str(source),'sourceDigest':digest(source.read_bytes()),
