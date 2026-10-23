@@ -256,7 +256,9 @@ def profile_from_source_model(
 ) -> L2FragmentSemanticProfile:
     """Derive a profile solely from normalized Phase-6A semantic fields."""
     state = getattr(getattr(source_model, 'privileged_state', None), 'state', None)
-    from .privileged_runtime_contracts import privileged_environment_route_kind
+    from .privileged_runtime_contracts import (
+        PrivilegedEnvironmentRouteKind, privileged_environment_route_kind,
+    )
     if (execution_profile == 'rv64gc-user-to-x86_64-user' and state is not None
             and getattr(getattr(state,'execution_profile',None), 'value', '') == 'riscv_machine_firmware'
             and getattr(getattr(state,'target_execution_mode',None), 'value', '') == 'virtualized_runtime'
@@ -358,7 +360,21 @@ def profile_from_source_model(
     # not evidence that the instruction writes privileged state. In particular,
     # a proof-owned read-only counter route must stay PRIVILEGED_READ so its
     # runtime-mediated relation can be selected.
-    privileged_write = explicit_csr_write or non_counter_state_effect
+    # An explicit environment call changes saved exception-entry state. It is
+    # not the same as a possible fault on a CSR read. Reuse the typed, exact
+    # single-operation route classifier; do not turn every trap effect into a
+    # write or infer a route from assembly/helper names. Classification supplies
+    # no execution permission: proof, handler, authority and provider gates stay.
+    explicit_environment_call = bool(
+        privileged_present
+        and getattr(privileged, "semantic_presence", None) is True
+        and getattr(privileged, "complete", False)
+        and getattr(privileged.state, "complete", False)
+        and privileged_environment_route_kind(privileged)
+            is PrivilegedEnvironmentRouteKind.ECALL
+    )
+    privileged_write = (explicit_csr_write or non_counter_state_effect
+                        or explicit_environment_call)
     privileged_shape = L2PrivilegedShape(
         privileged_present, privileged_read,
         privileged_write,

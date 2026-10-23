@@ -327,3 +327,25 @@ def test_incomplete_functional_approval_cannot_close_privileged_profile(mutation
 
     assert not bound.privileged_shape.complete
     assert not bound.complete
+
+
+def test_untyped_trap_claim_cannot_become_explicit_environment_call():
+    model = _source_model()
+    model.privileged_state = SimpleNamespace(
+        complete=True, semantic_presence=True, read_only_counter=None,
+        state=SimpleNamespace(present=True, complete=True, csr_effects=(),
+            trap_effects=(SimpleNamespace(kind=SimpleNamespace(value='environment_call')),),
+            return_effects=(), interrupt_effects=(), address_translation_effects=(),
+            virtualization_effects=(), debug_effects=()))
+    profile = profile_from_source_model('arbitrary/location:3:8', model)
+    assert profile.pattern_kind is L2PatternKind.UNKNOWN
+    assert not profile.complete and not profile.privileged_shape.writes_state
+
+
+def test_unknown_profile_diagnostic_explains_pattern_gate_without_permission():
+    profile = l2_fragment_semantic_profile_from_dict(profile_dict(
+        'arbitrary/location:4:2', L2PatternKind.UNKNOWN))
+    requirement = L2EligibilityClassifier().classify(_finding(profile.fragment_id, profile), 0)
+    assert requirement['eligibilityStatus'] == 'inconclusive'
+    assert 'l2.semantic-profile.incomplete' in requirement['reasonCodes']
+    assert 'l2.semantic-profile.pattern-unknown' in requirement['reasonCodes']

@@ -37,4 +37,5 @@ def test_real_controlled_m_system_renamed_production(tmp_path,operation):
     assert status['originalLinuxUserEquivalent'] is False
     assert status['L3Equivalent'] is False
     assert status['completedRoutes']==[operation]
-    assert status['productionAcceptance'][0]['programValidationLevels']=={'L0':'verified','L1':'verified','L2':'verified'}
+    assert status['productionAcceptance'][0]['programValidationLevels']=={
+        'L0':'verified','L1':'verified','L2':'verified','L3':'not_run'}

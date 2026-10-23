@@ -126,6 +126,21 @@ class L2EligibilityClassifier:
             profile_diagnostics = (() if semantic_profile.complete else
                                    ("l2.semantic-profile.incomplete",))
             if not semantic_profile.complete:
+                # Explain the failed semantic gate without inventing authority
+                # or changing the profile/requirement schemas or eligibility.
+                components = []
+                if semantic_profile.pattern_kind is L2PatternKind.UNKNOWN:
+                    components.append("l2.semantic-profile.pattern-unknown")
+                if (semantic_profile.pattern_kind in {
+                        L2PatternKind.PRIVILEGED_READ, L2PatternKind.PRIVILEGED_WRITE,
+                        L2PatternKind.COMPOSITE} and not semantic_profile.privileged_shape.complete):
+                    components.append("l2.semantic-profile.privileged-state-incomplete")
+                if not semantic_profile.internal_state_shape.complete:
+                    components.append("l2.semantic-profile.internal-state-incomplete")
+                if not semantic_profile.internal_state_shape.escape_complete:
+                    components.append("l2.semantic-profile.escape-incomplete")
+                profile_diagnostics = tuple(sorted((*profile_diagnostics, *components)))
+            if not semantic_profile.complete:
                 from .atomic_memory_binding import identity as binding_identity
                 decision=(finding.get('approvalArtifact') or {}).get('l2AtomicMemoryBindingDecision',{})
                 if (isinstance(decision,Mapping) and decision.get('schemaVersion')=='riscv2x86.atomic-memory-profile-decision.v1'

@@ -159,6 +159,42 @@ def test_registered_contract_real_pcode_proof_renderer_and_loader(backend,tmp_pa
     assert actual_finding.translationOutcome=='emitted'
     assert actual_finding.publicationOutcome=='withheld'
     assert 'rv2x86_m_' in actual_finding.translationAttemptArtifact['candidateReplacement']
+    # Consume the profile emitted by pipeline.run, rather than constructing a
+    # known-good profile. ECALL previously passed this test with UNKNOWN here.
+    from riscv2x86_py.l2_semantic_profile import profile_from_finding,L2PatternKind,profile_from_source_model
+    from riscv2x86_py.l2_materialization import required_dimensions_for_finding
+    actual_profile=profile_from_finding(asdict(actual_finding))
+    assert actual_profile.pattern_kind is L2PatternKind.PRIVILEGED_WRITE
+    assert actual_profile.complete
+    assert actual_profile.execution_profile=='rv64i-m-to-x86-logical-system-v1'
+    assert {d.value for d in required_dimensions_for_finding(asdict(actual_finding))}=={
+        'privileged_state','shell_semantics','trap_semantics'}
+    if operation=='ecall':
+        # Typed route facts must be complete and unambiguous. An approval or
+        # mnemonic-looking namespace must not manufacture state authority.
+        incomplete=replace(actual.privileged_state,complete=False,
+            strict_translation_eligible=False,functional_fallback_eligible=False)
+        refused=profile_from_source_model(fragment.id,SimpleNamespace(privileged_state=incomplete))
+        assert not refused.complete and refused.pattern_kind is L2PatternKind.UNKNOWN
+        trap=actual.privileged_state.state.trap_effects[0]
+        second=replace(trap,operation_index=trap.operation_index+1)
+        combined_state=replace(actual.privileged_state.state,
+            trap_effects=(trap,second))
+        combined=replace(actual.privileged_state,state=combined_state)
+        refused=profile_from_source_model(fragment.id,SimpleNamespace(privileged_state=combined))
+        assert not refused.complete and refused.pattern_kind is L2PatternKind.UNKNOWN
+        from riscv2x86_py.privileged_state_analysis import TrapEffectKind
+        other=replace(actual.privileged_state,state=replace(actual.privileged_state.state,
+            trap_effects=(replace(trap,kind=TrapEffectKind.BREAKPOINT),)))
+        refused=profile_from_source_model(fragment.id,SimpleNamespace(privileged_state=other))
+        assert not refused.complete and refused.pattern_kind is L2PatternKind.UNKNOWN
+        missing_handler=replace(trap,handler_binding_id=None,complete=False,
+            missing_fact_codes=('test.handler-missing',))
+        missing_state=replace(actual.privileged_state.state,trap_effects=(missing_handler,),
+            complete=False,missing_fact_codes=('test.handler-missing',))
+        refused=profile_from_source_model(fragment.id,SimpleNamespace(privileged_state=replace(
+            incomplete,state=missing_state)))
+        assert not refused.complete
     # A legacy/incomplete-state contract must still fail in pipeline.run, and
     # its actual expected/observed identities must survive report serialization.
     from riscv2x86_py.privileged_runtime_contracts import PrivilegedRuntimeRegistry
@@ -193,6 +229,40 @@ def test_registered_contract_real_pcode_proof_renderer_and_loader(backend,tmp_pa
         'declarations':{},'parameterDeclarationIds':[],'returnDeclarationId':'','declarationReferenceCounts':{}}}],
         semantic_identity({'producer':'explicit-compiler-protocol-fixture'}))
     assert authority.complete
+    # Exercise the real classifier and provider resolver after the proof-owned
+    # compiler-bound authority join. No provider execution is mocked as success.
+    from riscv2x86_py.l2_eligibility import L2EligibilityClassifier
+    from riscv2x86_py.l2_validator_resolution import provider_from_dict,resolve_fragment_execution_plan
+    approval['l2AuthoritySidecar']=authority.to_dict()
+    finding.update(translationOutcome='emitted',translationReasonCodes=[],
+        l2SemanticProfile=translated.metadata['l2SemanticProfile'])
+    manifest=L2EligibilityClassifier().classify_report({'findings':[finding]})
+    requirement=manifest['requirements'][0]
+    assert requirement['eligibilityStatus']=='eligible',requirement
+    assert requirement['requiredDimensions']==['privileged_state','shell_semantics','trap_semantics']
+    profile=profile_from_finding(finding)
+    provider=provider_from_dict({'providerId':'explicit-system-protocol',
+        'supportedDimensions':requirement['requiredDimensions'],'supportedPatterns':['privileged_write'],
+        'requiredCapabilities':list(profile.required_capabilities),'executionProfiles':[profile.execution_profile],
+        'bindingKind':'explicit','validatorType':'controlled-system-validation',
+        'configSchemaVersion':'riscv2x86.controlled-system-runner.v1',
+        'config':{'schemaVersion':'riscv2x86.controlled-system-runner.v1'},'fragmentIds':[fragment.id]})
+    plan=resolve_fragment_execution_plan(manifest,(provider,),fragment.id,
+        execution_profile=profile.execution_profile,profile=profile,
+        available_capabilities=profile.required_capabilities,
+        environment_execution_profiles=(profile.execution_profile,))
+    assert plan is not None
+    assert all(b.binding_status.value=='resolved' for b in plan.bindings)
+    assert {b.dimension.value for b in plan.bindings}==set(requirement['requiredDimensions'])
+    for providers in ((),(replace(provider,fragment_ids=('another-fragment',)),)):
+        refused_plan=resolve_fragment_execution_plan(manifest,providers,fragment.id,
+            execution_profile=profile.execution_profile,profile=profile,
+            available_capabilities=profile.required_capabilities,
+            environment_execution_profiles=(profile.execution_profile,))
+        assert {b.dimension.value for b in refused_plan.bindings}==set(requirement['requiredDimensions'])
+        assert all(b.binding_status.value!='resolved' for b in refused_plan.bindings)
+    unapproved=copy.deepcopy(finding);unapproved.pop('approvalArtifact')
+    assert L2EligibilityClassifier().classify(unapproved,0)['eligibilityStatus']=='inconclusive'
     # Real native execution + explicit simulated source transport exercises
     # the runner and persisted central evidence, never QEMU acceptance.
     from riscv2x86_py import controlled_system_runner as runner
