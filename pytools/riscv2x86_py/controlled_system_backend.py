@@ -17,7 +17,8 @@ from .semantic_content import semantic_identity
 from .system_instruction_ingress import PROFILE,digest
 
 BASE='b67b00e6b4c7831a3f5bc684bc0df7a9bfd1bd56'
-SCHEMA='riscv2x86.controlled-system-backend.v1'
+LEGACY_SCHEMA='riscv2x86.controlled-system-backend.v1'
+SCHEMA='riscv2x86.controlled-system-backend.v2'
 CPU_PROFILE='rv64,priv_spec=v1.12.0'
 FILES=('controlled_system.h','controlled_system.c','controlled_system_boot.S',
        'controlled_system.ld','controlled_system_kernel.c')
@@ -32,10 +33,9 @@ _CHECKED_QEMU_BINARIES=set()
 
 
 def checked(command, *, cwd=None, log=None, timeout=3600):
-    result=subprocess.run(command,cwd=cwd,capture_output=True,text=True,timeout=timeout,check=False)
-    if log is not None: Path(log).write_text(result.stdout+result.stderr)
-    if result.returncode: raise ValueError('SYSTEM_COMMAND_FAILED:'+json.dumps(command)+':'+result.stderr[-2000:])
-    return result
+    from .system_build_profile import run_command
+    record=run_command(command,cwd=cwd,log=log,timeout=timeout)
+    return subprocess.CompletedProcess(command,record['returnCode'],record['stdout'],record['stderr'])
 
 
 def executable(value):
@@ -50,12 +50,13 @@ def implementation_identity():
     return actual
 
 
-def validate_backend(path):
+def validate_backend(path, *, check_build_profile=True):
     path=Path(path).resolve();value=json.loads(path.read_text())
     fields={'schemaVersion','profile','baseCommit','implementationIdentity','implementationDirectory',
         'qemuBinary','qemuBinaryDigest','sourceCompiler','sourceCompilerDigest','sourceMarch','targetCompiler',
         'targetCompilerDigest','runtimeLibrary','runtimeLibraryDigest','buildIdentity','backendIdentity'}
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion']!=SCHEMA or value['profile']!=PROFILE or value['baseCommit']!=BASE:
+    if isinstance(value,dict) and value.get('schemaVersion')==SCHEMA: fields.add('buildProfile')
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in (SCHEMA,LEGACY_SCHEMA) or value['profile']!=PROFILE or value['baseCommit']!=BASE:
         raise ValueError('SYSTEM_BACKEND_SCHEMA_INVALID')
     if semantic_identity({k:v for k,v in value.items() if k!='backendIdentity'})!=value['backendIdentity']:
         raise ValueError('SYSTEM_BACKEND_IDENTITY_MISMATCH')
@@ -86,7 +87,49 @@ def validate_backend(path):
             if digest(library.read_bytes())!=value['runtimeLibraryDigest']:
                 raise ValueError('SYSTEM_BACKEND_RUNTIME_REBUILD_MISMATCH')
         _REBUILT_LIBRARIES.add(key)
+    if value['schemaVersion']==SCHEMA and check_build_profile:
+        from .system_build_profile import validate_profile
+        validate_profile(value['buildProfile'],value)
     return value
+
+
+def require_build_profile(value):
+    if value['schemaVersion']!=SCHEMA:
+        raise ValueError('SYSTEM_BUILD_PROFILE_REQUIRED:run controlled_system_backend upgrade-backend')
+    return value['buildProfile']
+
+
+def prepare_build_profile(value, output):
+    from .system_build_profile import probe_profile
+    output=Path(output);status_path=output/'build-profile-status.json'
+    status={'stage':'build-profile','status':'running','semanticApproval':False}
+    status_path.write_text(json.dumps(status,indent=2)+'\n')
+    try:
+        profile=probe_profile(value,output/'build-profile')
+    except (ValueError,OSError,subprocess.SubprocessError) as exc:
+        status.update(status='failed',detail=str(exc),diagnostic=getattr(exc,'diagnostic',None))
+        status_path.write_text(json.dumps(status,indent=2)+'\n')
+        raise
+    status.update(status='complete',profileIdentity=profile['profileIdentity'],buildCount=len(profile['records']))
+    status_path.write_text(json.dumps(status,indent=2)+'\n')
+    return profile
+
+
+def upgrade_backend(backend_path, output):
+    # Preserve and validate the existing QEMU/runtime; only reprobe build inputs.
+    value=validate_backend(backend_path,check_build_profile=False)
+    output=Path(output).resolve()
+    if output.exists(): raise ValueError('SYSTEM_BACKEND_OUTPUT_EXISTS')
+    output.mkdir(parents=True)
+    profile=prepare_build_profile(value,output)
+    value=dict(value,schemaVersion=SCHEMA,buildProfile=profile)
+    value['buildIdentity']=semantic_identity({'previousBuildIdentity':value['buildIdentity'],
+        'buildProfileIdentity':profile['profileIdentity']})
+    value.pop('backendIdentity')
+    value['backendIdentity']=semantic_identity(value)
+    manifest=output/'backend.json';manifest.write_text(json.dumps(value,indent=2)+'\n')
+    validate_backend(manifest)
+    return {'backendPath':str(manifest),'backendIdentity':value['backendIdentity'],'semanticApproval':False}
 
 
 def build(source,output,*,source_compiler='riscv64-linux-gnu-gcc',target_compiler='gcc',jobs=2):
@@ -108,10 +151,21 @@ def build(source,output,*,source_compiler='riscv64-linux-gnu-gcc',target_compile
         try:
             result=checked(command,cwd=cwd,log=output/(stage+'.log'))
             steps.append({'stage':stage,'command':command,'returnCode':result.returncode})
-        except Exception:
-            steps.append({'stage':stage,'command':command,'returnCode':None});raise
+        except Exception as exc:
+            diagnostic=getattr(exc,'diagnostic',{})
+            steps.append({'stage':stage,'command':command,'returnCode':diagnostic.get('returnCode'),
+                'timedOut':diagnostic.get('timedOut',False)});raise
         finally:
             (output/'build-status.json').write_text(json.dumps({'steps':steps,'semanticApproval':False},indent=2)+'\n')
+    implementation=output/'implementation';implementation.mkdir()
+    for name in FILES:shutil.copyfile(ROOT/name,implementation/name)
+    obj=implementation/'controlled_system.o';library=implementation/'libcontrolled_system.a'
+    run('target-runtime',[target,'-std=gnu11','-O2','-Wall','-Wextra','-Werror','-fPIC','-c',
+        str(implementation/'controlled_system.c'),'-I',str(implementation),'-o',str(obj)])
+    run('target-archive',[ar,'rcs',str(library),str(obj)])
+    profile=prepare_build_profile({'sourceCompiler':cc,'targetCompiler':target,'sourceMarch':march,
+        'implementationDirectory':str(implementation),'runtimeLibrary':str(library),
+        'implementationIdentity':implementation_identity()},output)
     work=output/'source'
     run('worktree',['git','-C',str(source),'worktree','add','--detach',str(work),BASE])
     run('submodules',['git','-C',str(work),'submodule','update','--init','meson','dtc','ui/keycodemapdb'])
@@ -121,20 +175,14 @@ def build(source,output,*,source_compiler='riscv64-linux-gnu-gcc',target_compile
     run('compile',['make','-j'+str(jobs)],cwd=build_dir)
     binary=build_dir/'qemu-system-riscv64'
     run('version',[str(binary),'--version'])
-    implementation=output/'implementation';implementation.mkdir()
-    for name in FILES:shutil.copyfile(ROOT/name,implementation/name)
-    obj=implementation/'controlled_system.o';library=implementation/'libcontrolled_system.a'
-    run('target-runtime',[target,'-std=gnu11','-O2','-Wall','-Wextra','-Werror','-fPIC','-c',
-        str(implementation/'controlled_system.c'),'-I',str(implementation),'-o',str(obj)])
-    run('target-archive',[ar,'rcs',str(library),str(obj)])
     value={'schemaVersion':SCHEMA,'profile':PROFILE,'baseCommit':BASE,
-        'implementationIdentity':implementation_identity(),'implementationDirectory':str(implementation),
+        'implementationIdentity':implementation_identity(),'implementationDirectory':str(implementation),'buildProfile':profile,
         'qemuBinary':str(binary),'qemuBinaryDigest':digest(binary.read_bytes()),
         'sourceCompiler':cc,'sourceCompilerDigest':digest(Path(cc).read_bytes()),'sourceMarch':march,
         'targetCompiler':target,'targetCompilerDigest':digest(Path(target).read_bytes()),
         'runtimeLibrary':str(library),'runtimeLibraryDigest':digest(library.read_bytes()),
         'buildIdentity':semantic_identity({'steps':steps,'configurationDigest':digest((build_dir/'config-host.mak').read_bytes()),
-            'implementationIdentity':implementation_identity()})}
+            'implementationIdentity':implementation_identity(),'buildProfileIdentity':profile['profileIdentity']})}
     value['backendIdentity']=semantic_identity(value)
     manifest=output/'backend.json';manifest.write_text(json.dumps(value,indent=2)+'\n')
     validate_backend(manifest)
@@ -149,48 +197,38 @@ def build_program(*,backend_path,side,source,symbol,operation,output,optimizatio
     if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',symbol) or symbol=='main' or symbol.startswith('__rv2x86_'):
         raise ValueError('SYSTEM_BUILD_SYMBOL_INVALID')
     if output.exists():raise ValueError('SYSTEM_PROGRAM_OUTPUT_EXISTS')
-    output.parent.mkdir(parents=True,exist_ok=True);impl=Path(value['implementationDirectory'])
-    wrapper=output.parent/'system-wrapper.c';number=1 if operation=='ecall' else 2
-    text='#include '+json.dumps(str(source))+'\n'
+    from .system_build_profile import compile_program
     if side=='source':
-        text+='void __rv2x86_probe(void){'+symbol+'();}\n'
-        command=[value['sourceCompiler'],'-std=gnu11',optimization,'-Wall','-Wextra','-Werror',
-            '-march='+value['sourceMarch'],'-mabi=lp64','-mcmodel=medany','-mno-relax','-msmall-data-limit=0',
-            '-ffreestanding','-fno-builtin','-fno-inline','-fno-pic','-fno-pie','-fno-stack-protector',
-            '-fno-asynchronous-unwind-tables','-nostdlib','-nostartfiles','-static','-D__RV2X86_OPERATION='+str(number),
-            str(wrapper),str(impl/'controlled_system_kernel.c'),str(impl/'controlled_system_boot.S'),
-            '-Wl,-T,'+str(impl/'controlled_system.ld'),'-Wl,--build-id=none','-o',str(output)]
+        mode=require_build_profile(value)['relaxMode']
     else:
-        text+='#include "controlled_system.h"\nint main(void){__rv2x86_system_initialize('+str(number)+');'
-        text+='__rv2x86_system_event('+str(1 if number==1 else 4)+');'+symbol+'();'
-        text+='__rv2x86_system_event('+str(3 if number==1 else 5)+');__rv2x86_system_finish();return 0;}\n'
-        command=[value['targetCompiler'],'-std=gnu11',optimization,'-Wall','-Wextra','-Werror',
-            '-fno-inline','-I',str(impl),'-include',str(impl/'controlled_system.h'),str(wrapper),value['runtimeLibrary'],
-            '-Wl,--build-id=none','-o',str(output)]
-    wrapper.write_text(text)
-    checked(command,log=output.with_name(output.name+'.build.log'),timeout=120)
-    data=output.read_bytes()
-    if len(data)<64 or data[:6]!=b'\x7fELF\x02\x01' or int.from_bytes(data[18:20],'little')!=(243 if side=='source' else 62):
-        raise ValueError('SYSTEM_PROGRAM_ELF_ARCHITECTURE_MISMATCH')
-    return {'programDigest':digest(data),'backendIdentity':value['backendIdentity'],'command':command,
-        'sourceDigest':digest(source.read_bytes()),'side':side,'optimization':optimization}
+        mode=value.get('buildProfile',{}).get('relaxMode','assembler-norelax')
+    record=compile_program(value,side=side,source=source,symbol=symbol,operation=operation,
+        output=output,optimization=optimization,relax_mode=mode)
+    record['backendIdentity']=value['backendIdentity']
+    if 'buildProfile' in value: record['buildProfileIdentity']=value['buildProfile']['profileIdentity']
+    output.with_name(output.name+'.build.json').write_text(json.dumps(record,indent=2)+'\n')
+    return record
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
     b=sub.add_parser('backend');b.add_argument('--qemu-source',required=True,type=Path);b.add_argument('--output',required=True,type=Path)
     b.add_argument('--jobs',type=int,default=2);b.add_argument('--source-compiler',default='riscv64-linux-gnu-gcc');b.add_argument('--target-compiler',default='gcc')
+    u=sub.add_parser('upgrade-backend');u.add_argument('--backend',required=True,type=Path);u.add_argument('--output',required=True,type=Path)
     r=sub.add_parser('program')
     for key in ('backend','source','output'):r.add_argument('--'+key,required=True,type=Path)
     r.add_argument('--side',choices=('source','target'),required=True);r.add_argument('--symbol',required=True)
     r.add_argument('--operation',choices=('ecall','wfi'),required=True)
     a=p.parse_args()
     try:
+        if a.action=='upgrade-backend':
+            print(json.dumps(upgrade_backend(a.backend,a.output)));return 0
         result=build(a.qemu_source,a.output,source_compiler=a.source_compiler,target_compiler=a.target_compiler,jobs=a.jobs) if a.action=='backend' else build_program(
             backend_path=a.backend,side=a.side,source=a.source,symbol=a.symbol,operation=a.operation,output=a.output)
         print(json.dumps(result));return 0
     except (OSError,ValueError,subprocess.SubprocessError) as exc:
-        print(json.dumps({'failureStage':'controlled_system_build','detail':str(exc),'semanticApproval':False}));return 2
+        print(json.dumps({'failureStage':'controlled_system_build','detail':str(exc),
+            'diagnostic':getattr(exc,'diagnostic',None),'semanticApproval':False}));return 2
 
 
 if __name__=='__main__':raise SystemExit(main())

@@ -14,7 +14,7 @@ import subprocess
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'pytools'))
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from riscv2x86_py.controlled_system_backend import validate_backend,executable
+from riscv2x86_py.controlled_system_backend import validate_backend,executable,require_build_profile
 from riscv2x86_py.controlled_system_contract import prepare
 from riscv2x86_py.controlled_system_runner import SCHEMA,DIMENSIONS,EXECUTION_PROFILE,observer_identity,load_config
 from riscv2x86_py.system_instruction_ingress import digest
@@ -41,7 +41,7 @@ def main():
     try:
         if out.exists():raise ValueError('SYSTEM_RUN_OUTPUT_EXISTS')
         require_disjoint_output(out,a.source,a.suite)
-        backend=validate_backend(a.backend);frontend=executable(a.frontend);clang=executable(a.clang)
+        backend=validate_backend(a.backend);require_build_profile(backend);frontend=executable(a.frontend);clang=executable(a.clang)
         sources=[s.resolve() for s in a.source]
         if a.existing_provider_directory is not None and (a.suite is None or not a.existing_provider_directory.is_dir()):
             raise ValueError('SYSTEM_RUN_EXISTING_PROVIDERS_REQUIRE_SUITE_AND_DIRECTORY')
@@ -106,7 +106,14 @@ def main():
             (providers/(source.name+'.l2-providers.json')).write_text(json.dumps(manifest,indent=2)+'\n')
             configured=batch(tag+'-configured',source,True)
             result=json.loads((configured/'batch-evaluation.json').read_text())
-            if result.get('statusCounts')!={'verified':1}:raise ValueError('SYSTEM_RUN_PRODUCTION_NOT_VERIFIED')
+            if result.get('statusCounts')!={'verified':1}:
+                status['failureDiagnostics']={'batchPath':str(configured/'batch-evaluation.json'),
+                    'statusCounts':result.get('statusCounts'),
+                    'buildFailures':[{'path':str(p),'diagnostic':json.loads(p.read_text())}
+                        for p in sorted(configured.rglob('*.build.log.failure.json'))],
+                    'caseResults':[str(configured/c['resultPath']) for c in result.get('cases',[]) if c.get('resultPath')]}
+                save()
+                raise ValueError('SYSTEM_RUN_PRODUCTION_NOT_VERIFIED')
             run(tag+'-provider-audit',[sys.executable,'-m','riscv2x86_py.l2_provider_artifacts','--batch',str(configured/'batch-evaluation.json')])
             case=result['cases'][0]
             if any(case.get('programValidationLevels',{}).get(level)!='verified' for level in ('L0','L1','L2')):

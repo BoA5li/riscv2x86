@@ -27,7 +27,7 @@ FIELDS={'schemaVersion','backendPath','approvalPath','environmentPath','sourcePa
 def observer_identity():
     return semantic_identity({'implementation':implementation_identity(),**{name:digest(Path(__file__).with_name(name).read_bytes())
         for name in ('controlled_system_runner.py','controlled_system_backend.py','controlled_system_scope.py',
-                     'controlled_system_contract.py','system_instruction_ingress.py')}})
+                     'controlled_system_contract.py','system_instruction_ingress.py','system_build_profile.py')}})
 
 
 def load_config(config):

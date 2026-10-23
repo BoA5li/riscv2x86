@@ -27,7 +27,7 @@ def backend(tmp_path,monkeypatch):
     subprocess.run([cc,'-std=gnu11','-O2','-Wall','-Wextra','-Werror','-fPIC','-c',
         str(impl/'controlled_system.c'),'-I',str(impl),'-o',str(obj)],check=True)
     subprocess.run([ar,'rcs',str(library),str(obj)],check=True)
-    value={'schemaVersion':backend_module.SCHEMA,'profile':PROFILE,'baseCommit':backend_module.BASE,
+    value={'schemaVersion':backend_module.LEGACY_SCHEMA,'profile':PROFILE,'baseCommit':backend_module.BASE,
         'implementationIdentity':backend_module.implementation_identity(),'implementationDirectory':str(impl),
         'qemuBinary':'/bin/true','qemuBinaryDigest':digest(Path('/bin/true').read_bytes()),
         'sourceCompiler':sys.executable,'sourceCompilerDigest':digest(Path(sys.executable).read_bytes()),
