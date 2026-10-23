@@ -73,16 +73,17 @@ def profiled_backend(backend,tmp_path,monkeypatch,request):
                 (request.param=='linker-norelax' and '-Wa,-mno-relax' in command)):
             record={'command':command,'returnCode':1,'stdout':'','stderr':'unrecognized -mno-relax','timedOut':False}
             raise profile.SystemBuildError('SYSTEM_BUILD_COMMAND_FAILED',record)
-        assert '-Wl,--no-relax' in command
+        if '-c' not in command: assert '-Wl,--no-relax' in command
         assert ('-Wa,-mno-relax' in command)==(request.param=='assembler-norelax')
-        Path(command[command.index('-o')+1]).write_bytes(bare_elf())
+        output=Path(kwargs['cwd'])/command[command.index('-o')+1]
+        output.write_bytes(b'explicit-simulated-object' if '-c' in command else bare_elf())
         return {'command':command,'returnCode':0,'stdout':'','stderr':'','timedOut':False}
     monkeypatch.setattr(profile,'run_command',source_transport)
     built=profile.probe_profile(value,tmp_path/'capabilities')
     assert built['relaxMode']==request.param
     assert len(built['records'])==12
     assert all(r['returnCode']==0 for r in built['records'])
-    assert len([c for c in calls if '-mcmodel=medany' in c])==(7 if request.param=='assembler-norelax' else 8)
+    assert len([c for c in calls if '-mcmodel=medany' in c])==(49 if request.param=='assembler-norelax' else 50)
     attempts=json.loads((tmp_path/'capabilities/probe-attempts.json').read_text())
     assert [a['relaxMode'] for a in attempts]==(['driver-norelax'] if request.param=='assembler-norelax'
         else ['driver-norelax','assembler-norelax'])
@@ -105,7 +106,7 @@ def test_full_matrix_selects_capability_and_binds_production(profiled_backend,tm
     assert result['elfChecks']['gpInitialization']=='auipc-addi-to-symbol'
 
 
-@pytest.mark.parametrize('mutation',['identity','flags','extra-flags','matrix','recipe','policy','tool','environment','mode','artifact','probe','boot','linker-script'])
+@pytest.mark.parametrize('mutation',['identity','flags','extra-flags','matrix','recipe','policy','tool','environment','mode','artifact','probe','boot','linker-script','cwd','object','wrapper','repeat','stage-exit'])
 def test_rehashed_configuration_cannot_relax_policy_or_hide_changed_inputs(profiled_backend,monkeypatch,mutation):
     _,value=profiled_backend;built=copy.deepcopy(value['buildProfile'])
     if mutation=='identity':built['profileIdentity']='bad'
@@ -125,6 +126,14 @@ def test_rehashed_configuration_cannot_relax_policy_or_hide_changed_inputs(profi
     if mutation=='linker-script':
         script=Path(value['implementationDirectory'])/'controlled_system.ld'
         script.write_text(script.read_text().replace('0x80000000','0x90000000'))
+    if mutation=='cwd':built['records'][0]['steps'][0]['cwd']='/another/workspace'
+    if mutation=='object':
+        r=built['records'][0]['steps'][0]
+        (Path(r['cwd'])/r['output']).write_bytes(b'changed-object')
+    if mutation=='wrapper':
+        (Path(built['records'][0]['workspace'])/'system-wrapper.c').write_text('void wrong(void){}')
+    if mutation=='repeat':built['records'][0]['reproduction']['programDigest']='sha256:'+'0'*64
+    if mutation=='stage-exit':built['records'][0]['steps'][0]['returnCode']=23
     if mutation!='identity':
         built.pop('profileIdentity');built['profileIdentity']=semantic_identity(built)
     with pytest.raises(ValueError,match='SYSTEM_BUILD_'):profile.validate_profile(built,value)
@@ -235,7 +244,7 @@ def test_changed_boot_cannot_enter_profile_preparation(backend,tmp_path,monkeypa
 
 @pytest.mark.parametrize('profiled_backend',['linker-norelax'],indirect=True)
 def test_selected_production_failure_never_retries_without_constraint(profiled_backend,tmp_path,monkeypatch):
-    path,_=profiled_backend;real_run=profile.run_command;calls=[]
+    path,value=profiled_backend;real_run=profile.run_command;calls=[]
     def reject_production(command,**kwargs):
         if '-mcmodel=medany' not in command:return real_run(command,**kwargs)
         calls.append(command)
@@ -247,5 +256,7 @@ def test_selected_production_failure_never_retries_without_constraint(profiled_b
     with pytest.raises(profile.SystemBuildError,match='SYSTEM_PROGRAM_BUILD_FAILED'):
         backend_module.build_program(backend_path=path,side='source',source=source,
             symbol='independent',operation='wfi',output=output)
-    assert len(calls)==1 and '-Wl,--no-relax' in calls[0]
+    assert len(calls)==1 and '-c' in calls[0]
+    assert '-Wl,--no-relax' in profile.program_command(value,side='source',source=source,
+        symbol='independent',operation='wfi',output=output,optimization='-O0',relax_mode='linker-norelax')[1][-1]['command']
     assert not output.exists() and not output.with_name(output.name+'.build.json').exists()

@@ -175,16 +175,21 @@ def run(config,**kwargs):
             programs[side]={'path':str(path.resolve()),'digest':program.artifact_digest,'buildIdentity':program.build_identity}
         if level is ValidationLevel.L0:
             builds=[]
-            with tempfile.TemporaryDirectory(prefix='rv2x86-system-l0-') as temp:
-                for opt in ('-O0','-O2','-O3'):
-                    for side in ('source','target'):
-                        source=(config['sourcePath'] if side=='source' else config['targetPath'])
-                        output=Path(temp)/side/opt[1:]/'program.elf'
-                        record=build_program(backend_path=config['backendPath'],side=side,source=source,
-                            symbol=config['scope']['functionSymbol'],operation=config['operation'],output=output,optimization=opt)
-                        if opt=='-O0' and record['programDigest']!=programs[side]['digest']:
-                            raise ValueError('SYSTEM_L0_INDEPENDENT_REBUILD_MISMATCH:'+side)
-                        builds.append(record)
+            from .system_build_profile import require_identical_rebuild
+            # Retain the complete matrix and mismatch snapshots beside the
+            # original artifacts. TemporaryDirectory used to erase the cause.
+            retained=Path(programs['source']['path']).parent/('system-l0-'+uuid4().hex)
+            retained.mkdir()
+            for opt in ('-O0','-O2','-O3'):
+                for side in ('source','target'):
+                    source=(config['sourcePath'] if side=='source' else config['targetPath'])
+                    output=retained/side/opt[1:]/'program.elf'
+                    record=build_program(backend_path=config['backendPath'],side=side,source=source,
+                        symbol=config['scope']['functionSymbol'],operation=config['operation'],output=output,optimization=opt)
+                    if opt=='-O0':
+                        require_identical_rebuild(programs[side],record,
+                            reason='SYSTEM_L0_INDEPENDENT_REBUILD_MISMATCH:'+side)
+                    builds.append(record)
             detail={'schemaVersion':RESULT,'level':'L0','status':'verified','claimBoundary':'freestanding-rv64i-and-native-sysv-build-matrix',
                 'builds':builds,'environmentId':actual_id,'environment':binding,
                 'notClaimedProperties':LIMITATIONS+['freestanding-source-sanitizers']}
@@ -215,9 +220,10 @@ def run(config,**kwargs):
         return ValidationLayerResult(level,ValidationStatus(detail['status']),identity,json.dumps(detail,sort_keys=True))
     except (OSError,ValueError,KeyError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
         return ValidationLayerResult(level,ValidationStatus.INCONCLUSIVE,detail=json.dumps({
-            'reasonCode':str(exc),'failureStage':'controlled_system_execution','executions':records,
+            'reasonCode':getattr(exc,'reason',str(exc)),'failureStage':'controlled_system_execution','executions':records,
+            'buildDiagnostic':getattr(exc,'diagnostic',None),
             'executionDisposition':'executed_inconclusive' if records else 'precondition_rejected',
-            'evidenceProductionDisposition':'partial' if records else 'not_produced'}))
+            'evidenceProductionDisposition':'partial' if records or getattr(exc,'diagnostic',None) else 'not_produced'}))
 
 
 def validate_persisted_result(detail):

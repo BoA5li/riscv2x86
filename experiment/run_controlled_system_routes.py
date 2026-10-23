@@ -111,6 +111,8 @@ def main():
                     'statusCounts':result.get('statusCounts'),
                     'buildFailures':[{'path':str(p),'diagnostic':json.loads(p.read_text())}
                         for p in sorted(configured.rglob('*.build.log.failure.json'))],
+                    'rebuildMismatches':[{'path':str(p),'diagnostic':json.loads(p.read_text())}
+                        for p in sorted(configured.rglob('rebuild-mismatch/comparison.json'))],
                     'caseResults':[str(configured/c['resultPath']) for c in result.get('cases',[]) if c.get('resultPath')]}
                 save()
                 raise ValueError('SYSTEM_RUN_PRODUCTION_NOT_VERIFIED')

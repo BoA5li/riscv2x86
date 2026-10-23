@@ -14,8 +14,8 @@ import subprocess
 from .semantic_content import semantic_identity
 from .system_instruction_ingress import digest
 
-SCHEMA = 'riscv2x86.system-build-profile.v1'
-POLICY = 'rv64i-lp64-bare-no-relax.v2'
+SCHEMA = 'riscv2x86.system-build-profile.v2'
+POLICY = 'rv64i-lp64-bare-no-relax.v3'
 OPTIMIZATIONS = ('-O0', '-O2', '-O3')
 RELAX_FLAGS = {
     'driver-norelax': ('-mno-relax', '-Wl,--no-relax'),
@@ -45,12 +45,13 @@ def check_build_implementation(value):
 
 class SystemBuildError(ValueError):
     def __init__(self, reason, diagnostic):
+        self.reason = reason
         self.diagnostic = diagnostic
         super().__init__(reason + ':' + json.dumps(diagnostic, sort_keys=True))
 
 
 def run_command(command, *, log=None, timeout=120, cwd=None):
-    record = {'command': [str(x) for x in command], 'returnCode': None,
+    record = {'command': [str(x) for x in command], 'cwd': str(Path(cwd or Path.cwd()).resolve()), 'returnCode': None,
               'timedOut': False, 'stdout': '', 'stderr': ''}
     try:
         result = subprocess.run(record['command'], capture_output=True, text=True,
@@ -110,29 +111,45 @@ def program_command(value, *, side, source, symbol, operation, output,
         raise ValueError('SYSTEM_BUILD_PROFILE_INVALID')
     if relax_mode not in RELAX_FLAGS:
         raise ValueError('SYSTEM_BUILD_RELAX_POLICY_INVALID')
-    output = Path(output); source = Path(source).resolve()
-    impl = Path(value['implementationDirectory'])
-    wrapper = output.parent / 'system-wrapper.c'
+    output = Path(output).resolve(); source = Path(source).resolve()
+    impl = Path(value['implementationDirectory']).resolve()
+    workspace = output.parent / (output.name + '.build')
     number = 1 if operation == 'ecall' else 2
     text = '#include ' + json.dumps(str(source)) + '\n'
     if side == 'source':
         text += 'void __rv2x86_probe(void){' + symbol + '();}\n'
-        command = [value['sourceCompiler'], '-std=gnu11', optimization, '-Wall', '-Wextra', '-Werror',
+        flags = ['-std=gnu11', optimization, '-Wall', '-Wextra', '-Werror',
             '-march=' + value['sourceMarch'], '-mabi=lp64', '-mcmodel=medany',
             *RELAX_FLAGS[relax_mode], '-msmall-data-limit=0',
             '-ffreestanding', '-fno-builtin', '-fno-inline', '-fno-pic', '-fno-pie', '-fno-stack-protector',
             '-fno-asynchronous-unwind-tables', '-nostdlib', '-nostartfiles', '-static',
-            '-D__RV2X86_OPERATION=' + str(number), str(wrapper),
-            str(impl/'controlled_system_kernel.c'), str(impl/'controlled_system_boot.S'),
-            '-Wl,-T,' + str(impl/'controlled_system.ld'), '-Wl,--build-id=none', '-o', str(output)]
+            '-D__RV2X86_OPERATION=' + str(number)]
+        inputs = [('wrapper', 'system-wrapper.c'), ('kernel', str(impl/'controlled_system_kernel.c')),
+                  ('boot', str(impl/'controlled_system_boot.S'))]
+        link_inputs = ['wrapper.o', 'kernel.o', 'boot.o', '-Wl,-T,' + str(impl/'controlled_system.ld')]
     else:
         text += '#include "controlled_system.h"\nint main(void){__rv2x86_system_initialize(' + str(number) + ');'
         text += '__rv2x86_system_event(' + str(1 if number == 1 else 4) + ');' + symbol + '();'
         text += '__rv2x86_system_event(' + str(3 if number == 1 else 5) + ');__rv2x86_system_finish();return 0;}\n'
-        command = [value['targetCompiler'], '-std=gnu11', optimization, '-Wall', '-Wextra', '-Werror',
-            '-fno-inline', '-I', str(impl), '-include', str(impl/'controlled_system.h'),
-            str(wrapper), value['runtimeLibrary'], '-Wl,--build-id=none', '-o', str(output)]
-    return text, command
+        flags = ['-std=gnu11', optimization, '-Wall', '-Wextra', '-Werror', '-fno-inline',
+                 '-I', str(impl), '-include', str(impl/'controlled_system.h')]
+        inputs = [('wrapper', 'system-wrapper.c')]
+        link_inputs = ['wrapper.o', str(Path(value['runtimeLibrary']).resolve())]
+    compiler = value[side+'Compiler']
+    # A relative object basename at link time is essential: a full random work
+    # path can become STT_FILE even when the object's basename is stable.
+    steps = [{'stage':'compile-'+name, 'cwd':str(workspace),
+              'command':[compiler, *[f for f in flags if not f.startswith('-Wl,')],
+                         '-c', source_file, '-o', name+'.o'], 'output':name+'.o',
+              'inputs':[source_file] + ([str(source)] if name=='wrapper' else [])
+                  + ([str(impl/'controlled_system.h')] if side=='target' else [])}
+             for name, source_file in inputs]
+    steps.append({'stage':'link', 'cwd':str(workspace),
+                  'command':[compiler, *flags, *link_inputs, '-Wl,--build-id=none', '-o', str(output)],
+                  'output':str(output), 'inputs':([name+'.o' for name,_ in inputs]
+                      + [str(impl/'controlled_system.ld')] if side=='source'
+                      else ['wrapper.o',str(Path(value['runtimeLibrary']).resolve())])})
+    return text, steps
 
 
 def inspect_elf(path, side):
@@ -202,29 +219,97 @@ def compile_program(value, *, side, source, symbol, operation, output, optimizat
     output = Path(output).resolve()
     if output.exists(): raise ValueError('SYSTEM_PROGRAM_OUTPUT_EXISTS')
     output.parent.mkdir(parents=True, exist_ok=True)
-    text, command = program_command(value, side=side, source=source, symbol=symbol,
+    text, plan = program_command(value, side=side, source=source, symbol=symbol,
         operation=operation, output=output, optimization=optimization, relax_mode=relax_mode)
-    (output.parent/'system-wrapper.c').write_text(text)
+    workspace = Path(plan[0]['cwd'])
+    workspace.mkdir()  # Never reuse or overwrite retained build evidence.
+    wrapper = workspace/'system-wrapper.c'; wrapper.write_text(text)
     log = output.with_name(output.name + '.build.log')
-    result = None
+    steps = []; stage = 'compile-link'; command = plan[0]['command']
     try:
-        result = run_command(command, log=log)
+        for item in plan:
+            command = item['command']
+            stage_log = workspace/(item['stage']+'.log')
+            input_digests = {name:digest((workspace/name).read_bytes()) for name in item['inputs']}
+            result = run_command(command, cwd=workspace, log=stage_log)
+            product = workspace/item['output']
+            if not product.is_file(): raise ValueError('SYSTEM_BUILD_STAGE_OUTPUT_MISSING:'+item['stage'])
+            steps.append(dict(item, returnCode=result['returnCode'], outputDigest=digest(product.read_bytes()),
+                              inputDigests=input_digests,
+                              stdout=result['stdout'], stderr=result['stderr'], timedOut=result['timedOut']))
+        stage = 'elf-inspection'
         checks = inspect_elf(output, side)
     except (ValueError, OSError) as exc:
         diagnostic = {'side':side, 'operation':operation, 'optimization':optimization,
             'output':str(output), 'logPath':str(log), 'outputExists':output.exists(),
-            'command':command, 'stage':'elf-inspection' if result is not None else 'compile-link',
-            'returnCode':result['returnCode'] if result is not None else getattr(exc,'diagnostic',{}).get('returnCode'),
+            'workspace':str(workspace), 'steps':steps, 'command':command, 'stage':stage,
+            'returnCode':0 if stage=='elf-inspection' else getattr(exc,'diagnostic',{}).get('returnCode'),
             'cause':getattr(exc,'diagnostic',str(exc))}
+        log.write_text(json.dumps(diagnostic,indent=2)+'\n')
         log.with_name(log.name+'.failure.json').write_text(json.dumps(diagnostic,indent=2)+'\n')
         raise SystemBuildError('SYSTEM_PROGRAM_BUILD_FAILED', diagnostic) from exc
-    record = {'programDigest':digest(output.read_bytes()), 'command':command,
+    record = {'schemaVersion':'riscv2x86.system-program-build.v2',
+        'programDigest':digest(output.read_bytes()), 'command':plan[-1]['command'], 'steps':steps,
+        'workspace':str(workspace), 'wrapperDigest':digest(wrapper.read_bytes()),
         'sourceDigest':digest(Path(source).read_bytes()), 'sourcePath':str(Path(source).resolve()),
         'programPath':str(output), 'side':side,
         'optimization':optimization, 'operation':operation, 'elfChecks':checks,
-        'returnCode':result['returnCode'], 'relaxMode':relax_mode}
+        'returnCode':0, 'relaxMode':relax_mode}
+    log.write_text(''.join(r['stage']+': '+r['stdout']+r['stderr']+'\n' for r in steps))
+    log.with_suffix(log.suffix+'.json').write_text(json.dumps(record,indent=2)+'\n')
     output.with_name(output.name+'.build.json').write_text(json.dumps(record,indent=2)+'\n')
     return record
+
+
+def elf_difference_regions(first, second):
+    """Diagnostic only: no section or segment difference is ever waived."""
+    def regions(data):
+        if data[:6]!=b'\x7fELF\x02\x01': raise ValueError('ELF64-LE-required')
+        phoff,shoff=struct.unpack_from('<QQ',data,32)
+        phsize,phnum,shsize,shnum,strings_index=struct.unpack_from('<HHHHH',data,54)
+        if phsize!=56 or shsize!=64 or phoff+phnum*56>len(data) or shoff+shnum*64>len(data):
+            raise ValueError('ELF-header-bounds')
+        sections=[struct.unpack_from('<IIQQQQIIQQ',data,shoff+i*64) for i in range(shnum)]
+        names=sections[strings_index]
+        strings=data[names[4]:names[4]+names[5]]
+        result=[]
+        for i,x in enumerate(sections):
+            if x[1]!=8 and x[4]+x[5]>len(data): raise ValueError('ELF-section-bounds')
+            name=strings[x[0]:].split(b'\0',1)[0].decode('utf-8',errors='replace')
+            result.append({'index':i,'name':name,'type':x[1],'flags':x[2],'address':x[3],
+                'offset':x[4],'size':x[5],'digest':None if x[1]==8 else digest(data[x[4]:x[4]+x[5]])})
+        loads=[]
+        for i in range(phnum):
+            p=struct.unpack_from('<IIQQQQQQ',data,phoff+i*56)
+            if p[0]==1:
+                if p[2]+p[5]>len(data):raise ValueError('ELF-load-bounds')
+                loads.append({'header':list(p),'digest':digest(data[p[2]:p[2]+p[5]])})
+        return result,loads
+    try:
+        a,la=regions(first);b,lb=regions(second)
+        changed=[{'original':a[i] if i<len(a) else None,'rebuilt':b[i] if i<len(b) else None}
+                 for i in range(max(len(a),len(b))) if i>=len(a) or i>=len(b) or a[i]!=b[i]]
+        return {'changedSections':changed,'loadSegmentsEqual':la==lb}
+    except (ValueError,IndexError,struct.error) as exc:
+        return {'inspectionError':str(exc)}
+
+
+def require_identical_rebuild(original, rebuilt, *, reason):
+    """Keep full-byte identity mandatory; a difference report never grants permission."""
+    first = Path(original['path']); second = Path(rebuilt['programPath'])
+    a = first.read_bytes(); b = second.read_bytes()
+    if digest(a) == original['digest'] == digest(b): return
+    evidence = second.parent/'rebuild-mismatch'; evidence.mkdir()
+    (evidence/'original.elf').write_bytes(a); (evidence/'rebuilt.elf').write_bytes(b)
+    offset = next((i for i,(x,y) in enumerate(zip(a,b)) if x!=y), min(len(a),len(b)))
+    diagnostic = {'reasonCode':reason, 'originalPath':str(first), 'rebuiltPath':str(second),
+        'expectedDigest':original['digest'], 'originalDigest':digest(a), 'rebuiltDigest':digest(b),
+        'originalSize':len(a), 'rebuiltSize':len(b), 'firstDifferenceOffset':offset,
+        'originalBytes':a[offset:offset+32].hex(), 'rebuiltBytes':b[offset:offset+32].hex(),
+        'buildRecord':rebuilt, 'evidenceDirectory':str(evidence),
+        'elfDifference':elf_difference_regions(a,b)}
+    (evidence/'comparison.json').write_text(json.dumps(diagnostic,indent=2)+'\n')
+    raise SystemBuildError(reason, diagnostic)
 
 
 def probe_source_text(operation, side):
@@ -253,6 +338,12 @@ def probe_profile(value, output):
                         path=output/mode/operation/opt[1:]/side/'program.elf'
                         record=compile_program(value,side=side,source=source if side=='source' else target,
                             symbol='probe',operation=operation,output=path,optimization=opt,relax_mode=mode)
+                        repeated=compile_program(value,side=side,source=source if side=='source' else target,
+                            symbol='probe',operation=operation,output=path.parent/'repeat'/'program.elf',
+                            optimization=opt,relax_mode=mode)
+                        require_identical_rebuild({'path':record['programPath'],'digest':record['programDigest']},
+                            repeated,reason='SYSTEM_BUILD_PROFILE_REPRODUCTION_MISMATCH:'+side)
+                        record['reproduction']=repeated
                         records.append(record)
         except (ValueError,OSError) as exc:
             attempts.append({'relaxMode':mode,'failure':getattr(exc,'diagnostic',str(exc))})
@@ -288,20 +379,40 @@ def _validate_profile(profile, value):
     if not isinstance(records,list) or len(records)!=len(expected) or {(r['side'],r['operation'],r['optimization']) for r in records}!=expected:
         raise ValueError('SYSTEM_BUILD_PROFILE_MATRIX_INCOMPLETE')
     for r in records:
-        if r['returnCode']!=0 or r['relaxMode']!=profile['relaxMode']:
-            raise ValueError('SYSTEM_BUILD_PROFILE_MATRIX_FAILED')
-        expected_flags=RELAX_FLAGS[profile['relaxMode']]
-        if r['side']=='source' and not all(flag in r['command'] for flag in expected_flags):
-            raise ValueError('SYSTEM_BUILD_PROFILE_FLAGS_MISSING')
-        source = Path(r['sourcePath']); program = Path(r['programPath'])
-        if source.read_text()!=probe_source_text(r['operation'],r['side']) or digest(source.read_bytes())!=r['sourceDigest']:
-            raise ValueError('SYSTEM_BUILD_PROFILE_PROBE_CHANGED')
-        text, command=program_command(value,side=r['side'],source=source,symbol='probe',operation=r['operation'],
-            output=program,optimization=r['optimization'],relax_mode=profile['relaxMode'])
-        if r['command']!=command or (program.parent/'system-wrapper.c').read_text()!=text:
-            raise ValueError('SYSTEM_BUILD_PROFILE_COMMAND_CHANGED')
-        if digest(program.read_bytes())!=r['programDigest'] or inspect_elf(program,r['side'])!=r['elfChecks']:
-            raise ValueError('SYSTEM_BUILD_PROFILE_ARTIFACT_CHANGED')
+        validate_build_record(r, value, profile['relaxMode'])
+        repeated=r['reproduction']
+        if any(repeated[k]!=r[k] for k in ('side','operation','optimization','sourcePath','sourceDigest','programDigest')):
+            raise ValueError('SYSTEM_BUILD_PROFILE_REPRODUCTION_MISMATCH')
+        if Path(repeated['programPath'])!=Path(r['programPath']).parent/'repeat'/'program.elf':
+            raise ValueError('SYSTEM_BUILD_PROFILE_REPRODUCTION_PATH_INVALID')
+        validate_build_record(repeated, value, profile['relaxMode'])
+
+
+def validate_build_record(r, value, mode):
+    if r['schemaVersion']!='riscv2x86.system-program-build.v2' or r['returnCode']!=0 or r['relaxMode']!=mode:
+        raise ValueError('SYSTEM_BUILD_PROFILE_MATRIX_FAILED')
+    source=Path(r['sourcePath']); program=Path(r['programPath'])
+    if source.read_text()!=probe_source_text(r['operation'],r['side']) or digest(source.read_bytes())!=r['sourceDigest']:
+        raise ValueError('SYSTEM_BUILD_PROFILE_PROBE_CHANGED')
+    text, plan=program_command(value,side=r['side'],source=source,symbol='probe',operation=r['operation'],
+        output=program,optimization=r['optimization'],relax_mode=mode)
+    if (r['command']!=plan[-1]['command'] or r['workspace']!=plan[0]['cwd']
+            or len(r['steps'])!=len(plan)):
+        raise ValueError('SYSTEM_BUILD_PROFILE_COMMAND_CHANGED')
+    wrapper=Path(r['workspace'])/'system-wrapper.c'
+    if wrapper.read_text()!=text or digest(wrapper.read_bytes())!=r['wrapperDigest']:
+        raise ValueError('SYSTEM_BUILD_PROFILE_WRAPPER_CHANGED')
+    for actual, expected in zip(r['steps'],plan):
+        if (any(actual[k]!=v for k,v in expected.items()) or actual['returnCode']!=0
+                or actual['timedOut'] is not False):
+            raise ValueError('SYSTEM_BUILD_PROFILE_STAGE_CHANGED')
+        product=Path(actual['cwd'])/actual['output']
+        if actual['inputDigests']!={name:digest((Path(actual['cwd'])/name).read_bytes()) for name in expected['inputs']}:
+            raise ValueError('SYSTEM_BUILD_PROFILE_INPUT_CHANGED')
+        if digest(product.read_bytes())!=actual['outputDigest']:
+            raise ValueError('SYSTEM_BUILD_PROFILE_OBJECT_CHANGED')
+    if digest(program.read_bytes())!=r['programDigest'] or inspect_elf(program,r['side'])!=r['elfChecks']:
+        raise ValueError('SYSTEM_BUILD_PROFILE_ARTIFACT_CHANGED')
 
 
 def validate_profile(profile, value):
