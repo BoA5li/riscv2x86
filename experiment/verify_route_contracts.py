@@ -15,6 +15,17 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_l3_authoritative_consumption.py',
+    'test_l3_intent_requirements.py',
+    'test_l3_provider_resolution.py',
+    'test_l3_experiment_runner.py',
+    'test_l3_evidence_closure.py',
+    'test_l3_attributed_traces.py',
+    'test_l3_concurrency_campaign.py',
+    'test_l3_statistical_experiment.py',
+    'test_l3_specialized_experiment.py',
+    'test_l3_batch_coverage.py',
+    'test_paper_evaluation.py',
     'test_system_build_profile.py',
     'test_system_build_reproducibility.py',
     'test_privileged_source_completion.py',

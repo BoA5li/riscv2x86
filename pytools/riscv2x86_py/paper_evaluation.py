@@ -346,7 +346,14 @@ def _validation_maps(
                         except (ValueError, AttributeError):
                             raw = None
                     try:
-                        closed = parse_fragment(raw)
+                        linkage = evaluation.get("translationEvaluationLink") or {}
+                        from .l3_intent_requirements import parse_l3_requirement_manifest
+                        from .l3_evidence_closure import validate_fragment_against_requirement
+                        manifest = parse_l3_requirement_manifest(linkage.get("l3Requirements"))
+                        matches = [r for r in manifest.requirements if r["fragmentId"] == attempt["fragmentId"]]
+                        if len(matches) != 1:
+                            raise ValueError("L3 authoritative requirement unavailable")
+                        closed = validate_fragment_against_requirement(raw, matches[0])
                         if closed["status"] != "verified":
                             raise ValueError("L3 fragment has incomplete properties")
                         reports = payload.get("platformReports")
@@ -412,9 +419,13 @@ def _validation_maps(
         if not any(level in item for item in maps):
             continue
         statuses = [item.get(level, "inconclusive") for item in maps]
-        result[level] = ("failed" if "failed" in statuses else
-                         "inconclusive" if "inconclusive" in statuses else
-                         "diagnostic_verified" if "diagnostic_verified" in statuses else "verified")
+        if level == "L3":
+            from .l3_evidence_closure import aggregate_statuses
+            result[level] = aggregate_statuses(statuses)
+        else:
+            result[level] = ("failed" if "failed" in statuses else
+                             "inconclusive" if "inconclusive" in statuses else
+                             "diagnostic_verified" if "diagnostic_verified" in statuses else "verified")
     dimension_result = {}
     for dimension in sorted(set(name for item in dimension_maps for name in item)):
         statuses = [item.get(dimension, "inconclusive") for item in dimension_maps]
@@ -605,7 +616,10 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                         closed = detail.get("fragmentResult")
                         if isinstance(closed, Mapping) and isinstance(fid, str):
                             from .l3_evidence_closure import parse_fragment, parse_dimension
-                            closed = parse_fragment(closed)
+                            from .l3_evidence_closure import validate_fragment_against_requirement
+                            if fid not in l3_requirements:
+                                raise ValueError("L3 authoritative requirement unavailable")
+                            closed = validate_fragment_against_requirement(closed, l3_requirements[fid])
                             if closed["fragmentId"] != fid:
                                 raise ValueError("L3 fragment attribution mismatch")
                             provider_detail = detail.get("providerDetail")
@@ -753,7 +767,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                           {x["propertyId"] for x in l3_requirement["requiredProperties"]} and
                           not l3_evidence["uncoveredEffects"])
         l3_complete = bool(valid_evidence and all(
-            value["status"] in {"verified", "failed"} and value["evidenceIdentity"]
+            value["status"] in {"verified", "failed"} and value["comparisonEvidenceIdentity"]
             for value in l3_evidence["dimensionResults"].values()))
         fragment.update({"l3EligibilityStatus": l3_status,
                          "l3Eligible": l3_status == "eligible",

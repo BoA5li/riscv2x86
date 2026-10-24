@@ -292,7 +292,48 @@ def parse_l3_requirement_manifest(value: Mapping[str, object]) -> L3RequirementM
         _sha(item["profileIdentity"], "profileIdentity")
         _sha(item["proofIdentity"], "proofIdentity", empty=True)
         _sha(item["approvedTargetRelationIdentity"], "approvedTargetRelationIdentity", empty=True)
-        L3IntentKind(item["intentKind"])
+        kind = L3IntentKind(item["intentKind"])
+        for name in ("fragmentId", "findingId"):
+            _text(item[name], name)
+        _text(item["programId"], "programId", empty=True)
+        _text(item["translationOutcome"], "translationOutcome")
+        classes = _strings(item["experimentClasses"], "experimentClasses")
+        if set(classes) - _CLASSES:
+            raise ValueError("L3 requirement experiment class unknown")
+        _strings(item["reasonCodes"], "reasonCodes")
+        props = item["requiredProperties"]
+        if not isinstance(props, list):
+            raise ValueError("L3 requirement properties invalid")
+        ids = []
+        for prop in props:
+            if not isinstance(prop, Mapping):
+                raise ValueError("L3 requirement property invalid")
+            _keys(prop, {"propertyId", "dimension", "unit"}, "L3 required property")
+            ids.append(_text(prop["propertyId"], "propertyId"))
+            if prop["dimension"] not in _DIMENSIONS:
+                raise ValueError("L3 requirement dimension unknown")
+            L3EvidenceUnit(prop["unit"])
+        if ids != sorted(set(ids)):
+            raise ValueError("L3 requirement properties must be sorted and unique")
+        status = item["eligibilityStatus"]
+        if status == "eligible":
+            if (kind in {L3IntentKind.NONE, L3IntentKind.UNKNOWN} or not props or not classes
+                    or not item["programId"] or not item["proofIdentity"]
+                    or not item["approvedTargetRelationIdentity"]
+                    or item["translationOutcome"] not in _OUTCOMES
+                    or item["disposition"] != "not_run"):
+                raise ValueError("L3 eligible requirement inconsistent")
+        elif status == "not_applicable":
+            if kind is not L3IntentKind.NONE or props or classes or item["disposition"] != status:
+                raise ValueError("L3 not-applicable requirement inconsistent")
+        elif status == "inconclusive" and item["disposition"] != "inconclusive":
+            raise ValueError("L3 incomplete requirement disposition invalid")
+        elif status == "needs_route" and (item["disposition"] != "not_run" or
+                item["translationOutcome"] in _OUTCOMES or kind in {L3IntentKind.NONE, L3IntentKind.UNKNOWN}):
+            raise ValueError("L3 route requirement inconsistent")
         if item["eligibilityStatus"] not in {"eligible", "inconclusive", "not_applicable", "needs_route"}:
             raise ValueError("L3 eligibility status unknown")
+    ids = [x["fragmentId"] for x in value["requirements"]]
+    if len(ids) != len(set(ids)):
+        raise ValueError("L3 requirement fragment identities ambiguous")
     return L3RequirementManifest(tuple(value["requirements"]), identity)

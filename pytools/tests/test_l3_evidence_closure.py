@@ -106,10 +106,14 @@ def test_paper_layer_classifies_diagnostic_separately_from_formal_l3():
     import json
     from riscv2x86_py.paper_evaluation import _validation_maps
 
-    req = requirement(("p:access", "access_pattern"))
+    from tests.test_l3_provider_resolution import _facts
+    profile, manifest = _facts()
+    req = manifest["requirements"][0]
     reports = {"source": {"event": "a"}, "target": {"event": "b"}}
     def observed(scope, l2):
-        item = dimension(scope=scope, l2=l2)
+        item = dimension("property:access", scope=scope, l2=l2)
+        for key in ("fragmentId", "programId", "profileIdentity", "requirementIdentity"):
+            item[key] = req[key]
         item["sourceReportIdentity"] = identity(reports["source"])
         item["targetReportIdentity"] = identity(reports["target"])
         item["resultIdentity"] = identity({k: v for k, v in item.items() if k != "resultIdentity"})
@@ -118,7 +122,8 @@ def test_paper_layer_classifies_diagnostic_separately_from_formal_l3():
                                 claim_scope="target_experiment_diagnostic")
     layers = [{"level": "L3", "status": "verified", "evidenceIdentity": H,
                "detail": json.dumps({"fragmentResult": diagnostic, "platformReports": reports})}]
-    evaluation = {"attempts": [{"fragmentId": "fragment:0", "validation": {"layers": layers}}]}
+    evaluation = {"translationEvaluationLink": {"l3Requirements": manifest},
+                  "attempts": [{"fragmentId": "fragment:0", "validation": {"layers": layers}}]}
     statuses, *_ = _validation_maps(evaluation, {"fragment:0"})
     assert statuses["L3"] == "diagnostic_verified"
     layers[0]["detail"] = json.dumps({"fragmentResult": close_fragment(req, [observed("architectural_intent", "architectural")],

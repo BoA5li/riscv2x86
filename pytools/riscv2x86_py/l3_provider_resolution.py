@@ -137,6 +137,11 @@ def _provider_inputs(provider: L3ValidatorProvider) -> tuple[Path, str, tuple[st
 
 def _contract_covers_properties(contract: object, profile: object) -> bool:
     """A provider declaration cannot substitute for an approved experiment contract."""
+    from .l3_property_bindings import validate_property_bindings
+    try:
+        validate_property_bindings(contract, [x.to_dict() for x in profile.required_properties])
+    except (ValueError, TypeError, KeyError):
+        return False
     classes = set(contract.experiment_classes)
     dimensions = {item.dimension for item in profile.required_properties}
     if "access_pattern" in dimensions and ("memory_access" not in classes
@@ -146,14 +151,14 @@ def _contract_covers_properties(contract: object, profile: object) -> bool:
                                          or not contract.required_control_flow):
         return False
     if "synchronization" in dimensions and (not contract.required_sync_semantics or
-            contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA and
+            contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA and
             not contract.payload.get("campaignContract")):
         return False
     if "performance_trend" in dimensions and ("statistical" not in classes or
-            not contract.metrics and contract.payload["schemaVersion"] != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
+            not contract.metrics and contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
         return False
     if "side_channel_speculation" in dimensions:
-        return (contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA and
+        return (contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA and
                 "side_channel_speculation" in classes and bool(contract.payload.get("specializedExperiment")) and
                 {"cross-ISA-hardware-equivalence", "identical-cache-or-timing-parameters"} <=
                 set(profile.not_claimed_properties))
@@ -264,7 +269,8 @@ def resolve_l3_execution_plan(
                                                        EXPERIMENT_CONTRACT_TRACE_SCHEMA,
                                                        EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA,
                                                        EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA}
-                                                       | {EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA}
+                                                       | {EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA,
+                                                          "riscv2x86.microarchitecture-experiment-contract.v7"}
                 or contract.intent_profile_identity != profile.profile_identity
                 or contract.requirement_identity != requirement["requirementIdentity"]
                 or contract.approved_target_relation_identity != profile.approved_target_relation_identity
@@ -276,7 +282,7 @@ def resolve_l3_execution_plan(
             if provider.binding_kind == "explicit":
                 explicit_contract_errors.add("l3.contract.binding-mismatch")
             continue
-        if contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA:
+        if contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA:
             from .l3_specialized_experiment import mechanism_route_status
             specialized = contract.payload["specializedExperiment"]
             if (provider.binding_kind != "explicit" or
@@ -428,17 +434,36 @@ def build_l3_capability_registry_validator(
                                              detail="l3.provider.protocol-error")
             if result.status is ValidationStatus.VERIFIED:
                 _sha(result.evidence_identity, "L3 provider evidence identity")
-                from .l3_evidence_closure import parse_fragment
+                from .l3_evidence_closure import validate_fragment_against_requirement
                 try:
                     provider_detail = json.loads(result.detail)
-                    fragment = parse_fragment(provider_detail["fragmentResult"])
+                    fragment_raw = provider_detail["fragmentResult"]
                     reports = provider_detail["platformReports"]
                     if not isinstance(reports, Mapping) or set(reports) != {"source", "target"}:
                         raise ValueError("L3 provider source/target report bodies missing")
-                    from .l3_evidence_closure import parse_dimension
-                    for dimension in fragment["dimensionResults"].values():
-                        parse_dimension(dimension, source_report=reports["source"],
-                                        target_report=reports["target"])
+                    context = {"contractIdentity": plan["contractIdentity"],
+                        "sourceArtifactIdentity": plan["sourceArtifactDigest"],
+                        "targetArtifactIdentity": plan["targetArtifactDigest"]}
+                    artifact_identity = getattr(artifact, "identity", None)
+                    _sha(artifact_identity, "L3 translation artifact")
+                    context["translationArtifactIdentity"] = artifact_identity
+                    prior = kwargs.get("prior_layer_results")
+                    if (not isinstance(prior, tuple) or len(prior) != 3 or
+                            any(not isinstance(x, ValidationLayerResult) for x in prior) or
+                            tuple(x.level for x in prior) != (ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2) or
+                            any(x.status is not ValidationStatus.VERIFIED for x in prior)):
+                        raise ValueError("L3 independent prerequisites incomplete")
+                    for index, name in enumerate(("l0EvidenceIdentity", "l1EvidenceIdentity", "l2EvidenceIdentity")):
+                        context[name] = _sha(prior[index].evidence_identity, name)
+                    scope = json.loads(prior[2].detail)["claimScope"]
+                    if scope not in {"architectural", "approved_functional_relation"}:
+                        raise ValueError("L3 independent L2 claim scope invalid")
+                    context["l2ClaimScope"] = scope
+                    context["claimScope"] = ("architectural_intent" if scope == "architectural" else
+                                             "target_experiment_diagnostic")
+                    fragment = validate_fragment_against_requirement(fragment_raw, requirement,
+                        source_report=reports["source"], target_report=reports["target"],
+                        expected_context=context)
                     if (fragment["status"] != "verified" or fragment["fragmentId"] != fragment_id or
                             fragment["requirementIdentity"] != requirement["requirementIdentity"] or
                             fragment["profileIdentity"] != requirement["profileIdentity"] or
@@ -460,6 +485,7 @@ def build_l3_capability_registry_validator(
                                 "providerKind": provider.binding_kind,
                                 "providerInvoked": True,
                                 "contractSchemaVersion": contract.payload["schemaVersion"],
+                                "contractBaseSchemaVersion": contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]),
                                 "fragmentResult": fragment,
                                 "providerDetail": result.detail}, sort_keys=True))
             return ValidationLayerResult(
@@ -469,6 +495,7 @@ def build_l3_capability_registry_validator(
                             "providerKind": provider.binding_kind,
                             "providerInvoked": True,
                             "contractSchemaVersion": contract.payload["schemaVersion"],
+                                "contractBaseSchemaVersion": contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]),
                             "providerDetail": result.detail}, sort_keys=True))
         except (ValueError, OSError, KeyError, TypeError) as exc:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,

@@ -70,10 +70,13 @@ def test_invocation_not_equivalent_to_evidence_or_verification():
 def test_diagnostic_evidence_never_enters_architectural_numerator():
     evaluation, manifest = _evaluation()
     req = manifest["requirements"][0]
-    result = {"fragmentId": req["fragmentId"], "requirementIdentity": req["requirementIdentity"],
-              "claimScope": "target_experiment_diagnostic", "status": "verified",
-              "uncoveredEffects": [], "dimensionResults": {"p:0": {"status": "verified",
-                                                               "evidenceIdentity": H}}}
+    from tests.test_l3_evidence_closure import dimension
+    from riscv2x86_py.l3_evidence_closure import close_fragment, identity
+    item = dimension("p:0", scope="target_experiment_diagnostic", l2="approved_functional_relation")
+    for key in ("fragmentId", "programId", "profileIdentity", "requirementIdentity"):
+        item[key] = req[key]
+    item["resultIdentity"] = identity({k: v for k, v in item.items() if k != "resultIdentity"})
+    result = close_fragment(req, [item], claim_scope="target_experiment_diagnostic")
     counts = summarize_l3_case(evaluation, [result])["counts"]
     assert counts["architecturalIntentVerified"] == 0
     assert counts["diagnosticVerified"] == 1

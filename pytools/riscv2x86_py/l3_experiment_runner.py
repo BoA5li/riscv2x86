@@ -177,7 +177,7 @@ class ExperimentContract:
         if "control_flow" in self.experiment_classes and not self.required_control_flow:
             raise ValueError("control-flow experiment requires logical control events")
         if ("statistical" in self.experiment_classes and not self.metrics and
-                self.payload["schemaVersion"] != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
+                self.payload.get("baseSchemaVersion", self.payload["schemaVersion"]) != EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA):
             raise ValueError("statistical experiment requires metrics")
         if self.sample_count <= 1 or self.warmup_count < 0 or not self.complete:
             raise ValueError("sample/warmup/complete contract is invalid")
@@ -316,9 +316,36 @@ def _parse_array(value: object, parser: Callable[[Mapping[str, object], str], ob
 
 
 def load_experiment_contract(path: str | Path) -> ExperimentContract:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    return parse_experiment_contract(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def parse_experiment_contract(value: object) -> ExperimentContract:
     if not isinstance(value, Mapping):
         raise ValueError("experiment contract must be an object")
+    from .l3_property_bindings import PROPERTY_CONTRACT_SCHEMA
+    if value.get("schemaVersion") == PROPERTY_CONTRACT_SCHEMA:
+        base_schema = value.get("baseSchemaVersion")
+        if base_schema not in {EXPERIMENT_CONTRACT_BOUND_SCHEMA, EXPERIMENT_CONTRACT_TRACE_SCHEMA,
+                EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA, EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA,
+                EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA}:
+            raise ValueError("L3 property contract base schema invalid")
+        if "propertyBindings" not in value:
+            raise ValueError("L3 property contract bindings missing")
+        base = dict(value)
+        base.pop("baseSchemaVersion")
+        base.pop("propertyBindings")
+        base["schemaVersion"] = base_schema
+        contract = parse_experiment_contract(base)
+        from dataclasses import replace
+        contract = replace(contract, payload=dict(value))
+        from .l3_property_bindings import validate_property_bindings
+        bindings = value["propertyBindings"]
+        if not isinstance(bindings, list) or not bindings:
+            raise ValueError("L3 property contract bindings missing")
+        properties = [{name: binding[name] for name in ("propertyId", "dimension", "unit")}
+                      for binding in bindings if isinstance(binding, dict)]
+        validate_property_bindings(contract, properties)
+        return contract
     fields = {"schemaVersion", "experimentId", "translationPlanId", "proofIdentity", "sourceIntent",
               "targetStrategy", "strategyRegistrationId", "preservationLevel", "experimentClasses",
               "requiredAccessPattern", "approvedExtraAccesses", "requiredControlFlow",
@@ -466,10 +493,10 @@ def load_l3_experiment_runner_config(value: Mapping[str, object]) -> ExperimentR
 
 def parse_platform_report(value: Mapping[str, object], *, side: str, runner_id: str,
                           contract: ExperimentContract) -> PlatformReport:
-    trace_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_TRACE_SCHEMA
-    campaign_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA
-    statistical_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA
-    specialized_enabled = contract.payload["schemaVersion"] == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA
+    trace_enabled = contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_TRACE_SCHEMA
+    campaign_enabled = contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_CAMPAIGN_SCHEMA
+    statistical_enabled = contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA
+    specialized_enabled = contract.payload.get("baseSchemaVersion", contract.payload["schemaVersion"]) == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA
     _fields(value, {"schemaVersion", "side", "runnerId", "contractIdentity", "calibrationProtocol",
                     "randomSeed", "affinityPolicy", "noisePolicy",
                     "warmupsCompleted", "environment", "logicalAccesses", "controlFlow",
@@ -747,6 +774,8 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                     contract.approved_target_relation_identity):
                 raise ValueError("L3 contract/profile/requirement binding mismatch")
             requirement = matches[0]
+            from .l3_property_bindings import validate_property_bindings
+            validate_property_bindings(contract, requirement["requiredProperties"])
         except ValueError as exc:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail="L3 requirement unavailable or stale: " + str(exc))

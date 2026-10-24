@@ -105,10 +105,7 @@ def close_fragment(requirement: Mapping, dimensions: Sequence[Mapping], *, claim
     uncovered = sorted(set(uncovered_effects))
     if any(not isinstance(x, str) or not x for x in uncovered):
         raise ValueError("L3 uncovered effect invalid")
-    status = ("inconclusive" if set(expected) - set(actual) or uncovered else
-              "failed" if "failed" in statuses else
-              "inconclusive" if "inconclusive" in statuses else
-              "not_run" if "not_run" in statuses else "verified")
+    status = aggregate_statuses(statuses + (["inconclusive"] if set(expected) - set(actual) or uncovered else []))
     payload = {"schemaVersion": FRAGMENT_SCHEMA, "fragmentId": requirement["fragmentId"],
                "programId": requirement["programId"], "requirementIdentity": requirement["requirementIdentity"],
                "profileIdentity": requirement["profileIdentity"], "claimScope": claim_scope,
@@ -138,7 +135,7 @@ def parse_fragment(value: object) -> Mapping[str, object]:
                        for pid in value["requiredProperties"] if pid in value["dimensionResults"]]}
     if set(value["requiredProperties"]) - set(value["dimensionResults"]):
         # The missing properties must stay missing; a verified claim cannot be reconstructed.
-        if value["status"] != "inconclusive":
+        if value["status"] not in {"inconclusive", "failed"}:
             raise ValueError("L3 fragment missing required property")
         for dimension in value["dimensionResults"].values():
             if (dimension["fragmentId"] != value["fragmentId"] or dimension["programId"] != value["programId"] or
@@ -146,12 +143,59 @@ def parse_fragment(value: object) -> Mapping[str, object]:
                     dimension["profileIdentity"] != value["profileIdentity"] or
                     dimension["claimScope"] != value["claimScope"]):
                 raise ValueError("L3 fragment partial property identity mismatch")
+        expected_status = aggregate_statuses(
+            [x["status"] for x in value["dimensionResults"].values()] + ["inconclusive"])
+        if value["status"] != expected_status:
+            raise ValueError("L3 partial fragment status mismatch")
         return value
     expected = close_fragment(requirement, list(value["dimensionResults"].values()),
                               claim_scope=value["claimScope"], uncovered_effects=value["uncoveredEffects"])
     if expected != value:
         raise ValueError("L3 fragment closure mismatch")
     return value
+
+
+def validate_fragment_against_requirement(value: object, requirement: Mapping, *,
+        source_report: Mapping | None = None, target_report: Mapping | None = None,
+        expected_context: Mapping | None = None) -> Mapping[str, object]:
+    """Reclose against the external obligation, never a result-owned property list.
+
+    Partial evidence is permitted only with its original full requiredProperties
+    and recomputed incomplete verdict. Context is supplied by the consumer's
+    approved execution plan, not inferred from the result's digest.
+    """
+    parsed = parse_fragment(value)
+    expected = close_fragment(requirement, list(parsed["dimensionResults"].values()),
+                              claim_scope=parsed["claimScope"],
+                              uncovered_effects=parsed["uncoveredEffects"])
+    if expected != parsed:
+        raise ValueError("L3 authoritative requirement closure mismatch")
+    for dimension in parsed["dimensionResults"].values():
+        parse_dimension(dimension, source_report=source_report, target_report=target_report)
+        for name, wanted in (expected_context or {}).items():
+            if name not in _DIM_FIELDS or dimension[name] != wanted:
+                raise ValueError("L3 execution context mismatch: " + name)
+    return parsed
+
+
+def aggregate_statuses(statuses: Sequence[str]) -> str:
+    """Order-independent conjunction; a valid counterexample is never hidden."""
+    allowed = _STATUSES | {"diagnostic_verified", "not_applicable", "needs_route", "unsupported"}
+    if any(x not in allowed for x in statuses):
+        raise ValueError("L3 aggregate status invalid")
+    active = [x for x in statuses if x != "not_applicable"]
+    if not active:
+        return "not_applicable" if statuses else "not_run"
+    if "failed" in active:
+        return "failed"
+    if "inconclusive" in active or "needs_route" in active or "unsupported" in active:
+        return "inconclusive"
+    if "not_run" in active:
+        return "not_run" if set(active) == {"not_run"} else "inconclusive"
+    # Mixed scopes cannot turn diagnostic evidence into architectural success.
+    if len(set(active)) > 1:
+        return "inconclusive"
+    return active[0]
 
 
 def close_program(program_id: str, required_fragment_ids: Sequence[str], members: Sequence[Mapping],
@@ -164,10 +208,7 @@ def close_program(program_id: str, required_fragment_ids: Sequence[str], members
     if len(by_id) != len(included) or any(x["programId"] != program_id or x["claimScope"] != claim_scope for x in included):
         raise ValueError("L3 program member identity/scope conflict")
     statuses = [x["status"] for x in included]
-    status = ("inconclusive" if set(required_fragment_ids) - set(by_id) else
-              "failed" if "failed" in statuses else
-              "inconclusive" if "inconclusive" in statuses else
-              "not_run" if "not_run" in statuses else "verified")
+    status = aggregate_statuses(statuses + (["inconclusive"] if set(required_fragment_ids) - set(by_id) else []))
     executions = sorted({x["executionIdentity"] for member in included
                          for x in member["dimensionResults"].values()})
     payload = {"schemaVersion": PROGRAM_SCHEMA, "programId": program_id,

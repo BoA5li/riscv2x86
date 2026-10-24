@@ -43,6 +43,7 @@ def summarize_l3_case(evaluation: Mapping[str, object], fragments: Sequence[Mapp
     invocations: dict[str, set[str]] = {}
     binding_kinds = Counter()
     platform_adapters = 0
+    counted_invocations = set()
     missing = Counter()
     contract_versions = set()
     for attempt in evaluation.get("attempts", []):
@@ -61,10 +62,16 @@ def summarize_l3_case(evaluation: Mapping[str, object], fragments: Sequence[Mapp
                 continue
             fragment_id = attempt.get("fragmentId")
             if detail.get("providerInvoked") is True and isinstance(fragment_id, str):
-                invocations.setdefault(fragment_id, set()).add(str(detail.get("executionIdentity", "")))
-                binding_kinds[str(detail.get("providerKind", "unknown"))] += 1
-                if detail.get("contractSchemaVersion") == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA:
-                    platform_adapters += 1
+                from .l3_evidence_closure import _sha
+                execution_id = detail.get("executionIdentity")
+                _sha(execution_id, "L3 invocation execution")
+                invocations.setdefault(fragment_id, set()).add(execution_id)
+                invocation = (detail.get("providerId", "unknown"), execution_id)
+                if invocation not in counted_invocations:
+                    counted_invocations.add(invocation)
+                    binding_kinds[str(detail.get("providerKind", "unknown"))] += 1
+                    if detail.get("contractBaseSchemaVersion", detail.get("contractSchemaVersion")) == EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA:
+                        platform_adapters += 1
                 if isinstance(detail.get("contractSchemaVersion"), str):
                     contract_versions.add(detail["contractSchemaVersion"])
             for reason in detail.get("reasonCodes", []) if isinstance(detail.get("reasonCodes"), list) else []:
@@ -90,11 +97,13 @@ def summarize_l3_case(evaluation: Mapping[str, object], fragments: Sequence[Mapp
             if attempted:
                 counts["inconclusive"] += 1
             continue
+        from .l3_evidence_closure import validate_fragment_against_requirement
+        result = validate_fragment_against_requirement(result, requirement)
         dimensions = result["dimensionResults"]
         expected = {x["propertyId"] for x in requirement["requiredProperties"]}
         complete = (set(dimensions) == expected and not result["uncoveredEffects"] and
                     all(x["status"] in {"verified", "failed"} and
-                        x["evidenceIdentity"] for x in dimensions.values()))
+                        x["comparisonEvidenceIdentity"] for x in dimensions.values()))
         if complete:
             counts["completeExecution"] += 1
         elif attempted:

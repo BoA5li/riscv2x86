@@ -334,8 +334,18 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         program_levels["L3"] = "inconclusive"
     if len(sidecars) == 1:
         from .l3_intent_requirements import parse_l3_requirement_manifest
-        from .l3_evidence_closure import close_program
+        from .l3_evidence_closure import close_program, validate_fragment_against_requirement, aggregate_statuses
         manifest = parse_l3_requirement_manifest(json.loads(sidecars[0].read_text(encoding="utf-8")))
+        authority = {x["fragmentId"]: x for x in manifest.requirements}
+        checked = []
+        l3_group_statuses = []
+        for member in l3_fragments:
+            try:
+                checked.append(dict(validate_fragment_against_requirement(
+                    member, authority[member["fragmentId"]])))
+            except (ValueError, TypeError, KeyError):
+                l3_group_statuses.append("inconclusive")
+        l3_fragments = checked
         grouped = {}
         for item in manifest.requirements:
             if item["eligibilityStatus"] == "eligible":
@@ -346,23 +356,34 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
             scope = ("target_experiment_diagnostic" if any(x["translationOutcome"] == "functional_fallback"
                      for x in required) else "architectural_intent")
             if scopes - {scope}:
-                program_levels["L3"] = "inconclusive"
+                l3_group_statuses.append("inconclusive")
                 continue
             group = close_program(program_id, sorted({x["fragmentId"] for x in required}), members,
                                   claim_scope=scope)
             l3_programs.append(group)
-            program_levels["L3"] = ("diagnostic_verified" if group["status"] == "verified" and
-                                    scope == "target_experiment_diagnostic" else group["status"])
+            l3_group_statuses.append("diagnostic_verified" if group["status"] == "verified" and
+                                     scope == "target_experiment_diagnostic" else group["status"])
+        if l3_group_statuses:
+            # Earlier invalid report evidence must not be overwritten by a later group.
+            if program_levels["L3"] in {"failed", "inconclusive"}:
+                l3_group_statuses.append(program_levels["L3"])
+            program_levels["L3"] = aggregate_statuses(l3_group_statuses)
     from .l3_coverage import summarize_l3_case
     try:
         l3_coverage = summarize_l3_case(result, l3_fragments)
     except (ValueError, TypeError, KeyError) as exc:
         l3_coverage = {"error": "l3.coverage.evidence-invalid: " + str(exc)}
         program_levels["L3"] = "inconclusive"
+    case_status = result["status"]
+    case_reasons = list(result.get("reasonCodes", []))
+    if ("L3" in level_statuses and case_status == "verified" and
+            program_levels["L3"] not in {"verified", "diagnostic_verified", "not_applicable"}):
+        case_status = "failed" if program_levels["L3"] == "failed" else "inconclusive"
+        case_reasons = sorted(set(case_reasons + ["l3.summary.authoritative-evidence-not-verified"]))
     return {
         "caseId": case_id, "category": case["category"],
         "descriptorIdentity": case["descriptorIdentity"],
-        "status": result["status"], "reasonCodes": result.get("reasonCodes", []),
+        "status": case_status, "reasonCodes": case_reasons,
         "evaluationIdentity": result.get("evaluationIdentity", ""),
         **({"orchestrationFailure": result["orchestrationFailure"]}
            if isinstance(result.get("orchestrationFailure"), Mapping) else {}),
