@@ -936,6 +936,8 @@ def prepare_automatic_inventory(
     privileged_config_directory: str | Path | None = None,
     l2_provider_directory: str | Path | None = None,
     l3_provider_directory: str | Path | None = None,
+    l3_memory_backend: str | Path | None = None,
+    l3_cache_model: str | Path | None = None,
     l3_intent_producer_directory: str | Path | None = None,
     atomic_authority_directory: str | Path | None = None,
     csr_authority_directory: str | Path | None = None,
@@ -950,6 +952,18 @@ def prepare_automatic_inventory(
                sorted(item for item in root.rglob("*.c")
                       if not item.name.endswith(".harness.c")))
     source_root = root.parent if root.is_file() else root
+    trace_backend=None; trace_model=None
+    if l3_memory_backend is not None:
+        if any(x is not None for x in (l3_provider_directory,l3_intent_producer_directory,experiment_environment,
+                privileged_config_directory,l2_provider_directory,csr_environment_contract_directory,instruction_stream_sync_directory)) or l3_diagnostic:
+            raise ValueError('L3_TRACE_EXPLICIT_ROUTE_MIXING_UNSUPPORTED')
+        from .l3_qemu_backend import validate_backend
+        from .l3_cache_model import validate as validate_cache_model
+        trace_backend=validate_backend(l3_memory_backend)
+        if l3_cache_model is not None:
+            trace_model=validate_cache_model(json.loads(Path(l3_cache_model).read_text()))
+    elif l3_cache_model is not None:
+        raise ValueError('L3_CACHE_MODEL_BACKEND_REQUIRED')
     environment_resolution=None
     if experiment_environment is not None:
         from .experiment_environment import load_environment
@@ -1148,6 +1162,20 @@ def prepare_automatic_inventory(
                 from .l3_intent_ingress import validate_manifest
                 validate_manifest(json.loads(intent_manifest.read_text()), source)
                 translation.extend(("--l3-intent-producer", str(intent_manifest)))
+        if trace_backend is not None:
+            from .l3_intent_ingress import producer_manifest
+            implementation=Path(__file__).with_name('l3_memory_intent.py').resolve()
+            command=[sys.executable,'-m','riscv2x86_py.l3_memory_intent','--implementation',str(implementation)]
+            for dependency in ('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py'):
+                command.extend(('--dependency',str(implementation.with_name(dependency))))
+            if trace_model is not None:
+                model_path=case_dir/'cache-model-selection.json'
+                _write_json(model_path,trace_model)
+                command.extend(('--cache-model-file',str(model_path.resolve())))
+            producer_path=case_dir/'memory-intent-producer.json'
+            _write_json(producer_path,producer_manifest(source,command,
+                'registered compiler-bound ordinary-read fragment mechanism; no physical hardware claim'))
+            translation.extend(('--l3-intent-producer',str(producer_path.resolve())))
         translation.extend(("--csr-target-build-contract", "automatic-gcc-separate-tu-no-lto-v1"))
         if allow_functional_fallbacks:
             translation.append("--allow-functional-fallbacks")
@@ -1475,6 +1503,17 @@ def prepare_automatic_inventory(
                 "sourceCapabilities": l3_binding["sourceCapabilities"],
                 "targetCapabilities": l3_binding["targetCapabilities"],
             }}
+        if trace_backend is not None:
+            if 'L1' not in validators or 'L2' not in validators:
+                raise ValueError('L3_TRACE_NORMAL_PREREQUISITES_REQUIRED')
+            plan.update(profile='microarch',planId=f'auto-{case_id}-compiler-region-trace-v1',
+                        experimentContractId='resolved-per-fragment')
+            validators['L3']={'type':'l3-memory-trace-route','config':{
+                'schemaVersion':'riscv2x86.compiler-region-trace-route.v1',
+                'sourcePath':'${SOURCE_PATH}','targetPath':'${TARGET_PATH}','reportPath':'${TRANSLATED_REPORT}',
+                'backendPath':str(Path(l3_memory_backend).resolve()),'backendDigest':_digest(Path(l3_memory_backend)),
+                'cacheModel':trace_model,'workDirectory':'${WORK_DIR}/l3-memory-trace/${ATTEMPT_ID}',
+                'sampleCount':4,'timeoutSeconds':timeout}}
         _write_json(case_dir / "validation-plan.json", plan)
         request = {"schemaVersion": "riscv2x86.evaluation-request.v2",
                    "sourceRoot": str(source_root), "sourceRelativePath": relative,
@@ -1601,6 +1640,17 @@ def prepare_automatic_inventory(
                                     "L3Intent": "fragment", "L3Execution": "program/entry/campaign",
                                     "translation": "fragment",
                                     "bootstrapCluster": "program"}}
+    if trace_backend is not None:
+        from .l3_trace_support import identity as trace_identity
+        payload['l3ObservationEnvironment']={
+            'backendIdentity':trace_backend['backendIdentity'],
+            'backendPath':str(Path(l3_memory_backend).resolve()),
+            'sourceExecutor':trace_backend['sourceExecutor'],
+            'targetExecutor':trace_backend['targetExecutor'],
+            'scope':'compiler-asm-region-only',
+            'cacheModelIdentity':None if trace_model is None else trace_identity(trace_model),
+            'physicalMicroarchitectureClaimed':False,
+            'prerequisiteEnvironmentRecordedSeparately':True}
     _write_json(inventory / "automatic-inventory.json", payload)
     return payload
 
@@ -1623,6 +1673,8 @@ def main() -> int:
                         help="directory containing <source>.c.l2-providers.json bindings")
     parser.add_argument("--l3-provider-directory",
                         help="directory containing <source>.c.l3-providers.json bindings")
+    parser.add_argument("--l3-memory-backend", help="calibrated QEMU API-v1 ordinary-read observation backend")
+    parser.add_argument("--l3-cache-model", help="explicit object-relative cache model; requires --l3-memory-backend")
     parser.add_argument("--l3-intent-producer-directory",
                         help="reviewed <source>.c.l3-intent-producer.json tool selections")
     parser.add_argument("--atomic-authority-directory",
@@ -1652,6 +1704,8 @@ def main() -> int:
                                     privileged_config_directory=args.privileged_config_directory,
                                     l2_provider_directory=args.l2_provider_directory,
                                     l3_provider_directory=args.l3_provider_directory,
+                                    l3_memory_backend=args.l3_memory_backend,
+                                    l3_cache_model=args.l3_cache_model,
                                     l3_intent_producer_directory=args.l3_intent_producer_directory,
                                     atomic_authority_directory=args.atomic_authority_directory,
                                     csr_authority_directory=args.csr_authority_directory,

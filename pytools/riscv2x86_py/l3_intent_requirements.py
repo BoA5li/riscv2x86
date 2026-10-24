@@ -13,12 +13,16 @@ import re
 from typing import Mapping
 
 INTENT_SCHEMA = "riscv2x86.l3-intent-profile.v1"
+INTENT_SCHEMA_V2 = "riscv2x86.l3-intent-profile.v2"
+REQUIREMENT_SCHEMA_V2 = "riscv2x86.l3-fragment-requirement.v2"
+MANIFEST_SCHEMA_V2 = "riscv2x86.l3-requirement-manifest.v2"
 REQUIREMENT_SCHEMA = "riscv2x86.l3-fragment-requirement.v1"
 MANIFEST_SCHEMA = "riscv2x86.l3-requirement-manifest.v1"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class L3IntentKind(str, Enum):
+    CACHE_MODEL = "cache_model"
     MEMORY_ACCESS = "memory_access"
     CONTROL_FLOW = "control_flow"
     SYNCHRONIZATION = "synchronization"
@@ -35,7 +39,7 @@ class L3EvidenceUnit(str, Enum):
     CAMPAIGN = "campaign"
 
 
-_DIMENSIONS = frozenset({"access_pattern", "control_flow", "synchronization",
+_DIMENSIONS = frozenset({"cache_model", "access_pattern", "control_flow", "synchronization",
                           "performance_trend", "side_channel_speculation"})
 _CLASSES = frozenset(item.value for item in L3IntentKind if item not in
                      (L3IntentKind.COMPOSITE, L3IntentKind.NONE, L3IntentKind.UNKNOWN))
@@ -105,9 +109,10 @@ class L3IntentProfile:
     proof_identity: str
     complete: bool
     profile_identity: str
+    schema_version: str = INTENT_SCHEMA
 
     def to_dict(self) -> dict[str, object]:
-        return {"schemaVersion": INTENT_SCHEMA, "fragmentId": self.fragment_id,
+        return {"schemaVersion": self.schema_version, "fragmentId": self.fragment_id,
                 "programId": self.program_id, "intentKind": self.intent_kind.value,
                 "experimentClasses": list(self.experiment_classes),
                 "sourceIntent": self.source_intent,
@@ -132,7 +137,7 @@ def parse_l3_intent_profile(value: Mapping[str, object], *, fragment_id: str = "
              "sourceCapabilities", "targetCapabilities", "observationBoundary",
              "notClaimedProperties", "producer", "complete", "profileIdentity"}
     _keys(value, names, "L3 intent profile")
-    if value["schemaVersion"] != INTENT_SCHEMA:
+    if value["schemaVersion"] not in {INTENT_SCHEMA, INTENT_SCHEMA_V2}:
         raise ValueError("L3 intent schema unsupported")
     fid = _text(value["fragmentId"], "fragmentId")
     if fragment_id and fid != fragment_id:
@@ -187,6 +192,8 @@ def parse_l3_intent_profile(value: Mapping[str, object], *, fragment_id: str = "
             raise ValueError("complete L3 experiment intent lacks approved requirements")
         if not _text(value["programId"], "programId"):
             raise ValueError("L3 program identity missing")
+    if value["schemaVersion"] == INTENT_SCHEMA and ("cache_model" in classes or any(p.dimension == "cache_model" for p in parsed)):
+        raise ValueError("cache model intent requires v2 schema")
     payload = dict(value)
     identity = _sha(payload.pop("profileIdentity"), "profileIdentity")
     if identity != _hash(payload):
@@ -197,7 +204,7 @@ def parse_l3_intent_profile(value: Mapping[str, object], *, fragment_id: str = "
                            _strings(value["targetCapabilities"], "targetCapabilities"),
                            bkind, bidentity,
                            _strings(value["notClaimedProperties"], "notClaimedProperties"),
-                           pkind, pid, proof, complete, identity)
+                           pkind, pid, proof, complete, identity, value["schemaVersion"])
 
 
 def _unknown_profile(fragment_id: str) -> L3IntentProfile:
@@ -216,9 +223,10 @@ def _unknown_profile(fragment_id: str) -> L3IntentProfile:
 class L3RequirementManifest:
     requirements: tuple[Mapping[str, object], ...]
     manifest_identity: str
+    schema_version: str = MANIFEST_SCHEMA
 
     def to_dict(self) -> dict[str, object]:
-        return {"schemaVersion": MANIFEST_SCHEMA, "requirements": list(self.requirements),
+        return {"schemaVersion": self.schema_version, "requirements": list(self.requirements),
                 "manifestIdentity": self.manifest_identity}
 
 
@@ -247,7 +255,7 @@ def classify_l3_requirements(report: Mapping[str, object]) -> L3RequirementManif
             status, disposition, reasons = "needs_route", "not_run", ["l3.translation.no-candidate"]
         else:
             status, disposition, reasons = "eligible", "not_run", ["l3.execution.not-yet-configured"]
-        payload = {"schemaVersion": REQUIREMENT_SCHEMA,
+        payload = {"schemaVersion": REQUIREMENT_SCHEMA_V2 if profile.schema_version == INTENT_SCHEMA_V2 else REQUIREMENT_SCHEMA,
                    "findingId": f"finding:{index}:{fid}", "fragmentId": fid,
                    "programId": profile.program_id, "translationOutcome":
                    _text(finding.get("translationOutcome", "not_attempted"), "translationOutcome"),
@@ -261,18 +269,19 @@ def classify_l3_requirements(report: Mapping[str, object]) -> L3RequirementManif
                    "reasonCodes": reasons}
         payload["requirementIdentity"] = _hash(payload)
         requirements.append(payload)
-    payload = {"schemaVersion": MANIFEST_SCHEMA, "requirements": requirements}
-    return L3RequirementManifest(tuple(requirements), _hash(payload))
+    schema = MANIFEST_SCHEMA_V2 if any(r["schemaVersion"] == REQUIREMENT_SCHEMA_V2 for r in requirements) else MANIFEST_SCHEMA
+    payload = {"schemaVersion": schema, "requirements": requirements}
+    return L3RequirementManifest(tuple(requirements), _hash(payload), schema)
 
 
 def parse_l3_requirement_manifest(value: Mapping[str, object]) -> L3RequirementManifest:
     if not isinstance(value, Mapping):
         raise ValueError("L3 manifest must be an object")
     _keys(value, {"schemaVersion", "requirements", "manifestIdentity"}, "L3 manifest")
-    if value["schemaVersion"] != MANIFEST_SCHEMA or not isinstance(value["requirements"], list):
+    if value["schemaVersion"] not in {MANIFEST_SCHEMA, MANIFEST_SCHEMA_V2} or not isinstance(value["requirements"], list):
         raise ValueError("L3 manifest schema/requirements invalid")
     identity = _sha(value["manifestIdentity"], "manifestIdentity")
-    if identity != _hash({"schemaVersion": MANIFEST_SCHEMA, "requirements": value["requirements"]}):
+    if identity != _hash({"schemaVersion": value["schemaVersion"], "requirements": value["requirements"]}):
         raise ValueError("L3 manifest identity mismatch")
     for index, item in enumerate(value["requirements"]):
         if not isinstance(item, Mapping):
@@ -282,7 +291,7 @@ def parse_l3_requirement_manifest(value: Mapping[str, object]) -> L3RequirementM
                  "intentKind", "experimentClasses", "requiredProperties",
                  "eligibilityStatus", "disposition", "reasonCodes", "requirementIdentity"}
         _keys(item, names, "L3 requirement")
-        if item["schemaVersion"] != REQUIREMENT_SCHEMA:
+        if item["schemaVersion"] not in {REQUIREMENT_SCHEMA, REQUIREMENT_SCHEMA_V2} or (value["schemaVersion"] == MANIFEST_SCHEMA and item["schemaVersion"] != REQUIREMENT_SCHEMA):
             raise ValueError("L3 requirement schema unsupported")
         payload = dict(item)
         if _sha(payload.pop("requirementIdentity"), "requirementIdentity") != _hash(payload):
@@ -315,6 +324,8 @@ def parse_l3_requirement_manifest(value: Mapping[str, object]) -> L3RequirementM
             L3EvidenceUnit(prop["unit"])
         if ids != sorted(set(ids)):
             raise ValueError("L3 requirement properties must be sorted and unique")
+        if item["schemaVersion"] == REQUIREMENT_SCHEMA and ("cache_model" in classes or any(p["dimension"] == "cache_model" for p in props)):
+            raise ValueError("cache model requirement requires v2 schema")
         status = item["eligibilityStatus"]
         if status == "eligible":
             if (kind in {L3IntentKind.NONE, L3IntentKind.UNKNOWN} or not props or not classes
@@ -336,4 +347,4 @@ def parse_l3_requirement_manifest(value: Mapping[str, object]) -> L3RequirementM
     ids = [x["fragmentId"] for x in value["requirements"]]
     if len(ids) != len(set(ids)):
         raise ValueError("L3 requirement fragment identities ambiguous")
-    return L3RequirementManifest(tuple(value["requirements"]), identity)
+    return L3RequirementManifest(tuple(value["requirements"]), identity, value["schemaVersion"])

@@ -9,6 +9,7 @@ from collections import Counter
 
 PROPERTY_CONTRACT_SCHEMA = 'riscv2x86.microarchitecture-experiment-contract.v7'
 _COMPARATORS = {
+    'cache_model': 'object-relative-cache-model.v1',
     'access_pattern': 'logical-access-contract.v1',
     'control_flow': 'logical-control-contract.v1',
     'synchronization': 'synchronization-contract.v1',
@@ -19,6 +20,8 @@ _COMPARATORS = {
 
 def comparator_obligations(contract):
     result = {}
+    if contract.payload.get("cacheModel") is not None:
+        result["cache_model"] = ["fragment-stream-lru-state"]
     if contract.required_access_pattern:
         result['access_pattern'] = sorted(x.event_id for x in contract.required_access_pattern)
     if contract.required_control_flow:

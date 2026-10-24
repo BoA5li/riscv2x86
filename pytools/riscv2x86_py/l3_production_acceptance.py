@@ -56,6 +56,17 @@ def audit_evaluation(evaluation):
                                 ('l0EvidenceIdentity', 'l1EvidenceIdentity', 'l2EvidenceIdentity'))}}
         fragment = validate_fragment_against_requirement(detail.get('fragmentResult'), requirements[fid],
             source_report=reports['source'], target_report=reports['target'], expected_context=expected_context)
+        if detail.get('traceDeployment') is not None:
+            from .l3_qemu_memory_route import parse_contract, verify_detail
+            contract_path=Path(detail['contractPath'])
+            if digest(contract_path)!=detail['contractDigest']:
+                raise ValueError('l3.acceptance.trace-contract-changed')
+            contract=parse_contract(json.loads(contract_path.read_text()))
+            from .translation_validation import program_artifact_from_dict
+            verify_detail(detail,contract,program_artifact_from_dict(evaluation['sourceProgramArtifact']),
+                          program_artifact_from_dict(evaluation['targetProgramArtifact']))
+            if {d['contractIdentity'] for d in fragment['dimensionResults'].values()} != {contract.identity}:
+                raise ValueError('l3.acceptance.trace-contract-mismatch')
         if fragment['status'] != 'verified':
             raise ValueError('l3.acceptance.fragment-not-verified:' + fid)
         bindings = detail.get('executionBindings')

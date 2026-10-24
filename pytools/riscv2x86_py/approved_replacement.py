@@ -35,7 +35,7 @@ def approved_replacement(finding):
     version=approval.get('artifactVersion')
     if version=='phase6-csr-runtime-v1':
         expected_digest=semantic_identity({'replacement':text})
-    elif version=='phase6-approval-v2':
+    elif version in {'phase6-approval-v1', 'phase6-approval-v2', 'phase6-functional-fallback-v1'}:
         # The generic cross-language Phase-6 artifact uses FNV-1a-64, just
         # as its producer and apply-side replay do. Do not accept arbitrary
         # digest algorithms based on the supplied string prefix.

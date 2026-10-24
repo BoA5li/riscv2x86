@@ -15,6 +15,8 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_l3_memory_trace.py',
+    'test_l3_memory_trace_production.py',
     'test_l3_production_ingress.py',
     'test_l3_production_acceptance.py',
     'test_l3_authoritative_consumption.py',

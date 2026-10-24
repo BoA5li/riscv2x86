@@ -221,6 +221,10 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
         "riscv2x86_py.l2_instruction_visibility_runner",fromlist=["build_validator"]).build_validator(config),
     "l2-concurrency-memory-model": _l2_concurrency_memory_model_factory,
     "l3-experiment-contract": _l3_experiment_contract_factory,
+    "l3-memory-trace-route": lambda config: __import__(
+        "riscv2x86_py.l3_qemu_memory_route",fromlist=["build_route"]).build_route(config),
+    "l3-qemu-memory-trace": lambda config: __import__(
+        "riscv2x86_py.l3_qemu_memory_route",fromlist=["build_observer"]).build_observer(config),
 }
 
 
