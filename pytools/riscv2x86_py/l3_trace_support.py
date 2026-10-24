@@ -21,12 +21,12 @@ def save(path, value):
     return path
 
 
-def run(command, directory, tag, timeout=120):
+def run(command, directory, tag, timeout=120, *, env=None):
     directory = Path(directory); directory.mkdir(parents=True, exist_ok=True)
     command = list(map(str, command))
     try:
         result = subprocess.run(command, cwd=directory, capture_output=True, text=True,
-                                timeout=timeout, check=False)
+                                timeout=timeout, check=False, env=env)
         record = {'command': command, 'returnCode': result.returncode,
                   'stdout': result.stdout, 'stderr': result.stderr, 'timedOut': False}
     except subprocess.TimeoutExpired as exc:
@@ -34,6 +34,13 @@ def run(command, directory, tag, timeout=120):
                   'stderr': str(exc), 'timedOut': True}
         save(directory / (tag + '.command.json'), record)
         raise ValueError('L3_TRACE_TIMEOUT:' + tag) from exc
+    except OSError as exc:
+        record = {'command': command, 'returnCode': None, 'stdout': '',
+                  'stderr': str(exc), 'timedOut': False, 'startupFailed': True}
+        save(directory / (tag + '.command.json'), record)
+        raise ValueError('L3_TRACE_COMMAND_START_FAILED:' + tag) from exc
+    if env is not None:
+        record['gitNetworkPolicy'] = env.get('GIT_ALLOW_PROTOCOL', '')
     save(directory / (tag + '.command.json'), record)
     if result.returncode:
         raise ValueError('L3_TRACE_COMMAND_FAILED:' + tag + ':' + result.stderr[-2000:])

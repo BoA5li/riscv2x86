@@ -1,0 +1,6 @@
+qemu72-git-submodule.sh is an unmodified test fixture from QEMU commit
+b67b00e6b4c7831a3f5bc684bc0df7a9bfd1bd56, scripts/git-submodule.sh:
+https://github.com/qemu/qemu/blob/b67b00e6b4c7831a3f5bc684bc0df7a9bfd1bd56/scripts/git-submodule.sh
+The fixture is GPL-2.0-or-later, as stated in its upstream header.
+It exercises the actual upstream status/validate protocol with local temporary
+Git repositories. It is not an emulator or an instruction-semantic fixture.

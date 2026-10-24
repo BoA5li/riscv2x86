@@ -1,6 +1,7 @@
 """Reproducible, opt-in QEMU 7.2/API-v1 backend and actual capture calibration."""
 import argparse
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,7 +10,8 @@ from uuid import uuid4
 
 from .l3_trace_support import Elf, digest, identity, run, save
 
-SCHEMA = 'riscv2x86.qemu-fragment-trace-backend.v1'
+SCHEMA = 'riscv2x86.qemu-fragment-trace-backend.v2'
+LEGACY_SCHEMA = 'riscv2x86.qemu-fragment-trace-backend.v1'
 REVIEWED_COMMIT = 'b67b00e6b4c7831a3f5bc684bc0df7a9bfd1bd56'
 
 
@@ -90,7 +92,9 @@ def validate_backend(value, *, allow_uncalibrated=False):
     if isinstance(value, (str,Path)): value = json.loads(Path(value).read_text())
     fields = {'schemaVersion','sourceCommit','sourceExecutor','targetExecutor','plugin',
               'sourceCompiler','targetCompiler','sourceRunnerArguments','targetRunnerArguments',
-              'files','calibration','scope','backendIdentity'}
+              'files','calibration','scope','backendIdentity','sourcePreparation'}
+    if isinstance(value,dict) and value.get('schemaVersion')==LEGACY_SCHEMA:
+        raise ValueError('L3_TRACE_BACKEND_LEGACY_PREPARATION_MISSING')
     if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion']!=SCHEMA:
         raise ValueError('L3_TRACE_BACKEND_SCHEMA_INVALID')
     if value['backendIdentity'] != identity({k:v for k,v in value.items() if k!='backendIdentity'}):
@@ -110,6 +114,7 @@ def validate_backend(value, *, allow_uncalibrated=False):
     for side in ('source','target'):
         for path, expected in compiler_files(value[side+'Compiler']).items():
             if value['files'].get(path)!=expected: raise ValueError('L3_TRACE_TOOLCHAIN_SELECTION_CHANGED')
+    _validate_source_preparation(value)
     calibration=value['calibration']
     if not isinstance(calibration,list) or len(calibration) not in ((0,4) if allow_uncalibrated else (4,)): raise ValueError('L3_TRACE_CALIBRATION_INVALID')
     if calibration:
@@ -145,6 +150,45 @@ def validate_backend(value, *, allow_uncalibrated=False):
     return value
 
 
+def _validate_source_preparation(backend):
+    from .l3_qemu_dependencies import verify_prepared_dependencies, validate_build_configuration
+    binding=backend['sourcePreparation']
+    if not isinstance(binding,dict) or set(binding)!={'recordPath','recordDigest','preparationIdentity','configuration'}:
+        raise ValueError('L3_TRACE_BACKEND_SOURCE_PREPARATION_BINDING_INVALID')
+    if backend['files'].get(binding['recordPath'])!=binding['recordDigest'] or digest(binding['recordPath'])!=binding['recordDigest']:
+        raise ValueError('L3_TRACE_BACKEND_SOURCE_PREPARATION_CHANGED')
+    record=json.loads(Path(binding['recordPath']).read_text())
+    verify_prepared_dependencies(record,expected_commit=backend['sourceCommit'])
+    if record['qemuCommit']!=backend['sourceCommit'] or record['preparationIdentity']!=binding['preparationIdentity']:
+        raise ValueError('L3_TRACE_BACKEND_SOURCE_PREPARATION_IDENTITY_MISMATCH')
+    configuration=binding['configuration']
+    build=Path(configuration['configPath']).parent
+    if validate_build_configuration(build,record['requirements'],prepared_source=record['preparedSourcePath'])!=configuration:
+        raise ValueError('L3_TRACE_BACKEND_BUILD_CONFIGURATION_CHANGED')
+    expected=Path(record['preparedSourcePath']).parent/'build'
+    if build.resolve()!=expected.resolve():
+        raise ValueError('L3_TRACE_BACKEND_BUILD_SOURCE_LOCATION_MISMATCH')
+    for side,name in (('source','qemu-riscv64'),('target','qemu-x86_64')):
+        if Path(backend[side+'Executor']).resolve()!=(build/name).resolve():
+            raise ValueError('L3_TRACE_BACKEND_EXECUTOR_BUILD_LOCATION_MISMATCH')
+    expected_command=[str(Path(record['preparedSourcePath'])/'configure'),
+        '--target-list=riscv64-linux-user,x86_64-linux-user','--disable-system','--enable-plugins',
+        '--with-git-submodules=validate','--meson=git','--enable-tcg','--cc='+backend['targetCompiler']]
+    for name in ('config-host.mak','config.status','meson-info/intro-buildoptions.json','configure.command.json','compile.command.json'):
+        path=str(build/name)
+        if backend['files'].get(path)!=digest(path):
+            raise ValueError('L3_TRACE_BACKEND_CONFIGURATION_BINDING_MISSING:'+name)
+    configured=json.loads((build/'configure.command.json').read_text())
+    compiled=json.loads((build/'compile.command.json').read_text())
+    if (configured['command']!=expected_command or configured['returnCode']!=0 or
+            configured['timedOut'] is not False or configured.get('gitNetworkPolicy')!='file' or
+            compiled['returnCode']!=0 or compiled['timedOut'] is not False or
+            compiled.get('gitNetworkPolicy')!='file' or len(compiled['command'])!=2 or
+            compiled['command'][0]!='make' or not re.fullmatch(r'-j[1-9][0-9]*',compiled['command'][1])):
+        raise ValueError('L3_TRACE_BACKEND_CONFIGURATION_COMMAND_MISMATCH')
+    return record
+
+
 def prepare(source, output, jobs, source_compiler, target_compiler, source_sysroot):
     source=Path(source).resolve(); output=Path(output).resolve()
     if output.exists(): raise ValueError('L3_TRACE_BACKEND_OUTPUT_EXISTS')
@@ -153,24 +197,36 @@ def prepare(source, output, jobs, source_compiler, target_compiler, source_sysro
     def stage(name):
         status['currentStage']=name
         (output/'build-status.json').write_text(json.dumps(status,indent=2))
+    stage('source')
     try:
+        if not Path(source_sysroot).is_dir(): raise ValueError('L3_TRACE_SOURCE_SYSROOT_MISSING')
         if (source/'VERSION').read_text().strip()!='7.2.0': raise ValueError('L3_TRACE_QEMU_VERSION_UNREVIEWED')
-        dirty=run(['git','-C',source,'status','--porcelain','--untracked-files=no'], output,'source-status')
+        dirty=run(['git','-C',source,'status','--porcelain','--untracked-files=no','--ignore-submodules=all'], output,'source-status')
         if dirty.stdout.strip(): raise ValueError('L3_TRACE_QEMU_SOURCE_DIRTY')
         commit=run(['git','-C',source,'rev-parse','HEAD'],output,'source-commit').stdout.strip()
         if commit!=REVIEWED_COMMIT: raise ValueError('L3_TRACE_QEMU_COMMIT_UNREVIEWED')
         cc=executable(source_compiler); native=executable(target_compiler)
         tools={**compiler_files(cc),**compiler_files(native)}
-        stage('worktree'); tree=output/'source'
-        run(['git','-C',source,'worktree','add','--detach',tree,commit],output,'worktree')
-        stage('submodules'); run(['git','-C',tree,'submodule','update','--init','meson'],output,'submodules',1200)
+        from .l3_qemu_dependencies import prepare_source, verify_prepared_dependencies, validate_build_configuration, _offline_env
+        tree=output/'source'; prep_dir=output/'dependency-preparation'
+        preparation=prepare_source(source,tree,prep_dir,commit=commit,stage=stage)
+        prep_path=prep_dir/'source-preparation.json'
         stage('configure'); build=output/'build'; build.mkdir()
-        run([tree/'configure','--target-list=riscv64-linux-user,x86_64-linux-user','--disable-system','--enable-plugins','--cc='+native],build,'configure',1200)
-        stage('compile'); run(['make','-j'+str(jobs)],build,'compile',7200)
+        run([tree/'configure','--target-list=riscv64-linux-user,x86_64-linux-user','--disable-system','--enable-plugins',
+             '--with-git-submodules=validate','--meson=git','--enable-tcg','--cc='+native],build,'configure',1200,env=_offline_env())
+        stage('configuration_validation')
+        configuration=validate_build_configuration(build,preparation['requirements'],prepared_source=tree)
+        verify_prepared_dependencies(preparation,expected_commit=commit)
+        stage('compile'); run(['make','-j'+str(jobs)],build,'compile',7200,env=_offline_env())
+        verify_prepared_dependencies(preparation,expected_commit=commit)
+        source_preparation={'recordPath':str(prep_path),'recordDigest':digest(prep_path),
+                            'preparationIdentity':preparation['preparationIdentity'],'configuration':configuration}
         plugin_source=Path(__file__).resolve().parents[2]/'runtime/l3_qemu_trace.c'
         stage('plugin'); plugin=output/'l3-trace.so'
         run([native,'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(tree/'include'),plugin_source,'-o',plugin],output,'plugin')
-        files={**tools,str(plugin):digest(plugin),str(plugin_source):digest(plugin_source),
+        files={**tools,str(prep_path):digest(prep_path),str(Path(__file__).resolve()):digest(__file__),
+               str(Path(__file__).with_name('l3_qemu_dependencies.py').resolve()):digest(Path(__file__).with_name('l3_qemu_dependencies.py')),
+               preparation['gitTool']['path']:preparation['gitTool']['digest'],str(plugin):digest(plugin),str(plugin_source):digest(plugin_source),
                str(tree/'include/qemu/qemu-plugin.h'):digest(tree/'include/qemu/qemu-plugin.h')}
         for config in (build/'config-host.mak',build/'config.status',build/'meson-info/intro-buildoptions.json',
                        build/'configure.command.json',build/'compile.command.json'):
@@ -183,7 +239,7 @@ def prepare(source, output, jobs, source_compiler, target_compiler, source_sysro
         value={'schemaVersion':SCHEMA,'sourceCommit':commit,'sourceExecutor':executors['source'],
             'targetExecutor':executors['target'],'plugin':str(plugin),'sourceCompiler':cc,'targetCompiler':native,
             'sourceRunnerArguments':['-L',str(Path(source_sysroot).resolve())], 'targetRunnerArguments':[],
-            'files':files,'calibration':[],'scope':'single-thread-successful-compiler-asm-region-memory-stream'}
+            'sourcePreparation':source_preparation,'files':files,'calibration':[],'scope':'single-thread-successful-compiler-asm-region-memory-stream'}
         value['backendIdentity']=identity(value)
         stage('calibration'); calibrations=[]
         for side in ('source','target'):
@@ -212,11 +268,14 @@ def prepare(source, output, jobs, source_compiler, target_compiler, source_sysro
                 value['backendIdentity']=identity({k:v for k,v in value.items() if k!='backendIdentity'})
         value['calibration']=calibrations
         value['backendIdentity']=identity({k:v for k,v in value.items() if k!='backendIdentity'})
+        stage('final_validation')
         validate_backend(value); save(output/'backend.json',value)
         status.update(complete=True,currentStage='complete',backendIdentity=value['backendIdentity']); stage('complete')
         return value
     except Exception as exc:
-        status['blocker']=str(exc); stage(status['currentStage']); raise
+        status['blocker']=str(exc)
+        if hasattr(exc,'failure'): status['failureDetail']=exc.failure
+        stage(status['currentStage']); raise
 
 
 def main():
