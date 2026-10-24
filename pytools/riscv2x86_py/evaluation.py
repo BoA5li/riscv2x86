@@ -808,9 +808,20 @@ def run_evaluation(
                                and item["fragment"].get("id") == attempt.fragment_id]
                     if len(matches) == 1 and isinstance(matches[0], Mapping):
                         l3_profile = matches[0]
+                        from .l3_intent_ingress import validate_receipt
+                        finding = next(item for item in findings if isinstance(item, Mapping)
+                                       and isinstance(item.get("fragment"), Mapping)
+                                       and item["fragment"].get("id") == attempt.fragment_id)
+                        validate_receipt(finding, translation, source_path, report)
+
+            from .l3_execution_context import L3ExecutionContext
+            l3_context = (L3ExecutionContext.create(source_program, target_program)
+                          if effective_plan.profile in {ValidationProfile.MICROARCH,
+                                                       ValidationProfile.MICROARCH_DIAGNOSTIC} else None)
             validation = run_translation_validation(
                 translation, source_program, target_program, effective_plan,
                 environment, registry, comparison_policy=effective_policy,
+                l3_execution_context=l3_context,
                 l3_requirement_manifest=l3_manifest,
                 l3_intent_profile=l3_profile,
                 l3_plan_directory=str(replay) if effective_plan.profile in {
@@ -894,6 +905,9 @@ def _attempt_result(attempt: object, validation: TranslationValidationResult | N
             "l2_authority_identity": translation.l2_authority_identity,
             "effect_relation_set_identity": translation.effect_relation_set_identity,
             "l2_authority_complete": translation.l2_authority_complete,
+            "l2_semantic_profile_identity": translation.l2_semantic_profile_identity,
+            "l2_pattern_kind": translation.l2_pattern_kind,
+            "renderer_semantic_contract_id": translation.renderer_semantic_contract_id,
         },
         "reasonCodes": list(sorted(set(reasons))),
         "replayArtifacts": list(replay_artifacts),

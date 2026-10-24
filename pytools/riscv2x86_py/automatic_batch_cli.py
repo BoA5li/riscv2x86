@@ -936,6 +936,7 @@ def prepare_automatic_inventory(
     privileged_config_directory: str | Path | None = None,
     l2_provider_directory: str | Path | None = None,
     l3_provider_directory: str | Path | None = None,
+    l3_intent_producer_directory: str | Path | None = None,
     atomic_authority_directory: str | Path | None = None,
     csr_authority_directory: str | Path | None = None,
     csr_architecture_directory: str | Path | None = None,
@@ -955,6 +956,7 @@ def prepare_automatic_inventory(
         resolved,environment_resolution=load_environment(experiment_environment,source=root,overrides={
             "harness_directory":harness_directory,"privileged_config_directory":privileged_config_directory,
             "l2_provider_directory":l2_provider_directory,"l3_provider_directory":l3_provider_directory,
+            "l3_intent_producer_directory":l3_intent_producer_directory,
             "atomic_authority_directory":atomic_authority_directory,"csr_authority_directory":csr_authority_directory,
             "csr_architecture_directory":csr_architecture_directory,
             "csr_environment_contract_directory":csr_environment_contract_directory,
@@ -963,6 +965,7 @@ def prepare_automatic_inventory(
         privileged_config_directory=resolved.get("privileged_config_directory")
         l2_provider_directory=resolved.get("l2_provider_directory")
         l3_provider_directory=resolved.get("l3_provider_directory")
+        l3_intent_producer_directory=resolved.get("l3_intent_producer_directory")
         atomic_authority_directory=resolved.get("atomic_authority_directory")
         csr_authority_directory=resolved.get("csr_authority_directory")
         csr_architecture_directory=resolved.get("csr_architecture_directory")
@@ -982,6 +985,10 @@ def prepare_automatic_inventory(
     l3_root = None if l3_provider_directory is None else Path(l3_provider_directory).resolve()
     if l3_root is not None and not l3_root.is_dir():
         raise ValueError("L3 provider directory is unavailable")
+    l3_intent_root = (None if l3_intent_producer_directory is None
+                      else Path(l3_intent_producer_directory).resolve())
+    if l3_intent_root is not None and not l3_intent_root.is_dir():
+        raise ValueError("L3 intent producer directory is unavailable")
     atomic_root = (None if atomic_authority_directory is None
                    else Path(atomic_authority_directory).resolve())
     if atomic_root is not None and not atomic_root.is_dir():
@@ -1135,6 +1142,12 @@ def prepare_automatic_inventory(
                        "--source-root", "${SOURCE_ROOT}",
                        "--report", "${TRANSLATED_REPORT}",
                        "--validation-plan", str((case_dir / "validation-plan.json").resolve())]
+        if l3_intent_root is not None:
+            intent_manifest = l3_intent_root / (relative + ".l3-intent-producer.json")
+            if intent_manifest.is_file():
+                from .l3_intent_ingress import validate_manifest
+                validate_manifest(json.loads(intent_manifest.read_text()), source)
+                translation.extend(("--l3-intent-producer", str(intent_manifest)))
         translation.extend(("--csr-target-build-contract", "automatic-gcc-separate-tu-no-lto-v1"))
         if allow_functional_fallbacks:
             translation.append("--allow-functional-fallbacks")
@@ -1610,6 +1623,8 @@ def main() -> int:
                         help="directory containing <source>.c.l2-providers.json bindings")
     parser.add_argument("--l3-provider-directory",
                         help="directory containing <source>.c.l3-providers.json bindings")
+    parser.add_argument("--l3-intent-producer-directory",
+                        help="reviewed <source>.c.l3-intent-producer.json tool selections")
     parser.add_argument("--atomic-authority-directory",
                         help="directory containing <source>.c.atomic-authority.json bindings")
     parser.add_argument("--csr-architecture-directory", help="source-bound CSR specification profiles; grants no execution permission")
@@ -1621,6 +1636,8 @@ def main() -> int:
     parser.add_argument("--instruction-stream-sync-directory",
                         help=("directory containing <source>.c.instruction-stream-sync.json "
                               "runtime contract registries"))
+    parser.add_argument("--require-l3", action="store_true",
+                        help="require actual complete L0-L3 production evidence for every selected input")
     parser.add_argument("--l3-diagnostic", action="store_true",
                         help="run explicitly bound target-only experiment diagnostics")
     parser.add_argument("--experiment-environment",help="sealed experiment manifest; grants no semantic approval")
@@ -1635,6 +1652,7 @@ def main() -> int:
                                     privileged_config_directory=args.privileged_config_directory,
                                     l2_provider_directory=args.l2_provider_directory,
                                     l3_provider_directory=args.l3_provider_directory,
+                                    l3_intent_producer_directory=args.l3_intent_producer_directory,
                                     atomic_authority_directory=args.atomic_authority_directory,
                                     csr_authority_directory=args.csr_authority_directory,
                                     csr_architecture_directory=args.csr_architecture_directory,
@@ -1649,6 +1667,21 @@ def main() -> int:
         return 2
     print(json.dumps({"batchIdentity": result["batchIdentity"], "caseCount": result["caseCount"],
                       "statusCounts": result["statusCounts"], "inventory": str(inventory)}, sort_keys=True))
+    if args.require_l3:
+        from .l3_production_acceptance import audit_evaluation
+        records = []
+        for case in result["cases"]:
+            try:
+                record = audit_evaluation(json.loads((output / case["resultPath"]).read_text()))
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                record = {"status": "inconclusive", "reason": str(exc)}
+            records.append(dict(record, caseId=case["caseId"]))
+        complete = bool(records) and all(r["status"] == "verified" for r in records)
+        _write_json(output / "l3-production-acceptance.json", {
+            "schemaVersion": "riscv2x86.l3-production-acceptance.v1",
+            "productionAcceptanceComplete": complete, "evaluations": records})
+        if not complete:
+            return 2
     return 0 if set(result["statusCounts"]).issubset({"verified"}) else 1
 
 

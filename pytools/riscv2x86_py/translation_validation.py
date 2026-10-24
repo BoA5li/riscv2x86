@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 from .validation_status import PreservationMode, ValidationStatus
 from .schema import ValidationOutcome
 from .validation_observation import ExecutionObservation
+from .l3_execution_context import L3ExecutionContext
 
 
 VALIDATION_PLAN_SCHEMA = "riscv2x86.validation-plan.v1"
@@ -467,6 +468,7 @@ def run_translation_validation(
     l3_requirement_manifest: Mapping[str, object] | None = None,
     l3_intent_profile: Mapping[str, object] | None = None,
     l3_plan_directory: str | None = None,
+    l3_execution_context: L3ExecutionContext | None = None,
 ) -> TranslationValidationResult:
     """Run registered validation layers in mandatory L0 → L3 order.
 
@@ -545,7 +547,8 @@ def run_translation_validation(
             comparison_policy=comparison_policy,
             **({"prior_layer_results": tuple(layers), "l3_requirement_manifest": l3_requirement_manifest,
                 "l3_intent_profile": l3_intent_profile,
-                "l3_plan_directory": l3_plan_directory}
+                "l3_plan_directory": l3_plan_directory,
+                "l3_execution_context": l3_execution_context}
                if level is ValidationLevel.L3 else {}),
         )
         if not isinstance(layer, ValidationLayerResult) or layer.level is not level:
@@ -614,7 +617,8 @@ def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArt
     }
     authority_fields = fields - {"l2_semantic_profile_identity", "l2_pattern_kind"}
     if frozenset(data) not in {
-            frozenset(fields), frozenset(authority_fields), frozenset(legacy_fields)}:
+            frozenset(fields), frozenset(authority_fields), frozenset(legacy_fields),
+            frozenset(fields | {"renderer_semantic_contract_id"})}:
         _strict_fields(data, fields, "translation artifact")
     ignored = data.get("ignored_source_state")
     if not isinstance(ignored, list) or not all(isinstance(item, str) for item in ignored):
@@ -640,6 +644,7 @@ def translation_artifact_from_dict(data: Mapping[str, object]) -> TranslationArt
         l2_authority_complete=bool(data.get("l2_authority_complete", False)),
         l2_semantic_profile_identity=str(data.get("l2_semantic_profile_identity", "")),
         l2_pattern_kind=str(data.get("l2_pattern_kind", "")),
+        renderer_semantic_contract_id=str(data.get("renderer_semantic_contract_id", "")),
     )
 
 

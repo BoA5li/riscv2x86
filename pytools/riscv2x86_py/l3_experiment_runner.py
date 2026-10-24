@@ -808,6 +808,16 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                 diagnostic != (getattr(artifact, "preservation_mode", None) is PreservationMode.FUNCTIONAL_EQUIVALENCE_ONLY)):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail="l3.closure.l2-claim-scope-mismatch")
+    context = kwargs.get("l3_execution_context")
+    if context is not None:
+        from .l3_execution_context import L3ExecutionContext
+        try:
+            if not isinstance(context, L3ExecutionContext):
+                raise ValueError("typed context required")
+            context.validate(kwargs.get("source_program_artifact"), kwargs.get("target_program_artifact"))
+        except (OSError, ValueError, AttributeError) as exc:
+            return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
+                                         detail="l3.execution.context-invalid: " + str(exc))
     for command in (config.source_command, config.target_command):
         if not (Path(command[0]).is_file() or shutil.which(command[0])):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
@@ -815,6 +825,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
     command_runner = kwargs.get("l3_command_runner", _run_command)
     if not callable(command_runner):
         return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE, detail="L3 command runner invalid")
+    execution_bindings = {}
     reports = []
     report_bodies = {}
     trace_reports = {}
@@ -831,6 +842,8 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             ("source", config.source_runner_id, config.source_command, contract.source_environment_requirements),
             ("target", config.target_runner_id, config.target_command, contract.target_environment_requirements)):
         current = dict(request, side=side, runnerId=runner_id)
+        if context is not None:
+            current["executionBinding"] = context.request_binding(side)
         try:
             result = command_runner(command, json.dumps(current, sort_keys=True), config.timeout_seconds)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -848,13 +861,22 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             raw = json.loads(result.stdout)
             if not isinstance(raw, Mapping):
                 raise ValueError("report root must be an object")
+            if context is not None:
+                context.validate(kwargs.get("source_program_artifact"), kwargs.get("target_program_artifact"))
+                if raw.get("executionBinding") != current["executionBinding"]:
+                    raise ValueError("l3.execution.observer-binding-missing-or-stale")
+                # The versioned envelope is independent of the existing metric schema.
+                raw = dict(raw)
+                raw.pop("executionBinding")
             report = parse_platform_report(raw, side=side, runner_id=runner_id, contract=contract)
-        except (ValueError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " report invalid: " + str(exc))
         if not _environment_matches(report.environment, requirements):
             return ValidationLayerResult(ValidationLevel.L3, ValidationStatus.INCONCLUSIVE,
                                          detail=side + " controlled environment does not satisfy contract")
+        if context is not None:
+            execution_bindings[side] = current["executionBinding"]
         report_bodies[side] = asdict(report)
         if trace_contract is not None:
             from .l3_attributed_traces import parse_logical_trace, parse_machine_trace
@@ -974,7 +996,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
             report_ids = {x["side"]: x["report"] for x in reports}
             environment_ids = {x["side"]: closure_identity(x["environment"]) for x in reports}
             execution_id = closure_identity({"programId": requirement["programId"], "reports": report_ids,
-                                             "runners": reports,
+                                             "runners": reports, "executionBindings": execution_bindings,
                                              "sourceArtifact": source_artifact_id,
                                              "targetArtifact": target_artifact_id})
             comparison = {
@@ -1026,6 +1048,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "contractIdentity": contract.identity, "contractDigest": config.contract_digest,
                         "intentProfileIdentity": contract.intent_profile_identity,
                         "requirementIdentity": contract.requirement_identity,
+                        "executionBindings": execution_bindings,
                         "reports": reports, "statistics": summaries, "traceIdentities": trace_identities,
                         "attributionVerifierBinary": verifier_digest if trace_contract is not None else "",
                         "campaignResultIdentity": campaign_result["resultIdentity"] if campaign_result else "",
@@ -1037,6 +1060,7 @@ def run_l3_experiment_validation(config: ExperimentRunnerConfig, **kwargs: objec
                         "fragmentResultIdentity": fragment_closure["resultIdentity"] if fragment_closure else ""})
     detail = json.dumps({
         "conclusion": "logical access/control-flow intent and per-platform statistical conclusions satisfy the experiment contract",
+        "executionBindings": execution_bindings,
         "statisticalSummary": summaries, "traceIdentities": trace_identities,
         "campaignResult": campaign_result,
         "statisticalResult": statistical_result,

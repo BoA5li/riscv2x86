@@ -256,6 +256,7 @@ def main() -> int:
     parser.add_argument("--csr-environment-contract")
     parser.add_argument("--privileged-environment-sidecar")
     parser.add_argument("--instruction-stream-sync-registry")
+    parser.add_argument("--l3-intent-producer", help="explicit reviewed source-bound semantic producer manifest")
     args = parser.parse_args()
     report = Path(args.report).resolve(); report.parent.mkdir(parents=True, exist_ok=True)
     def preflight_failure(stage, exc, reason="evaluation.translation-preflight-failed", code=2):
@@ -267,7 +268,7 @@ def main() -> int:
 
     if any(Path(str(report) + suffix).exists() for suffix in (
             "", ".attempts.json", ".requirement-staging.json", ".requirement-failure.json",
-            ".l2-requirements.json", ".l3-requirements.json", ".preflight.json")):
+            ".l2-requirements.json", ".l3-requirements.json", ".l3-intent-production.json", ".preflight.json")):
         if Path(str(report) + ".preflight.json").exists():
             print("Preflight artifact already exists; use a fresh work directory", file=sys.stderr)
             return 2
@@ -480,6 +481,14 @@ def main() -> int:
                       for index, item in enumerate(findings)),
                 str(report) + ".attempts.json",
             )
+            failure_stage = "l3_intent_production"
+            if args.l3_intent_producer:
+                from .l3_intent_ingress import produce_intents
+                translated = produce_intents(args.source, report, args.l3_intent_producer)
+                atomic_json(report, translated)
+            elif any(f.get("l3IntentProfile") is not None or f.get("l3IntentReceipt") is not None
+                     for f in translated.get("findings", [])):
+                raise ValueError("l3.intent.explicit-producer-not-selected")
             failure_stage = "requirement_classification"
             manifest = classify_l2_requirements(translated)
             atomic_json(str(report) + ".l2-requirements.json", manifest)

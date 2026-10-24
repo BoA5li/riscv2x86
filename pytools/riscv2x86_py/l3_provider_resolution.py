@@ -437,6 +437,16 @@ def build_l3_capability_registry_validator(
                 from .l3_evidence_closure import validate_fragment_against_requirement
                 try:
                     provider_detail = json.loads(result.detail)
+                    context_binding = kwargs.get("l3_execution_context")
+                    if context_binding is not None:
+                        from .l3_execution_context import L3ExecutionContext
+                        if not isinstance(context_binding, L3ExecutionContext):
+                            raise ValueError("l3.execution.context-invalid")
+                        context_binding.validate(source_artifact, target_artifact)
+                        expected_bindings = {side: context_binding.request_binding(side)
+                                             for side in ("source", "target")}
+                        if provider_detail.get("executionBindings") != expected_bindings:
+                            raise ValueError("l3.execution.provider-binding-missing-or-stale")
                     fragment_raw = provider_detail["fragmentResult"]
                     reports = provider_detail["platformReports"]
                     if not isinstance(reports, Mapping) or set(reports) != {"source", "target"}:

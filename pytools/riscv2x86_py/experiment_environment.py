@@ -8,7 +8,7 @@ from .route_authority import content_identity
 
 SCHEMA='riscv2x86.experiment-environment.v1'
 DIRECTORIES=('harness_directory','privileged_config_directory','l2_provider_directory',
-    'l3_provider_directory','atomic_authority_directory','csr_authority_directory',
+    'l3_provider_directory','l3_intent_producer_directory','atomic_authority_directory','csr_authority_directory',
     'csr_architecture_directory','csr_environment_contract_directory','instruction_stream_sync_directory')
 _SHA=re.compile(r'sha256:[0-9a-f]{64}')
 

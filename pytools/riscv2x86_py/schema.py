@@ -453,6 +453,10 @@ class Finding:
     publicationOutcome: str = PublicationOutcome.NOT_REQUESTED.value
     translationAttemptArtifact: Dict[str, Any] = field(default_factory=dict)
 
+    # L3 experiment obligations survive report load/save; they grant no translation permission.
+    l3IntentProfile: Dict[str, Any] | None = None
+    l3IntentReceipt: Dict[str, Any] | None = None
+
     # 附加诊断信息。
     notes: List[str] = field(default_factory=list)
 
@@ -518,6 +522,10 @@ class Finding:
             else None
         )
 
+        if self.l3IntentProfile is not None:
+            from .l3_intent_requirements import parse_l3_intent_profile
+            result["l3IntentProfile"] = parse_l3_intent_profile(
+                self.l3IntentProfile, fragment_id=self.fragment.id if self.fragment else "").to_dict()
         return result
         
 @dataclass
@@ -1047,6 +1055,10 @@ def load_report(path: str) -> List[Finding]:
             if not f.column:
                 f.column = f.fragment.column
 
+        if f.l3IntentProfile is not None:
+            from .l3_intent_requirements import parse_l3_intent_profile
+            f.l3IntentProfile = parse_l3_intent_profile(
+                f.l3IntentProfile, fragment_id=f.fragment.id if f.fragment else "").to_dict()
         out.append(f)
 
     return out
