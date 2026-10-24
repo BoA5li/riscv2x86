@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 TESTS = (
     'test_l3_qemu_dependencies.py',
     'test_l3_memory_trace.py',
+    'test_l3_trace_driver.py',
     'test_l3_memory_trace_production.py',
     'test_l3_production_ingress.py',
     'test_l3_production_acceptance.py',

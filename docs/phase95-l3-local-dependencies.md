@@ -29,8 +29,9 @@ git rev-parse HEAD
 export REPO="$PWD"
 export PYTHONPATH="$REPO/pytools${PYTHONPATH:+:$PYTHONPATH}"
 export RISCV2X86_TEST_FRONTEND="$REPO/build/riscv2x86"
-export CLANG10="$REPO/experiment/results/phase33-generated-suite-20261010T093538Z/clang10-toolchain/clang"
-export PATH="$(dirname "$CLANG10"):$PATH"
+export CLANG10="/usr/bin/clang-10"
+export PATH="/usr/lib/llvm-10/bin:$PATH"
+hash -r
 export RV2X86_SYSTEM_CLANG="$CLANG10"
 export PHASE95_ROOT="$(mktemp -d "$REPO/experiment/results/phase95-XXXXXX")"
 printf 'PHASE95_ROOT=%s\n' "$PHASE95_ROOT"

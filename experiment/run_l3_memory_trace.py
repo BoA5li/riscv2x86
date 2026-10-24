@@ -11,6 +11,34 @@ import subprocess
 import sys
 
 
+def batch_diagnostics(batch_root, batch):
+    """Retain case failures without accepting paths outside the batch tree."""
+    root = Path(batch_root).resolve()
+    cases = batch['cases']
+    if not isinstance(cases, list) or not cases:
+        raise ValueError('L3_TRACE_BATCH_CASES_EMPTY_OR_INVALID')
+    records = []
+    for case in cases:
+        path = (root / case['resultPath']).resolve()
+        if root not in path.parents:
+            raise ValueError('L3_TRACE_RESULT_PATH_OUTSIDE_BATCH')
+        report = json.loads(path.read_text())
+        records.append({
+            'caseId': case['caseId'], 'reportPath': str(path),
+            'status': report.get('status'),
+            'reasonCodes': report.get('reasonCodes', []),
+            'detail': report.get('detail'),
+            'orchestrationFailure': report.get('orchestrationFailure'),
+            'attempts': [{
+                'translationOutcome': attempt.get('translationOutcome'),
+                'status': attempt.get('status'),
+                'reasonCodes': attempt.get('reasonCodes', []),
+                'layers': (attempt.get('validation') or {}).get('layers', []),
+            } for attempt in report.get('attempts', [])],
+        })
+    return records
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input',required=True,help='C file or explicitly selected corpus directory')
@@ -49,13 +77,26 @@ def main():
         with (output/'batch.log').open('w') as log:
             result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=False)
         status['steps'].append({'stage':'normal_production','command':command,'returnCode':result.returncode})
+        status['batchLogPath'] = str(output/'batch.log')
+        status['currentStage'] = 'normal_production_result';write()
+        summary = output/'batch/batch-evaluation.json'
+        if not summary.is_file():
+            reason = ('L3_TRACE_PRODUCTION_FAILED_WITHOUT_SUMMARY' if result.returncode
+                      else 'L3_TRACE_PRODUCTION_SUMMARY_MISSING')
+            raise ValueError(reason)
+        batch = json.loads(summary.read_text())
+        status['caseDiagnostics'] = batch_diagnostics(output/'batch', batch)
+        write()
+        if result.returncode:
+            raise ValueError('L3_TRACE_NORMAL_PRODUCTION_FAILED')
         status['currentStage']='independent_acceptance';write()
-        batch=json.loads((output/'batch/batch-evaluation.json').read_text())
         records=[]
-        for case in batch['cases']:
-            path=output/'batch'/case['resultPath']
-            records.append(dict(audit_evaluation(json.loads(path.read_text())),caseId=case['caseId'],reportPath=str(path)))
-        if result.returncode or not records:raise ValueError('L3_TRACE_REQUIRED_PRODUCTION_INCOMPLETE')
+        for case in status['caseDiagnostics']:
+            path=Path(case['reportPath'])
+            audited = audit_evaluation(json.loads(path.read_text()))
+            if audited.get('status') != 'verified':
+                raise ValueError('L3_TRACE_INDEPENDENT_ACCEPTANCE_NOT_VERIFIED')
+            records.append(dict(audited,caseId=case['caseId'],reportPath=str(path)))
         status.update(currentStage='complete',productionAcceptanceComplete=True,acceptance=records,
                       observationScope='compiler-asm-region-only',cacheModelSelected=bool(args.cache_model))
         write();print(json.dumps(status,ensure_ascii=False));return 0

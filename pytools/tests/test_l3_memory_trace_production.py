@@ -15,7 +15,8 @@ def test_real_ordinary_read_renamed_production(tmp_path,cache_model):
     frontend=os.environ.get('RISCV2X86_TEST_FRONTEND','')
     assert Path(manifest).is_file(),'selected L3 backend manifest missing'
     assert frontend and Path(frontend).is_file(),'selected real frontend missing'
-    source=tmp_path/'arbitrary_file.c'
+    inputs=tmp_path/'inputs';inputs.mkdir()
+    source=inputs/'arbitrary_file.c'
     source.write_text('#include <stdint.h>\nuint64_t independent_read_name(const uint64_t *base) {\n'
         'uint64_t result;\n__asm__ volatile("ld %[dst],24(%[src])" : [dst] "=r"(result) : [src] "r"(base) : "memory");\nreturn result;\n}\n')
     root=Path(__file__).resolve().parents[2]
