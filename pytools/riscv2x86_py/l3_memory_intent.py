@@ -14,6 +14,26 @@ LIMITATIONS = sorted(['compiler-loader-harness-and-outside-fragment-accesses-not
     'single-thread-private-valid-object-domain-only'])
 
 
+def _range_covers(ranges, offset, width, size):
+    """Validate effect ranges, then check one range covers this access.
+
+    These are fragment access obligations, not page permissions or authority
+    for the harness's outside-fragment initialization/post-state observations.
+    """
+    if not isinstance(ranges, list):
+        raise ValueError('L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE')
+    pairs = []
+    for item in ranges:
+        if (not isinstance(item, list) or len(item) != 2
+                or any(type(value) is not int for value in item)
+                or not 0 <= item[0] < item[1] <= size):
+            raise ValueError('L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE')
+        pairs.append(tuple(item))
+    if pairs != sorted(set(pairs)):
+        raise ValueError('L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE')
+    return any(start <= offset and offset + width <= end for start, end in pairs)
+
+
 def memory_spec(finding):
     approval = finding.get('approvalArtifact') or {}
     if (approval.get('proofStatus') != 'approved' or approval.get('architectureSemanticsPreserved') is not True or
@@ -36,10 +56,14 @@ def memory_spec(finding):
     if (type(width) is not int or width not in (1,2,4,8) or type(offset) is not int or offset<0 or
             type(size) is not int or not offset+width<=size<=65536 or type(alignment) is not int or
             alignment<width or alignment>64 or alignment & (alignment-1) or offset%width or obj.get('complete') is not True or
-            obj.get('originKind')!='function_argument' or obj.get('lifetimeScope')!='function_call' or
-            (facts.get('accessKind')=='load' and obj.get('writableRanges')) or not any(a<=offset and offset+width<=b for a,b in obj.get('readableRanges',[]))):
+            obj.get('originKind')!='function_argument' or obj.get('lifetimeScope')!='function_call'):
         raise ValueError('L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE')
-    if facts['accessKind']=='store' and not any(a<=offset and offset+width<=b for a,b in obj.get('writableRanges',[])):
+    readable = _range_covers(obj.get('readableRanges', []), offset, width, size)
+    writable = _range_covers(obj.get('writableRanges', []), offset, width, size)
+    # L2 deliberately emits no read range for a pure store. Preserve that
+    # producer contract: only the actual access kind determines coverage.
+    if (facts['accessKind']=='load' and (obj.get('writableRanges') or not readable)
+            or facts['accessKind']=='store' and not writable):
         raise ValueError('L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE')
     operands=authority.get('operands',[])
     address=[x for x in operands if x.get('operandIndex')==facts.get('addressOperandIndex')]

@@ -44,6 +44,20 @@ def test_real_ordinary_read_renamed_production(tmp_path,cache_model,access):
     raw=json.loads(layers[-1]['detail']);detail=json.loads(raw['providerDetail'])
     assert detail['observationScope']=='compiler-asm-region-only'
     assert bool(detail['cacheModelResults'])==cache_model
+    # Inspect the authority actually emitted by production, not a store
+    # fixture which accidentally retains the old load's readable range.
+    translated=json.loads(Path(detail['traceDeployment']['inputs']['report']).read_text())
+    assert len(translated['findings'])==1
+    finding=translated['findings'][0]
+    assert finding['l3IntentProfile']['complete'] is True
+    objects=finding['approvalArtifact']['l2AuthoritySidecar']['memoryObjects']
+    assert len(objects)==1
+    assert objects[0]['readableRanges']==([[24,32]] if access=='read' else [])
+    assert objects[0]['writableRanges']==([[24,32]] if access=='write' else [])
+    contract=json.loads(Path(detail['contractPath']).read_text())
+    assert contract['spec']['access']==access
+    assert contract['schemaVersion']==('riscv2x86.compiler-region-trace-experiment.v2'
+        if access=='write' else 'riscv2x86.compiler-region-trace-experiment.v1')
     for side in ('source','target'):
         assert len(detail['platformReports'][side]['events'])==4
         assert all(e['offset']==24 and e['size']==8 and e['access']==access for e in detail['platformReports'][side]['events'])

@@ -27,6 +27,7 @@ def store_finding():
     f=finding();a=f['approvalArtifact'];facts=a['l2MemoryProofFacts'];auth=a['l2AuthoritySidecar']
     facts.update(accessKind='store',valueOperandIndex=2)
     auth['sourceEffects'][0]['effectKind']='WriteMemory'
+    auth['memoryObjects'][0]['readableRanges']=[]
     auth['memoryObjects'][0]['writableRanges']=[[24,32]]
     auth['operands'].append({'operandIndex':2,'typeKind':'integer','parameterIndex':1,'accessMode':'input'})
     return f
@@ -76,13 +77,18 @@ def test_store_object_result_is_checked_against_input_not_only_other_side():
     with pytest.raises(ValueError,match='STORE_VALUE_OR_OBJECT'):parse_objects(json.dumps(row),token,spec,1)
 
 
-def test_store_harness_builds_and_runs_real_native_object_mutation(tmp_path):
+@pytest.mark.parametrize('offset',[0,8,24])
+def test_store_harness_builds_and_runs_real_native_object_mutation(tmp_path,offset):
     cc=shutil.which('gcc')
     if not cc:pytest.skip('native C compiler missing')
-    spec=memory_spec(store_finding())
+    f=store_finding()
+    f['approvalArtifact']['l2MemoryProofFacts']['byteOffset']=offset
+    f['approvalArtifact']['l2AuthoritySidecar']['memoryObjects'][0]['writableRanges']=[[offset,offset+8]]
+    spec=memory_spec(f)
     scope={'name':'arbitrary_store','returnType':'uint64_t','parameterType':'uint64_t *','valueParameterType':'uint64_t'}
     source=tmp_path/'harness.c'
-    source.write_text(harness(scope,spec,4)+'\nuint64_t arbitrary_store(uint64_t *p,uint64_t x){__asm__ volatile("movq %1,24(%0)"::"r"(p),"r"(x):"memory");return p[3];}\n')
+    source.write_text(harness(scope,spec,4)+
+        f'\nuint64_t arbitrary_store(uint64_t *p,uint64_t x){{__asm__ volatile("movq %1,{offset}(%0)"::"r"(p),"r"(x):"memory");return p[{offset//8}];}}\n')
     result=subprocess.run([cc,'-std=gnu11','-Wall','-Wextra','-Werror',str(source),'-o',str(tmp_path/'program')],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
     result=subprocess.run([str(tmp_path/'program'),'a'*64],capture_output=True,text=True)
@@ -183,3 +189,72 @@ def test_store_contract_requires_v2_and_actual_write_property_binding(model):
     for binding in raw['propertyBindings']:
         if binding['dimension']=='access_pattern':binding['obligationIds']=['memory:approved-read']
     with pytest.raises(ValueError):parse_contract(raw)
+
+
+@pytest.mark.parametrize('access',['load','store'])
+@pytest.mark.parametrize('offset',[0,8,24])
+@pytest.mark.parametrize('cache_model',[False,True])
+def test_actual_l2_object_producer_feeds_l3_intent_and_requirements(access,offset,cache_model):
+    """Exercise real range production/consumption, not a frontend or QEMU run."""
+    from dataclasses import replace
+    from tests.test_l2_memory_object_observation import _facts, _operand
+    from riscv2x86_py.l2_memory_object import MemoryAccessAuthority, bind_memory_object_authority
+    from riscv2x86_py.l3_cache_model import DEFAULT
+    f=finding() if access=='load' else store_finding()
+    fid=f['fragment']['id']; value_index=0 if access=='load' else 2
+    facts=_facts(fragment_id=fid,access_kind=access,byte_offset=offset,value_operand_index=value_index)
+    value=_operand(value_index)
+    if access=='store':value=replace(value,access_mode='input',parameter_index=1,escape_kind='function_argument')
+    operands=(value,_operand(1,pointer=True,parameter=0))
+    authority=MemoryAccessAuthority(fid,access,'parameter-object:decl:1',SHA,'decl:1',
+        offset,8,8,8,32,f'0<={offset} && {offset+8}<=32','alias:decl:1','c.default',
+        SHA,False,True,facts.decoder_address_node_identity,SHA)
+    obj,_=bind_memory_object_authority(facts,operands,authority)
+    assert obj.readable_ranges==(((offset,offset+8),) if access=='load' else ())
+    assert obj.writable_ranges==(((offset,offset+8),) if access=='store' else ())
+    a=f['approvalArtifact'];a['l2MemoryProofFacts']=facts.to_dict()
+    a['l2AuthoritySidecar']['memoryObjects']=[obj.to_dict()]
+    a['l2AuthoritySidecar']['operands']=[operand.to_dict() for operand in operands]
+    original=deepcopy(f)
+    assert memory_spec(f)['access']==('read' if access=='load' else 'write')
+    response=produce(request(f),DEFAULT if cache_model else None)
+    assert 'dispositions' not in response
+    assert response['profiles'][0]['complete'] is True
+    assert f==original  # Consumer must not invent extra readable/writable ranges.
+    f['l3IntentProfile']=response['profiles'][0]
+    requirements=classify_l3_requirements({'findings':[f]}).to_dict()
+    assert parse_l3_requirement_manifest(requirements)
+    assert requirements['requirements'][0]['eligibilityStatus']=='eligible'
+    assert {p['dimension'] for p in response['profiles'][0]['requiredProperties']}==(
+        {'access_pattern','cache_model'} if cache_model else {'access_pattern'})
+
+
+@pytest.mark.parametrize('access',['load','store'])
+@pytest.mark.parametrize('ranges',[[],[[0,24]],[[24,31]],[[25,32]],None,[[24]],
+    [[True,32]],[['24',32]],[[-1,32]],[[24,33]],[[32,24]],[[24,32],[24,32]]])
+def test_access_specific_ranges_reject_missing_insufficient_or_malformed_coverage(access,ranges):
+    f=finding() if access=='load' else store_finding()
+    obj=f['approvalArtifact']['l2AuthoritySidecar']['memoryObjects'][0]
+    obj['readableRanges' if access=='load' else 'writableRanges']=ranges
+    with pytest.raises(ValueError,match='L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE'):memory_spec(f)
+    response=produce(request(f))
+    assert response['profiles'][0]['complete'] is False
+    assert response['profiles'][0]['intentKind']=='unknown'
+    assert response['dispositions'][0]['status']=='prerequisites_missing'
+
+
+@pytest.mark.parametrize('mutation',['read-only','bounds','offset','alignment','lifetime','origin','fragment','atomic'])
+def test_pure_store_keeps_existing_proof_and_object_preconditions(mutation):
+    f=store_finding();a=f['approvalArtifact'];facts=a['l2MemoryProofFacts']
+    obj=a['l2AuthoritySidecar']['memoryObjects'][0]
+    if mutation=='read-only':obj.update(readableRanges=[[24,32]],writableRanges=[])
+    if mutation=='bounds':obj['sizeBytes']=31
+    if mutation=='offset':facts['byteOffset']=16
+    if mutation=='alignment':obj['minimumAlignment']=4
+    if mutation=='lifetime':obj['lifetimeScope']='global'
+    if mutation=='origin':obj['originKind']='unknown'
+    if mutation=='fragment':facts['fragmentId']='another-fragment'
+    if mutation=='atomic':facts['nonAtomic']=False
+    with pytest.raises(ValueError):memory_spec(f)
+    profile=produce(request(f))['profiles'][0]
+    assert not profile['complete'] and profile['intentKind']=='unknown'
