@@ -30,6 +30,8 @@ def trace_spec(finding):
 
 
 def scalar_harness(scope, samples):
+    if 'callSignature' in scope:
+        return vector_harness(scope, samples)
     return r'''#include <stdint.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -47,8 +49,23 @@ int main(int argc,char **argv){
 ''' % (scope['returnType'],scope['name'],scope['parameterType'],samples,scope['name'],scope['parameterType'])
 
 
-def parse_samples(stdout,token,samples):
+def parse_samples(stdout,token,samples,signature=None):
     import json,re
+    if signature is not None:
+        from .l3_scalar_call import sample_plan
+        plan=sample_plan(signature,samples); rows=[]
+        for line in stdout.splitlines():
+            row=json.loads(line)
+            if (not isinstance(row,dict) or set(row)!={'schemaVersion','token','sample','inputs','value','planIdentity'}
+                    or row['schemaVersion']!='riscv2x86.l3-scalar-sample.v2'
+                    or row['token']!=token or type(row['sample']) is not int or row['sample']!=len(rows)
+                    or len(rows)>=samples or row['inputs']!=plan['inputs'][len(rows)]
+                    or row['planIdentity']!=plan['planIdentity']
+                    or not isinstance(row['value'],str) or re.fullmatch('[0-9a-f]{16}',row['value']) is None):
+                raise ValueError('L3_SCALAR_RUNTIME_SAMPLE_INVALID')
+            rows.append(row)
+        if len(rows)!=samples:raise ValueError('L3_SCALAR_RUNTIME_SAMPLES_MISSING')
+        return rows
     rows=[]
     for line in stdout.splitlines():
         row=json.loads(line)
@@ -60,3 +77,37 @@ def parse_samples(stdout,token,samples):
         rows.append(row)
     if len(rows)!=samples:raise ValueError('L3_SCALAR_RUNTIME_SAMPLES_MISSING')
     return rows
+
+
+def vector_harness(scope, samples):
+    from .l3_scalar_call import sample_plan
+    import re
+    if not isinstance(scope['name'],str) or re.fullmatch('[A-Za-z_][A-Za-z0-9_]*',scope['name']) is None:
+        raise ValueError('L3_SCALAR_CALL_NAME_INVALID')
+    signature=scope['callSignature']; plan=sample_plan(signature,samples)
+    types=[p['cType'] for p in signature['parameters']]
+    data=',\n'.join('{'+','.join('UINT64_C(0x'+x+')' for x in row)+'}' for row in plan['inputs'])
+    arguments=[]
+    for i,p in enumerate(signature['parameters']):
+        x=f'inputs[sample][{i}]'
+        # Every conversion to int64_t is in range; subtraction remains in range.
+        arguments.append(f'({x} <= INT64_MAX ? (int64_t){x} : -INT64_C(1)-(int64_t)(UINT64_MAX-{x}))'
+                         if p['signed'] else x)
+    inputs_format=','.join('\\"%016" PRIx64 "\\"' for _ in types)
+    inputs_args=','.join(f'inputs[sample][{i}]' for i in range(len(types)))
+    return '''#include <stdint.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
+extern %s %s(%s);
+int main(int argc,char **argv){
+ if(argc!=2 || strlen(argv[1])!=64) return 2;
+ const uint64_t inputs[%d][%d]={%s};
+ for(unsigned sample=0;sample<%d;++sample){
+  uint64_t value=(uint64_t)%s(%s);
+  printf("{\\"schemaVersion\\":\\"riscv2x86.l3-scalar-sample.v2\\",\\"token\\":\\"%%s\\",\\"sample\\":%%u,\\"inputs\\":[%s],\\"value\\":\\"%%016" PRIx64 "\\",\\"planIdentity\\":\\"%s\\"}\\n",argv[1],sample,%s,value);
+ }
+ return 0;
+}
+''' % (signature['result']['cType'],scope['name'],','.join(types),samples,len(types),data,samples,
+       scope['name'],','.join(arguments),inputs_format,plan['planIdentity'],inputs_args)

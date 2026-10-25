@@ -154,13 +154,17 @@ def test_scalar_deployment_uses_compiler_scope_not_function_name(tmp_path,monkey
     b=f['approvalArtifact']['l2FragmentOperandBoundary'];fid=b['functionId']
     scope={'scope':'single_asm_no_other_memory_or_control_effects','sourceDigest':digest(source),
            'functionIdentity':fid,'scopeIdentity':identity('scope')}
-    fn={'name':f['fragment']['enclosingFunction'],'returnType':'uint64_t','parameterTypes':['uint64_t'],
-        'functionId':fid,'compilerAtomicFunctionScope':scope}
+    _,fn=literal_finding()
+    fn['compilerAtomicFunctionScope']=scope
     monkeypatch.setattr('riscv2x86_py.mechanism_route_checks.compiler_bound_finding',lambda *a:(f,{'functions':[fn]}))
     if mutation=='function':fn['functionId']=identity('other')
     if mutation=='type':fn['parameterTypes']=['uint64_t *']
     if mutation=='outside-effects':scope['scope']='unknown'
     if mutation=='digest':scope['sourceDigest']=identity('stale')
-    if mutation=='none':assert function_scope(source,'report',f)['name']==fn['name']
+    if mutation=='none':
+        current=function_scope(source,'report',f)
+        assert current['name']==fn['name'] and current['callSignature']['parameters'][0]['cType']=='unsigned long'
+        legacy=function_scope(source,'report',f,legacy_scalar=True)
+        assert legacy['parameterType']=='unsigned long' and 'callSignature' not in legacy
     else:
         with pytest.raises(ValueError,match='SCALAR_SCOPE'):function_scope(source,'report',f)

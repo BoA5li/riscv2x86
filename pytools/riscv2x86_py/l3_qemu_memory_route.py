@@ -21,6 +21,7 @@ from .validation_status import ValidationStatus
 CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v1'
 STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v2'
 SCALAR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v3'
+VECTOR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v4'
 ROUTE_SCHEMA='riscv2x86.compiler-region-trace-route.v1'
 RUNNER_SCHEMA='riscv2x86.compiler-region-trace-runner.v1'
 
@@ -31,9 +32,11 @@ def parse_contract(value):
             'requirementIdentity','approvedTargetRelationIdentity','programId','fragmentId','spec',
             'deployment','backendPath','backendDigest','cacheModel','requiredProperties','propertyBindings',
             'sampleCount','knownNonEquivalences'}
-    scalar=isinstance(value,dict) and value.get('schemaVersion')==SCALAR_CONTRACT_SCHEMA
+    vector=isinstance(value,dict) and value.get('schemaVersion')==VECTOR_CONTRACT_SCHEMA
+    scalar=isinstance(value,dict) and value.get('schemaVersion') in {SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}
     if scalar:fields.add('propertyObligations')
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA}:
+    if vector:fields.add('samplePlan')
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}:
         raise ValueError('L3_TRACE_CONTRACT_SCHEMA_INVALID')
     if type(value['sampleCount']) is not int or not 2<=value['sampleCount']<=16:
         raise ValueError('L3_TRACE_SAMPLE_COUNT_INVALID')
@@ -72,6 +75,16 @@ def parse_contract(value):
         raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
     if value['deployment']['spec']!=spec or value['deployment']['sampleCount']!=value['sampleCount']:
         raise ValueError('L3_TRACE_CONTRACT_DEPLOYMENT_MISMATCH')
+    if scalar and not vector and 'callSignature' in value['deployment'].get('functionScope',{}):
+        raise ValueError('L3_SCALAR_CALL_CONTRACT_VERSION_REQUIRED')
+    if vector:
+        from .l3_scalar_call import sample_plan
+        deployment=value['deployment']
+        if deployment.get('schemaVersion')!='riscv2x86.compiler-region-execution-deployment.v2':
+            raise ValueError('L3_SCALAR_CALL_DEPLOYMENT_VERSION_REQUIRED')
+        signature=deployment['functionScope']['callSignature']
+        if value.get('samplePlan')!=sample_plan(signature,value['sampleCount']):
+            raise ValueError('L3_SCALAR_SAMPLE_PLAN_MISMATCH')
     model=value['cacheModel']
     if model is not None: cache_validate(model)
     expected_limits=sorted(LIMITATIONS+([] if model is None else ['cache-model-is-object-relative-fragment-stream-only']))
@@ -104,10 +117,10 @@ def validate_profile_scope(profile, spec, model, obligations=None):
         raise ValueError('L3_TRACE_REGISTERED_INTENT_SCOPE_MISMATCH')
 
 
-def parse_objects(stdout, token, spec, samples):
+def parse_objects(stdout, token, spec, samples, signature=None):
     if spec['access']=='none':
         from .l3_scalar_trace import parse_samples
-        return parse_samples(stdout,token,samples)
+        return parse_samples(stdout,token,samples,signature)
     objects=[]
     for line in stdout.splitlines():
         value=json.loads(line)
@@ -156,7 +169,7 @@ def normalize(events, objects, spec):
 def report_from_capture(side, backend, deployment, events, objects, evidence):
     spec=deployment['spec']; normalized,reasons=normalize(events,objects,spec)
     scalar=spec['access']=='none'
-    return {'schemaVersion':('riscv2x86.compiler-region-trace-observation.v2' if scalar else 'riscv2x86.compiler-region-trace-observation.v1'),'side':side,
+    return {'schemaVersion':('riscv2x86.compiler-region-trace-observation.v3' if scalar and 'callSignature' in deployment.get('functionScope',{}) else 'riscv2x86.compiler-region-trace-observation.v2' if scalar else 'riscv2x86.compiler-region-trace-observation.v1'),'side':side,
             'backendIdentity':backend['backendIdentity'],'deploymentIdentity':deployment['deploymentIdentity'],
             'captureBoundary':'compiler-asm-region-only',('samples' if scalar else 'objects'):objects,'events':normalized,
             'evidence':evidence,'environment':{'executor':backend[side+'Executor'],
@@ -195,7 +208,7 @@ def replay_reports(detail, contract, source_artifact, target_artifact):
         region=deployment['sides'][side]['region']
         events=parse_capture(Path(evidence['rawTracePath']).read_text(),token=evidence['token'],
             target='riscv64' if side=='source' else 'x86_64',region=region,calls=raw['sampleCount'])
-        objects=parse_objects(record['stdout'],evidence['token'],raw['spec'],raw['sampleCount'])
+        objects=parse_objects(record['stdout'],evidence['token'],raw['spec'],raw['sampleCount'],deployment['functionScope'].get('callSignature'))
         command=record['command']; binary=deployment['sides'][side]['executionArtifact']['artifactPath']
         expected_plugin=','.join([backend['plugin'],'start='+hex(region['start']),'end='+hex(region['end']),
                                  'limit=4096','output='+str(Path(evidence['rawTracePath']).resolve()),'token='+evidence['token']])
@@ -245,7 +258,7 @@ def build_observer(config):
                 # Stderr has to remain empty; capture protocol is a separate file.
                 record=json.loads((work/side/'execute.command.json').read_text())
                 if record['stderr']: raise ValueError('L3_TRACE_EXECUTOR_STDERR_UNEXPECTED')
-                objects=parse_objects(stdout,evidence['token'],raw['spec'],raw['sampleCount'])
+                objects=parse_objects(stdout,evidence['token'],raw['spec'],raw['sampleCount'],deployment['functionScope'].get('callSignature'))
                 reports[side]=report_from_capture(side,backend,deployment,events,objects,evidence)
             detail={'traceDeployment':deployment,'contractPath':config['contractPath'],'contractDigest':config['contractDigest'],
                 'platformReports':reports,'executionBindings':{s:context.request_binding(s) for s in ('source','target')},
@@ -329,14 +342,17 @@ def build_route(config):
             properties=[x.to_dict() for x in profile.required_properties]
             bindings=[dict(p,comparatorId=('object-relative-cache-model.v1' if p['dimension']=='cache_model' else 'logical-access-contract.v1'),
                 obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else (['memory:empty-executed-region'] if spec['access']=='none' else ['memory:approved-'+spec['access']])) for p in properties]
-            contract={'schemaVersion':SCALAR_CONTRACT_SCHEMA if spec['access']=='none' else (STORE_CONTRACT_SCHEMA if spec['access']=='write' else CONTRACT_SCHEMA),'experimentId':'compiler-region:'+profile.profile_identity,
+            contract={'schemaVersion':VECTOR_CONTRACT_SCHEMA if spec['access']=='none' else (STORE_CONTRACT_SCHEMA if spec['access']=='write' else CONTRACT_SCHEMA),'experimentId':'compiler-region:'+profile.profile_identity,
                 'translationPlanId':kwargs['translation_artifact'].translation_plan_id,'proofIdentity':profile.proof_identity,
                 'intentProfileIdentity':profile.profile_identity,'requirementIdentity':req['requirementIdentity'],
                 'approvedTargetRelationIdentity':profile.approved_target_relation_identity,'programId':spec['programId'],'fragmentId':spec['fragmentId'],
                 'spec':spec,'deployment':deployment,'backendPath':str(Path(config['backendPath']).resolve()),'backendDigest':config['backendDigest'],
                 'cacheModel':model,'requiredProperties':properties,'propertyBindings':bindings,'sampleCount':samples,
                 'knownNonEquivalences':list(profile.not_claimed_properties)}
-            if spec['access']=='none':contract['propertyObligations']=obligations
+            if spec['access']=='none':
+                from .l3_scalar_call import sample_plan
+                contract['propertyObligations']=obligations
+                contract['samplePlan']=sample_plan(deployment['functionScope']['callSignature'],samples)
             parse_contract(contract); path=save(work/'experiment-contract.json',contract)
             observer={'schemaVersion':RUNNER_SCHEMA,'contractPath':str(path),'contractDigest':digest(path),
                 'sourceCommand':[backend['sourceExecutor']], 'targetCommand':[backend['targetExecutor']],

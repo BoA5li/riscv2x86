@@ -15,6 +15,7 @@ from .l3_trace_support import Elf, digest, identity, run, save
 from .l3_scalar_trace import trace_spec
 
 SCHEMA='riscv2x86.compiler-region-execution-deployment.v1'
+SCALAR_SCHEMA='riscv2x86.compiler-region-execution-deployment.v2'
 _INTEGER=r'(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)'
 
 
@@ -29,7 +30,7 @@ def label_assembly(text):
     return ''.join(lines[:starts[0]+1])+begin+''.join(lines[starts[0]+1:ends[0]])+end+''.join(lines[ends[0]:])
 
 
-def function_scope(source, report, finding):
+def function_scope(source, report, finding, *, legacy_scalar=False):
     from .mechanism_route_checks import compiler_bound_finding
     fid=finding['fragment']['id']; bound,snapshot=compiler_bound_finding(source,report,fid)
     if bound!=finding: raise ValueError('L3_TRACE_FINDING_CHANGED')
@@ -39,17 +40,25 @@ def function_scope(source, report, finding):
     name=function.get('name'); result=function.get('returnType'); parameters=function.get('parameterTypes')
     spec=trace_spec(finding)
     if spec['access']=='none':
-        normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
         if (not isinstance(name,str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) is None
                 or name!=finding['fragment'].get('enclosingFunction')
                 or function.get('functionId')!=boundary.get('functionId')
                 or scope.get('scope')!='single_asm_no_other_memory_or_control_effects'
                 or scope.get('sourceDigest')!=digest(source)
-                or scope.get('functionIdentity')!=function['functionId']
-                or normalized not in [['uint64_t'],['unsigned long']]
-                or result not in {'uint64_t','unsigned long'}):
+                or scope.get('functionIdentity')!=function['functionId']):
             raise ValueError('L3_TRACE_COMPILER_SCALAR_SCOPE_UNSUPPORTED')
-        return {'name':name,'returnType':result,'parameterType':parameters[0],
+        if legacy_scalar:
+            normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
+            if normalized not in [['uint64_t'],['unsigned long']] or result not in {'uint64_t','unsigned long'}:
+                raise ValueError('L3_TRACE_COMPILER_SCALAR_SCOPE_UNSUPPORTED')
+            return {'name':name,'returnType':result,'parameterType':parameters[0],
+                    'functionIdentity':function['functionId'],'scopeIdentity':scope['scopeIdentity']}
+        from .l3_scalar_call import call_signature
+        try:
+            signature=call_signature(function,finding)
+        except (KeyError,TypeError,ValueError) as exc:
+            raise ValueError('L3_TRACE_COMPILER_SCALAR_SCOPE_UNSUPPORTED:'+str(exc)) from exc
+        return {'name':name,'callSignature':signature,
                 'functionIdentity':function['functionId'],'scopeIdentity':scope['scopeIdentity']}
     if spec['access']=='write':
         store=function.get('compilerStoreFunctionScope') or {}
@@ -160,7 +169,7 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
               'files':files,'executor':backend[side+'Executor'],'executorDigest':digest(backend[side+'Executor']),
               'runnerArguments':backend[side+'RunnerArguments']}
         deployments[side]=body
-    value={'schemaVersion':SCHEMA,'backendIdentity':backend['backendIdentity'],'spec':spec,'functionScope':scope,
+    value={'schemaVersion':SCALAR_SCHEMA if 'callSignature' in scope else SCHEMA,'backendIdentity':backend['backendIdentity'],'spec':spec,'functionScope':scope,
            'sampleCount':samples,'sourceAndTargetFiles':code_files,'inputs':{'source':str(source),'target':str(target),'report':str(Path(report).resolve())},'sides':deployments,
            'captureBoundary':'compiler-asm-region-only','compilerRegionWitness':'zero-byte-labels-and-exact-function-bytes',
            'outsideFragmentEffectsClaimed':False}
@@ -172,16 +181,18 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
 def validate(value, backend, source_artifact, target_artifact):
     fields={'schemaVersion','backendIdentity','spec','functionScope','sampleCount','sourceAndTargetFiles','sides',
             'captureBoundary','compilerRegionWitness','outsideFragmentEffectsClaimed','deploymentIdentity','inputs'}
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion']!=SCHEMA or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}):
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {SCHEMA,SCALAR_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}):
         raise ValueError('L3_TRACE_DEPLOYMENT_IDENTITY_INVALID')
     if (value['backendIdentity']!=backend['backendIdentity'] or value['captureBoundary']!='compiler-asm-region-only' or
             value['compilerRegionWitness']!='zero-byte-labels-and-exact-function-bytes' or value['outsideFragmentEffectsClaimed'] is not False):
         raise ValueError('L3_TRACE_DEPLOYMENT_SCOPE_INVALID')
     for path,expected in value['sourceAndTargetFiles'].items():
         if digest(path)!=expected: raise ValueError('L3_TRACE_DEPLOYMENT_SOURCE_CHANGED')
+    if (value['schemaVersion']==SCALAR_SCHEMA) != ('callSignature' in value['functionScope']):
+        raise ValueError('L3_TRACE_DEPLOYMENT_CALL_VERSION_MISMATCH')
     inputs=value['inputs']; data=json.loads(Path(inputs['report']).read_text())
     findings=[f for f in data['findings'] if (f.get('fragment') or {}).get('id')==value['spec']['fragmentId']]
-    if len(findings)!=1 or trace_spec(findings[0])!=value['spec'] or function_scope(inputs['source'],inputs['report'],findings[0])!=value['functionScope']:
+    if len(findings)!=1 or trace_spec(findings[0])!=value['spec'] or function_scope(inputs['source'],inputs['report'],findings[0],legacy_scalar=value['schemaVersion']==SCHEMA)!=value['functionScope']:
         raise ValueError('L3_TRACE_DEPLOYMENT_PROOF_REPLAY_MISMATCH')
     from .approved_replacement import approved_replacement
     finding=findings[0]; original=Path(inputs['source']).read_bytes()

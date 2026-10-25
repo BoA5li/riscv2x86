@@ -48,3 +48,48 @@ def test_real_register_scalar_data_access_intent(tmp_path,operation,constant):
     trace=Path(detail['platformReports']['source']['evidence']['rawTracePath'])
     trace.write_text(trace.read_text().replace('F 4 4 0 0','F 0 0 0 0'))
     with pytest.raises(ValueError):audit_evaluation(report)
+
+
+@pytest.mark.parametrize('result,parameters,instruction',[
+    ('uint64_t','uint64_t x,uint64_t y','sub'),
+    ('uint64_t','uint64_t x,uint64_t y','srl'),
+    ('int64_t','int64_t x,int64_t y','sra'),
+    ('uint64_t','int64_t x,int64_t y','slt'),
+])
+def test_real_multi_parameter_scalar_trace(tmp_path,result,parameters,instruction):
+    manifest=os.environ.get('RV2X86_L3_TRACE_BACKEND','')
+    if not manifest:pytest.skip('explicit calibrated dual-ISA QEMU L3 backend not selected')
+    frontend=os.environ.get('RISCV2X86_TEST_FRONTEND','')
+    assert Path(manifest).is_file() and Path(frontend).is_file()
+    inputs=tmp_path/'inputs';inputs.mkdir();source=inputs/'arbitrary_pair.c'
+    source.write_text('#include <stdint.h>\n'+result+' independent_pair('+parameters+'){'+result+' z;\n'
+        '__asm__ volatile("'+instruction+' %0,%1,%2":"=r"(z):"r"(x),"r"(y));return z;}\n')
+    root=Path(__file__).resolve().parents[2];output=tmp_path/'production'
+    run=subprocess.run([sys.executable,str(root/'experiment/run_l3_memory_trace.py'),
+        '--input',str(source),'--frontend',frontend,'--backend',manifest,'--output',str(output)],
+        capture_output=True,text=True,check=False,timeout=1200)
+    logs=[str(p)+':\n'+p.read_text()[-10000:] for p in output.rglob('batch.log')]
+    assert run.returncode==0,run.stdout+run.stderr+'\n'.join(logs)
+    status=json.loads((output/'run-status.json').read_text())
+    assert status['productionAcceptanceComplete'] and not status['blockers']
+    reports=list(output.glob('batch/cases/*/evaluation-result.json'));assert len(reports)==1
+    report=json.loads(reports[0].read_text());layers=report['attempts'][0]['validation']['layers']
+    assert [l['level'] for l in layers]==['L0','L1','L2','L3']
+    assert all(l['status']=='verified' for l in layers)
+    detail=json.loads(json.loads(layers[-1]['detail'])['providerDetail'])
+    signature=detail['traceDeployment']['functionScope']['callSignature']
+    assert len(signature['parameters'])==2
+    assert all(p['signed']==parameters.startswith('int64_t') for p in signature['parameters'])
+    for side in ('source','target'):
+        observed=detail['platformReports'][side]
+        assert observed['schemaVersion']=='riscv2x86.compiler-region-trace-observation.v3'
+        assert not observed['events'] and len(observed['samples'])==4
+        assert all(len(row['inputs'])==2 for row in observed['samples'])
+    from riscv2x86_py.l3_production_acceptance import audit_evaluation
+    assert audit_evaluation(report)['status']=='verified'
+    # Rehashed in-memory observation cannot replace actual command stdout.
+    detail['platformReports']['source']['samples'][0]['inputs'].reverse()
+    # audit_evaluation below uses the report's providerDetail, not this local copy.
+    outer=json.loads(layers[-1]['detail']);outer['providerDetail']=json.dumps(detail)
+    layers[-1]['detail']=json.dumps(outer)
+    with pytest.raises(ValueError):audit_evaluation(report)

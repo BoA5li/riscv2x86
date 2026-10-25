@@ -166,7 +166,7 @@ class ExperimentContract:
     def __post_init__(self) -> None:
         if not self.experiment_id or not self.translation_plan_id or not _SHA256.fullmatch(self.proof_identity):
             raise ValueError("experiment identity is incomplete")
-        trace_contract = self.payload.get('schemaVersion') in {'riscv2x86.compiler-region-trace-experiment.v1','riscv2x86.compiler-region-trace-experiment.v2','riscv2x86.compiler-region-trace-experiment.v3'}
+        trace_contract = self.payload.get('schemaVersion') in {'riscv2x86.compiler-region-trace-experiment.v1','riscv2x86.compiler-region-trace-experiment.v2','riscv2x86.compiler-region-trace-experiment.v3','riscv2x86.compiler-region-trace-experiment.v4'}
         levels = _PRESERVATION | ({'bounded_execution_intent'} if trace_contract else set())
         classes = _EXPERIMENT_CLASSES | ({'cache_model'} if trace_contract else set())
         if self.preservation_level not in levels or not self.strategy_registration_id:
@@ -176,7 +176,7 @@ class ExperimentContract:
         if self.experiment_classes != tuple(sorted(set(self.experiment_classes))):
             raise ValueError("experiment classes must be canonical")
         if ("memory_access" in self.experiment_classes and not self.required_access_pattern
-                and self.payload.get("schemaVersion")!="riscv2x86.compiler-region-trace-experiment.v3"):
+                and self.payload.get("schemaVersion") not in {"riscv2x86.compiler-region-trace-experiment.v3","riscv2x86.compiler-region-trace-experiment.v4"}):
             raise ValueError("memory-access experiment requires a logical access pattern")
         if "control_flow" in self.experiment_classes and not self.required_control_flow:
             raise ValueError("control-flow experiment requires logical control events")
@@ -326,7 +326,7 @@ def load_experiment_contract(path: str | Path) -> ExperimentContract:
 def parse_experiment_contract(value: object) -> ExperimentContract:
     if not isinstance(value, Mapping):
         raise ValueError("experiment contract must be an object")
-    if value.get("schemaVersion") in {"riscv2x86.compiler-region-trace-experiment.v1","riscv2x86.compiler-region-trace-experiment.v2", "riscv2x86.compiler-region-trace-experiment.v3"}:
+    if value.get("schemaVersion") in {"riscv2x86.compiler-region-trace-experiment.v1","riscv2x86.compiler-region-trace-experiment.v2", "riscv2x86.compiler-region-trace-experiment.v3", "riscv2x86.compiler-region-trace-experiment.v4"}:
         from .l3_qemu_memory_route import parse_contract
         return parse_contract(value)
     from .l3_property_bindings import PROPERTY_CONTRACT_SCHEMA

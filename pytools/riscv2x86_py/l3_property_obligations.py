@@ -14,7 +14,7 @@ POLICY = {'schemaVersion':'riscv2x86.l3-evaluation-policy.v1',
                 'physical-timing','prediction','speculation']}
 
 
-def analyze(finding):
+def analyze(finding, functions=None):
     from .l2_semantic_profile import profile_from_finding
     from .l2_authority import l2_authority_sidecar_from_dict
     from .l2_effect_proof import effect_proof_facts_from_dict
@@ -26,9 +26,13 @@ def analyze(finding):
     profile=profile_from_finding(finding); sidecar=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar'])
     proof=effect_proof_facts_from_dict(a['l2EffectProofFacts'])
     boundary=a['l2FragmentOperandBoundary']
+    atomic=profile.pattern_kind.value=='atomic'
+    if atomic:
+        from .l3_source_eligibility import atomic_boundary
+        boundary=atomic_boundary(finding,functions,sidecar)
     if (not profile.complete or not sidecar.complete or not proof.complete or
             any(x!=fid for x in (profile.fragment_id,sidecar.fragment_id,proof.fragment_id,boundary.get('fragmentId')))
-            or proof.proof_identity!=a['proofIdentity'] or not boundary.get('complete')
+            or proof.proof_identity!=a['proofIdentity'] or (not atomic and not boundary.get('complete'))
             or not boundary.get('programId') or sidecar.effect_relation_set_identity==''):
         raise ValueError('L3_OBLIGATION_FACTS_INCOMPLETE')
     # All shapes are needed to make cross-family negative classifications;

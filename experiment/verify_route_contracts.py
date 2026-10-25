@@ -19,6 +19,8 @@ TESTS = (
     'test_l3_memory_trace.py',
     'test_l3_route_applicability.py',
     'test_l3_scalar_trace.py',
+    'test_l3_scalar_call.py',
+    'test_l3_atomic_eligibility.py',
     'test_l3_scalar_trace_production.py',
     'test_static_operand_production.py',
     'test_static_operand_real_production.py',
@@ -133,7 +135,11 @@ def main():
     parser.add_argument('--require-verified-case',action='append',default=[])
     parser.add_argument('--acceptance-matrix', type=Path)
     parser.add_argument('--require-no-regression-skips', action='store_true')
+    parser.add_argument('--regression-timeout-seconds', type=int, default=1800,
+                        help='outer pytest process budget; does not change per-test semantic checks')
     args = parser.parse_args()
+    if args.regression_timeout_seconds <= 0:
+        parser.error('--regression-timeout-seconds must be positive')
     repo = Path(__file__).resolve().parents[1]
     output = args.output.absolute()
     output.mkdir(parents=True, exist_ok=True)
@@ -150,7 +156,8 @@ def main():
     env['RISCV2X86_TEST_FRONTEND'] = str(args.frontend.absolute())
     status = {'schemaVersion':'riscv2x86.route-contract-regression.v1',
         'steps':[], 'generatedSuiteExecuted':False, 'generatedSuiteExitCode':None,
-        'blockers':[], 'python':sys.executable, 'repository':str(repo)}
+        'blockers':[], 'python':sys.executable, 'repository':str(repo),
+        'regressionTimeoutSeconds':args.regression_timeout_seconds}
 
     def save():
         (output/'run-status.json').write_text(json.dumps(status, indent=2)+'\n')
@@ -198,7 +205,7 @@ def main():
             status['blockers'].append('frontend-build')
         if not status['blockers'] and not run('regression', [sys.executable,'-m','pytest','-q',
                 '--junitxml='+str(output/'regression.xml'),
-                *['pytools/tests/'+name for name in TESTS]],1800):
+                *['pytools/tests/'+name for name in TESTS]],args.regression_timeout_seconds):
             status['blockers'].append('regression')
     regression_xml = output/'regression.xml'
     if regression_xml.is_file():

@@ -1172,7 +1172,9 @@ def prepare_automatic_inventory(
             command=[sys.executable,'-m','riscv2x86_py.l3_trace_intent','--implementation',str(implementation)]
             for dependency in ('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py',
                     'l3_memory_intent.py','l3_property_obligations.py','l3_scalar_trace.py',
-                    'l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py'):
+                    'l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py',
+                    'l3_source_eligibility.py','l2_atomic_authority.py','l2_materialization.py','l2_fragment_execution.py',
+                    'compiler_provenance.py'):
                 command.extend(('--dependency',str(implementation.with_name(dependency))))
             if trace_model is not None:
                 model_path=case_dir/'cache-model-selection.json'

@@ -18,7 +18,7 @@ def produce(request, model=None):
     for item in request['candidates']:
         f=item['finding']; artifact=item['translationArtifact']; obligation=None
         try:
-            obligation=analyze(f)
+            obligation=analyze(f,item.get('compilerFunctions'))
             if (obligation['proofIdentity']!=artifact['proof_identity'] or
                     obligation['approvedTargetRelationIdentity']!=artifact['effect_relation_set_identity']):
                 raise ValueError('L3_OBLIGATION_ARTIFACT_MISMATCH')
@@ -72,7 +72,9 @@ def main():
     a=p.parse_args()
     expected={str(Path(__file__).with_name(n).resolve()) for n in (
         'l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py','l3_memory_intent.py',
-        'l3_property_obligations.py','l3_scalar_trace.py','l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py')}
+        'l3_property_obligations.py','l3_scalar_trace.py','l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py',
+        'l3_source_eligibility.py','l2_atomic_authority.py','l2_materialization.py','l2_fragment_execution.py',
+        'compiler_provenance.py')}
     if Path(a.implementation).resolve()!=Path(__file__).resolve() or set(str(Path(x).resolve()) for x in a.dependency)!=expected:
         raise ValueError('L3_TRACE_PRODUCER_DEPENDENCIES_UNPINNED')
     model=None if a.cache_model_file is None else json.loads(Path(a.cache_model_file).read_text())

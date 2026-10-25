@@ -81,7 +81,7 @@ def produce_intents(source, report, manifest_path, *, replay=False):
         artifact = artifacts.get(f'finding:{index}:{fid}')
         if artifact is None:
             continue  # No translation candidate is not authority to infer intent=none.
-        bound, _ = compiler_bound_finding(source, report, fid)
+        bound, snapshot = compiler_bound_finding(source, report, fid)
         bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
         finding.pop('l3IntentProfile', None)
         finding.pop('l3IntentReceipt', None)
@@ -101,6 +101,7 @@ def produce_intents(source, report, manifest_path, *, replay=False):
             prerequisite_refusals.append(fid)
             continue
         items.append({'findingIndex': index, 'finding': dict(finding),
+                      'compilerFunctions': snapshot.get('functions', []),
                       'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
                       asdict(artifact)})
     if not items and prerequisite_refusals:

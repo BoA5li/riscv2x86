@@ -14,6 +14,24 @@ def runner():
     return module
 
 
+def test_outer_regression_budget_is_explicit_without_changing_test_options(tmp_path,monkeypatch):
+    module=runner();output=tmp_path/'out';seen=[]
+    monkeypatch.setattr(module.sys,'argv',['runner','--frontend','frontend','--clang10','clang',
+        '--output',str(output),'--regression-timeout-seconds','7200'])
+    monkeypatch.setattr(module.shutil,'which',lambda name,**kw:'/tools/'+name)
+    def run(command,**kw):
+        stage=Path(kw['stdout'].name).stem
+        if stage=='clang-version':kw['stdout'].write('clang version 10.0.0\n')
+        if stage=='regression':
+            seen.append(kw['timeout'])
+            assert '--require-no-regression-skips' not in command
+            assert '--junitxml='+str(output/'regression.xml') in command
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    assert module.main()==0 and seen==[7200]
+    assert json.loads((output/'run-status.json').read_text())['regressionTimeoutSeconds']==7200
+
+
 @pytest.mark.parametrize('failed', ['clang-version','frontend-build','regression',None])
 def test_runner_preserves_nonzero_results_and_never_runs_suite_after_failed_prerequisite(tmp_path, monkeypatch, failed):
     module = runner(); output=tmp_path/'out'; calls=[]
