@@ -89,6 +89,16 @@ def bind_compiler_provenance(fragment, sidecar):
                     'valueNodeIdentity': operand.value_node_identity,
                     'access': operand.access_mode, 'widthBits': operand.width_bits,
                     'signedness': operand.signedness}
+        static = getattr(operand,'static_operand',None)
+        if static is not None:
+            from .compiler_static_operand import validate_static_operand
+            validate_static_operand(static,index=operand.operand_index,node=operand.value_node_identity,
+                width=operand.width_bits,signedness=operand.signedness,access=operand.access_mode,declaration=operand.declaration_id)
+            carriers=[c for c in candidate['operandCarriers'] if c['operandIndex']==operand.operand_index]
+            if (len(carriers)!=1 or carriers[0].get('constantValue')!=static['value']
+                    or carriers[0].get('expressionIdentity')!=static['expressionIdentity']
+                    or carriers[0].get('evaluationBindingIdentity')!=static['evaluationBindingIdentity']):
+                raise ValueError('COMPILER_AUTHORITY_STATIC_VALUE_MISMATCH')
         if getattr(operand, 'operand_role', 'value') == 'memory_lvalue':
             # Storage authority has no scalar signed interpretation. Require
             # the exact replayed memory role and evaluation/address identities.

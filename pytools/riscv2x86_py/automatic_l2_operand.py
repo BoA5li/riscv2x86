@@ -190,6 +190,8 @@ def _operand_join_reason(actual: Mapping[str, object],
     ):
         if actual.get(field) != expected.get(field):
             return "L2_OPERAND_" + suffix + "_MISMATCH"
+    if actual.get("staticOperand") != expected.get("staticOperand"):
+        return "L2_OPERAND_STATIC_BINDING_MISMATCH"
     return ""
 
 
@@ -369,6 +371,7 @@ def _authority(finding: Mapping[str, object], functions: list[object], artifact:
         "targetContractCarriedByProof": True,
         "escaped": item.escape_kind not in {"none", "non_escaping"},
         "valueNodeIdentity": item.value_node_identity,
+        **({"staticOperand":dict(item.static_operand)} if item.static_operand is not None else {}),
     } for item in canonical]
     raw_sidecar = approval.get("l2AuthoritySidecar")
     if not isinstance(raw_sidecar, Mapping):
@@ -730,6 +733,10 @@ def _sample_observations(rows: tuple[tuple[int, ...], ...] | None,
         return values[sample_index]
 
     def before_value(binding, row: tuple[int, ...], sample_index):
+        if binding.closure_kind == 'compiler_constant':
+            # Static compiler witness, explicitly not a guest runtime read.
+            raw=binding.static_operand
+            return f"0x{raw['value'] & ((1 << binding.width_bits)-1):016x}", 'compiler_constant'
         if binding.closure_kind == "parameter" or binding.access == "read_write":
             index = binding.parameter_index
             if index is None:

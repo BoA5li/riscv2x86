@@ -15,12 +15,14 @@ from typing import Mapping, Sequence
 
 from .l2_effect_proof import effect_proof_facts_from_dict
 from .l2_fragment_execution import fragment_boundary_from_dict
+from .compiler_static_operand import validate_static_operand, static_operands
 
 
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 CANONICAL_L2_OPERAND_BINDING_SET_SCHEMA = (
     "riscv2x86.canonical-l2-operand-binding-set.v1"
 )
+STATIC_CANONICAL_SCHEMA = "riscv2x86.canonical-l2-operand-binding-set.v2"
 _INTEGER = re.compile(
     r"^(?:const |volatile )*(u?int(?:8|16|32|64)_t|"
     r"unsigned(?: (?:char|short|int|long|long long))?|"
@@ -83,12 +85,13 @@ class CanonicalL2OperandBinding:
     escape_kind: str
     complete: bool
     logical_name: str = ""
+    static_operand: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (not self.fragment_id or not self.operand_id
                 or isinstance(self.operand_index, bool)
                 or not isinstance(self.operand_index, int)
-                or self.operand_index < 0 or not self.declaration_identity
+                or self.operand_index < 0 or (not self.declaration_identity and self.static_operand is None)
                 or _SHA.fullmatch(self.value_node_identity) is None
                 or self.access_mode not in {"input", "output", "read_write"}
                 or self.type_kind not in {"integer", "pointer"}
@@ -100,6 +103,12 @@ class CanonicalL2OperandBinding:
                     and self.signedness not in {"unsigned", "not_applicable"})
                 or self.complete is not True):
             raise ValueError("canonical L2 operand binding is incomplete")
+        if self.static_operand is not None:
+            validate_static_operand(self.static_operand,index=self.operand_index,node=self.value_node_identity,
+                width=self.width_bits,signedness=self.signedness,access=self.access_mode,declaration=self.declaration_identity)
+            if (self.parameter_index is not None or self.source_constraint != self.static_operand['sourceConstraint']
+                    or self.type_kind!='integer' or self.tied_to_operand_id or self.early_clobber):
+                raise ValueError('canonical constant role mismatch')
         if self.parameter_index is not None and (
                 isinstance(self.parameter_index, bool)
                 or not isinstance(self.parameter_index, int)
@@ -126,6 +135,7 @@ class CanonicalL2OperandBinding:
             "earlyClobber": self.early_clobber,
             "escapeKind": self.escape_kind, "complete": self.complete,
             "logicalName": self.logical_name,
+            **({"staticOperand":dict(self.static_operand)} if self.static_operand is not None else {}),
         }
 
 
@@ -140,7 +150,7 @@ def canonical_l2_operand_binding_set(
     if len(fragment_ids) != 1:
         raise ValueError("canonical operands span multiple fragments")
     value = {
-        "schemaVersion": CANONICAL_L2_OPERAND_BINDING_SET_SCHEMA,
+        "schemaVersion": STATIC_CANONICAL_SCHEMA if any(x.static_operand is not None for x in bindings) else CANONICAL_L2_OPERAND_BINDING_SET_SCHEMA,
         "fragmentId": next(iter(fragment_ids)),
         "proofIdentity": proof_identity,
         "bindings": [item.to_dict() for item in
@@ -160,8 +170,8 @@ def canonical_l2_operand_bindings_from_dict(
     payload = dict(value)
     claimed = payload.pop("bindingSetIdentity", None)
     if (set(value) != fields
-            or value.get("schemaVersion") !=
-            CANONICAL_L2_OPERAND_BINDING_SET_SCHEMA
+            or value.get("schemaVersion") not in
+            {CANONICAL_L2_OPERAND_BINDING_SET_SCHEMA,STATIC_CANONICAL_SCHEMA}
             or value.get("complete") is not True
             or claimed != _identity(payload)):
         raise ValueError("canonical operand binding set identity is invalid")
@@ -183,11 +193,12 @@ def canonical_l2_operand_bindings_from_dict(
         raise ValueError("canonical operand bindings are missing")
     result = []
     for item in raw:
-        if not isinstance(item, Mapping) or set(item) != binding_fields:
+        if not isinstance(item, Mapping) or set(item) != binding_fields | ({"staticOperand"} if "staticOperand" in item else set()):
             raise ValueError("canonical operand binding fields are invalid")
         if (not isinstance(item.get("earlyClobber"), bool)
                 or not isinstance(item.get("complete"), bool)):
             raise ValueError("canonical operand boolean fields are invalid")
+        if "staticOperand" in item and not isinstance(item["staticOperand"],Mapping):raise ValueError("static canonical binding is invalid")
         index, width, parameter = (item.get("operandIndex"),
                                    item.get("widthBits"),
                                    item.get("parameterIndex"))
@@ -203,7 +214,9 @@ def canonical_l2_operand_bindings_from_dict(
             str(item["signedness"]), parameter,
             str(item["sourceConstraint"]), str(item["tiedToOperandId"]),
             item.get("earlyClobber") is True, str(item["escapeKind"]),
-            item.get("complete") is True, str(item["logicalName"])))
+            item.get("complete") is True, str(item["logicalName"]), item.get("staticOperand")))
+    if any(x.static_operand is not None for x in result) != (value["schemaVersion"] == STATIC_CANONICAL_SCHEMA):
+        raise ValueError("constant canonical bindings require v2 schema")
     indices = tuple(item.operand_index for item in result)
     ids = {item.operand_id for item in result}
     if (indices != tuple(range(len(result))) or len(ids) != len(result)
@@ -245,9 +258,9 @@ def _boundary_bindings(fragment_boundary: Mapping[str, object],
     if "boundaryIdentity" in fragment_boundary:
         for group in ("inputBindings", "outputBindings"):
             for raw in fragment_boundary.get(group, ()):
-                if isinstance(raw, Mapping) and set(raw) != {
+                if isinstance(raw, Mapping) and set(raw) != ({
                         "operandIndex", "declarationIdentity", "valueNodeIdentity",
-                        "access", "widthBits", "signedness", "complete"}:
+                        "access", "widthBits", "signedness", "complete"} | ({"staticOperand"} if "staticOperand" in raw else set())):
                     raise ValueError("canonical compiler carrier schema is unsupported")
         parsed = fragment_boundary_from_dict(
             fragment_boundary, expected_fragment_id=fragment_id)
@@ -327,9 +340,20 @@ def bind_canonical_l2_operands(
         if any(counts.get(item) != count for item, count in expected.items()):
             raise ValueError("legacy compiler declaration accounting is stale")
 
+    literals = static_operands(fragment)
     preliminary = []
     for index, raw, constraint, access in ordered:
         binding = bindings[index]
+        if getattr(binding,'static_operand',None) is not None:
+            literal = literals.get(index)
+            if literal != binding.static_operand or constraint != literal['sourceConstraint']:
+                raise ValueError('canonical constant compiler replay mismatch')
+            preliminary.append({'fragment_id':fragment_id,'operand_id':f'{fragment_id}:{index}:{literal["expressionIdentity"]}',
+                'operand_index':index,'declaration_identity':'','value_node_identity':binding.value_node_identity,
+                'access_mode':access,'type_kind':'integer','width_bits':binding.width_bits,'signedness':binding.signedness,
+                'parameter_index':None,'source_constraint':constraint,'early_clobber':False,'escape_kind':'none',
+                'complete':True,'logical_name':f'constant:{index}','static_operand':literal})
+            continue
         declaration = declarations.get(binding.declaration_identity)
         if not isinstance(declaration, Mapping):
             raise ValueError("canonical operand declaration join failed")

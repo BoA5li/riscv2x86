@@ -12,6 +12,7 @@ from .compiler_value_flow import (
     compiler_downstream_use_from_dict, compiler_operand_binding_from_dict,
     compiler_operand_carrier_from_dict, compiler_value_node_from_dict,
 )
+from .compiler_static_operand import validate_static_operand, static_operands
 from .l2_internal_value import internal_value_proof_facts_from_dict
 
 
@@ -21,6 +22,8 @@ PROGRAM_EXECUTION_AUTHORITY_SCHEMA = "riscv2x86.fragment-program-execution-autho
 OPERAND_OBSERVATION_AUTHORITY_SCHEMA = (
     "riscv2x86.l2-operand-observation-authority.v2"
 )
+STATIC_BOUNDARY_SCHEMA = "riscv2x86.fragment-operand-boundary.v3"
+STATIC_OBSERVATION_SCHEMA = "riscv2x86.l2-operand-observation-authority.v3"
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -39,22 +42,27 @@ class OperandBinding:
     width_bits: int
     complete: bool
     signedness: str = "unsigned"
+    static_operand: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (isinstance(self.operand_index, bool) or self.operand_index < 0
-                or not self.declaration_identity or not self.value_node_identity
+                or (not self.declaration_identity and self.static_operand is None) or not self.value_node_identity
                 or self.access not in {"input", "output", "read_write"}
                 or self.width_bits <= 0 or self.complete is not True
                 or self.signedness not in {"signed", "unsigned"}
                 or _SHA.fullmatch(self.value_node_identity) is None):
             raise ValueError("fragment operand binding is incomplete")
+        if self.static_operand is not None:
+            validate_static_operand(self.static_operand,index=self.operand_index,node=self.value_node_identity,
+                width=self.width_bits,signedness=self.signedness,access=self.access,declaration=self.declaration_identity)
 
     def to_dict(self) -> dict[str, object]:
         return {"operandIndex": self.operand_index,
                 "declarationIdentity": self.declaration_identity,
                 "valueNodeIdentity": self.value_node_identity,
                 "access": self.access, "widthBits": self.width_bits,
-                "signedness": self.signedness, "complete": self.complete}
+                "signedness": self.signedness, "complete": self.complete,
+                **({"staticOperand":dict(self.static_operand)} if self.static_operand is not None else {})}
 
 
 @dataclass(frozen=True)
@@ -137,12 +145,13 @@ class L2OperandObservationBinding:
     value_flow_edge_identity: str = ""
     instrumentation_plan_identity: str = ""
     complete: bool = True
+    static_operand: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if (not self.fragment_id or not self.operand_id
                 or isinstance(self.operand_index, bool)
                 or not isinstance(self.operand_index, int)
-                or self.operand_index < 0 or not self.declaration_identity
+                or self.operand_index < 0 or (not self.declaration_identity and self.static_operand is None)
                 or _SHA.fullmatch(self.value_node_identity) is None
                 or self.access not in {"input", "output", "read_write"}
                 or isinstance(self.width_bits, bool)
@@ -150,9 +159,16 @@ class L2OperandObservationBinding:
                 or self.signedness not in {"signed", "unsigned"}
                 or self.closure_kind not in {
                     "parameter", "producer", "sink", "consumer", "discard",
-                    "instrumentation"}
+                    "instrumentation", "compiler_constant"}
                 or self.complete is not True):
             raise ValueError("operand observation binding header is invalid")
+        constant = self.closure_kind == "compiler_constant"
+        if constant != (self.static_operand is not None):
+            raise ValueError("static observation role mismatch")
+        if constant:
+            validate_static_operand(self.static_operand,index=self.operand_index,node=self.value_node_identity,
+                width=self.width_bits,signedness=self.signedness,access=self.access,declaration=self.declaration_identity)
+            if self.observation_kind != "compiler_constant":raise ValueError("static observation kind mismatch")
         parameter = self.closure_kind == "parameter"
         producer = self.closure_kind == "producer"
         sink = self.closure_kind == "sink"
@@ -228,6 +244,7 @@ class L2OperandObservationBinding:
             "valueFlowEdgeIdentity": self.value_flow_edge_identity,
             "instrumentationPlanIdentity": self.instrumentation_plan_identity,
             "complete": self.complete,
+            **({"staticOperand":dict(self.static_operand)} if self.static_operand is not None else {}),
         }
         if include_identity:
             value["bindingIdentity"] = self.binding_identity
@@ -245,12 +262,14 @@ class L2OperandObservationAuthority:
     schema_version: str = OPERAND_OBSERVATION_AUTHORITY_SCHEMA
 
     def __post_init__(self) -> None:
-        if (self.schema_version != OPERAND_OBSERVATION_AUTHORITY_SCHEMA
+        if (self.schema_version not in {OPERAND_OBSERVATION_AUTHORITY_SCHEMA,STATIC_OBSERVATION_SCHEMA}
                 or not self.fragment_id
                 or _SHA.fullmatch(self.boundary_identity) is None
                 or _SHA.fullmatch(self.proof_identity) is None
                 or _SHA.fullmatch(self.dependency_graph_identity) is None):
             raise ValueError("operand observation authority header is invalid")
+        if any(b.static_operand is not None for b in self.bindings) != (self.schema_version == STATIC_OBSERVATION_SCHEMA):
+            raise ValueError("static observations require v3 authority")
         indices = tuple(item.operand_index for item in self.bindings)
         if (not self.bindings or indices != tuple(sorted(set(indices)))
                 or any(item.fragment_id != self.fragment_id
@@ -302,6 +321,7 @@ def materialize_operand_observation_authority(
                     != (boundary.fragment_id, item.declaration_identity,
                         item.value_node_identity, item.access,
                         item.width_bits, item.signedness)
+                    or getattr(bound,"static_operand",None) != item.static_operand
                     or operand_ids.get(item.operand_index) != bound.operand_id
                     or (parameter_indices or {}).get(item.operand_index)
                     != bound.parameter_index):
@@ -311,6 +331,9 @@ def materialize_operand_observation_authority(
     for input_binding in boundary.input_bindings:
         routes: list[dict[str, object]] = []
         parameter_index = parameters.get(input_binding.operand_index)
+        if input_binding.static_operand is not None:
+            routes.append({"closure_kind":"compiler_constant","observation_kind":"compiler_constant",
+                           "static_operand":input_binding.static_operand})
         if parameter_index is not None:
             routes.append({"closure_kind": "parameter",
                            "observation_kind": "function_parameter",
@@ -402,7 +425,8 @@ def materialize_operand_observation_authority(
     return L2OperandObservationAuthority(
         boundary.fragment_id, boundary.boundary_identity, proof_identity,
         dependency_graph_identity,
-        tuple(sorted(bindings, key=lambda item: item.operand_index)), True)
+        tuple(sorted(bindings, key=lambda item: item.operand_index)), True,
+        STATIC_OBSERVATION_SCHEMA if any(b.static_operand is not None for b in bindings) else OPERAND_OBSERVATION_AUTHORITY_SCHEMA)
 
 
 def operand_observation_authority_from_dict(
@@ -426,9 +450,10 @@ def operand_observation_authority_from_dict(
     }
     bindings = []
     for raw in value["bindings"]:
-        if (not isinstance(raw, Mapping) or set(raw) != binding_fields
+        if (not isinstance(raw, Mapping) or set(raw) != binding_fields | ({"staticOperand"} if "staticOperand" in raw else set())
                 or not isinstance(raw.get("complete"), bool)):
             raise ValueError("operand observation binding fields are invalid")
+        if "staticOperand" in raw and not isinstance(raw["staticOperand"],Mapping):raise ValueError("static observation binding is invalid")
         index = raw.get("operandIndex")
         if isinstance(index, bool) or not isinstance(index, int):
             raise ValueError("operand observation binding index is invalid")
@@ -450,7 +475,7 @@ def operand_observation_authority_from_dict(
             str(raw.get("consumerValueNodeIdentity", "")),
             str(raw.get("valueFlowEdgeIdentity", "")),
             str(raw.get("instrumentationPlanIdentity", "")),
-            bool(raw.get("complete")),
+            bool(raw.get("complete")), static_operand=raw.get("staticOperand"),
         )
         if raw.get("bindingIdentity") != binding.binding_identity:
             raise ValueError("operand observation binding identity is stale")
@@ -492,7 +517,7 @@ class FragmentOperandBoundary:
     schema_version: str = FRAGMENT_OPERAND_BOUNDARY_SCHEMA
 
     def __post_init__(self) -> None:
-        if (self.schema_version != FRAGMENT_OPERAND_BOUNDARY_SCHEMA
+        if (self.schema_version not in {FRAGMENT_OPERAND_BOUNDARY_SCHEMA,STATIC_BOUNDARY_SCHEMA}
                 or not self.program_id or not self.function_id or not self.fragment_id
                 or self.live_in_nodes != tuple(sorted(set(self.live_in_nodes)))
                 or self.live_out_nodes != tuple(sorted(set(self.live_out_nodes)))
@@ -501,6 +526,8 @@ class FragmentOperandBoundary:
                 or self.instrumentation_observed_nodes != tuple(sorted(set(self.instrumentation_observed_nodes)))):
             raise ValueError("fragment operand boundary identity is invalid")
         bindings = self.output_bindings + self.input_bindings
+        if any(b.static_operand is not None for b in bindings) != (self.schema_version == STATIC_BOUNDARY_SCHEMA):
+            raise ValueError("static operands require v3 boundary")
         indices = tuple(item.operand_index for item in bindings)
         if len(indices) != len(set(indices)):
             raise ValueError("fragment operand boundary indices are duplicated")
@@ -803,6 +830,17 @@ def materialize_fragment_execution_authority(
         candidate, candidate_reason = resolve_compiler_fragment_candidate(
             fragment, [item for item in candidates if isinstance(item, Mapping)],
             function)
+        if isinstance(candidate, Mapping) and fragment.get('compilerFragmentAuthority'):
+            try:
+                literals = static_operands(fragment)
+                if literals:
+                    closed = fragment['compilerFragmentAuthority']['candidate']
+                    if closed['expressionClosureInputs']['candidate'] != candidate:
+                        raise ValueError('COMPILER_STATIC_ORIGINAL_CANDIDATE_MISMATCH')
+                    candidate = closed
+            except (ValueError,KeyError,TypeError) as exc:
+                candidate_reason = str(exc)
+                candidate = None
         resolved[fragment_id] = candidate, candidate_reason, fragment
         if isinstance(candidate, Mapping) and isinstance(candidate.get("candidateIdentity"), str):
             candidate_fragments.setdefault(
@@ -819,7 +857,7 @@ def materialize_fragment_execution_authority(
         reasons: set[str] = set()
         if candidate is None:
             reasons.add(candidate_reason or "L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
-        elif candidate.get("schemaVersion") != COMPILER_FRAGMENT_CANDIDATE_SCHEMA:
+        elif candidate.get("schemaVersion") not in {COMPILER_FRAGMENT_CANDIDATE_SCHEMA,"riscv2x86.closed-compiler-fragment.v2"}:
             reasons.add("L2_FRAGMENT_CANDIDATE_SCHEMA_UNSUPPORTED")
         elif candidate.get("complete") is not True:
             reasons.add("L2_FRAGMENT_CANDIDATE_INCOMPLETE")
@@ -836,6 +874,9 @@ def materialize_fragment_execution_authority(
                         binding_key.get("sourceFile"), function.get("sourceFile"))
                     or candidate.get("candidateIdentity") != expected_candidate):
                 reasons.add("L2_FRAGMENT_BINDING_KEY_MISMATCH")
+        literals = static_operands(fragment) if candidate and candidate.get("expressionEvaluation") else {}
+        if candidate and candidate.get("schemaVersion")=="riscv2x86.closed-compiler-fragment.v2" and not literals:
+            reasons.add("L2_FRAGMENT_CANDIDATE_SCHEMA_UNSUPPORTED")
         raw_bindings = candidate.get("operandBindings") if candidate else None
         raw_carriers = candidate.get("operandCarriers") if candidate else None
         raw_nodes = candidate.get("valueNodes") if candidate else None
@@ -853,7 +894,8 @@ def materialize_fragment_execution_authority(
         if isinstance(raw_nodes, list):
             try:
                 node_ids = {compiler_value_node_from_dict(item).node_identity
-                            for item in raw_nodes if isinstance(item, Mapping)}
+                            for item in raw_nodes if isinstance(item, Mapping) and item.get("nodeIdentity") not in {v["valueNodeIdentity"] for v in literals.values()}}
+                node_ids.update(v["valueNodeIdentity"] for v in literals.values())
             except ValueError:
                 reasons.add("L2_FRAGMENT_VALUE_NODE_INVALID")
         else:
@@ -868,6 +910,12 @@ def materialize_fragment_execution_authority(
                                    if is_output and constraint.startswith("+")
                                    else "output" if is_output else "input")
                 try:
+                    if index in literals:
+                        b = raw_bindings[index]; literal = literals[index]
+                        input_bindings.append(OperandBinding(index,'',b['valueNodeIdentity'],'input',
+                            b['widthBits'],True,b['signedness'],literal))
+                        if expected_access!='input':raise ValueError('literal output unsupported')
+                        continue
                     if isinstance(raw_carriers, list):
                         parsed_carrier = compiler_operand_carrier_from_dict(
                             raw_operand)
@@ -968,11 +1016,14 @@ def materialize_fragment_execution_authority(
                     consumer_nodes = (consumer_candidate.get("valueNodes")
                                       if isinstance(consumer_candidate, Mapping) else None)
                     try:
+                        consumer_literals = static_operands(consumer_report_fragment) if (
+                            isinstance(consumer_candidate, Mapping) and consumer_candidate.get('expressionEvaluation')) else {}
+                        static_ids = {v['valueNodeIdentity'] for v in consumer_literals.values()}
                         valid_nodes = {
                             compiler_value_node_from_dict(item).node_identity
                             for item in consumer_nodes
-                            if isinstance(item, Mapping)
-                        } if isinstance(consumer_nodes, list) else set()
+                            if isinstance(item, Mapping) and item.get('nodeIdentity') not in static_ids
+                        } | static_ids if isinstance(consumer_nodes, list) else set()
                     except ValueError:
                         valid_nodes = set()
                     if (len(matches) != 1 or matches[0] not in valid_nodes
@@ -1031,7 +1082,8 @@ def materialize_fragment_execution_authority(
                          key=lambda item: (item.producer_value_node,
                                            item.consumer_value_node))),
             tuple(sorted(sinks, key=lambda item: item.sink_identity)),
-            tuple(sorted(discarded)), tuple(sorted(instrumented)))
+            tuple(sorted(discarded)), tuple(sorted(instrumented)),
+            STATIC_BOUNDARY_SCHEMA if literals else FRAGMENT_OPERAND_BOUNDARY_SCHEMA)
 
     edges = sorted(set(graph_edges), key=lambda item: (
         item.producer_fragment_id, item.consumer_fragment_id,
@@ -1096,11 +1148,12 @@ def fragment_boundary_from_dict(
         result = []
         for item in raw:
             if not isinstance(item, Mapping): raise ValueError("fragment binding is invalid")
+            if "staticOperand" in item and not isinstance(item["staticOperand"],Mapping):raise ValueError("static fragment binding is invalid")
             result.append(OperandBinding(
                 int(item.get("operandIndex", -1)), str(item.get("declarationIdentity") or ""),
                 str(item.get("valueNodeIdentity") or ""), str(item.get("access") or ""),
                 int(item.get("widthBits", 0)), item.get("complete") is True,
-                str(item.get("signedness") or "")))
+                str(item.get("signedness") or ""), item.get("staticOperand")))
         return tuple(result)
     reasons, live_in, live_out = (value.get("reasonCodes"), value.get("liveInNodes"),
                                   value.get("liveOutNodes"))

@@ -240,3 +240,20 @@ def test_terminal_upstream_refusal_does_not_invent_an_intent_profile(ingress, mo
     monkeypatch.setattr(binding,'artifacts_from_report',lambda *args:{})
     assert produce_intents(source,report,manifest)==data
     assert not report.with_name(report.name+'.l3-intent-production.json').exists()
+
+
+def test_missing_effect_relation_keeps_unknown_requirements_without_invoking_producer(ingress,monkeypatch):
+    source,report,manifest,tool,artifact,seal=ingress
+    artifact.effect_relation_set_identity=''
+    def forbidden(*args,**kwargs):raise AssertionError('producer must not run without its prerequisites')
+    import riscv2x86_py.l3_intent_ingress as subject
+    monkeypatch.setattr(subject.subprocess,'run',forbidden)
+    data=produce_intents(source,report,manifest)
+    f=data['findings'][0]
+    assert f['l3IntentProfile']['intentKind']=='unknown'
+    assert f['l3IntentProfile']['complete'] is False
+    assert 'l3IntentReceipt' not in f
+    requirement=classify_l3_requirements(data).requirements[0]
+    assert requirement['eligibilityStatus']=='inconclusive'
+    assert requirement['reasonCodes']==['l3.intent.effect-relation-required','l3.intent.prerequisites_missing']
+    assert json.loads(report.with_name(report.name+'.l3-intent-production.json').read_text())['producerInvoked'] is False

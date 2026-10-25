@@ -266,7 +266,15 @@ def build_route(config):
             report=Path(config['reportPath']); data=json.loads(report.read_text())
             matches=[f for f in data['findings'] if (f.get('fragment') or {}).get('id')==kwargs['translation_artifact'].fragment_id]
             if len(matches)!=1 or len(data['findings'])!=1: raise ValueError('L3_TRACE_SINGLE_FRAGMENT_PROGRAM_REQUIRED')
-            finding=matches[0]; spec=memory_spec(finding)
+            finding=matches[0]
+            requirements=parse_l3_requirement_manifest(kwargs['l3_requirement_manifest'])
+            selected=[r for r in requirements.requirements if r['fragmentId']==kwargs['translation_artifact'].fragment_id]
+            if len(selected)!=1:raise ValueError('L3_TRACE_REQUIREMENT_INELIGIBLE')
+            if selected[0]['eligibilityStatus']!='eligible':
+                return ValidationLayerResult(ValidationLevel.L3,ValidationStatus.INCONCLUSIVE,
+                    detail=json.dumps({'reasonCodes':selected[0]['reasonCodes'],
+                        'failureStage':'l3-requirement-resolution','evidenceProductionDisposition':'not_produced'}))
+            spec=memory_spec(finding)
             profile=validate_receipt(finding,kwargs['translation_artifact'],config['sourcePath'],report)
             manifest=parse_l3_requirement_manifest(kwargs['l3_requirement_manifest']); reqs=[r for r in manifest.requirements if r['fragmentId']==spec['fragmentId']]
             if len(reqs)!=1 or reqs[0]['eligibilityStatus']!='eligible': raise ValueError('L3_TRACE_REQUIREMENT_INELIGIBLE')

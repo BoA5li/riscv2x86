@@ -72,6 +72,7 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     archive = load_translation_attempt_archive(str(report) + '.attempts.json')
     artifacts = artifacts_from_report(report, archive)
     items = []
+    prerequisite_refusals = []
     for index, finding in enumerate(data['findings']):
         fragment = finding.get('fragment') or {}
         fid = fragment.get('id', '')
@@ -85,11 +86,31 @@ def produce_intents(source, report, manifest_path, *, replay=False):
         finding.pop('l3IntentProfile', None)
         finding.pop('l3IntentReceipt', None)
         finding.pop('l3IntentDisposition', None)
-        if bound != finding or not artifact.effect_relation_set_identity:
-            raise ValueError('l3.intent.approved-relation-unavailable')
+        if bound != finding:
+            raise ValueError('l3.intent.compiler-binding-mismatch')
+        if not artifact.effect_relation_set_identity:
+            # No relation is not authority for intent=none. Publish a framework
+            # precondition refusal so L2 requirements can still be classified.
+            from .l3_intent_requirements import _unknown_profile
+            profile = _unknown_profile(fid).to_dict()
+            decision = {'schemaVersion':'riscv2x86.l3-intent-disposition.v1',
+                'fragmentId':fid,'profileIdentity':profile['profileIdentity'],
+                'status':'prerequisites_missing','reasonCodes':['l3.intent.effect-relation-required']}
+            finding['l3IntentProfile']=profile
+            finding['l3IntentDisposition']=dict(decision,dispositionIdentity=_hash(decision))
+            prerequisite_refusals.append(fid)
+            continue
         items.append({'findingIndex': index, 'finding': dict(finding),
                       'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
                       asdict(artifact)})
+    if not items and prerequisite_refusals:
+        if not replay:
+            transcript=report.with_name(report.name+'.l3-intent-production.json')
+            with transcript.open('x') as stream:
+                json.dump({'schemaVersion':'riscv2x86.l3-intent-prerequisite-refusal.v1',
+                    'producerInvoked':False,'fragmentIds':prerequisite_refusals,
+                    'sourceDigest':value['sourceDigest'],'semanticApproval':False},stream,indent=2)
+        return data
     if not items:
         # Terminal upstream refusals do not need an experiment profile. Keep
         # their exact translation outcomes; unknown intent remains unproved.

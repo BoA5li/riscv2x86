@@ -46,6 +46,8 @@ def bind_operand_observation_plan(
     if len(canonical) != len(observation.bindings):
         raise ValueError("canonical observation operand coverage mismatch")
     for fact, binding in zip(canonical, observation.bindings):
+        if fact.static_operand != binding.static_operand:
+            raise ValueError("canonical static observation binding mismatch")
         if ((fact.fragment_id, fact.operand_id, fact.operand_index,
              fact.declaration_identity, fact.value_node_identity,
              fact.access_mode, fact.width_bits, fact.signedness, fact.parameter_index)

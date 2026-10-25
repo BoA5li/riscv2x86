@@ -23,7 +23,7 @@ from .l2_authority import (
     L2InternalValueAuthority,
     L2IgnoredStateAuthority,
     L2RuntimeContractBinding,
-    L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA,
+    L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA, L2_STATIC_AUTHORITY_SIDECAR_SCHEMA,
 )
 from .l2_control_flow import (
     bind_control_flow_authority,
@@ -340,6 +340,8 @@ def _scalar_authority(
             parameter_index=item.parameter_index,
             source_constraint=item.source_constraint,
             target_contract_carried_by_proof=True,
+            static_operand=item.static_operand,
+            operand_role="compiler_constant" if item.static_operand is not None else "value",
         ) for item in canonical]
         if isinstance(approval, dict):
             approval["l2CanonicalOperandBindings"] = \
@@ -436,7 +438,7 @@ def _scalar_authority(
                             "v6", producer_digest),
         shell_identity, tuple(operands), (), source_effects, relations,
         (), (), True, control_flow=control_flow, internal_values=internal_values,
-        schema_version=(L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA
+        schema_version=(L2_STATIC_AUTHORITY_SIDECAR_SCHEMA if any(x.static_operand is not None for x in operands) else L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA
                         if observation_authority is not None
                         else "riscv2x86.l2-authority-sidecar.v3"),
         operand_observation_authority=observation_authority,

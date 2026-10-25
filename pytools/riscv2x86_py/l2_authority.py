@@ -17,6 +17,7 @@ LEGACY_L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v1"
 PREVIOUS_L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v2"
 L2_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v3"
 L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v4"
+L2_STATIC_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v6"
 L2_EXPRESSION_AUTHORITY_SIDECAR_SCHEMA = "riscv2x86.l2-authority-sidecar.v5"
 L2_AUTHORITY_MIGRATION_VERSION = "l2-authority-v1-to-v2-migration-v1"
 L2_AUTHORITY_V2_TO_V3_MIGRATION_VERSION = "l2-authority-v2-to-v3-migration-v1"
@@ -86,18 +87,28 @@ class L2OperandAuthority:
     expression_identity: str = ""
     evaluation_binding_identity: str = ""
     operand_role: str = "value"
+    static_operand: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not self.operand_id or not self.logical_name or self.operand_index < 0:
             raise ValueError("operand authority identity/index is invalid")
+        if self.static_operand is not None:
+            from .compiler_static_operand import validate_static_operand
+            validate_static_operand(self.static_operand,index=self.operand_index,node=self.value_node_identity,
+                width=self.width_bits,signedness=self.signedness,access=self.access_mode,declaration=self.declaration_id)
+            if (self.operand_role!='compiler_constant' or self.type_kind!='integer' or self.parameter_index is not None
+                    or self.expression_identity or self.evaluation_binding_identity
+                    or self.source_constraint!=self.static_operand['sourceConstraint'] or self.tied_to_operand_id or self.early_clobber
+                    or self.fixed_register_contract or self.target_contract_carried_by_proof is not True):
+                raise ValueError('static operand authority role mismatch')
         expression_backed = bool(self.expression_identity or self.evaluation_binding_identity or self.operand_role != 'value')
-        if expression_backed:
+        if expression_backed and self.static_operand is None:
             if (self.operand_role!='memory_lvalue' or self.declaration_id
                     or self.type_kind!='aggregate' or self.signedness!='not_applicable'
                     or _SHA256.fullmatch(self.expression_identity) is None
                     or _SHA256.fullmatch(self.evaluation_binding_identity) is None):
                 raise ValueError('expression operand authority is invalid')
-        elif not self.declaration_id:
+        elif not self.declaration_id and self.static_operand is None:
             raise ValueError("operand authority declaration identity is invalid")
         if _SHA256.fullmatch(self.value_node_identity) is None:
             raise ValueError("operand authority value-node identity is invalid")
@@ -130,7 +141,8 @@ class L2OperandAuthority:
                 "targetContractCarriedByProof": self.target_contract_carried_by_proof,
                 **({'expressionIdentity':self.expression_identity,
                     'evaluationBindingIdentity':self.evaluation_binding_identity,
-                    'operandRole':self.operand_role} if self.expression_identity else {})}
+                    'operandRole':self.operand_role} if self.expression_identity else {}),
+                **({'staticOperand':dict(self.static_operand)} if self.static_operand is not None else {})}
 
 
 _OPERAND_FIELDS = {"operandId", "operandIndex", "logicalName", "accessMode", "typeKind",
@@ -141,7 +153,8 @@ _OPERAND_FIELDS = {"operandId", "operandIndex", "logicalName", "accessMode", "ty
 
 def l2_operand_authority_from_dict(v: Mapping[str, object]) -> L2OperandAuthority:
     expression_fields = {'expressionIdentity','evaluationBindingIdentity','operandRole'} if 'expressionIdentity' in v else set()
-    _fields(v, _OPERAND_FIELDS | expression_fields, "operand authority")
+    _fields(v, _OPERAND_FIELDS | expression_fields | ({"staticOperand"} if "staticOperand" in v else set()), "operand authority")
+    if "staticOperand" in v and not isinstance(v["staticOperand"],Mapping):raise ValueError("static authority binding is invalid")
     parameter = v.get("parameterIndex")
     if parameter is not None and (isinstance(parameter, bool) or not isinstance(parameter, int)):
         raise ValueError("operand authority parameterIndex is invalid")
@@ -154,12 +167,13 @@ def l2_operand_authority_from_dict(v: Mapping[str, object]) -> L2OperandAuthorit
         _str(v, "fixedRegisterContract", "operand authority", True),
         _str(v, "escapeKind", "operand authority"),
         _str(v, "valueNodeIdentity", "operand authority"),
-        _str(v, "declarationId", "operand authority", bool(expression_fields)), parameter,
+        _str(v, "declarationId", "operand authority", bool(expression_fields) or "staticOperand" in v), parameter,
         _str(v, "sourceConstraint", "operand authority", True),
         _bool(v, "targetContractCarriedByProof", "operand authority"),
         expression_identity=_str(v,'expressionIdentity','expression operand') if expression_fields else '',
         evaluation_binding_identity=_str(v,'evaluationBindingIdentity','expression operand') if expression_fields else '',
-        operand_role=_str(v,'operandRole','expression operand') if expression_fields else 'value')
+        operand_role=_str(v,'operandRole','expression operand') if expression_fields else 'compiler_constant' if 'staticOperand' in v else 'value',
+        static_operand=v.get('staticOperand'))
 
 
 @dataclass(frozen=True)
@@ -472,13 +486,15 @@ class L2AuthoritySidecar:
 
     def __post_init__(self) -> None:
         if self.schema_version not in {L2_AUTHORITY_SIDECAR_SCHEMA,
-                                      L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA, L2_EXPRESSION_AUTHORITY_SIDECAR_SCHEMA}:
+                                      L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA, L2_EXPRESSION_AUTHORITY_SIDECAR_SCHEMA,L2_STATIC_AUTHORITY_SIDECAR_SCHEMA}:
             raise ValueError("L2 authority sidecar schema is unsupported")
-        if ((self.schema_version == L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA)
+        if ((self.schema_version in {L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA,L2_STATIC_AUTHORITY_SIDECAR_SCHEMA})
                 != (self.operand_observation_authority is not None)):
             raise ValueError("closed sidecar requires operand observation authority")
         if not self.fragment_id or _SHA256.fullmatch(self.shell_fact_identity) is None:
             raise ValueError("L2 authority fragment/shell identity is invalid")
+        if any(x.static_operand is not None for x in self.operands) != (self.schema_version==L2_STATIC_AUTHORITY_SIDECAR_SCHEMA):
+            raise ValueError("static operands require v6 sidecar")
         has_expression=any(x.expression_identity for x in self.operands)
         if has_expression != (self.schema_version==L2_EXPRESSION_AUTHORITY_SIDECAR_SCHEMA):
             raise ValueError('expression operands require explicit v5 sidecar schema')
@@ -513,6 +529,8 @@ class L2AuthoritySidecar:
                             binding.value_node_identity, binding.access,
                             binding.width_bits, binding.signedness)):
                     raise ValueError("sidecar observation operand binding mismatch")
+                if operand.static_operand != binding.static_operand:
+                    raise ValueError("static observation operand mismatch")
         if any(x.tied_to_operand_id and x.tied_to_operand_id not in known_operands
                for x in self.operands):
             raise ValueError("operand tie names an unknown operand")
@@ -591,13 +609,13 @@ def _array(value: object, label: str, parser: Callable[[Mapping[str, object]], T
 def l2_authority_sidecar_from_dict(value: Mapping[str, object], *, expected_fragment_id: str = "",
                                    expected_shell_fact_identity: str = "") -> L2AuthoritySidecar:
     if value.get("schemaVersion") not in {L2_AUTHORITY_SIDECAR_SCHEMA,
-                                          L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA, L2_EXPRESSION_AUTHORITY_SIDECAR_SCHEMA}:
+                                          L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA, L2_EXPRESSION_AUTHORITY_SIDECAR_SCHEMA,L2_STATIC_AUTHORITY_SIDECAR_SCHEMA}:
         raise ValueError("L2 authority schema is unsupported; migrate older schemas explicitly")
     fields = {"schemaVersion", "fragmentId", "producer", "shellFactIdentity", "operands",
       "memoryObjects", "sourceEffects", "controlFlow", "ordering", "internalValues",
       "approvedEffectRelations", "runtimeContracts", "ignoredState", "complete", "authorityIdentity"}
     observation = None
-    if value.get("schemaVersion") == L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA:
+    if value.get("schemaVersion") in {L2_CLOSED_AUTHORITY_SIDECAR_SCHEMA,L2_STATIC_AUTHORITY_SIDECAR_SCHEMA}:
         fields.add("operandObservationAuthority")
         raw_observation = value.get("operandObservationAuthority")
         if not isinstance(raw_observation, Mapping):
