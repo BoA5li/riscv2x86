@@ -47,7 +47,8 @@ def read_staged_requirements(report):
                 raise ValueError("requirement production failure identity is stale")
         except (OSError, ValueError, AttributeError, TypeError) as exc:
             raise RequirementArtifactError("l2", failure_path, exc) from exc
-        error = RequirementArtifactError("l2", failure_path, ValueError(failure["detail"]))
+        level = "l3" if failure.get("failureStage") == "l3_intent_production" else "l2"
+        error = RequirementArtifactError(level, failure_path, ValueError(failure["detail"]))
         error.detail.update({key: failure[key] for key in (
             "failureStage", "exceptionType", "detail", "artifactPath", "schema", "jsonPath")})
         raise error

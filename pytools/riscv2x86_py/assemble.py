@@ -525,6 +525,20 @@ def materialize_template(frag: AsmFragment) -> MaterializedInlineAsm:
                     #
                     # 则 operand #1 的 canonical_n 为 #0。
                     canonical_n = operand_aliases[n]
+                    constraint=(getattr(operands[canonical_n], 'constraint', '') or '').strip()
+                    if constraint in {'i','n'}:
+                        from .compiler_fragment_closure import validate_closed_compiler_fragment_candidate
+                        from .compiler_expression_evaluation import literal_operand_value
+                        authority=getattr(frag,'compilerFragmentAuthority',{}) or {}
+                        candidate=authority.get('candidate') or {}
+                        validate_closed_compiler_fragment_candidate(candidate)
+                        evaluation=candidate.get('expressionEvaluation') or {}
+                        slots=[x for x in evaluation.get('bindings',[]) if x['operandIndex']==canonical_n]
+                        if len(slots)!=1: raise ValueError('COMPILER_IMMEDIATE_EVALUATION_MISSING')
+                        joined=evaluation['expressionJoin']['operands'][canonical_n]
+                        value=literal_operand_value(slots[0],joined)
+                        op_pos += 1
+                        return str(value)
 
                     reg = _PLACEHOLDER_REGS_INT[
                         canonical_n % len(_PLACEHOLDER_REGS_INT)

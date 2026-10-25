@@ -83,3 +83,40 @@ def atomic_function_scope(function, *, source_digest, function_identity, source_
         'asmBegin':extent[0],'asmEnd':extent[1],
         'scope':'single_asm_no_other_memory_or_control_effects'}
     return {**payload,'scopeIdentity':identity(payload)}
+
+
+def memory_store_function_scope(function, *, source_digest, function_identity, source_range):
+    """Sole asm followed by return of an indexed uint64 parameter object.
+
+    This additional C read is outside the observed asm region. Its exact
+    object/index is exposed for the deployment consumer to bind to the store.
+    """
+    params=[n for n in function.get('inner',[]) if n.get('kind')=='ParmVarDecl']
+    bodies=[n for n in function.get('inner',[]) if n.get('kind')=='CompoundStmt']
+    if len(params)!=2 or len(bodies)!=1:return None
+    statements=bodies[0].get('inner',[])
+    if [n.get('kind') for n in statements]!=['GCCAsmStmt','ReturnStmt']:return None
+    def strip(node):
+        while node.get('kind') in {'ParenExpr','ImplicitCastExpr'}:
+            if node.get('kind')=='ImplicitCastExpr' and node.get('castKind') not in {'LValueToRValue','NoOp'}:return {}
+            children=node.get('inner',[])
+            if len(children)!=1:return {}
+            node=children[0]
+        return node
+    returned=statements[1].get('inner',[])
+    if len(returned)!=1:return None
+    array=strip(returned[0]); children=array.get('inner',[])
+    if array.get('kind')!='ArraySubscriptExpr' or len(children)!=2:return None
+    base,index=strip(children[0]),strip(children[1])
+    if (base.get('kind')!='DeclRefExpr' or base.get('referencedDecl',{}).get('id')!=params[0].get('id')
+            or index.get('kind')!='IntegerLiteral'):return None
+    try:offset=int(index['value'])
+    except (KeyError,TypeError,ValueError):return None
+    if offset<0:return None
+    extent=source_range(statements[0])
+    if extent is None:return None
+    payload={'schemaVersion':'riscv2x86.compiler-store-function-scope.v1',
+        'sourceDigest':source_digest,'functionIdentity':function_identity,
+        'asmBegin':extent[0],'asmEnd':extent[1], 'returnObjectParameterIndex':0,
+        'returnElementIndex':offset,'scope':'single_asm_and_bound_object_return'}
+    return {**payload,'scopeIdentity':identity(payload)}

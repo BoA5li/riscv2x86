@@ -1,4 +1,4 @@
-"""Normal-production ordinary-read TCG route and optional explicit cache model.
+"""Normal-production ordinary-memory TCG route and optional explicit cache model.
 
 This is bounded compiler-region observation, never a physical-cache experiment.
 L0-L2 prerequisite executions keep their own environment identities; the TCG
@@ -19,6 +19,7 @@ from .translation_validation import ValidationLayerResult, ValidationLevel, Vali
 from .validation_status import ValidationStatus
 
 CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v1'
+STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v2'
 ROUTE_SCHEMA='riscv2x86.compiler-region-trace-route.v1'
 RUNNER_SCHEMA='riscv2x86.compiler-region-trace-runner.v1'
 
@@ -29,7 +30,7 @@ def parse_contract(value):
             'requirementIdentity','approvedTargetRelationIdentity','programId','fragmentId','spec',
             'deployment','backendPath','backendDigest','cacheModel','requiredProperties','propertyBindings',
             'sampleCount','knownNonEquivalences'}
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion']!=CONTRACT_SCHEMA:
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA}:
         raise ValueError('L3_TRACE_CONTRACT_SCHEMA_INVALID')
     if type(value['sampleCount']) is not int or not 2<=value['sampleCount']<=16:
         raise ValueError('L3_TRACE_SAMPLE_COUNT_INVALID')
@@ -43,8 +44,10 @@ def parse_contract(value):
             type(spec['alignment']) is not int or not spec['width']<=spec['alignment']<=64 or
             spec['alignment'] & (spec['alignment']-1) or spec['observationUnit']!='compiler-asm-region'):
         raise ValueError('L3_TRACE_CONTRACT_OBJECT_DOMAIN_INVALID')
-    if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId'] or spec['access']!='read':
+    if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId'] or spec['access'] not in {'read','write'}:
         raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
+    if spec['access']=='write' and (value['schemaVersion']!=STORE_CONTRACT_SCHEMA or spec['width']!=8):
+        raise ValueError('L3_TRACE_STORE_CONTRACT_VERSION_REQUIRED')
     if value['deployment']['spec']!=spec or value['deployment']['sampleCount']!=value['sampleCount']:
         raise ValueError('L3_TRACE_CONTRACT_DEPLOYMENT_MISMATCH')
     model=value['cacheModel']
@@ -54,7 +57,7 @@ def parse_contract(value):
     expected=[{'propertyId':'memory.fragment-access','dimension':'access_pattern','unit':'fragment'}]
     if model is not None: expected.insert(0,{'propertyId':'cache.fragment-stream-model','dimension':'cache_model','unit':'fragment'})
     if value['requiredProperties']!=expected: raise ValueError('L3_TRACE_CONTRACT_PROPERTIES_MISMATCH')
-    access=LogicalAccess('memory:approved-read',spec['objectId'],spec['offset'],spec['width'],'read',spec['alignment'],'non_atomic','relaxed',())
+    access=LogicalAccess('memory:approved-'+spec['access'],spec['objectId'],spec['offset'],spec['width'],spec['access'],spec['alignment'],'non_atomic','relaxed',())
     classes=('memory_access',) if model is None else ('cache_model','memory_access')
     contract=ExperimentContract(value['experimentId'],value['translationPlanId'],value['proofIdentity'],
         'approved object-relative memory stream','byte-identical compiler-region TCG observation',
@@ -79,13 +82,26 @@ def parse_objects(stdout, token, spec, samples):
     objects=[]
     for line in stdout.splitlines():
         value=json.loads(line)
-        if (not isinstance(value,dict) or set(value)!={'token','sample','objectBase','objectSize','value'} or
+        fields={'token','sample','objectBase','objectSize','value'}
+        if spec['access']=='write':fields.add('objectHex')
+        if (not isinstance(value,dict) or set(value)!=fields or
                 value['token']!=token or type(value['sample']) is not int or value['sample']!=len(objects) or
                 type(value['objectSize']) is not int or value['objectSize']<spec['size'] or
                 int(value['objectBase'],16)%spec['alignment'] or int(value['objectBase'],16)<=0 or
                 not isinstance(value['value'],str) or len(value['value'])!=16):
             raise ValueError('L3_TRACE_RUNTIME_OBJECT_BINDING_INVALID')
-        int(value['value'],16); objects.append(value)
+        int(value['value'],16)
+        if spec['access']=='write':
+            if value['objectSize']!=((spec['size']+7)//8)*8:
+                raise ValueError('L3_TRACE_RUNTIME_OBJECT_BINDING_INVALID')
+            # Both executions must match the declared input and full object
+            # result, not merely each other or an identical return value.
+            expected=bytearray((0x31+17*i+len(objects))&255 for i in range(value['objectSize']))
+            written=0x1020304050607080+len(objects)
+            expected[spec['offset']:spec['offset']+spec['width']]=written.to_bytes(8,'little')
+            if (value.get('objectHex')!=expected.hex() or int(value['value'],16)!=written):
+                raise ValueError('L3_TRACE_STORE_VALUE_OR_OBJECT_MISMATCH')
+        objects.append(value)
     if len(objects)!=samples: raise ValueError('L3_TRACE_RUNTIME_SAMPLES_MISSING')
     return objects
 
@@ -99,7 +115,7 @@ def normalize(events, objects, spec):
             offset=event['address']-int(obj['objectBase'],16)
             if not 0<=offset or offset+event['size']>obj['objectSize']:
                 reasons.append('L3_TRACE_OBJECT_BOUNDS_MISMATCH:'+str(sample))
-            if (offset,event['size'],event['access'])!=(spec['offset'],spec['width'],'read'):
+            if (offset,event['size'],event['access'])!=(spec['offset'],spec['width'],spec['access']):
                 reasons.append('L3_TRACE_APPROVED_ACCESS_MISMATCH:'+str(sample))
             normalized.append({'sample':sample,'objectId':spec['objectId'],'offset':offset,
                                'size':event['size'],'access':event['access']})
@@ -262,8 +278,8 @@ def build_route(config):
             deployment=prepare_deployment(config['sourcePath'],config['targetPath'],report,finding,backend,source,target,work/'deployment',samples)
             properties=[x.to_dict() for x in profile.required_properties]
             bindings=[dict(p,comparatorId=('object-relative-cache-model.v1' if p['dimension']=='cache_model' else 'logical-access-contract.v1'),
-                obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else ['memory:approved-read']) for p in properties]
-            contract={'schemaVersion':CONTRACT_SCHEMA,'experimentId':'compiler-region:'+profile.profile_identity,
+                obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else ['memory:approved-'+spec['access']]) for p in properties]
+            contract={'schemaVersion':STORE_CONTRACT_SCHEMA if spec['access']=='write' else CONTRACT_SCHEMA,'experimentId':'compiler-region:'+profile.profile_identity,
                 'translationPlanId':kwargs['translation_artifact'].translation_plan_id,'proofIdentity':profile.proof_identity,
                 'intentProfileIdentity':profile.profile_identity,'requirementIdentity':req['requirementIdentity'],
                 'approvedTargetRelationIdentity':profile.approved_target_relation_identity,'programId':spec['programId'],'fragmentId':spec['fragmentId'],
@@ -278,7 +294,7 @@ def build_route(config):
             provider={'schemaVersion':PROVIDER_SCHEMA,'providerId':'compiler-region-trace-v1','bindingKind':'explicit',
                 'validatorType':'l3-qemu-memory-trace','config':observer,'experimentClasses':list(profile.experiment_classes),
                 'propertyDimensions':sorted({p['dimension'] for p in properties}),'sourceCapabilities':[CAPABILITY],'targetCapabilities':[CAPABILITY],
-                'executionProfiles':['rv64gc-user-to-x86_64-user'],'contractSchemas':[CONTRACT_SCHEMA],
+                'executionProfiles':['rv64gc-user-to-x86_64-user'],'contractSchemas':[contract['schemaVersion']],
                 'fragmentIds':[spec['fragmentId']],'profileIdentities':[]}
             registry={'schemaVersion':REGISTRY_SCHEMA,'providers':[provider],'executionProfile':'rv64gc-user-to-x86_64-user',
                 'environmentId':kwargs['target_environment']['environmentId'],'sourceCapabilities':[CAPABILITY],'targetCapabilities':[CAPABILITY]}

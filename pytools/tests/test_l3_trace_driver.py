@@ -87,3 +87,11 @@ def test_evaluator_still_rejects_overlapping_source_and_work(tmp_path):
     with pytest.raises(ValueError, match='must not overlap'):
         run_evaluation(SimpleNamespace(source_root=str(source)), work_directory=work)
     assert not work.exists()
+
+
+def test_case_diagnostics_retains_requirement_stage_failure(tmp_path):
+    failure={'failureStage':'l3_intent_production','reasonCode':'producer-failed'}
+    report={'status':'inconclusive','requirementStagingFailure':failure}
+    (tmp_path/'result.json').write_text(json.dumps(report))
+    records=driver().batch_diagnostics(tmp_path,{'cases':[{'caseId':'renamed','resultPath':'result.json'}]})
+    assert records[0]['requirementStagingFailure']==failure

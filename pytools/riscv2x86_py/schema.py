@@ -456,6 +456,7 @@ class Finding:
     # L3 experiment obligations survive report load/save; they grant no translation permission.
     l3IntentProfile: Dict[str, Any] | None = None
     l3IntentReceipt: Dict[str, Any] | None = None
+    l3IntentDisposition: Dict[str, Any] | None = None
 
     # 附加诊断信息。
     notes: List[str] = field(default_factory=list)

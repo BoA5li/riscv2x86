@@ -1,4 +1,4 @@
-"""Deploy approved single-asm leaf reads using zero-instruction compiler labels.
+"""Deploy approved bounded single-asm ordinary accesses using zero-instruction compiler labels.
 
 The observer scope is exactly the compiler APP region, not the whole function.
 Both object and final executable function bytes must equal the actual approved
@@ -37,6 +37,24 @@ def function_scope(source, report, finding):
     if len(functions)!=1: raise ValueError('L3_TRACE_SINGLE_FUNCTION_SCOPE_REQUIRED')
     function=functions[0]; scope=function.get('compilerAtomicFunctionScope') or {}
     name=function.get('name'); result=function.get('returnType'); parameters=function.get('parameterTypes')
+    spec=memory_spec(finding)
+    if spec['access']=='write':
+        store=function.get('compilerStoreFunctionScope') or {}
+        normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
+        if (not isinstance(name,str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) is None
+                or name!=finding['fragment'].get('enclosingFunction')
+                or function.get('functionId')!=boundary.get('functionId')
+                or normalized not in [['uint64_t *','uint64_t'],['unsigned long *','unsigned long']]
+                or result not in {'uint64_t','unsigned long'} or spec['width']!=8
+                or store.get('scope')!='single_asm_and_bound_object_return'
+                or store.get('sourceDigest')!=digest(source)
+                or store.get('functionIdentity')!=function['functionId']
+                or type(store.get('returnElementIndex')) is not int
+                or store['returnElementIndex']*8!=spec['offset']):
+            raise ValueError('L3_TRACE_COMPILER_STORE_SCOPE_UNSUPPORTED')
+        return {'name':name,'returnType':result,'parameterType':parameters[0],
+                'valueParameterType':parameters[1],'functionIdentity':function['functionId'],
+                'scopeIdentity':store['scopeIdentity']}
     if (not isinstance(name,str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) is None or
             name!=finding['fragment'].get('enclosingFunction') or function.get('functionId')!=boundary.get('functionId') or
             scope.get('scope')!='single_asm_no_other_memory_or_control_effects' or scope.get('sourceDigest')!=digest(source) or
@@ -49,6 +67,7 @@ def function_scope(source, report, finding):
 
 
 def harness(scope, spec, samples):
+    if spec['access']=='write': return store_harness(scope,spec,samples)
     # Metadata is emitted outside the observed asm region. The object is real,
     # initialized and private. No timing/non-interference claim is made for it.
     return '''#include <stdint.h>
@@ -199,3 +218,28 @@ def validate(value, backend, source_artifact, target_artifact):
                 raise ValueError('L3_TRACE_EXECUTION_IMAGE_REBUILD_MISMATCH')
 
     return value
+
+
+def store_harness(scope, spec, samples):
+    """Observe object post-state outside the compiler asm trace boundary."""
+    return r'''#include <stdint.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
+extern %s %s(%s,%s);
+int main(int argc,char **argv){
+ if(argc!=2 || strlen(argv[1])!=64) return 2;
+ _Alignas(64) uint64_t object[%d];
+ for(unsigned sample=0;sample<%d;++sample){
+  unsigned char *bytes=(unsigned char *)object;
+  for(unsigned i=0;i<sizeof object;++i) bytes[i]=(unsigned char)(0x31u+17u*i+sample);
+  uint64_t written=UINT64_C(0x1020304050607080)+sample;
+  uint64_t value=(uint64_t)%s((%s)object,(%s)written);
+  printf("{\"token\":\"%%s\",\"sample\":%%u,\"objectBase\":\"%%" PRIxPTR "\",\"objectSize\":%%zu,\"value\":\"%%016" PRIx64 "\",\"objectHex\":\"",argv[1],sample,(uintptr_t)object,sizeof object,value);
+  for(unsigned i=0;i<sizeof object;++i) printf("%%02x",bytes[i]);
+  puts("\"}");
+ }
+ return 0;
+}
+''' % (scope['returnType'],scope['name'],scope['parameterType'],scope['valueParameterType'],
+       (spec['size']+7)//8,samples,scope['name'],scope['parameterType'],scope['valueParameterType'])

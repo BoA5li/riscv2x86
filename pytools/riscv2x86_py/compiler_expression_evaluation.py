@@ -87,3 +87,30 @@ def validate_expression_evaluation(raw, candidate, fragment, *, source_digest, f
     if dict(raw) != expected:
         _reject('BINDING_MISMATCH', 'Evaluation carrier differs from compiler facts or GNU operand roles')
     return deepcopy(expected)
+
+
+def literal_operand_value(evaluated, joined):
+    """Evaluate only compiler-owned literal/unary-sign/parenthesis ASTs.
+
+    No C text parsing, declaration invention or general constant folding. The
+    instruction encoder remains responsible for its immediate field range.
+    """
+    if (evaluated['role']!='scalar_value' or evaluated['access']!='input'
+            or evaluated['sourceConstraint'] not in {'i','n'}):
+        raise ValueError('COMPILER_IMMEDIATE_CONSTRAINT_REQUIRED')
+    typ=compiler_operand_type_from_dict(joined['compilerType'])
+    if not typ.is_integer or typ.is_pointer:
+        raise ValueError('COMPILER_IMMEDIATE_INTEGER_TYPE_REQUIRED')
+    def visit(node):
+        if node['kind'] in {'IntegerLiteral','CharacterLiteral'} and not node['children']:
+            return int(node['literalValue'])
+        if node['kind']=='ParenExpr' and len(node['children'])==1:
+            return visit(node['children'][0])
+        if node['kind']=='UnaryOperator' and node['operation'] in {'+','-'} and len(node['children'])==1:
+            return visit(node['children'][0]) * (-1 if node['operation']=='-' else 1)
+        raise ValueError('COMPILER_IMMEDIATE_LITERAL_AST_REQUIRED')
+    value=visit(joined['expression'])
+    low=-(1 << (typ.width_bits-1)) if typ.is_signed else 0
+    high=(1 << (typ.width_bits-(1 if typ.is_signed else 0)))-1
+    if not low<=value<=high: raise ValueError('COMPILER_IMMEDIATE_TYPE_RANGE_INVALID')
+    return value

@@ -75,21 +75,26 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     for index, finding in enumerate(data['findings']):
         fragment = finding.get('fragment') or {}
         fid = fragment.get('id', '')
-        if not replay and (finding.get('l3IntentProfile') is not None or finding.get('l3IntentReceipt') is not None):
+        if not replay and (finding.get('l3IntentProfile') is not None or finding.get('l3IntentReceipt') is not None or finding.get('l3IntentDisposition') is not None):
             raise ValueError('l3.intent.preexisting-unreviewed-profile')
         artifact = artifacts.get(f'finding:{index}:{fid}')
         if artifact is None:
             continue  # No translation candidate is not authority to infer intent=none.
         bound, _ = compiler_bound_finding(source, report, fid)
-        bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt'}}
+        bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
         finding.pop('l3IntentProfile', None)
         finding.pop('l3IntentReceipt', None)
+        finding.pop('l3IntentDisposition', None)
         if bound != finding or not artifact.effect_relation_set_identity:
             raise ValueError('l3.intent.approved-relation-unavailable')
         items.append({'findingIndex': index, 'finding': dict(finding),
                       'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
                       asdict(artifact)})
     if not items:
+        # Terminal upstream refusals do not need an experiment profile. Keep
+        # their exact translation outcomes; unknown intent remains unproved.
+        if data['findings'] and all(f.get('translationOutcome') in {'unsupported','failed','needs_route'} for f in data['findings']):
+            return data
         raise ValueError('l3.intent.approved-candidates-unavailable')
     request = {'schemaVersion': 'riscv2x86.l3-intent-producer-request.v1',
                'sourcePath': str(source), 'sourceDigest': digest(source),
@@ -108,9 +113,13 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     if completed.returncode:
         raise ValueError('l3.intent.producer-failed:' + str(completed.returncode) + ':' + completed.stderr[-2000:])
     response = json.loads(completed.stdout)
-    if (not isinstance(response, dict) or set(response) != {'schemaVersion', 'requestIdentity', 'profiles'} or
-            response['schemaVersion'] != 'riscv2x86.l3-intent-producer-response.v1' or
-            response['requestIdentity'] != request['requestIdentity'] or not isinstance(response['profiles'], list)):
+    response_version=response.get('schemaVersion') if isinstance(response,dict) else None
+    response_fields={'schemaVersion','requestIdentity','profiles'}
+    if response_version=='riscv2x86.l3-intent-producer-response.v2': response_fields.add('dispositions')
+    if (not isinstance(response, dict) or set(response) != response_fields or
+            response_version not in {'riscv2x86.l3-intent-producer-response.v1','riscv2x86.l3-intent-producer-response.v2'} or
+            response['requestIdentity'] != request['requestIdentity'] or not isinstance(response['profiles'], list) or
+            (response_version.endswith('.v2') and not isinstance(response['dispositions'], list))):
         raise ValueError('l3.intent.producer-response-invalid')
     expected = {(item['finding']['fragment']['id']): item for item in items}
     if len(expected) != len(items):
@@ -118,16 +127,30 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     profiles = [parse_l3_intent_profile(p) for p in response['profiles']]
     if len(profiles) != len(expected) or {p.fragment_id for p in profiles} != set(expected):
         raise ValueError('l3.intent.producer-fragment-coverage-invalid')
+    decisions={}
+    for decision in response.get('dispositions',[]):
+        from .l3_intent_requirements import validate_intent_disposition
+        validate_intent_disposition(decision)
+        fid=decision['fragmentId']
+        if fid in decisions or fid not in expected: raise ValueError('l3.intent.disposition-coverage-invalid')
+        decisions[fid]=decision
     for profile in profiles:
         item = expected[profile.fragment_id]
         artifact = artifacts[f"finding:{item['findingIndex']}:{profile.fragment_id}"]
-        if (not profile.complete or profile.producer_identity != value['producerIdentity'] or
+        decision=decisions.get(profile.fragment_id)
+        if decision is not None:
+            if profile.complete or profile.intent_kind.value!='unknown' or decision['profileIdentity']!=profile.profile_identity:
+                raise ValueError('l3.intent.disposition-profile-mismatch')
+        elif not profile.complete:
+            raise ValueError('l3.intent.incomplete-profile-without-disposition')
+        if (profile.producer_identity != value['producerIdentity'] or
                 profile.proof_identity != artifact.proof_identity or
                 (profile.intent_kind.value != 'none' and
                  profile.approved_target_relation_identity != artifact.effect_relation_set_identity)):
             raise ValueError('l3.intent.producer-approval-binding-mismatch')
         finding = data['findings'][item['findingIndex']]
         finding['l3IntentProfile'] = profile.to_dict()
+        if decision is not None: finding['l3IntentDisposition']=decision
         receipt = {'schemaVersion': 'riscv2x86.l3-intent-consumption.v1',
             'sourceDigest': value['sourceDigest'], 'profileIdentity': profile.profile_identity,
             'translationArtifactIdentity': artifact.identity, 'requestIdentity': request['requestIdentity'],
@@ -137,8 +160,8 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     for item in items:
         bound, _ = compiler_bound_finding(source, report, item['finding']['fragment']['id'])
         consumed = {k: v for k, v in item['finding'].items()
-                    if k not in {'l3IntentProfile', 'l3IntentReceipt'}}
-        bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt'}}
+                    if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
+        bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
         if bound != consumed:
             raise ValueError('l3.intent.compiler-binding-changed')
     if replay:
@@ -176,7 +199,7 @@ def validate_receipt(finding, artifact, source, report):
     replayed = produce_intents(source, report, path, replay=True)
     matches = [f for f in replayed['findings']
                if (f.get('fragment') or {}).get('id') == artifact.fragment_id]
-    if len(matches) != 1 or matches[0].get('l3IntentProfile') != profile.to_dict() or matches[0].get('l3IntentReceipt') != receipt:
+    if len(matches) != 1 or matches[0].get('l3IntentProfile') != profile.to_dict() or matches[0].get('l3IntentReceipt') != receipt or matches[0].get('l3IntentDisposition') != finding.get('l3IntentDisposition'):
         raise ValueError('l3.intent.producer-replay-mismatch')
     return profile
 

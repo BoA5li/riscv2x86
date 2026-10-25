@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Require normal-production L0-L3 closure for an explicitly selected input set.
 
-The first route supports compiler-bound ordinary reads. An unsupported selection
+The bounded route supports compiler-bound ordinary reads and writes. An unsupported selection
 remains a rejection; this driver never derives success from an exit code alone.
 """
 import argparse
@@ -29,6 +29,7 @@ def batch_diagnostics(batch_root, batch):
             'reasonCodes': report.get('reasonCodes', []),
             'detail': report.get('detail'),
             'orchestrationFailure': report.get('orchestrationFailure'),
+            'requirementStagingFailure': report.get('requirementStagingFailure'),
             'attempts': [{
                 'translationOutcome': attempt.get('translationOutcome'),
                 'status': attempt.get('status'),

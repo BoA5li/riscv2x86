@@ -230,6 +230,20 @@ class L3RequirementManifest:
                 "manifestIdentity": self.manifest_identity}
 
 
+def validate_intent_disposition(value):
+    names={'schemaVersion','fragmentId','profileIdentity','status','reasonCodes','dispositionIdentity'}
+    if (not isinstance(value,Mapping) or set(value)!=names or
+            value['schemaVersion']!='riscv2x86.l3-intent-disposition.v1' or
+            value['status'] not in {'unsupported','prerequisites_missing'} or
+            not value['reasonCodes']):
+        raise ValueError('l3.intent.disposition-invalid')
+    _text(value['fragmentId'],'fragmentId')
+    _sha(value['profileIdentity'],'profileIdentity')
+    _strings(value['reasonCodes'],'reasonCodes')
+    if value['dispositionIdentity']!=_hash({k:v for k,v in value.items() if k!='dispositionIdentity'}):
+        raise ValueError('l3.intent.disposition-identity-invalid')
+
+
 def classify_l3_requirements(report: Mapping[str, object]) -> L3RequirementManifest:
     findings = report.get("findings")
     if not isinstance(findings, list):
@@ -255,6 +269,13 @@ def classify_l3_requirements(report: Mapping[str, object]) -> L3RequirementManif
             status, disposition, reasons = "needs_route", "not_run", ["l3.translation.no-candidate"]
         else:
             status, disposition, reasons = "eligible", "not_run", ["l3.execution.not-yet-configured"]
+        decision=finding.get('l3IntentDisposition')
+        if decision is not None:
+            validate_intent_disposition(decision)
+            if (decision['fragmentId']!=fid or decision['profileIdentity']!=profile.profile_identity
+                    or profile.complete or profile.intent_kind is not L3IntentKind.UNKNOWN):
+                raise ValueError('l3.intent.disposition-binding-invalid')
+            reasons=sorted(set(['l3.intent.'+decision['status'],*decision['reasonCodes']]))
         payload = {"schemaVersion": REQUIREMENT_SCHEMA_V2 if profile.schema_version == INTENT_SCHEMA_V2 else REQUIREMENT_SCHEMA,
                    "findingId": f"finding:{index}:{fid}", "fragmentId": fid,
                    "programId": profile.program_id, "translationOutcome":

@@ -736,6 +736,10 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                 function_identity=function_identity,source_range=_source_range)
             if atomic_scope is not None:
                 function['compilerAtomicFunctionScope'] = atomic_scope
+            from .compiler_continuation_sites import memory_store_function_scope
+            store_scope=memory_store_function_scope(node,source_digest=source_digest,
+                function_identity=function_identity,source_range=_source_range)
+            if store_scope is not None:function['compilerStoreFunctionScope']=store_scope
             function["l2OperandBoundary"] = _l2_operand_boundary_facts(
                 node, source_digest=source_digest,
                 function_identity=function_identity,

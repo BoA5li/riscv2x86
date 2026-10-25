@@ -61,10 +61,27 @@ def bind_compiler_provenance(fragment, sidecar):
             parsed = compiler_operand_type_from_dict(record['compilerType'])
             carrier = next((x for x in candidate['operandCarriers']
                             if x['operandIndex'] == record['operandIndex']), None)
+            expected_kind = 'pointer' if parsed.is_pointer else 'integer'
+            if carrier is not None and carrier.get('schemaVersion') == 'riscv2x86.compiler-expression-carrier.v1':
+                # validate_closed_compiler_fragment_candidate above independently
+                # replays this expression carrier from its original AST/GNU shell.
+                evaluation = candidate.get('expressionEvaluation', {})
+                matches = [x for x in evaluation.get('bindings', [])
+                           if x.get('operandIndex') == record['operandIndex']]
+                if len(matches) != 1:
+                    raise ValueError('COMPILER_AUTHORITY_EXPRESSION_BINDING_MISSING')
+                evaluated = matches[0]
+                joined = evaluation['expressionJoin']['operands'][record['operandIndex']]
+                if joined['compilerType'] != record['compilerType']:
+                    raise ValueError('COMPILER_AUTHORITY_EXPRESSION_TYPE_MISMATCH')
+                if evaluated['role'] == 'memory_lvalue':
+                    expected_kind = 'memory_lvalue'
+                if (carrier.get('evaluationBindingIdentity') != evaluated['bindingIdentity']
+                        or carrier.get('expressionIdentity') != evaluated['expressionIdentity']):
+                    raise ValueError('COMPILER_AUTHORITY_EXPRESSION_BINDING_MISMATCH')
             if (record['valueNodeIdentity'] != binding['valueNodeIdentity']
                     or parsed.width_bits != binding['widthBits']
-                    or carrier is None
-                    or carrier['carrierKind'] != ('pointer' if parsed.is_pointer else 'integer')):
+                    or carrier is None or carrier['carrierKind'] != expected_kind):
                 raise ValueError('COMPILER_AUTHORITY_TYPE_VALUE_MISMATCH')
     for operand in sidecar.operands:
         binding = by_index.get(operand.operand_index)
@@ -72,6 +89,19 @@ def bind_compiler_provenance(fragment, sidecar):
                     'valueNodeIdentity': operand.value_node_identity,
                     'access': operand.access_mode, 'widthBits': operand.width_bits,
                     'signedness': operand.signedness}
+        if getattr(operand, 'operand_role', 'value') == 'memory_lvalue':
+            # Storage authority has no scalar signed interpretation. Require
+            # the exact replayed memory role and evaluation/address identities.
+            records = (candidate.get('expressionEvaluation') or {}).get('bindings', [])
+            matches = [x for x in records if x.get('operandIndex') == operand.operand_index]
+            if (len(matches) != 1 or matches[0]['role'] != 'memory_lvalue'
+                    or getattr(operand, 'type_kind', '') != 'aggregate'
+                    or operand.signedness != 'not_applicable'
+                    or operand.declaration_id
+                    or operand.expression_identity != matches[0]['expressionIdentity']
+                    or operand.evaluation_binding_identity != matches[0]['bindingIdentity']):
+                raise ValueError('COMPILER_AUTHORITY_MEMORY_ROLE_MISMATCH')
+            expected.pop('signedness')
         if binding is None or any(binding.get(k) != v for k, v in expected.items()):
             raise ValueError('COMPILER_AUTHORITY_CANONICAL_OPERAND_MISMATCH')
     result = {

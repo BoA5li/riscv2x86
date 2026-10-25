@@ -9,7 +9,8 @@ import pytest
 
 
 @pytest.mark.parametrize('cache_model',[False,True])
-def test_real_ordinary_read_renamed_production(tmp_path,cache_model):
+@pytest.mark.parametrize('access',['read','write'])
+def test_real_ordinary_read_renamed_production(tmp_path,cache_model,access):
     manifest=os.environ.get('RV2X86_L3_TRACE_BACKEND','')
     if not manifest:pytest.skip('explicit calibrated dual-ISA QEMU L3 backend not selected')
     frontend=os.environ.get('RISCV2X86_TEST_FRONTEND','')
@@ -17,8 +18,12 @@ def test_real_ordinary_read_renamed_production(tmp_path,cache_model):
     assert frontend and Path(frontend).is_file(),'selected real frontend missing'
     inputs=tmp_path/'inputs';inputs.mkdir()
     source=inputs/'arbitrary_file.c'
-    source.write_text('#include <stdint.h>\nuint64_t independent_read_name(const uint64_t *base) {\n'
-        'uint64_t result;\n__asm__ volatile("ld %[dst],24(%[src])" : [dst] "=r"(result) : [src] "r"(base) : "memory");\nreturn result;\n}\n')
+    if access=='read':
+        source.write_text('#include <stdint.h>\nuint64_t independent_read_name(const uint64_t *base) {\n'
+            'uint64_t result;\n__asm__ volatile("ld %[dst],24(%[src])" : [dst] "=r"(result) : [src] "r"(base) : "memory");\nreturn result;\n}\n')
+    else:
+        source.write_text('#include <stdint.h>\nuint64_t independent_write_name(uint64_t *base,uint64_t value) {\n'
+            '__asm__ volatile("sd %[value],24(%[base])" :: [base] "r"(base),[value] "r"(value) : "memory");\nreturn base[3];\n}\n')
     root=Path(__file__).resolve().parents[2]
     command=[sys.executable,str(root/'experiment/run_l3_memory_trace.py'),'--input',str(source),
         '--frontend',frontend,'--backend',manifest,'--output',str(tmp_path/'production')]
@@ -41,11 +46,11 @@ def test_real_ordinary_read_renamed_production(tmp_path,cache_model):
     assert bool(detail['cacheModelResults'])==cache_model
     for side in ('source','target'):
         assert len(detail['platformReports'][side]['events'])==4
-        assert all(e['offset']==24 and e['size']==8 and e['access']=='read' for e in detail['platformReports'][side]['events'])
+        assert all(e['offset']==24 and e['size']==8 and e['access']==access for e in detail['platformReports'][side]['events'])
     from riscv2x86_py.l3_production_acceptance import audit_evaluation
     assert audit_evaluation(report)['status']=='verified'
     # Independent audit must re-read raw evidence; recomputing a report hash
     # cannot conceal a changed capture, compiler region or executable.
     trace=Path(detail['platformReports']['source']['evidence']['rawTracePath'])
-    trace.write_text(trace.read_text().replace(' 8 R',' 8 W',1))
+    trace.write_text(trace.read_text().replace(' 8 R' if access=='read' else ' 8 W',' 8 W' if access=='read' else ' 8 R',1))
     with pytest.raises(ValueError):audit_evaluation(report)

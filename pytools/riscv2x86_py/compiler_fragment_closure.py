@@ -242,21 +242,27 @@ def _close_expression_candidate(candidate, fragment, *, source_digest, function_
                 raise ValueError('COMPILER_EXPRESSION_TYPE_CARRIER_MISMATCH')
             carrier = dict(carrier)
         else:
-            if item['role'] != 'memory_lvalue' or item['declarationIdentity']:
-                raise ValueError('COMPILER_EXPRESSION_SCALAR_VALUE_FLOW_REQUIRED')
             typ = compiler_operand_type_from_dict(joined['compilerType'])
-            address = item['addressNode']
-            node = {**address, 'nodeIdentity': address['valueNodeIdentity'],
-                    'complete': True}
+            literal = item['role']=='scalar_value' and item['sourceConstraint'] in {'i','n'}
+            if literal:
+                from .compiler_expression_evaluation import literal_operand_value
+                constant=literal_operand_value(item,joined)
+                address=item['valueNodes'][0]
+            elif item['role']=='memory_lvalue' and not item['declarationIdentity']:
+                address=item['addressNode']
+            else:
+                raise ValueError('COMPILER_EXPRESSION_SCALAR_VALUE_FLOW_REQUIRED')
+            node = {**address, 'nodeIdentity': address['valueNodeIdentity'], 'complete': True}
             nodes.append(node)
             carrier = {'schemaVersion': 'riscv2x86.compiler-expression-carrier.v1',
                 'operandIndex': index, 'declarationIdentity': '',
                 'expressionIdentity': item['expressionIdentity'],
                 'valueNodeIdentity': address['valueNodeIdentity'],
-                'carrierKind': 'memory_lvalue', 'widthBits': typ.width_bits,
+                'carrierKind': 'integer' if literal else 'memory_lvalue', 'widthBits': typ.width_bits,
                 'signedness': 'signed' if typ.is_signed else 'unsigned',
                 'addressSpaceIdentity': '', 'complete': True,
                 'evaluationBindingIdentity': item['bindingIdentity']}
+            if literal: carrier['constantValue']=constant
         carriers.append(carrier)
         bindings.append({'operandIndex': index, 'declarationIdentity': carrier['declarationIdentity'],
             'valueNodeIdentity': carrier['valueNodeIdentity'], 'access': item['access'],

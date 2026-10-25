@@ -203,3 +203,40 @@ def test_producer_timeout_is_a_typed_precondition_failure(ingress, monkeypatch):
     with pytest.raises(ValueError, match='producer-timed-out'):
         produce_intents(source, report, manifest)
     assert json.loads(report.read_text())['findings'][0].get('l3IntentProfile') is None
+
+
+@pytest.mark.parametrize('malformed', ['', 'duplicate', 'not-list', 'wrong-profile'])
+def test_bounded_refusal_protocol_preserves_unknown_and_replays(ingress, malformed):
+    source, report, manifest, tool, artifact, seal = ingress
+    text = tool.read_text()
+    marker = 'p["profileIdentity"]='
+    text = text.replace(marker, 'p.update(intentKind="unknown",experimentClasses=[],requiredProperties=[],sourceCapabilities=[],targetCapabilities=[],complete=False)\n'+marker)
+    text = text.replace('print(json.dumps(',
+        'd={"schemaVersion":"riscv2x86.l3-intent-disposition.v1","fragmentId":p["fragmentId"],'
+        '"profileIdentity":p["profileIdentity"],"status":"unsupported","reasonCodes":["bounded-route-only"]}\n'
+        'd["dispositionIdentity"]=_hash(d)\nprint(json.dumps(')
+    text = text.replace('response.v1', 'response.v2').replace('"profiles":[p]', '"profiles":[p],"dispositions":[d]')
+    if malformed == 'duplicate':text=text.replace('"dispositions":[d]', '"dispositions":[d,d]')
+    if malformed == 'not-list':text=text.replace('"dispositions":[d]', '"dispositions":{}')
+    if malformed == 'wrong-profile':text=text.replace('"profileIdentity":p["profileIdentity"]','"profileIdentity":"'+RELATION+'"')
+    tool.write_text(text);seal()
+    if malformed:
+        with pytest.raises(ValueError):produce_intents(source,report,manifest)
+        return
+    data=produce_intents(source,report,manifest)
+    requirement=classify_l3_requirements(data).requirements[0]
+    assert requirement['eligibilityStatus']=='inconclusive'
+    assert 'l3.intent.unsupported' in requirement['reasonCodes']
+    report.write_text(json.dumps(data))
+    validate_receipt(data['findings'][0],artifact,source,report)
+    assert produce_intents(source,report,manifest,replay=True)['findings'][0]['l3IntentDisposition']==data['findings'][0]['l3IntentDisposition']
+
+
+def test_terminal_upstream_refusal_does_not_invent_an_intent_profile(ingress, monkeypatch):
+    import riscv2x86_py.translation_artifact_binding as binding
+    source,report,manifest,tool,artifact,seal=ingress
+    data={'findings':[{'fragment':{'id':'fragment:0'},'translationOutcome':'unsupported'}]}
+    report.write_text(json.dumps(data))
+    monkeypatch.setattr(binding,'artifacts_from_report',lambda *args:{})
+    assert produce_intents(source,report,manifest)==data
+    assert not report.with_name(report.name+'.l3-intent-production.json').exists()
