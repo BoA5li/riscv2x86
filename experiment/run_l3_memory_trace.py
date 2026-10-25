@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Require normal-production L0-L3 closure for an explicitly selected input set.
 
-The bounded route supports compiler-bound ordinary reads and writes. An unsupported selection
+The bounded route supports compiler-bound ordinary reads/writes and bounded register-scalar data-access absence. An unsupported selection
 remains a rejection; this driver never derives success from an exit code alone.
 """
 import argparse

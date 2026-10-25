@@ -20,6 +20,7 @@ from .validation_status import ValidationStatus
 
 CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v1'
 STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v2'
+SCALAR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v3'
 ROUTE_SCHEMA='riscv2x86.compiler-region-trace-route.v1'
 RUNNER_SCHEMA='riscv2x86.compiler-region-trace-runner.v1'
 
@@ -30,7 +31,9 @@ def parse_contract(value):
             'requirementIdentity','approvedTargetRelationIdentity','programId','fragmentId','spec',
             'deployment','backendPath','backendDigest','cacheModel','requiredProperties','propertyBindings',
             'sampleCount','knownNonEquivalences'}
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA}:
+    scalar=isinstance(value,dict) and value.get('schemaVersion')==SCALAR_CONTRACT_SCHEMA
+    if scalar:fields.add('propertyObligations')
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA}:
         raise ValueError('L3_TRACE_CONTRACT_SCHEMA_INVALID')
     if type(value['sampleCount']) is not int or not 2<=value['sampleCount']<=16:
         raise ValueError('L3_TRACE_SAMPLE_COUNT_INVALID')
@@ -38,16 +41,35 @@ def parse_contract(value):
     spec_fields={'fragmentId','programId','objectId','sourceEffectId','offset','width','size','alignment','access','observationUnit','authorityIdentity'}
     if not isinstance(spec,dict) or set(spec)!=spec_fields:
         raise ValueError('L3_TRACE_CONTRACT_SPEC_INVALID')
-    if (type(spec['width']) is not int or spec['width'] not in (1,2,4,8) or
-            type(spec['offset']) is not int or spec['offset']<0 or spec['offset']%spec['width'] or
-            type(spec['size']) is not int or not spec['offset']+spec['width']<=spec['size']<=65536 or
-            type(spec['alignment']) is not int or not spec['width']<=spec['alignment']<=64 or
-            spec['alignment'] & (spec['alignment']-1) or spec['observationUnit']!='compiler-asm-region'):
-        raise ValueError('L3_TRACE_CONTRACT_OBJECT_DOMAIN_INVALID')
-    if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId'] or spec['access'] not in {'read','write'}:
+    if scalar:
+        if any(spec[k]!=v or type(spec[k]) is not type(v) for k,v in
+                {'objectId':'','sourceEffectId':'','offset':0,'width':0,'size':0,'alignment':0,
+                 'access':'none','observationUnit':'compiler-asm-region'}.items()):
+            raise ValueError('L3_SCALAR_CONTRACT_SPEC_INVALID')
+        from .l3_property_obligations import check_properties, validate as validate_obligations
+        obligations=value['propertyObligations']
+        from .l3_trace_support import identity
+        if (not isinstance(obligations,dict) or obligations.get('obligationIdentity')!=identity({k:v for k,v in obligations.items() if k!='obligationIdentity'})
+                or obligations.get('fragmentId')!=value['fragmentId'] or obligations.get('programId')!=value['programId']
+                or obligations.get('proofIdentity')!=value['proofIdentity']
+                or obligations.get('approvedTargetRelationIdentity')!=value['approvedTargetRelationIdentity']):
+            raise ValueError('L3_SCALAR_OBLIGATION_BINDING_INVALID')
+        validate_obligations(obligations)
+        check_properties(obligations,value['requiredProperties'])
+        if value['cacheModel'] is not None:raise ValueError('L3_SCALAR_OBJECT_RELATIVE_CACHE_MODEL_UNSUPPORTED')
+    else:
+        if (type(spec['width']) is not int or spec['width'] not in (1,2,4,8) or
+                type(spec['offset']) is not int or spec['offset']<0 or spec['offset']%spec['width'] or
+                type(spec['size']) is not int or not spec['offset']+spec['width']<=spec['size']<=65536 or
+                type(spec['alignment']) is not int or not spec['width']<=spec['alignment']<=64 or
+                spec['alignment'] & (spec['alignment']-1) or spec['observationUnit']!='compiler-asm-region'):
+            raise ValueError('L3_TRACE_CONTRACT_OBJECT_DOMAIN_INVALID')
+        if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId'] or spec['access'] not in {'read','write'}:
+            raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
+        if spec['access']=='write' and (value['schemaVersion']!=STORE_CONTRACT_SCHEMA or spec['width']!=8):
+            raise ValueError('L3_TRACE_STORE_CONTRACT_VERSION_REQUIRED')
+    if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId']:
         raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
-    if spec['access']=='write' and (value['schemaVersion']!=STORE_CONTRACT_SCHEMA or spec['width']!=8):
-        raise ValueError('L3_TRACE_STORE_CONTRACT_VERSION_REQUIRED')
     if value['deployment']['spec']!=spec or value['deployment']['sampleCount']!=value['sampleCount']:
         raise ValueError('L3_TRACE_CONTRACT_DEPLOYMENT_MISMATCH')
     model=value['cacheModel']
@@ -57,12 +79,12 @@ def parse_contract(value):
     expected=[{'propertyId':'memory.fragment-access','dimension':'access_pattern','unit':'fragment'}]
     if model is not None: expected.insert(0,{'propertyId':'cache.fragment-stream-model','dimension':'cache_model','unit':'fragment'})
     if value['requiredProperties']!=expected: raise ValueError('L3_TRACE_CONTRACT_PROPERTIES_MISMATCH')
-    access=LogicalAccess('memory:approved-'+spec['access'],spec['objectId'],spec['offset'],spec['width'],spec['access'],spec['alignment'],'non_atomic','relaxed',())
+    access=None if scalar else LogicalAccess('memory:approved-'+spec['access'],spec['objectId'],spec['offset'],spec['width'],spec['access'],spec['alignment'],'non_atomic','relaxed',())
     classes=('memory_access',) if model is None else ('cache_model','memory_access')
     contract=ExperimentContract(value['experimentId'],value['translationPlanId'],value['proofIdentity'],
-        'approved object-relative memory stream','byte-identical compiler-region TCG observation',
+        ('executed scalar region with no successful data accesses' if scalar else 'approved object-relative memory stream'),'byte-identical compiler-region TCG observation',
         'registered:compiler-region-memory-trace.v1','bounded_execution_intent',classes,
-        (access,),(),(),(),(),'not-a-timing-experiment',value['sampleCount'],0,0,
+        (() if scalar else (access,)),(),(),(),(),'not-a-timing-experiment',value['sampleCount'],0,0,
         'single-guest-thread-no-timing-claim','complete-stream-no-sample-exclusion',{}, {},
         tuple(value['knownNonEquivalences']),True,value,value['intentProfileIdentity'],value['requirementIdentity'],
         value['approvedTargetRelationIdentity'],value['programId'])
@@ -71,14 +93,21 @@ def parse_contract(value):
     return contract
 
 
-def validate_profile_scope(profile, spec, model):
+def validate_profile_scope(profile, spec, model, obligations=None):
+    scope={'spec':spec,'model':model}
+    if spec['access']=='none':
+        # Scalar profiles bind the independently replayed policy obligations.
+        scope['obligations']=obligations
     if (profile.observation_boundary_kind!='compiler-asm-region' or
-            profile.observation_boundary_identity!=identity({'spec':spec,'model':model}) or
+            profile.observation_boundary_identity!=identity(scope) or
             tuple(profile.source_capabilities)!=(CAPABILITY,) or tuple(profile.target_capabilities)!=(CAPABILITY,)):
         raise ValueError('L3_TRACE_REGISTERED_INTENT_SCOPE_MISMATCH')
 
 
 def parse_objects(stdout, token, spec, samples):
+    if spec['access']=='none':
+        from .l3_scalar_trace import parse_samples
+        return parse_samples(stdout,token,samples)
     objects=[]
     for line in stdout.splitlines():
         value=json.loads(line)
@@ -107,6 +136,8 @@ def parse_objects(stdout, token, spec, samples):
 
 
 def normalize(events, objects, spec):
+    if spec['access']=='none':
+        return list(events),(['L3_SCALAR_UNEXPECTED_DATA_ACCESS'] if events else [])
     normalized=[]; reasons=[]
     for sample,obj in enumerate(objects):
         selected=[e for e in events if e['sample']==sample]
@@ -124,9 +155,10 @@ def normalize(events, objects, spec):
 
 def report_from_capture(side, backend, deployment, events, objects, evidence):
     spec=deployment['spec']; normalized,reasons=normalize(events,objects,spec)
-    return {'schemaVersion':'riscv2x86.compiler-region-trace-observation.v1','side':side,
+    scalar=spec['access']=='none'
+    return {'schemaVersion':('riscv2x86.compiler-region-trace-observation.v2' if scalar else 'riscv2x86.compiler-region-trace-observation.v1'),'side':side,
             'backendIdentity':backend['backendIdentity'],'deploymentIdentity':deployment['deploymentIdentity'],
-            'captureBoundary':'compiler-asm-region-only','objects':objects,'events':normalized,
+            'captureBoundary':'compiler-asm-region-only',('samples' if scalar else 'objects'):objects,'events':normalized,
             'evidence':evidence,'environment':{'executor':backend[side+'Executor'],
                 'executorDigest':digest(backend[side+'Executor']),'runnerArguments':backend[side+'RunnerArguments'],
                 'observationKind':'tcg-successful-guest-memory-accesses','physicalMicroarchitectureClaimed':False},
@@ -142,7 +174,11 @@ def replay_reports(detail, contract, source_artifact, target_artifact):
     data=json.loads(Path(deployment['inputs']['report']).read_text())
     finding=next(f for f in data['findings'] if f['fragment']['id']==raw['fragmentId'])
     profile=parse_l3_intent_profile(finding['l3IntentProfile'],fragment_id=raw['fragmentId'])
-    validate_profile_scope(profile,raw['spec'],raw['cacheModel'])
+    validate_profile_scope(profile,raw['spec'],raw['cacheModel'],raw.get('propertyObligations'))
+    if raw['spec']['access']=='none':
+        from .l3_property_obligations import analyze
+        if analyze(finding)!=raw['propertyObligations'] or detail.get('propertyObligations')!=raw['propertyObligations']:
+            raise ValueError('L3_SCALAR_OBLIGATION_REPLAY_MISMATCH')
     if profile.profile_identity!=contract.intent_profile_identity or profile.proof_identity!=contract.proof_identity:
         raise ValueError('L3_TRACE_DEPLOYMENT_INTENT_CHANGED')
     if detail.get('traceDeployment')!=deployment: raise ValueError('L3_TRACE_REPORTED_DEPLOYMENT_MISMATCH')
@@ -167,7 +203,8 @@ def replay_reports(detail, contract, source_artifact, target_artifact):
             raise ValueError('L3_TRACE_LAUNCHED_PROGRAM_MISMATCH')
         rebuilt[side]=report_from_capture(side,backend,deployment,events,objects,evidence)
         if rebuilt[side]!=report: raise ValueError('L3_TRACE_NORMALIZATION_REPLAY_MISMATCH')
-    if [x['value'] for x in rebuilt['source']['objects']] != [x['value'] for x in rebuilt['target']['objects']]:
+    rows='samples' if raw['spec']['access']=='none' else 'objects'
+    if [x['value'] for x in rebuilt['source'][rows]] != [x['value'] for x in rebuilt['target'][rows]]:
         raise ValueError('L3_TRACE_DEPLOYMENT_FUNCTIONAL_MISMATCH')
     return rebuilt
 
@@ -195,7 +232,7 @@ def build_observer(config):
             if len(reqs)!=1 or reqs[0]['requirementIdentity']!=contract.requirement_identity or reqs[0]['requiredProperties']!=raw['requiredProperties']:
                 raise ValueError('L3_TRACE_REQUIREMENT_MISMATCH')
             profile=parse_l3_intent_profile(kwargs['l3_intent_profile'],fragment_id=raw['fragmentId'])
-            validate_profile_scope(profile,raw['spec'],raw['cacheModel'])
+            validate_profile_scope(profile,raw['spec'],raw['cacheModel'],raw.get('propertyObligations'))
             if (profile.profile_identity!=contract.intent_profile_identity or profile.proof_identity!=contract.proof_identity or
                     kwargs['translation_artifact'].proof_identity!=contract.proof_identity or
                     kwargs['translation_artifact'].translation_plan_id!=contract.translation_plan_id or
@@ -214,6 +251,7 @@ def build_observer(config):
                 'platformReports':reports,'executionBindings':{s:context.request_binding(s) for s in ('source','target')},
                 'observationScope':'compiler-asm-region-only','physicalMicroarchitectureClaimed':False,
                 'prerequisiteEnvironment':kwargs['target_environment']}
+            if raw['spec']['access']=='none':detail['propertyObligations']=raw['propertyObligations']
             replay_reports(detail,contract,source,target)
             reasons=sorted(set(r for report in reports.values() for r in report['reasonCodes']))
             if reports['source']['events']!=reports['target']['events']: reasons.append('L3_TRACE_SOURCE_TARGET_STREAM_MISMATCH')
@@ -274,26 +312,31 @@ def build_route(config):
                 return ValidationLayerResult(ValidationLevel.L3,ValidationStatus.INCONCLUSIVE,
                     detail=json.dumps({'reasonCodes':selected[0]['reasonCodes'],
                         'failureStage':'l3-requirement-resolution','evidenceProductionDisposition':'not_produced'}))
-            spec=memory_spec(finding)
+            from .l3_scalar_trace import trace_spec
+            from .l3_property_obligations import analyze, check_properties
+            obligations=analyze(finding)
+            spec=trace_spec(finding)
             profile=validate_receipt(finding,kwargs['translation_artifact'],config['sourcePath'],report)
             manifest=parse_l3_requirement_manifest(kwargs['l3_requirement_manifest']); reqs=[r for r in manifest.requirements if r['fragmentId']==spec['fragmentId']]
             if len(reqs)!=1 or reqs[0]['eligibilityStatus']!='eligible': raise ValueError('L3_TRACE_REQUIREMENT_INELIGIBLE')
             model=None if config['cacheModel'] is None else cache_validate(config['cacheModel'])
-            validate_profile_scope(profile,spec,model)
+            check_properties(obligations,[p.to_dict() for p in profile.required_properties])
+            validate_profile_scope(profile,spec,model,obligations if spec['access']=='none' else None)
             req=reqs[0]; samples=config['sampleCount']
             if type(samples) is not int or not 2<=samples<=16: raise ValueError('L3_TRACE_SAMPLE_COUNT_INVALID')
             work=Path(config['workDirectory']).resolve(); work.mkdir(parents=True,exist_ok=False)
             deployment=prepare_deployment(config['sourcePath'],config['targetPath'],report,finding,backend,source,target,work/'deployment',samples)
             properties=[x.to_dict() for x in profile.required_properties]
             bindings=[dict(p,comparatorId=('object-relative-cache-model.v1' if p['dimension']=='cache_model' else 'logical-access-contract.v1'),
-                obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else ['memory:approved-'+spec['access']]) for p in properties]
-            contract={'schemaVersion':STORE_CONTRACT_SCHEMA if spec['access']=='write' else CONTRACT_SCHEMA,'experimentId':'compiler-region:'+profile.profile_identity,
+                obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else (['memory:empty-executed-region'] if spec['access']=='none' else ['memory:approved-'+spec['access']])) for p in properties]
+            contract={'schemaVersion':SCALAR_CONTRACT_SCHEMA if spec['access']=='none' else (STORE_CONTRACT_SCHEMA if spec['access']=='write' else CONTRACT_SCHEMA),'experimentId':'compiler-region:'+profile.profile_identity,
                 'translationPlanId':kwargs['translation_artifact'].translation_plan_id,'proofIdentity':profile.proof_identity,
                 'intentProfileIdentity':profile.profile_identity,'requirementIdentity':req['requirementIdentity'],
                 'approvedTargetRelationIdentity':profile.approved_target_relation_identity,'programId':spec['programId'],'fragmentId':spec['fragmentId'],
                 'spec':spec,'deployment':deployment,'backendPath':str(Path(config['backendPath']).resolve()),'backendDigest':config['backendDigest'],
                 'cacheModel':model,'requiredProperties':properties,'propertyBindings':bindings,'sampleCount':samples,
                 'knownNonEquivalences':list(profile.not_claimed_properties)}
+            if spec['access']=='none':contract['propertyObligations']=obligations
             parse_contract(contract); path=save(work/'experiment-contract.json',contract)
             observer={'schemaVersion':RUNNER_SCHEMA,'contractPath':str(path),'contractDigest':digest(path),
                 'sourceCommand':[backend['sourceExecutor']], 'targetCommand':[backend['targetExecutor']],

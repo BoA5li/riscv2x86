@@ -22,6 +22,8 @@ def comparator_obligations(contract):
     result = {}
     if contract.payload.get("cacheModel") is not None:
         result["cache_model"] = ["fragment-stream-lru-state"]
+    if contract.payload.get('schemaVersion')=='riscv2x86.compiler-region-trace-experiment.v3':
+        result['access_pattern']=['memory:empty-executed-region']
     if contract.required_access_pattern:
         result['access_pattern'] = sorted(x.event_id for x in contract.required_access_pattern)
     if contract.required_control_flow:

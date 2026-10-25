@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 
 from .l3_trace_support import Elf, digest, identity, run, save
-from .l3_memory_intent import memory_spec
+from .l3_scalar_trace import trace_spec
 
 SCHEMA='riscv2x86.compiler-region-execution-deployment.v1'
 _INTEGER=r'(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)'
@@ -37,7 +37,20 @@ def function_scope(source, report, finding):
     if len(functions)!=1: raise ValueError('L3_TRACE_SINGLE_FUNCTION_SCOPE_REQUIRED')
     function=functions[0]; scope=function.get('compilerAtomicFunctionScope') or {}
     name=function.get('name'); result=function.get('returnType'); parameters=function.get('parameterTypes')
-    spec=memory_spec(finding)
+    spec=trace_spec(finding)
+    if spec['access']=='none':
+        normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
+        if (not isinstance(name,str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) is None
+                or name!=finding['fragment'].get('enclosingFunction')
+                or function.get('functionId')!=boundary.get('functionId')
+                or scope.get('scope')!='single_asm_no_other_memory_or_control_effects'
+                or scope.get('sourceDigest')!=digest(source)
+                or scope.get('functionIdentity')!=function['functionId']
+                or normalized not in [['uint64_t'],['unsigned long']]
+                or result not in {'uint64_t','unsigned long'}):
+            raise ValueError('L3_TRACE_COMPILER_SCALAR_SCOPE_UNSUPPORTED')
+        return {'name':name,'returnType':result,'parameterType':parameters[0],
+                'functionIdentity':function['functionId'],'scopeIdentity':scope['scopeIdentity']}
     if spec['access']=='write':
         store=function.get('compilerStoreFunctionScope') or {}
         normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
@@ -67,6 +80,9 @@ def function_scope(source, report, finding):
 
 
 def harness(scope, spec, samples):
+    if spec['access']=='none':
+        from .l3_scalar_trace import scalar_harness
+        return scalar_harness(scope,samples)
     if spec['access']=='write': return store_harness(scope,spec,samples)
     # Metadata is emitted outside the observed asm region. The object is real,
     # initialized and private. No timing/non-interference claim is made for it.
@@ -93,7 +109,7 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
     from .l3_qemu_backend import validate_backend
     backend=validate_backend(backend)
     directory=Path(directory).resolve(); directory.mkdir(parents=True,exist_ok=False)
-    spec=memory_spec(finding); scope=function_scope(source,report,finding)
+    spec=trace_spec(finding); scope=function_scope(source,report,finding)
     source=Path(source).resolve(); target=Path(target).resolve()
     if digest(source)!=finding['sourceDigest']: raise ValueError('L3_TRACE_SOURCE_CHANGED')
     from .approved_replacement import approved_replacement
@@ -165,7 +181,7 @@ def validate(value, backend, source_artifact, target_artifact):
         if digest(path)!=expected: raise ValueError('L3_TRACE_DEPLOYMENT_SOURCE_CHANGED')
     inputs=value['inputs']; data=json.loads(Path(inputs['report']).read_text())
     findings=[f for f in data['findings'] if (f.get('fragment') or {}).get('id')==value['spec']['fragmentId']]
-    if len(findings)!=1 or memory_spec(findings[0])!=value['spec'] or function_scope(inputs['source'],inputs['report'],findings[0])!=value['functionScope']:
+    if len(findings)!=1 or trace_spec(findings[0])!=value['spec'] or function_scope(inputs['source'],inputs['report'],findings[0])!=value['functionScope']:
         raise ValueError('L3_TRACE_DEPLOYMENT_PROOF_REPLAY_MISMATCH')
     from .approved_replacement import approved_replacement
     finding=findings[0]; original=Path(inputs['source']).read_bytes()

@@ -96,7 +96,11 @@ def audit_evaluation(evaluation):
         if fid in closed:
             raise ValueError('l3.acceptance.duplicate-fragment-result')
         closed[fid] = {'fragmentId': fid, 'claimScope': fragment['claimScope'],
-                       'resultIdentity': fragment['resultIdentity'], 'contextIdentity': expected_context}
+                       'resultIdentity': fragment['resultIdentity'], 'contextIdentity': expected_context,
+                       'verifiedPropertyIds': sorted(fragment['dimensionResults'])}
+        if detail.get('propertyObligations') is not None:
+            closed[fid]['evaluationPolicyIdentity']=detail['propertyObligations']['policyIdentity']
+            closed[fid]['excludedProperties']=detail['propertyObligations']['policy']['excluded']
     if set(closed) != set(requirements):
         raise ValueError('l3.acceptance.required-fragment-not-run')
     return {'status': 'verified', 'requirementManifestIdentity': manifest.manifest_identity,

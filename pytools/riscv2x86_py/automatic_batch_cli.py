@@ -1168,9 +1168,11 @@ def prepare_automatic_inventory(
                 translation.extend(("--l3-intent-producer", str(intent_manifest)))
         if trace_backend is not None:
             from .l3_intent_ingress import producer_manifest
-            implementation=Path(__file__).with_name('l3_memory_intent.py').resolve()
-            command=[sys.executable,'-m','riscv2x86_py.l3_memory_intent','--implementation',str(implementation)]
-            for dependency in ('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py'):
+            implementation=Path(__file__).with_name('l3_trace_intent.py').resolve()
+            command=[sys.executable,'-m','riscv2x86_py.l3_trace_intent','--implementation',str(implementation)]
+            for dependency in ('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py',
+                    'l3_memory_intent.py','l3_property_obligations.py','l3_scalar_trace.py',
+                    'l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py'):
                 command.extend(('--dependency',str(implementation.with_name(dependency))))
             if trace_model is not None:
                 model_path=case_dir/'cache-model-selection.json'
@@ -1178,7 +1180,7 @@ def prepare_automatic_inventory(
                 command.extend(('--cache-model-file',str(model_path.resolve())))
             producer_path=case_dir/'memory-intent-producer.json'
             _write_json(producer_path,producer_manifest(source,command,
-                'registered compiler-bound ordinary-read fragment mechanism; no physical hardware claim'))
+                'registered obligation-first compiler-region data-access policy; no physical hardware claim'))
             translation.extend(('--l3-intent-producer',str(producer_path.resolve())))
         translation.extend(("--csr-target-build-contract", "automatic-gcc-separate-tu-no-lto-v1"))
         if allow_functional_fallbacks:
@@ -1677,7 +1679,7 @@ def main() -> int:
                         help="directory containing <source>.c.l2-providers.json bindings")
     parser.add_argument("--l3-provider-directory",
                         help="directory containing <source>.c.l3-providers.json bindings")
-    parser.add_argument("--l3-memory-backend", help="calibrated QEMU API-v1 ordinary-read observation backend")
+    parser.add_argument("--l3-memory-backend", help="calibrated QEMU API-v1 compiler-region data-access backend (ordinary read/write or bounded register scalar)")
     parser.add_argument("--l3-cache-model", help="explicit object-relative cache model; requires --l3-memory-backend")
     parser.add_argument("--l3-intent-producer-directory",
                         help="reviewed <source>.c.l3-intent-producer.json tool selections")

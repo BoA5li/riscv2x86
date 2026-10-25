@@ -44,14 +44,23 @@ def memory_spec(finding):
     objects = authority.get('memoryObjects',[]); effects = authority.get('sourceEffects',[])
     relations = authority.get('approvedEffectRelations',[])
     fragment = finding.get('fragment') or {}; boundary = approval.get('l2FragmentOperandBoundary') or {}
-    if (not authority.get('complete') or not facts.get('complete') or not boundary.get('complete') or
-            facts.get('fragmentId') != fragment.get('id') or authority.get('fragmentId') != fragment.get('id') or
-            boundary.get('fragmentId') != fragment.get('id') or facts.get('accessKind') not in {'load','store'} or
-            facts.get('nonAtomic') is not True or len(objects)!=1 or len(effects)!=1 or len(relations)!=1 or
-            effects[0].get('effectKind')!=('ReadMemory' if facts.get('accessKind')=='load' else 'WriteMemory') or effects[0].get('complete') is not True or
-            relations[0].get('sourceEffectId')!=effects[0].get('effectId') or relations[0].get('relationKind')!='exact' or
-            relations[0].get('complete') is not True or authority.get('runtimeContracts') or authority.get('ignoredState')):
-        raise ValueError('L3_MEMORY_ORDINARY_SINGLE_READ_REQUIRED')
+    if facts.get('accessKind') not in {'load','store'}:
+        raise ValueError('L3_MEMORY_ORDINARY_ACCESS_KIND_UNSUPPORTED')
+    if not authority.get('complete') or not facts.get('complete') or not boundary.get('complete'):
+        raise ValueError('L3_MEMORY_AUTHORITY_FACTS_INCOMPLETE')
+    if any(x.get('fragmentId')!=fragment.get('id') for x in (facts,authority,boundary)):
+        raise ValueError('L3_MEMORY_FRAGMENT_BINDING_MISMATCH')
+    if facts.get('nonAtomic') is not True:
+        raise ValueError('L3_MEMORY_NONATOMIC_DOMAIN_REQUIRED')
+    if len(objects)!=1 or len(effects)!=1 or len(relations)!=1:
+        raise ValueError('L3_MEMORY_SINGLE_OBJECT_EFFECT_RELATION_REQUIRED')
+    if (effects[0].get('effectKind')!=('ReadMemory' if facts['accessKind']=='load' else 'WriteMemory')
+            or effects[0].get('complete') is not True
+            or relations[0].get('sourceEffectId')!=effects[0].get('effectId')
+            or relations[0].get('relationKind')!='exact' or relations[0].get('complete') is not True):
+        raise ValueError('L3_MEMORY_EXACT_EFFECT_RELATION_REQUIRED')
+    if authority.get('runtimeContracts') or authority.get('ignoredState'):
+        raise ValueError('L3_MEMORY_RUNTIME_OR_IGNORED_STATE_UNSUPPORTED')
     obj=objects[0]; width=facts.get('widthBytes'); offset=facts.get('byteOffset'); size=obj.get('sizeBytes'); alignment=obj.get('minimumAlignment')
     if (type(width) is not int or width not in (1,2,4,8) or type(offset) is not int or offset<0 or
             type(size) is not int or not offset+width<=size<=65536 or type(alignment) is not int or
@@ -95,7 +104,10 @@ def produce(request, model=None):
             # nor permission to infer that the source has no L3 obligations.
             code=str(exc)
             if code not in {'L3_MEMORY_ARCHITECTURAL_APPROVAL_REQUIRED',
-                    'L3_MEMORY_ORDINARY_SINGLE_READ_REQUIRED',
+                    'L3_MEMORY_ORDINARY_ACCESS_KIND_UNSUPPORTED',
+                    'L3_MEMORY_AUTHORITY_FACTS_INCOMPLETE','L3_MEMORY_FRAGMENT_BINDING_MISMATCH',
+                    'L3_MEMORY_NONATOMIC_DOMAIN_REQUIRED','L3_MEMORY_SINGLE_OBJECT_EFFECT_RELATION_REQUIRED',
+                    'L3_MEMORY_EXACT_EFFECT_RELATION_REQUIRED','L3_MEMORY_RUNTIME_OR_IGNORED_STATE_UNSUPPORTED',
                     'L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE',
                     'L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE'}:
                 raise
@@ -113,7 +125,8 @@ def produce(request, model=None):
             profiles.append(parse_l3_intent_profile(profile).to_dict())
             decision={'schemaVersion':'riscv2x86.l3-intent-disposition.v1',
                 'fragmentId':fid,'profileIdentity':profile['profileIdentity'],
-                'status':'unsupported' if code=='L3_MEMORY_ORDINARY_SINGLE_READ_REQUIRED' else 'prerequisites_missing',
+                'status':'unsupported' if code in {'L3_MEMORY_ORDINARY_ACCESS_KIND_UNSUPPORTED','L3_MEMORY_NONATOMIC_DOMAIN_REQUIRED',
+                    'L3_MEMORY_SINGLE_OBJECT_EFFECT_RELATION_REQUIRED','L3_MEMORY_RUNTIME_OR_IGNORED_STATE_UNSUPPORTED'} else 'prerequisites_missing',
                 'reasonCodes':[code]}
             dispositions.append(dict(decision,dispositionIdentity=_hash(decision)))
             continue

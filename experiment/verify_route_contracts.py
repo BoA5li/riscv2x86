@@ -18,6 +18,8 @@ TESTS = (
     'test_l3_qemu_dependencies.py',
     'test_l3_memory_trace.py',
     'test_l3_route_applicability.py',
+    'test_l3_scalar_trace.py',
+    'test_l3_scalar_trace_production.py',
     'test_static_operand_production.py',
     'test_static_operand_real_production.py',
     'test_l3_trace_driver.py',
