@@ -864,7 +864,8 @@ def _local_branch_select_recipe(approved: ApprovedTargetLoweringPlan):
 def _local_unconditional_jump_recipe(approved: ApprovedTargetLoweringPlan):
     """Encode the registered direct-jump-to-copy CFG contract.
 
-    This emits only the proven reachable copy.  All source inputs are retained
+    This retains an executed direct transfer to the proven reachable copy.
+    The local destination needs no fabricated dead instructions. All source inputs are retained
     as GNU inputs, even when the canonical CFG proves one is unreachable, so
     source operand evaluation remains part of the compiler-shell contract.
     """
@@ -872,6 +873,7 @@ def _local_unconditional_jump_recipe(approved: ApprovedTargetLoweringPlan):
     contract = c.x86_gnu_inline_asm_contract
     jump = None if contract is None else contract.local_unconditional_jump
     if (contract is None or jump is None or
+            approved.plan.metadata.get("renderer_semantic_contract_id") != "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2" or
             contract.value_operation_kind is not SourceValueOperationKind.COPY or
             not c.control_flow_constraint.preserve_control_flow or
             c.control_flow_constraint.preserve_condition_codes):
@@ -891,7 +893,7 @@ def _local_unconditional_jump_recipe(approved: ApprovedTargetLoweringPlan):
     suffix = "l" if result.required_width_bits == 32 else "q"
     selected_template_index = 1 + inputs.index(selected)
     return (RendererContractKind.GNU_INLINE_ASM, GnuInlineAsmRecipe(
-        template=f"mov{suffix} %{selected_template_index}, %0",
+        template=f"jmp 1f\n\t1: mov{suffix} %{selected_template_index}, %0",
         output_operand_indexes=(result.source_operand_index,),
         input_operand_indexes=tuple(item.source_operand_index for item in inputs),
     ))
@@ -1259,9 +1261,9 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             frozenset({"x86:gpr_inline_asm"}),
         ),
         RegisteredRendererContract(
-            "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
+            "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2",
             TargetLoweringKind.X86_GNU_INLINE_ASM,
-            "x86.gnu-att.local-unconditional-jump.copy.u32-u64",
+            "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2",
             _local_unconditional_jump_recipe,
             "x86_gnu_inline_asm_contract",
             frozenset({"x86:gpr_inline_asm"}),

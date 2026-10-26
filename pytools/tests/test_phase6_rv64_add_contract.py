@@ -73,7 +73,7 @@ class _IngressLift:
 _CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-gpr-binary.v1"
 _IMMEDIATE_CONTRACT_ID = "x86.gnu-att.gpr.out-gpr-immediate-binary.v1"
 _LOCAL_BRANCH_SELECT_CONTRACT_ID = "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
-_LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID = "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
+_LOCAL_UNCONDITIONAL_JUMP_CONTRACT_ID = "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2"
 
 
 def _build_rv64_add_model(*, source_cc_clobber: bool = False, include_phase5: bool = False):
@@ -447,7 +447,7 @@ def test_rv64_local_unconditional_jump_to_copy_is_proof_bound_and_renderable() -
         RendererContext({plan.plan_id: renderer_contract}, {0: "out", 1: "init", 2: "alt"}),
     ))
     assert rendered.kind is RenderedReplacementKind.GNU_INLINE_ASM
-    assert rendered.emitted_text == '__asm__ volatile ("movq %1, %0" : "=&r"(out) : "r"(init), "r"(alt) : "cc");'
+    assert rendered.emitted_text == '__asm__ volatile ("jmp 1f\\n\\t1: movq %1, %0" : "=&r"(out) : "r"(init), "r"(alt) : "cc");'
 
 
 def test_rv64_local_branch_select_covers_canonical_integer_comparisons() -> None:

@@ -3760,7 +3760,7 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
             "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
             "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
-            "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
+            "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2",
             "c.builtin.atomic-load-n.u32-u64.v2",
             "c.builtin.atomic-store-n.u32-u64.v2",
             "c.builtin.atomic-fetch-add.u32-u64.v2",

@@ -622,7 +622,7 @@ def _generate_cfg_candidates(
             metadata={
                 "strategy": "x86_local_unconditional_jump_copy_inline_asm",
                 "renderer_semantic_contract_id":
-                    "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
+                    "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2",
             },
             rationale=("A canonical direct local jump with one reachable bound "
                        "copy has a registered proof-bound x86 inline-asm route.",),

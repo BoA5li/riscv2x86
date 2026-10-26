@@ -8,7 +8,7 @@ def prove(r):
     if c.x86_gnu_inline_asm_contract is None and c.x86_memory_inline_asm_contract is None:return reject(r,SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
     local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
-    local_unconditional_jump_route = semantic_id == "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
+    local_unconditional_jump_route = semantic_id == "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2"
     local_cfg_route = local_branch_select_route or local_unconditional_jump_route
     if s.atomic.present or s.barrier.present or (s.operation.has_control_flow and not local_cfg_route):return reject(r,SemanticProofReasonCode.UNSUPPORTED_PLAN_KIND)
     if (s.shell.has_cc_clobber and not c.preserve_cc_clobber) or (s.shell.is_volatile and not c.preserve_volatile):return reject(r,SemanticProofReasonCode.SHELL_UNPRESERVED)

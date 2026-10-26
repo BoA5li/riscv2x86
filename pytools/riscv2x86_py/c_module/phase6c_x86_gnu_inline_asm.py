@@ -76,7 +76,7 @@ _SUPPORTED_RENDERER_CONTRACTS = frozenset({
     "x86.gnu-att.gpr.out-gpr-immediate-shift.u32-u64.v1",
     "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1",
     "x86.gnu-att.local-branch-select.compare.u32-u64.v1",
-    "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1",
+    "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2",
 })
 
 
@@ -198,7 +198,7 @@ def _validate_renderer_operand_contract(candidate_plan, operands, target_operand
             })
         return None
 
-    if semantic_id == "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1":
+    if semantic_id == "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2":
         outputs = [op for op in target_operands if op.role.name == "OUTPUT"]
         inputs = [op for op in target_operands if op.role.name == "INPUT"]
         if (len(outputs) != 1 or not inputs or
@@ -331,7 +331,7 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if feature not in target_environment.available_features: return _fail(candidate_plan,"X86_INLINE_ASM_FEATURE_UNAVAILABLE",{"feature":feature})
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
     local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
-    local_unconditional_jump_route = semantic_id == "x86.gnu-att.local-unconditional-jump.copy.u32-u64.v1"
+    local_unconditional_jump_route = semantic_id == "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2"
     local_cfg_route = local_branch_select_route or local_unconditional_jump_route
     if not source_model.operands.complete or not source_model.operation.complete or not source_model.implicit_state.complete: return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
     if ((not local_cfg_route and source_model.operation.kind.value != "register_only") or
