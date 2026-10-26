@@ -11,14 +11,15 @@ SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
 def load(path):
     path=Path(path).resolve();raw=json.loads(path.read_text())
-    if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
+    if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
     from .l3_qemu_backend import validate_backend
     from .l3_control_backend import validate as control
     from .l3_program_backend import validate as program
+    from .l3_fence_backend import validate as fence
     result={}
     for name,p in sorted(raw['backends'].items()):
         if not isinstance(p,str) or not p:raise ValueError('L3_MECHANISM_BACKEND_PATH_INVALID')
-        p=str((Path(p) if Path(p).is_absolute() else path.parent/p).resolve());b={'memory':validate_backend,'control':control,'scalar-program':program}[name](p)
+        p=str((Path(p) if Path(p).is_absolute() else path.parent/p).resolve());b={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence}[name](p)
         result[name]={'path':p,'digest':digest(p),'backendIdentity':b['backendIdentity']}
     return result
 
@@ -34,6 +35,7 @@ def produce(request,selections):
     from .l3_program_intent import produce as program_produce
     from .l3_control_intent import produce as control_produce
     from .l3_trace_intent import produce as memory_produce
+    from .l3_fence_intent import produce as fence_produce
     if request.get('requestIdentity')!=identity({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_MECHANISM_REQUEST_CHANGED')
     try:
         candidates=request['candidates'];functions=candidates[0]['compilerFunctions']
@@ -47,7 +49,7 @@ def produce(request,selections):
         for d in value['dispositions']:
             d['reasonCodes']=sorted(set(d['reasonCodes']+[str(exc)]));d['dispositionIdentity']=identity({k:v for k,v in d.items() if k!='dispositionIdentity'})
         return value
-    return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce}[kind](request)
+    return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce,'fence':fence_produce}[kind](request)
 
 
 def build_route(config):
@@ -64,6 +66,9 @@ def build_route(config):
             c.update(backendPath=selected['path'],backendDigest=selected['digest'])
             if kind=='memory':
                 from .l3_qemu_memory_route import build_route as factory
+            elif kind=='fence':
+                from .l3_fence_route import build_route as factory
+                c.update(schemaVersion='riscv2x86.fence-trace-route.v1',sampleCount=None,clang=config['routeConfig']['clang'])
             elif kind=='control':
                 from .l3_control_route import build_route as factory
                 c.update(schemaVersion='riscv2x86.control-trace-route.v1',sampleCount=None,clang=config['routeConfig']['clang'])
@@ -80,7 +85,8 @@ def build_route(config):
 def main():
     from .l3_program_intent import DEPENDENCIES as pd
     from .l3_control_intent import DEPENDENCIES as cd
-    deps=set(pd)|set(cd)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py'}
+    from .l3_fence_intent import DEPENDENCIES as fd
+    deps=set(pd)|set(cd)|set(fd)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py'}
     p=argparse.ArgumentParser();p.add_argument('--implementation',required=True);p.add_argument('--dependency',action='append',default=[]);p.add_argument('--selection-file',required=True);a=p.parse_args()
     if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str(Path(__file__).with_name(n).resolve()) for n in deps}:raise ValueError('L3_MECHANISM_DEPENDENCIES_UNPINNED')
     print(json.dumps(produce(json.load(sys.stdin),load(a.selection_file)),sort_keys=True))

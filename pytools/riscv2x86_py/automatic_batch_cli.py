@@ -949,6 +949,7 @@ def prepare_automatic_inventory(
     l3_memory_backend: str | Path | None = None,
     l3_control_backend: str | Path | None = None,
     l3_program_backend: str | Path | None = None,
+    l3_fence_backend: str | Path | None = None,
     l3_mechanism_selections: str | Path | None = None,
     l3_cache_model: str | Path | None = None,
     l3_intent_producer_directory: str | Path | None = None,
@@ -967,11 +968,16 @@ def prepare_automatic_inventory(
     source_root = root.parent if root.is_file() else root
     trace_backend=None; trace_model=None;trace_selections=None
     if l3_mechanism_selections is not None:
-        if any(x is not None for x in (l3_memory_backend,l3_control_backend,l3_program_backend,l3_cache_model)):
+        if any(x is not None for x in (l3_memory_backend,l3_control_backend,l3_program_backend,l3_fence_backend,l3_cache_model)):
             raise ValueError('L3_MECHANISM_SELECTION_CONFLICT')
         from .l3_mechanism_selection import load
         trace_selections=load(l3_mechanism_selections)
         l3_memory_backend=next(iter(trace_selections.values()))['path']
+    trace_fence=l3_fence_backend is not None
+    if trace_fence:
+        if any(x is not None for x in (l3_memory_backend,l3_control_backend,l3_program_backend,l3_cache_model)):
+            raise ValueError('L3_FENCE_BACKEND_SELECTION_CONFLICT')
+        l3_memory_backend=l3_fence_backend
     trace_control=l3_control_backend is not None
     trace_program=l3_program_backend is not None
     if trace_program:
@@ -990,10 +996,14 @@ def prepare_automatic_inventory(
             selection_kind=next(iter(trace_selections))
             if selection_kind=='memory':
                 from .l3_qemu_backend import validate_backend
+            elif selection_kind=='fence':
+                from .l3_fence_backend import validate as validate_backend
             elif selection_kind=='control':
                 from .l3_control_backend import validate as validate_backend
             else:
                 from .l3_program_backend import validate as validate_backend
+        elif trace_fence:
+            from .l3_fence_backend import validate as validate_backend
         elif trace_program:
             from .l3_program_backend import validate as validate_backend
         elif trace_control:
@@ -1206,7 +1216,7 @@ def prepare_automatic_inventory(
                 translation.extend(("--l3-intent-producer", str(intent_manifest)))
         if trace_backend is not None:
             from .l3_intent_ingress import producer_manifest
-            module='l3_program_intent' if trace_program else ('l3_control_intent' if trace_control else 'l3_trace_intent')
+            module='l3_fence_intent' if trace_fence else ('l3_program_intent' if trace_program else ('l3_control_intent' if trace_control else 'l3_trace_intent'))
             implementation=Path(__file__).with_name(module+'.py').resolve()
             command=[sys.executable,'-m','riscv2x86_py.'+module,'--implementation',str(implementation)]
             dependencies=('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py',
@@ -1214,6 +1224,9 @@ def prepare_automatic_inventory(
                     'l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py',
                     'l3_source_eligibility.py','l2_atomic_authority.py','l2_materialization.py','l2_fragment_execution.py',
                     'compiler_provenance.py')
+            if trace_fence:
+                from .l3_fence_intent import DEPENDENCIES
+                dependencies=DEPENDENCIES
             if trace_control:
                 from .l3_control_intent import DEPENDENCIES
                 dependencies=DEPENDENCIES
@@ -1223,9 +1236,10 @@ def prepare_automatic_inventory(
             if trace_selections is not None:
                 from .l3_program_intent import DEPENDENCIES as pd
                 from .l3_control_intent import DEPENDENCIES as cd
+                from .l3_fence_intent import DEPENDENCIES as fd
                 module='l3_mechanism_selection';implementation=Path(__file__).with_name(module+'.py').resolve()
                 command=[sys.executable,'-m','riscv2x86_py.'+module,'--implementation',str(implementation),'--selection-file',str(Path(l3_mechanism_selections).resolve())]
-                dependencies=sorted(set(pd)|set(cd)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py'})
+                dependencies=sorted(set(pd)|set(cd)|set(fd)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py'})
             for dependency in dependencies:
                 command.extend(('--dependency',str(implementation.with_name(dependency))))
             if trace_model is not None:
@@ -1579,6 +1593,9 @@ def prepare_automatic_inventory(
                 validators['L3']['config']['schemaVersion']='riscv2x86.control-trace-route.v1'
                 validators['L3']['config']['sampleCount']=None
                 validators['L3']['config']['clang']=str(Path(shutil.which('clang') or 'clang').resolve())
+            if trace_fence:
+                validators['L3']['type']='l3-fence-trace-route'
+                validators['L3']['config'].update(schemaVersion='riscv2x86.fence-trace-route.v1',sampleCount=None,clang=str(Path(shutil.which('clang') or 'clang').resolve()))
             if trace_program:
                 validators['L3']['type']='l3-program-regions-route'
                 validators['L3']['config'].update(schemaVersion='riscv2x86.scalar-program-route.v1',sampleCount=8,
@@ -1752,6 +1769,7 @@ def main() -> int:
                         help="directory containing <source>.c.l3-providers.json bindings")
     parser.add_argument("--l3-memory-backend", help="calibrated QEMU API-v1 compiler-region data-access backend (ordinary read/write or bounded register scalar)")
     parser.add_argument("--l3-control-backend", help="separately calibrated compiler-region control-path backend")
+    parser.add_argument("--l3-fence-backend", help="separately calibrated executed ordinary-memory fence backend")
     parser.add_argument("--l3-program-backend", help="calibrated ordered multi-region scalar-program backend")
     parser.add_argument("--l3-mechanism-selections", help="explicit calibrated backends selected by complete proof obligations")
     parser.add_argument("--l3-cache-model", help="explicit object-relative cache model; requires --l3-memory-backend")
@@ -1787,6 +1805,7 @@ def main() -> int:
                                     l3_memory_backend=args.l3_memory_backend,
                                     l3_control_backend=args.l3_control_backend,
                                     l3_program_backend=args.l3_program_backend,
+                                    l3_fence_backend=args.l3_fence_backend,
                                     l3_mechanism_selections=args.l3_mechanism_selections,
                                     l3_cache_model=args.l3_cache_model,
                                     l3_intent_producer_directory=args.l3_intent_producer_directory,

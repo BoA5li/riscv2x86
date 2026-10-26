@@ -30,6 +30,18 @@ def audit_evaluation(evaluation):
         audited=audit_result(evaluation)
         return {'status':audited['status'],'requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
             'fragments':audited['fragments'],'programExecutionUnitCount':audited['programExecutionUnitCount'],'physicalMicroarchitectureEquivalenceClaimed':False}
+    fence=[]
+    for attempt in evaluation.get('attempts',[]):
+        for layer in (attempt.get('validation') or {}).get('layers',[]):
+            if layer.get('level')=='L3' and _detail(layer).get('fenceDeployment') is not None:
+                fence.append(layer)
+    if fence:
+        if len(fence)!=1:raise ValueError('l3.acceptance.fence-fragment-ambiguous')
+        from .l3_fence_route import audit_result
+        audited=audit_result(evaluation)
+        if audited['status']!='verified':raise ValueError('l3.acceptance.fence-result-not-verified')
+        return {'status':'verified','requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
+                'fragments':[audited],'physicalMicroarchitectureEquivalenceClaimed':False}
     control=[]
     for attempt in evaluation.get('attempts',[]):
         for layer in (attempt.get('validation') or {}).get('layers',[]):
