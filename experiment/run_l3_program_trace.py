@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from riscv2x86_py.l3_status import write_status_atomic, record_failure
 
 
 def main():
@@ -15,9 +16,9 @@ def main():
     status={'schemaVersion':'riscv2x86.program-regions-production-run.v1','currentStage':'input_validation','steps':[],
         'executionComplete':False,'independentResultAuditComplete':False,'productionAcceptanceComplete':False,
         'physicalMicroarchitectureClaimed':False,'blockers':[]}
-    def write(): (out/'run-status.json').write_text(json.dumps(status,ensure_ascii=False,indent=2))
-    write()
+    def write(): write_status_atomic(out/'run-status.json',status)
     try:
+        write()
         from riscv2x86_py.l3_program_backend import validate
         from riscv2x86_py.l3_trace_support import digest
         validate(a.backend)
@@ -39,6 +40,9 @@ def main():
         if not accepted:status['blockers']=['L3_PROGRAM_PROPERTY_COUNTEREXAMPLE']
         write();print(json.dumps(status,ensure_ascii=False));return 0 if accepted else 1
     except (OSError,ValueError,KeyError,TypeError) as exc:
-        status['blockers'].append(str(exc));write();print(json.dumps(status,ensure_ascii=False));return 2
+        status['blockers'].append(str(exc))
+        record_failure(out/'run-status.json',status,exc,stage_key='currentStage',
+                       completion_keys=('productionAcceptanceComplete',))
+        print(json.dumps(status,ensure_ascii=False));return 2
 
 if __name__=='__main__':raise SystemExit(main())

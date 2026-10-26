@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 from .l3_trace_support import Elf,digest,identity,run,save
 from .l3_qemu_backend import validate_backend
+from .l3_status import write_status_atomic, record_failure
 
 SCHEMA='riscv2x86.qemu-program-regions.v1'
 TOOLS=('sourceExecutor','targetExecutor','sourceCompiler','targetCompiler','sourceRunnerArguments','targetRunnerArguments')
@@ -92,7 +93,7 @@ def validate(value,*,uncalibrated=False):
     base=validate_backend(b['baseBackendPath'])
     if digest(b['baseBackendPath'])!=b['baseBackendDigest'] or any(b[k]!=base[k] for k in TOOLS):raise ValueError('L3_PROGRAM_BASE_CHANGED')
     impl=Path(__file__).resolve();source=impl.parents[2]/'runtime/l3_qemu_program_trace.c';headers=[p for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h')];build=Path(b['plugin']).with_name('plugin.command.json')
-    if len(headers)!=1 or not {str(impl),str(source),str(build),b['plugin'],headers[0]}<=set(b['files']):raise ValueError('L3_PROGRAM_BACKEND_FILES_MISSING')
+    if len(headers)!=1 or not {str(impl),str(impl.with_name('l3_status.py')),str(source),str(build),b['plugin'],headers[0]}<=set(b['files']):raise ValueError('L3_PROGRAM_BACKEND_FILES_MISSING')
     for p,sha in b['files'].items():
         if digest(p)!=sha:raise ValueError('L3_PROGRAM_BACKEND_FILE_CHANGED:'+p)
     c=json.loads(build.read_text())
@@ -105,24 +106,31 @@ def validate(value,*,uncalibrated=False):
 
 def prepare(base_path,output):
     base_path=Path(base_path).resolve();base=validate_backend(base_path);out=Path(output).resolve();out.mkdir(parents=True,exist_ok=False)
-    status={'stage':'plugin','complete':False,'semanticApproval':False}
-    def checkpoint():save(out/'build-status.json',status)
-    checkpoint()
+    status={'stage':'plugin','status':'running','complete':False,'semanticApproval':False,'calibrationCompleted':[]}
+    def checkpoint():write_status_atomic(out/'build-status.json',status)
     try:
+        checkpoint()
         impl=Path(__file__).resolve();source=impl.parents[2]/'runtime/l3_qemu_program_trace.c';header=next(Path(p) for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h'));plugin=out/'program-trace.so'
         run([base['targetCompiler'],'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(header.parents[1]),source,'-o',plugin],out,'plugin')
-        b={'schemaVersion':SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),**{k:base[k] for k in TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in (impl,source,header,plugin,out/'plugin.command.json')},'calibration':[]}
+        b={'schemaVersion':SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),**{k:base[k] for k in TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in (impl,impl.with_name('l3_status.py'),source,header,plugin,out/'plugin.command.json')},'calibration':[]}
         b['backendIdentity']=identity(b);status['stage']='calibration';checkpoint();records=[]
         for side in ('source','target'):
             for kind in ('empty','read','skip'):
+                status['calibrationCurrent']={'side':side,'kind':kind};checkpoint()
                 work=out/'calibration'/side/kind;work.mkdir(parents=True);asm=work/'probe.S';asm.write_text(probe(side,kind));binary=work/'probe'
                 flags=['-march=rv64gc','-mabi=lp64d','-Wl,--no-relax'] if side=='source' else []
                 run([base[side+'Compiler'],*flags,'-nostdlib','-nostartfiles','-static','-no-pie','-Wl,--build-id=none',asm,'-o',binary],work,'build')
                 _,_,e=capture(b,side,binary,regions_of(Elf(binary)),work/'capture',1,120,calibration=True,negative=kind=='skip')
                 r={'side':side,'kind':kind,'binary':str(binary),'binaryDigest':digest(binary),'assembly':str(asm),'buildCommandDigest':digest(work/'build.command.json'),'evidence':e};check_calibration(b,r);records.append(r)
-        b['calibration']=records;b['backendIdentity']=identity({k:v for k,v in b.items() if k!='backendIdentity'});validate(b);save(out/'backend.json',b)
-        status.update(stage='complete',complete=True,backendIdentity=b['backendIdentity']);checkpoint();return b
-    except Exception as exc:status['error']=str(exc);checkpoint();raise
+                status['calibrationCompleted'].append({'side':side,'kind':kind});checkpoint()
+        status['stage']='validation';checkpoint()
+        b['calibration']=records;b['backendIdentity']=identity({k:v for k,v in b.items() if k!='backendIdentity'});validate(b)
+        status['stage']='publication';checkpoint();save(out/'backend.json',b)
+        status.update(stage='final_status',complete=False,backendIdentity=b['backendIdentity'],backendPublished=True);checkpoint()
+        status.update(stage='complete',status='complete',complete=True);checkpoint();return b
+    except Exception as exc:
+        record_failure(out/'build-status.json',status,exc)
+        raise
 
 
 def main():
