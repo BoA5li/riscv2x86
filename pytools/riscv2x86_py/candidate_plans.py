@@ -851,7 +851,7 @@ def _generate_barrier_candidates(
 
     if facts.target_is_x86:
         routes = (
-            ("mfence", "x86.gnu-att.mfence.full-system-seq-cst.v1", "x86:hardware_fence", 30),
+            ("mfence", "x86.gnu-att.mfence.ordinary-rw.v2", "x86:hardware_fence", 30),
             ("serialize", "x86.gnu-att.serialize.instruction-serialization.v1", "x86:serialize", 31),
         )
         for route, semantic_id, feature, rank in routes:

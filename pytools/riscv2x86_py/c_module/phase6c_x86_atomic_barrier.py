@@ -10,6 +10,7 @@ from ..source_model import (
     SourceAtomicKind,
     SourceAtomicRmwOperation,
     SourceBarrierScope,
+    SourceFenceOrdering,
     SourceMemoryOrdering,
     SourceSemanticModel,
 )
@@ -61,7 +62,7 @@ class X86BarrierContract:
     """Compiler and hardware barrier obligations remain explicitly separate."""
     compiler_barrier: bool
     hardware_memory_fence: bool
-    ordering: SourceMemoryOrdering | None
+    ordering: SourceMemoryOrdering | SourceFenceOrdering | None
     scope: SourceBarrierScope | None
     instruction_serializing: bool
     speculation_control: bool
@@ -261,15 +262,15 @@ def derive_x86_barrier_constraints(source_model: SourceSemanticModel, candidate_
             requires_compiler_barrier=True, requires_instruction_serialization=True,
             barrier_scope=barrier.scope)
     else:
-        # This is deliberately the narrow SYSTEM + seq_cst full-fence route.
+        # This is deliberately the narrow SYSTEM + ordinary R/W pair-order route.
         # Load/store-only ordering lacks an authoritative direction model and
         # is therefore not guessed as lfence/sfence.
-        semantic_id = "x86.gnu-att.mfence.full-system-seq-cst.v1"
+        semantic_id = "x86.gnu-att.mfence.ordinary-rw.v2"
         feature, route = "x86:hardware_fence", "full_hardware_fence"
         if (not barrier.hardware_memory_barrier or
-                barrier.ordering is not SourceMemoryOrdering.SEQ_CST or
+                barrier.ordering is not SourceFenceOrdering.RW_RW or
                 barrier.scope is not SourceBarrierScope.SYSTEM):
-            return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED", {"expected": "system_seq_cst_full_fence"})
+            return _failure(candidate_plan, "X86_BARRIER_SEMANTICS_UNSUPPORTED", {"expected": "system_ordinary_rw_fence"})
         if (candidate_plan.metadata.get("renderer_semantic_contract_id") != semantic_id or
                 feature not in target_environment.available_features):
             return _failure(candidate_plan, "X86_BARRIER_FEATURE_UNAVAILABLE", {"feature": feature})

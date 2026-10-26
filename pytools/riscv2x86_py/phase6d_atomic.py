@@ -74,7 +74,7 @@ def prove_barrier(r):
     if contract.route == "full_hardware_fence":
         if (not s.barrier.hardware_memory_barrier or
                 not c.memory_constraint.requires_hardware_barrier or
-                contract.ordering.value != "seq_cst" or
+                contract.ordering.value != "rw_rw" or
                 contract.scope.value != "system"):
             return reject(r, SemanticProofReasonCode.BARRIER_UNPRESERVED)
     elif contract.route == "instruction_serialization":

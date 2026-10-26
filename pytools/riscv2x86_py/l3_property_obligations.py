@@ -68,6 +68,10 @@ def analyze(finding, functions=None):
         'authorityIdentity':sidecar.authority_identity,'effectProofIdentity':proof.to_dict()['factsIdentity'],
         'approvedTargetRelationIdentity':sidecar.effect_relation_set_identity,
         'requiredProperties':props,'decisions':decisions,'physicalMicroarchitectureClaimed':False}
+    if any(p['dimension']=='synchronization' for p in props):
+        from .l3_sync_obligations import build
+        body['schemaVersion']='riscv2x86.l3-property-obligations.v2'
+        body['synchronizationObligations']=build(finding,profile,proof,sidecar)
     return validate(dict(body,obligationIdentity=identity(body)))
 
 
@@ -84,8 +88,19 @@ def validate(value):
     fields={'schemaVersion','fragmentId','programId','policy','policyIdentity','proofIdentity',
         'sourceProfileIdentity','authorityIdentity','effectProofIdentity','approvedTargetRelationIdentity',
         'requiredProperties','decisions','physicalMicroarchitectureClaimed','obligationIdentity'}
+    if isinstance(value,dict) and value.get('schemaVersion')=='riscv2x86.l3-property-obligations.v2':
+        fields.add('synchronizationObligations')
+        from .l3_sync_obligations import validate as validate_sync
+        if 'synchronizationObligations' not in value:
+            raise ValueError('L3_SYNC_OBLIGATION_REQUIRED')
+        if not fields <= set(value):
+            raise ValueError('L3_OBLIGATION_RECORD_INVALID')
+        sync=validate_sync(value['synchronizationObligations'])
+        for k in ('fragmentId','proofIdentity','authorityIdentity','sourceProfileIdentity'):
+            if sync[k]!=value[k]:raise ValueError('L3_SYNC_OBLIGATION_BINDING_MISMATCH')
+        if sync['effectRelationIdentity']!=value['approvedTargetRelationIdentity']:raise ValueError('L3_SYNC_OBLIGATION_BINDING_MISMATCH')
     if (not isinstance(value,dict) or set(value)!=fields
-            or value['schemaVersion']!='riscv2x86.l3-property-obligations.v1'
+            or value['schemaVersion'] not in {'riscv2x86.l3-property-obligations.v1','riscv2x86.l3-property-obligations.v2'}
             or value['policy']!=POLICY or value['policyIdentity']!=identity(POLICY)
             or value['physicalMicroarchitectureClaimed'] is not False
             or value['obligationIdentity']!=identity({k:v for k,v in value.items() if k!='obligationIdentity'})):
@@ -102,6 +117,8 @@ def validate(value):
     if (not isinstance(props,list) or not props or props!=[p for p in allowed if p in props]
             or not any(p['dimension']=='access_pattern' for p in props)):
         raise ValueError('L3_OBLIGATION_PROPERTY_SET_INVALID')
+    if ('synchronizationObligations' in value) != any(p['dimension']=='synchronization' for p in props):
+        raise ValueError('L3_SYNC_OBLIGATION_REQUIRED')
     expected=[{'dimension':d,'status':'required' if any(p['dimension']==d for p in props)
                 else 'not_applicable_with_basis','basisIdentity':value['sourceProfileIdentity']}
                for d in POLICY['dimensions']]

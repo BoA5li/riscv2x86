@@ -3771,7 +3771,7 @@ def _translate_phase6_proof_pipeline(
             "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
             "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1",
             "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
-            "x86.gnu-att.mfence.full-system-seq-cst.v1",
+            "x86.gnu-att.mfence.ordinary-rw.v2",
             "x86.gnu-att.serialize.instruction-serialization.v1",
             "x86.gnu-att.memory.load.gpr-address.u32.v1",
             "x86.gnu-att.memory.load.gpr-address.u64.v1",

@@ -9,12 +9,18 @@ def build(findings,functions,capabilities):
     for f in findings:
         obligations=analyze(f,functions);kind=f['l2SemanticProfile']['patternKind']
         dimensions={p['dimension'] for p in obligations['requiredProperties']}
-        mechanism=('scalar-program' if len(findings)>1 and kind=='scalar' else
+        mechanism=('scalar-program' if len(findings)>1 and kind=='scalar' and dimensions=={'access_pattern'} else
                    'memory' if dimensions=={'access_pattern'} else
                    'control' if kind in {'branch','jump','asm_goto'} and dimensions=={'access_pattern','control_flow'} else 'unavailable')
-        available=mechanism in capabilities
+        available=mechanism != 'unavailable' and mechanism in capabilities
         members.append({'fragmentId':f['fragment']['id'],'obligations':obligations,'mechanism':mechanism,
             'status':'ready' if available else 'unsupported','reasonCodes':[] if available else ['L3_PLAN_CAPABILITY_MISSING:'+mechanism]})
+    for member in members:
+        sync=member['obligations'].get('synchronizationObligations')
+        if sync is not None:
+            member['requiredSynchronizationCapabilities']=[p['propertyId'] for p in sync['requiredSubproperties']]
+            member['reasonCodes']=sorted(set(member['reasonCodes']+sync['reasonCodes']+[
+                'L3_PLAN_SYNC_CAPABILITY_MISSING:'+p for p in member['requiredSynchronizationCapabilities']]))
     programs={m['obligations']['programId'] for m in members}
     if len(programs)!=1:raise ValueError('L3_PLAN_PROGRAM_IDENTITY_CONFLICT')
     body={'schemaVersion':'riscv2x86.l3-mechanism-plan.v1','programId':programs.pop(),

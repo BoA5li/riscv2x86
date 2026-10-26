@@ -27,7 +27,7 @@ from riscv2x86_py.schema import AsmFragment
 from riscv2x86_py.source_model import build_source_semantic_model
 
 
-_MFENCE_CONTRACT_ID = "x86.gnu-att.mfence.full-system-seq-cst.v1"
+_MFENCE_CONTRACT_ID = "x86.gnu-att.mfence.ordinary-rw.v2"
 
 
 def _summary(*, pred: FenceSet, succ: FenceSet) -> IRSummary:
@@ -88,7 +88,7 @@ def test_full_rw_fence_has_proven_mfence_contract_and_compiles() -> None:
     assert model.barrier.hardware_memory_barrier
     assert model.barrier.compiler_barrier
     assert model.barrier.ordering is not None
-    assert model.barrier.ordering.value == "seq_cst"
+    assert model.barrier.ordering.value == "rw_rw"
     assert model.barrier.scope is not None and model.barrier.scope.value == "system"
 
     plan = next(

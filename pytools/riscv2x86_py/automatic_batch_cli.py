@@ -1210,7 +1210,7 @@ def prepare_automatic_inventory(
             implementation=Path(__file__).with_name(module+'.py').resolve()
             command=[sys.executable,'-m','riscv2x86_py.'+module,'--implementation',str(implementation)]
             dependencies=('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py',
-                    'l3_memory_intent.py','l3_property_obligations.py','l3_scalar_trace.py',
+                    'l3_memory_intent.py','l3_property_obligations.py','l3_sync_obligations.py','l2_fence_ordering.py','fence_semantics.py','l3_scalar_trace.py',
                     'l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py',
                     'l3_source_eligibility.py','l2_atomic_authority.py','l2_materialization.py','l2_fragment_execution.py',
                     'compiler_provenance.py')

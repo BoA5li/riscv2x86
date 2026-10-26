@@ -3160,6 +3160,11 @@ class SourceMemoryOrdering(str, Enum):
     SEQ_CST = "seq_cst"
 
 
+class SourceFenceOrdering(str, Enum):
+    """ISA fence access-pair ordering, deliberately distinct from C orders."""
+    RW_RW = "rw_rw"
+
+
 class SourceBarrierScope(str, Enum):
     """
     Barrier scope is intentionally independent from ordering.
@@ -3732,7 +3737,7 @@ class SourceBarrierModel:
     instruction_serializing: bool
     speculation_control: bool
 
-    ordering: Optional[SourceMemoryOrdering]
+    ordering: Optional[SourceMemoryOrdering | SourceFenceOrdering]
     scope: Optional[SourceBarrierScope]
 
     complete: bool
@@ -3751,10 +3756,10 @@ class SourceBarrierModel:
 
         if self.ordering is not None and not isinstance(
             self.ordering,
-            SourceMemoryOrdering,
+            (SourceMemoryOrdering, SourceFenceOrdering),
         ):
             raise TypeError(
-                "ordering must be None or SourceMemoryOrdering"
+                "ordering must be None or an explicit memory/fence ordering"
             )
 
         if self.scope is not None and not isinstance(
@@ -3764,6 +3769,12 @@ class SourceBarrierModel:
             raise TypeError(
                 "scope must be None or SourceBarrierScope"
             )
+
+        if isinstance(self.ordering, SourceFenceOrdering) and self.complete:
+            if (not self.present or not self.hardware_memory_barrier
+                    or self.scope is not SourceBarrierScope.SYSTEM
+                    or self.instruction_serializing or self.speculation_control):
+                raise ValueError("ISA R/W fence requires its complete ordinary-memory domain")
 
         if not self.present:
             if any(
@@ -6038,8 +6049,8 @@ def _build_barrier_model(
     #
     # The only automatic hardware-fence route is the narrow, architecture
     # defined ``fence rw,rw`` case.  Its R/W predecessor and successor sets
-    # are both complete, and the selected x86 ``mfence`` plan is explicitly a
-    # system-scope seq_cst strengthening.  Directional fences, I/O fences,
+    # are both complete, and remain an ISA access-pair ordering, not a C seq_cst order.
+    # The target contract is selected and proved separately.  Directional fences, I/O fences,
     # fence.tso, fence.i, multiple barriers and incomplete metadata retain the
     # existing fail-closed path.
     summary_barrier = getattr(summary, "barrier_info", None)
@@ -6063,7 +6074,7 @@ def _build_barrier_model(
             hardware_memory_barrier=True,
             instruction_serializing=False,
             speculation_control=False,
-            ordering=SourceMemoryOrdering.SEQ_CST,
+            ordering=SourceFenceOrdering.RW_RW,
             scope=SourceBarrierScope.SYSTEM,
             complete=True,
         )

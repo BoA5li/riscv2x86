@@ -1093,7 +1093,7 @@ def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
     contract = approved.constraints.x86_barrier_contract
     memory = approved.constraints.memory_constraint
     routes = {
-        "x86.gnu-att.mfence.full-system-seq-cst.v1": ("mfence", "full_hardware_fence", "x86:hardware_fence"),
+        "x86.gnu-att.mfence.ordinary-rw.v2": ("mfence", "full_hardware_fence", "x86:hardware_fence"),
         "x86.gnu-att.serialize.instruction-serialization.v1": ("serialize", "instruction_serialization", "x86:serialize"),
     }
     expected = routes.get(semantic_id)
@@ -1108,7 +1108,7 @@ def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
         return None
     if route == "full_hardware_fence":
         if (not contract.hardware_memory_fence or not memory.requires_hardware_barrier or
-                contract.ordering is not SourceMemoryOrdering.SEQ_CST or
+                getattr(contract.ordering, "value", None) != "rw_rw" or
                 contract.scope is None or contract.scope.value != "system" or
                 contract.instruction_serializing or memory.requires_instruction_serialization):
             return None
@@ -1398,9 +1398,9 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
             frozenset({"x86:atomic"}),
         ),
         RegisteredRendererContract(
-            "x86.gnu-att.mfence.full-system-seq-cst.v1",
+            "x86.gnu-att.mfence.ordinary-rw.v2",
             TargetLoweringKind.X86_BARRIER,
-            "x86.gnu-att.mfence.full-system-seq-cst",
+            "x86.gnu-att.mfence.ordinary-rw",
             _x86_barrier_recipe,
             "x86_barrier_contract",
             frozenset({"x86:hardware_fence"}),

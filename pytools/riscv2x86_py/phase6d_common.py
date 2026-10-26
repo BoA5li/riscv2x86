@@ -189,13 +189,17 @@ def constraint_identity(c):
     )
     return "|".join((c.plan_id, str(c.environment.architecture.value), str(c.environment.abi.value), c.target_register_policy_version, operands, str((memory.requires_memory_clobber,memory.requires_atomic_ordering,memory.requires_compiler_barrier,memory.requires_hardware_barrier,memory.atomic_success_ordering,memory.atomic_failure_ordering,memory.required_atomic_width_bits,memory.required_alignment_bytes,memory.barrier_scope)), str((control.preserve_control_flow,control.preserve_asm_goto,control.preserve_retry_loop,control.requires_helper_abi_contract,control.preserve_stack_pointer,control.preserve_frame_pointer)), contract_identity))
 
+def source_model_identity(s):
+    """One proof/selection identity; barrier source semantics cannot be swapped."""
+    stack=s.stack_frame
+    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
+    return "|".join((s.operation.kind.value, ",".join(sorted(x.value for x in s.features)), ",".join(sorted(s.reason_codes)), stack_id,repr(s.abi_effects),repr(s.privileged_state))) + ("|" + repr(s.barrier) if s.barrier.present else "")
+
 def _evidence(request, conclusions, requirements, privileged_effect_evidence=()):
     e=request.target_environment
-    stack=request.source_model.stack_frame
-    stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
     effect_evidence = tuple(sorted(privileged_effect_evidence, key=lambda item: item.source_effect_id))
     return ProofEvidence(
-        source_model_id="|".join((request.source_model.operation.kind.value, ",".join(sorted(x.value for x in request.source_model.features)), ",".join(sorted(request.source_model.reason_codes)), stack_id,repr(request.source_model.abi_effects),repr(request.source_model.privileged_state))),
+        source_model_id=source_model_identity(request.source_model),
         preservation_level=request.preservation_decision.level.value,
         preservation_decision_id=request.preservation_decision.level.value+":"+",".join(sorted(request.preservation_decision.reason_codes)),
         plan_id=request.candidate_plan.plan_id, constraints_plan_id=request.constraints.plan_id, constraints_id=constraint_identity(request.constraints),

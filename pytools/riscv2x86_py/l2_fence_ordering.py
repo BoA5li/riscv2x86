@@ -7,14 +7,17 @@ import json
 import re
 from typing import Mapping, Sequence
 
+from .fence_semantics import refinement, describe, ordering_covers, scope_covers
 from .effect_relation import ApprovedEffectRelation, EffectOrderingRequirement
 
 
-L2_FENCE_PROOF_FACTS_SCHEMA = "riscv2x86.l2-fence-proof-facts.v2"
+L2_FENCE_PROOF_FACTS_SCHEMA = "riscv2x86.l2-fence-proof-facts.v3"
 L2_FENCE_OBSERVATION_SCHEMA = "riscv2x86.l2-fence-ordering-observation.v1"
-_ORDERINGS = {"relaxed", "consume", "acquire", "release", "acq_rel", "seq_cst"}
+_ORDERINGS = {"relaxed", "consume", "acquire", "release", "acq_rel", "seq_cst", "rw_rw"}
 _SCOPES = {"compiler", "thread", "system"}
 _CONTRACTS = {
+    "x86.gnu-att.mfence.ordinary-rw.v2":
+        (True, True, "rw_rw", "system"),
     "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1":
         (True, False, "seq_cst", "compiler"),
     "x86.gnu-att.mfence.full-system-seq-cst.v1":
@@ -54,6 +57,11 @@ class L2FenceProofFacts:
     schema_version: str = L2_FENCE_PROOF_FACTS_SCHEMA
 
     def __post_init__(self) -> None:
+        for field in ('source_compiler_ordering','source_hardware_ordering','target_compiler_ordering',
+                      'target_hardware_ordering','source_domain_complete','target_contract_approved',
+                      'instruction_visibility','complete'):
+            if type(getattr(self,field)) is not bool:
+                raise ValueError('fence proof flag must be boolean: '+field)
         if self.schema_version != L2_FENCE_PROOF_FACTS_SCHEMA or not self.fragment_id:
             raise ValueError("fence proof facts schema/fragment is invalid")
         ids = (self.before_effect_id, self.fence_effect_id, self.after_effect_id)
@@ -75,6 +83,11 @@ class L2FenceProofFacts:
                   and (self.target_compiler_ordering or self.target_hardware_ordering))
         if self.complete != closed:
             raise ValueError("fence proof completeness does not match authority facts")
+        source = (self.source_compiler_ordering, self.source_hardware_ordering, self.source_ordering, self.source_scope)
+        target = (self.target_compiler_ordering, self.target_hardware_ordering, self.target_ordering, self.target_scope)
+        if self.complete and (_CONTRACTS.get(self.target_semantic_contract_id) != target
+                              or refinement(source, target) != self.relation_kind):
+            raise ValueError("fence proof refinement is unproved or target contract mismatched")
         expected = _identity(self._payload(False))
         if self.facts_identity and self.facts_identity != expected:
             raise ValueError("fence proof identity does not match content")
@@ -97,6 +110,9 @@ class L2FenceProofFacts:
           "sourceDomainComplete":self.source_domain_complete,
           "targetContractApproved":self.target_contract_approved,
           "instructionVisibility":self.instruction_visibility, "complete":self.complete}
+        result["sourceOrderingContract"] = describe(self.source_compiler_ordering, self.source_hardware_ordering, self.source_ordering, self.source_scope)
+        result["targetOrderingContract"] = describe(self.target_compiler_ordering, self.target_hardware_ordering, self.target_ordering, self.target_scope)
+        result["effectRoles"] = {self.before_effect_id: "proof-context-anchor", self.after_effect_id: "proof-context-anchor", self.fence_effect_id: "source-operation"}
         if include_identity:
             result["factsIdentity"] = self.facts_identity
         return result
@@ -126,9 +142,9 @@ def fence_proof_facts_from_source_model(
     target_compiler, target_hardware, target_ordering, target_scope = target
     source_compiler = bool(getattr(barrier, "compiler_barrier", False))
     source_hardware = bool(getattr(barrier, "hardware_memory_barrier", False))
-    exact = ((source_compiler, source_hardware, source_ordering, source_scope)
-             == target)
-    relation_kind = "exact" if exact else "strengthened"
+    relation_kind = refinement((source_compiler, source_hardware, source_ordering, source_scope), target)
+    if relation_kind is None:
+        return None
     facts = dict(source_domain_complete=True, target_contract_approved=True,
                  instruction_visibility=False)
     return L2FenceProofFacts(
@@ -148,7 +164,8 @@ def fence_proof_facts_from_dict(value: Mapping[str, object]) -> L2FenceProofFact
       "targetHardwareOrdering", "targetOrdering", "targetScope", "relationKind",
       "targetSemanticContractId", "targetRendererContractId",
       "targetRendererVersion", "sourceDomainComplete",
-      "targetContractApproved", "instructionVisibility", "complete", "factsIdentity"}
+      "targetContractApproved", "instructionVisibility", "complete", "factsIdentity",
+      "sourceOrderingContract", "targetOrderingContract", "effectRoles"}
     if set(value) != fields:
         raise ValueError("fence proof facts fields are incomplete or unknown")
     def text(key: str) -> str:
@@ -161,7 +178,7 @@ def fence_proof_facts_from_dict(value: Mapping[str, object]) -> L2FenceProofFact
         if not isinstance(item, bool):
             raise ValueError("fence proof " + key + " must be boolean")
         return item
-    return L2FenceProofFacts(
+    facts = L2FenceProofFacts(
         text("fragmentId"), text("beforeEffectId"), text("fenceEffectId"),
         text("afterEffectId"), flag("sourceCompilerOrdering"),
         flag("sourceHardwareOrdering"), text("sourceOrdering"), text("sourceScope"),
@@ -173,6 +190,10 @@ def fence_proof_facts_from_dict(value: Mapping[str, object]) -> L2FenceProofFact
         flag("instructionVisibility"), flag("complete"), text("factsIdentity"),
         text("schemaVersion"),
     )
+
+    if facts.to_dict() != dict(value):
+        raise ValueError("fence semantic domains or effect roles are stale")
+    return facts
 
 
 def approved_fence_relations(facts: L2FenceProofFacts) -> tuple[ApprovedEffectRelation, ...]:
@@ -315,20 +336,12 @@ def _reachable(events: Mapping[str, L2FenceOrderingEvent], before: str, after: s
     return False
 
 
-def _ordering_covers(source: object, target: object) -> bool:
-    coverage = {
-        "relaxed":{"relaxed", "consume", "acquire", "release", "acq_rel", "seq_cst"},
-        "consume":{"consume", "acquire", "acq_rel", "seq_cst"},
-        "acquire":{"acquire", "acq_rel", "seq_cst"},
-        "release":{"release", "acq_rel", "seq_cst"},
-        "acq_rel":{"acq_rel", "seq_cst"}, "seq_cst":{"seq_cst"},
-    }
-    return isinstance(source, str) and isinstance(target, str) and target in coverage.get(source, set())
+def _ordering_covers(source, target):
+    return ordering_covers(source, target)
 
 
-def _scope_covers(source: object, target: object) -> bool:
-    rank = {"compiler":0, "thread":1, "system":2}
-    return source in rank and target in rank and rank[target] >= rank[source]
+def _scope_covers(source, target):
+    return scope_covers(source, target, source_hardware=source != "compiler")
 
 
 def fence_ordering_observations_match(
