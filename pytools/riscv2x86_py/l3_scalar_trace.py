@@ -79,12 +79,23 @@ def parse_samples(stdout,token,samples,signature=None):
     return rows
 
 
-def vector_harness(scope, samples):
+def vector_harness(scope, samples, *, plan=None):
     from .l3_scalar_call import sample_plan
     import re
     if not isinstance(scope['name'],str) or re.fullmatch('[A-Za-z_][A-Za-z0-9_]*',scope['name']) is None:
         raise ValueError('L3_SCALAR_CALL_NAME_INVALID')
-    signature=scope['callSignature']; plan=sample_plan(signature,samples)
+    signature=scope['callSignature']
+    if plan is None:plan=sample_plan(signature,samples)
+    else:
+        from .l3_scalar_call import validate_signature
+        from .l3_trace_support import identity
+        validate_signature(signature)
+        if (plan.get('signatureIdentity')!=signature['signatureIdentity'] or type(samples) is not int
+                or not 1<=samples<=32 or len(plan.get('inputs',[]))!=samples
+                or plan.get('planIdentity')!=identity({k:v for k,v in plan.items() if k!='planIdentity'})
+                or any(not isinstance(row,list) or len(row)!=len(signature['parameters'])
+                       or any(not isinstance(x,str) or re.fullmatch('[0-9a-f]{16}',x) is None for x in row) for row in plan['inputs'])):
+            raise ValueError('L3_CONTROL_HARNESS_PLAN_INVALID')
     types=[p['cType'] for p in signature['parameters']]
     data=',\n'.join('{'+','.join('UINT64_C(0x'+x+')' for x in row)+'}' for row in plan['inputs'])
     arguments=[]

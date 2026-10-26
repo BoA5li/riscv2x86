@@ -24,6 +24,18 @@ def _detail(layer):
 def audit_evaluation(evaluation):
     if evaluation.get('status') != 'verified':
         raise ValueError('l3.acceptance.evaluation-not-verified')
+    control=[]
+    for attempt in evaluation.get('attempts',[]):
+        for layer in (attempt.get('validation') or {}).get('layers',[]):
+            if layer.get('level')=='L3' and _detail(layer).get('controlDeployment') is not None:
+                control.append(layer)
+    if control:
+        if len(control)!=1:raise ValueError('l3.acceptance.control-fragment-ambiguous')
+        from .l3_control_route import audit_result
+        audited=audit_result(evaluation)
+        if audited['status']!='verified':raise ValueError('l3.acceptance.control-result-not-verified')
+        return {'status':'verified','requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
+                'fragments':[audited],'physicalMicroarchitectureEquivalenceClaimed':False}
     manifest = parse_l3_requirement_manifest(evaluation['translationEvaluationLink']['l3Requirements'])
     if not manifest.requirements or any(r['eligibilityStatus'] != 'eligible' for r in manifest.requirements):
         raise ValueError('l3.acceptance.selected-scope-not-fully-eligible')

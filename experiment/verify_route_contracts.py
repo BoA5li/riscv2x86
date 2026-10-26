@@ -15,6 +15,10 @@ import sys
 import xml.etree.ElementTree as ET
 
 TESTS = (
+    'test_l3_control_machine.py',
+    'test_l3_control_spec.py',
+    'test_l3_control_backend.py',
+    'test_l3_control_production.py',
     'test_l3_qemu_dependencies.py',
     'test_l3_memory_trace.py',
     'test_l3_route_applicability.py',
