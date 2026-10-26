@@ -225,6 +225,8 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
         "riscv2x86_py.l3_qemu_memory_route",fromlist=["build_route"]).build_route(config),
     "l3-fence-trace-route": lambda config: __import__(
         "riscv2x86_py.l3_fence_route",fromlist=["build_route"]).build_route(config),
+    "l3-atomic-trace-route": lambda config: __import__(
+        "riscv2x86_py.l3_atomic_route",fromlist=["build_route"]).build_route(config),
     "l3-control-trace-route": lambda config: __import__(
         "riscv2x86_py.l3_control_route",fromlist=["build_route"]).build_route(config),
     "l3-program-regions-route": lambda config: __import__(

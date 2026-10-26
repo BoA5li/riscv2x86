@@ -30,6 +30,18 @@ def audit_evaluation(evaluation):
         audited=audit_result(evaluation)
         return {'status':audited['status'],'requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
             'fragments':audited['fragments'],'programExecutionUnitCount':audited['programExecutionUnitCount'],'physicalMicroarchitectureEquivalenceClaimed':False}
+    atomic=[]
+    for attempt in evaluation.get('attempts',[]):
+        for layer in (attempt.get('validation') or {}).get('layers',[]):
+            if layer.get('level')=='L3' and _detail(layer).get('atomicDeployment') is not None:
+                atomic.append(layer)
+    if atomic:
+        if len(atomic)!=1:raise ValueError('l3.acceptance.atomic-fragment-ambiguous')
+        from .l3_atomic_route import audit_result
+        audited=audit_result(evaluation)
+        if audited['status']!='verified':raise ValueError('l3.acceptance.atomic-result-not-verified')
+        return {'status':'verified','requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
+                'fragments':[audited],'physicalMicroarchitectureEquivalenceClaimed':False}
     fence=[]
     for attempt in evaluation.get('attempts',[]):
         for layer in (attempt.get('validation') or {}).get('layers',[]):

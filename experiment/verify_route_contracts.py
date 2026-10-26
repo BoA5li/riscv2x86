@@ -16,7 +16,9 @@ import xml.etree.ElementTree as ET
 
 TESTS = (
     'test_l3_fence_trace.py',
+    'test_l3_atomic_trace.py',
     'test_l3_fence_production.py',
+    'test_l3_atomic_production.py',
     'test_l3_sync_semantics.py',
     'test_l3_program_regions.py',
     'test_l3_program_production.py',

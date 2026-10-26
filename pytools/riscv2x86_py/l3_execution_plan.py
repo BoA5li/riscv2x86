@@ -20,6 +20,13 @@ def build(findings,functions,capabilities):
                 mechanism='fence'
             except (OSError,ValueError,KeyError,TypeError) as exc:
                 route_reasons.append('L3_PLAN_FENCE_PREREQUISITE:'+str(exc))
+        if kind=='atomic' and len(findings)==1:
+            try:
+                from .l3_atomic_spec import spec
+                spec(f,functions)
+                mechanism='atomic'
+            except (OSError,ValueError,KeyError,TypeError,IndexError) as exc:
+                route_reasons.append('L3_PLAN_ATOMIC_PREREQUISITE:'+str(exc))
         available=mechanism != 'unavailable' and mechanism in capabilities
         members.append({'fragmentId':f['fragment']['id'],'obligations':obligations,'mechanism':mechanism,
             'status':'ready' if available else 'unsupported','reasonCodes':[] if available else route_reasons+['L3_PLAN_CAPABILITY_MISSING:'+mechanism]})

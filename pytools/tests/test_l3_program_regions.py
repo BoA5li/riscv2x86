@@ -209,13 +209,16 @@ def test_audit_consumer_closes_all_members_and_bindings(tmp_path,monkeypatch,mut
     with pytest.raises((ValueError,KeyError)):route.audit_result(value)
 
 
-@pytest.mark.parametrize('kind',['memory','control','scalar-program','fence'])
+@pytest.mark.parametrize('kind',['memory','control','scalar-program','fence','atomic'])
 def test_common_dispatch_selects_only_proof_bound_mechanism(tmp_path,monkeypatch,kind):
     # Lifecycle dispatch fixture; factories below do not execute an experiment.
     import riscv2x86_py.l3_mechanism_selection as selection
     from riscv2x86_py.translation_validation import ValidationLayerResult,ValidationLevel
     from riscv2x86_py.validation_status import ValidationStatus
     if kind=='scalar-program':_,findings,fn=fixture(tmp_path)
+    elif kind=='atomic':
+        from tests.test_l3_atomic_trace import fixture as atomic_fixture
+        finding,functions=atomic_fixture(tmp_path);findings=[finding];fn=functions[0]
     elif kind=='fence':
         from tests.test_l3_fence_trace import fixture as fence_fixture
         finding,functions=fence_fixture(tmp_path);findings=[finding];fn=functions[0]
@@ -229,7 +232,7 @@ def test_common_dispatch_selects_only_proof_bound_mechanism(tmp_path,monkeypatch
     selectors=tmp_path/'selection.json';selectors.write_text('fixture');backend=tmp_path/'backend.json';backend.write_text('fixture')
     monkeypatch.setattr(selection,'load',lambda _: {kind:{'path':str(backend),'digest':selection.digest(backend)}})
     import importlib
-    module=importlib.import_module('riscv2x86_py.'+{'memory':'l3_qemu_memory_route','control':'l3_control_route','scalar-program':'l3_program_route','fence':'l3_fence_route'}[kind]);seen=[]
+    module=importlib.import_module('riscv2x86_py.'+{'memory':'l3_qemu_memory_route','control':'l3_control_route','scalar-program':'l3_program_route','fence':'l3_fence_route','atomic':'l3_atomic_route'}[kind]);seen=[]
     wanted=ValidationLayerResult(ValidationLevel.L3,ValidationStatus.INCONCLUSIVE,detail='dispatch fixture')
     def factory(config):seen.append(config);return lambda **kw:wanted
     monkeypatch.setattr(module,'build_route',factory)
@@ -238,7 +241,7 @@ def test_common_dispatch_selects_only_proof_bound_mechanism(tmp_path,monkeypatch
     assert selection.build_route(c)()==wanted
     assert len(seen)==1 and seen[0]['backendPath']==str(backend)
     if kind=='memory':assert 'clang' not in seen[0]
-    if kind in {'control','fence'}:assert seen[0]['sampleCount'] is None
+    if kind in {'control','fence','atomic'}:assert seen[0]['sampleCount'] is None
     if kind=='scalar-program':assert seen[0]['sampleCount']==8 and Path(seen[0]['workDirectory']).name=='program'
 
 
