@@ -198,17 +198,38 @@ for name,value in load(os.environ['SELECT_CONFIG'],progress=lambda e:print(json.
     print(name,value['backendIdentity'])
 print('selectionElapsedSeconds:',time.monotonic()-started)
 inputs=root/'inputs';inputs.mkdir()
-for name,operation,width,order,discard in (
-    ('alpha','amoand',64,'',False),('beta','amoor',32,'.aqrl',False),
-    ('gamma','amoxor',32,'.rl',True)):
+for name,function_name,operation,width,order,discard in (
+    ('alpha','rv2x86_probe_atomic_and_old','amoand',64,'',False),
+    ('beta','rv2x86_probe_atomic_or_old','amoor',32,'.aqrl',False),
+    ('gamma','rv2x86_probe_atomic_xor_discard','amoxor',32,'.rl',True)):
     instruction=operation+('.d' if width==64 else '.w')+order
     body=('__asm__ volatile("'+instruction+' zero,%1,%0": "+A"(*address):"r"(value):"memory");') if discard else (
         'uint64_t old;__asm__ volatile("'+instruction+' %0,%2,%1":"=r"(old),"+A"(*address):"r"(value):"memory");return old;')
-    (inputs/(name+'.c')).write_text('#include <stdint.h>\n'+('void' if discard else 'uint64_t')+' '+name+'(uint'+str(width)+'_t *address,uint64_t value){'+body+'}\n')
+    (inputs/(name+'.c')).write_text('#include <stdint.h>\n'+('void' if discard else 'uint64_t')+' '+function_name+'(uint'+str(width)+'_t *address,uint64_t value){'+body+'}\n')
 PY_INPUTS
 SELECTION_STATUS=$?
 printf 'selection_status=%s\n' "$SELECTION_STATUS"
 tail -n 80 "$PHASE109_ROOT/selection.log"
+```
+
+Case labels and C symbols are separate. The old sample used `gamma` as a C
+symbol, conflicting with GCC's built-in declaration under `-Werror`. Project
+prefixes reduce accidental collisions; actual strict compilation remains mandatory.
+Do not rename user symbols in the translator or disable built-ins/warnings.
+
+The creation block is for a fresh directory only. To recheck an existing selection
+without rewriting it or the original creation log, run:
+
+```bash
+python3 - <<'PY_RECHECK' > "$PHASE109_ROOT/selection-recheck.log" 2>&1
+import os
+from riscv2x86_py.l3_mechanism_selection import load
+for name, backend in load(os.environ['SELECT_CONFIG']).items():
+    print(name, backend['backendIdentity'], flush=True)
+PY_RECHECK
+RECHECK_STATUS=$?
+printf 'selection_recheck_status=%s\n' "$RECHECK_STATUS"
+cat "$PHASE109_ROOT/selection-recheck.log"
 ```
 
 Only after selection_status=0, run three original RISC-V inputs through the normal
@@ -243,6 +264,12 @@ for name in ('alpha','beta','gamma'):
     report=json.loads(paths[0].read_text())
     print('status:',report.get('status'),'reasonCodes:',report.get('reasonCodes'))
     print('requirementStagingFailure:',report.get('requirementStagingFailure'))
+    if report.get('status')!='verified':
+        failures.append(name+': evaluation not verified')
+        for command in report.get('commands',[]):
+            if command.get('status')!='verified':
+                print('FAILED_COMMAND:',json.dumps(command,ensure_ascii=False,indent=2))
+        print('A failed build prevents layered validation; inspect compiler stderr first.')
     for attempt in report.get('attempts',[]):
         print('translationOutcome:',attempt.get('translationOutcome'))
         for layer in (attempt.get('validation') or {}).get('layers',[]):
@@ -257,7 +284,9 @@ for name in ('alpha','beta','gamma'):
     try:
         audit=audit_evaluation(report);print('AUDIT:',audit['status'],flush=True)
         if audit['status']!='verified':failures.append(name+': audit not verified')
-    except Exception as exc:failures.append(name+': '+type(exc).__name__+': '+str(exc))
+    except Exception as exc:
+        message=name+': '+type(exc).__name__+': '+str(exc)
+        print('AUDIT_ERROR:',message,flush=True);failures.append(message)
 print('FAILURES:',failures,flush=True)
 assert not failures,failures
 PY_AUDIT
