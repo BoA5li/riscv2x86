@@ -6,7 +6,8 @@ from .lrsc_sequence import candidate, SequenceError
 from .route_authority import RouteAuthorityDecision, content_identity
 
 
-def decision(fragment, machine_bytes, *, base_address=0, xlen_bits=64):
+def decision(fragment, machine_bytes, *, base_address=0, xlen_bits=64,
+             runtime_facts=None, source_digest=""):
     if not isinstance(machine_bytes, bytes) or len(machine_bytes) < 4:
         return None
     first = int.from_bytes(machine_bytes[:4], "little")
@@ -33,6 +34,23 @@ def decision(fragment, machine_bytes, *, base_address=0, xlen_bits=64):
             machine_bytes, base_address=base_address, xlen_bits=xlen_bits)
         code = "LRSC_SEQUENCE_MACHINE_CONTRACT_ONLY"
         detail = "Machine sequence decoded; compiler closure and full semantic proof still required"
+        if runtime_facts is not None:
+            from .lrsc_compiler_binding import bind
+            try:
+                payload["compilerBinding"] = bind(payload["sequenceCandidate"], authority,
+                    fragment_id=str(raw.get("fragmentId") or raw.get("id")),
+                    source_digest=source_digest, begin_offset=raw.get("beginOffset"),
+                    end_offset=raw.get("endOffset"), runtime_facts=runtime_facts,
+                    frontend_fragment=raw)
+                code = "LRSC_COMPILER_BINDING_COMPLETE_SEMANTIC_PROOF_REQUIRED"
+                detail = "Compiler operands/object bound; sequence semantic and execution proof still required"
+            except (ValueError, KeyError, TypeError, IndexError) as exc:
+                payload["compilerBindingFailure"] = {
+                    "reasonCode": getattr(exc, "reason_code", "LRSC_COMPILER_BINDING_INVALID"),
+                    "detail": str(exc), "exceptionType": type(exc).__name__}
+                code = payload["compilerBindingFailure"]["reasonCode"]
+                detail = "Compiler/object binding rejected; no semantic approval"
+
     except SequenceError as exc:
         code, detail = exc.reason_code, "LR/SC machine region is outside the closed sequence domain"
     return RouteAuthorityDecision(

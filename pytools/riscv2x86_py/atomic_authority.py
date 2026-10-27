@@ -48,55 +48,9 @@ def atomic_runtime_object_from_compiler_authority(
     ordering, width and register roles come exclusively from the canonical
     decoder fact supplied here.
     """
-    required = {
-        "schemaVersion", "sourceDigest", "fragmentId", "targetTriple",
-        "functionIdentity", "fragmentBindingKey", "candidate",
-        "memoryObjectBindings", "authorityIdentity",
-    }
-    from .fragment_source_range import AUTHORITY_SCHEMA, validate_fragment_source_range
-    ranged = raw_authority.get("schemaVersion") == AUTHORITY_SCHEMA
-    typed = ranged or raw_authority.get("schemaVersion") == "riscv2x86.compiler-fragment-authority.v2"
-    if ranged:
-        required.add("sourceRangeBinding")
-    if typed:
-        required.add("compilerTypeBindings")
-    if set(raw_authority) != required:
-        raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_FIELDS_INVALID", "compiler fragment authority fields are invalid")
-    unsigned = {key: value for key, value in raw_authority.items()
-                if key != "authorityIdentity"}
-    if (raw_authority.get("schemaVersion") not in {COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
-                "riscv2x86.compiler-fragment-authority.v2", AUTHORITY_SCHEMA}
-            or raw_authority.get("sourceDigest") != source_digest
-            or raw_authority.get("fragmentId") != fragment_id
-            or raw_authority.get("targetTriple") != "riscv64-linux-gnu"
-            or raw_authority.get("authorityIdentity") != _identity(unsigned)):
-        raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_IDENTITY_MISMATCH", "compiler fragment authority is stale or malformed")
-    key = raw_authority.get("fragmentBindingKey")
-    candidate = raw_authority.get("candidate")
-    objects = raw_authority.get("memoryObjectBindings")
-    if not isinstance(key, Mapping) or not isinstance(candidate, Mapping) \
-            or not isinstance(objects, Mapping):
-        raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_PAYLOAD_INVALID", "compiler fragment authority payload is malformed")
-    from .fragment_source_range import equal, FragmentRangeError
-    try:
-        equal("source_digest", source_digest, key.get("sourceDigest"))
-        equal("function_identity", raw_authority.get("functionIdentity"), key.get("functionIdentity"))
-        equal("candidate_key", dict(key), candidate.get("fragmentBindingKey"))
-        for field in ("complete", "compilerStructureComplete", "operandClassificationComplete"):
-            equal(field, True, candidate.get(field))
-        if ranged:
-            validate_fragment_source_range(raw_authority["sourceRangeBinding"], key,
-                fragment_id=fragment_id, source_digest=source_digest,
-                begin_offset=begin_offset, end_offset=end_offset, frontend_fragment=frontend_fragment)
-        else:
-            equal("begin_offset", begin_offset, key.get("beginOffset"))
-            equal("end_offset", end_offset, key.get("endOffset"))
-    except FragmentRangeError as exc:
-        raise AtomicAuthorityError(exc.reason_code, str(exc), exc.failure_stage) from exc
-    try:
-        validate_closed_compiler_fragment_candidate(candidate)
-    except ValueError as exc:
-        raise AtomicAuthorityError("ATOMIC_COMPILER_CLOSURE_INVALID", str(exc)) from exc
+    candidate, objects = validated_compiler_fragment_authority(
+        raw_authority, fragment_id=fragment_id, source_digest=source_digest,
+        begin_offset=begin_offset, end_offset=end_offset, frontend_fragment=frontend_fragment)
     register_map = getattr(runtime_facts, "rv_to_operand_index", {})
     width_map = getattr(runtime_facts, "operand_width_bits", {})
     address_register = getattr(atomic_operation, "address_binding", "")
@@ -249,40 +203,9 @@ def atomic_runtime_object_from_compiler_authority(
         raise AtomicAuthorityError("ATOMIC_POINTEE_WIDTH_MISMATCH", "Compiler pointee width disagrees with atomic memory access")
     if pointer_type.pointee_qualifiers:
         raise AtomicAuthorityError("ATOMIC_POINTEE_QUALIFIER_CONTRACT_REQUIRED", "Qualified atomic objects require a dedicated qualifier/shell contract")
-    memory_object = objects.get(declaration)
-    if not isinstance(memory_object, Mapping):
-        raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_MISSING", "atomic memory object binding is missing")
-    object_required = {
-        "schemaVersion", "objectIdentity", "baseDeclarationIdentity",
-        "objectSizeBytes", "provenAlignmentBytes", "aliasDomainIdentity",
-        "addressSpaceIdentity", "volatile", "bindingOrigin",
-        "producerIdentity", "sourceDigest", "bindingIdentity",
-    }
-    object_unsigned = {k: v for k, v in memory_object.items()
-                       if k != "bindingIdentity"}
-    alignment = memory_object.get("provenAlignmentBytes")
-    size = memory_object.get("objectSizeBytes")
-    if (set(memory_object) != object_required
-            or memory_object.get("schemaVersion") != "riscv2x86.memory-object-binding.v1"
-            or memory_object.get("sourceDigest") != source_digest
-            or memory_object.get("baseDeclarationIdentity") != declaration
-            or memory_object.get("bindingIdentity") != _identity(object_unsigned)
-            or not isinstance(alignment, int) or isinstance(alignment, bool)
-            or alignment < width_bits // 8 or alignment & (alignment - 1)
-            or type(memory_object.get("volatile")) is not bool
-            or not all(isinstance(memory_object.get(k), str) and memory_object[k]
-                for k in ("objectIdentity", "aliasDomainIdentity", "addressSpaceIdentity",
-                          "bindingOrigin", "producerIdentity"))):
-        raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_PROVENANCE_INVALID", "atomic memory object alignment/provenance is incomplete")
-    if not isinstance(size, int) or isinstance(size, bool) or size < width_bits // 8:
-        raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_BOUNDS_UNPROVEN", "atomic access is not covered by the bound object")
-    if memory_object["addressSpaceIdentity"] != "c.default":
-        raise AtomicAuthorityError("ATOMIC_ADDRESS_SPACE_UNSUPPORTED", "Only explicitly bound default C memory is supported")
-    # v1 describes a harness-owned object at offset zero. It is not a static
-    # proof of arbitrary caller memory; do not silently turn it into one.
-    if (memory_object["bindingOrigin"] != "automatic-aligned-memory-object-harness-v1"
-            or memory_object["producerIdentity"] != "automatic-l1-memory-harness.v1"):
-        raise AtomicAuthorityError("ATOMIC_OBJECT_ENVIRONMENT_CONTRACT_REQUIRED", "Non-harness memory needs a versioned object/environment contract")
+    memory_object = validated_compiler_memory_object(
+        objects, declaration=declaration, source_digest=source_digest, width_bits=width_bits)
+    alignment = memory_object["provenAlignmentBytes"]
     operation_kind = getattr(atomic_operation, "operation_kind", "")
     arithmetic = {
         "exchange": "exchange", "fetch_add": "add_mod_2n",
@@ -405,3 +328,97 @@ def atomic_runtime_objects_from_bundle(
         address_space_relation_identity=authority.authority_identity
         + ":address-space-relation",
     )}
+
+
+def validated_compiler_fragment_authority(raw_authority, *, fragment_id, source_digest,
+        begin_offset, end_offset, frontend_fragment=None):
+    """Replay compiler identity/range/closure without assigning atomic semantics."""
+    required = {
+        "schemaVersion", "sourceDigest", "fragmentId", "targetTriple",
+        "functionIdentity", "fragmentBindingKey", "candidate",
+        "memoryObjectBindings", "authorityIdentity",
+    }
+    from .fragment_source_range import AUTHORITY_SCHEMA, validate_fragment_source_range
+    ranged = raw_authority.get("schemaVersion") == AUTHORITY_SCHEMA
+    typed = ranged or raw_authority.get("schemaVersion") == "riscv2x86.compiler-fragment-authority.v2"
+    if ranged:
+        required.add("sourceRangeBinding")
+    if typed:
+        required.add("compilerTypeBindings")
+    if set(raw_authority) != required:
+        raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_FIELDS_INVALID", "compiler fragment authority fields are invalid")
+    unsigned = {key: value for key, value in raw_authority.items()
+                if key != "authorityIdentity"}
+    if (raw_authority.get("schemaVersion") not in {COMPILER_FRAGMENT_AUTHORITY_SCHEMA,
+                "riscv2x86.compiler-fragment-authority.v2", AUTHORITY_SCHEMA}
+            or raw_authority.get("sourceDigest") != source_digest
+            or raw_authority.get("fragmentId") != fragment_id
+            or raw_authority.get("targetTriple") != "riscv64-linux-gnu"
+            or raw_authority.get("authorityIdentity") != _identity(unsigned)):
+        raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_IDENTITY_MISMATCH", "compiler fragment authority is stale or malformed")
+    key = raw_authority.get("fragmentBindingKey")
+    candidate = raw_authority.get("candidate")
+    objects = raw_authority.get("memoryObjectBindings")
+    if not isinstance(key, Mapping) or not isinstance(candidate, Mapping) \
+            or not isinstance(objects, Mapping):
+        raise AtomicAuthorityError("ATOMIC_COMPILER_AUTHORITY_PAYLOAD_INVALID", "compiler fragment authority payload is malformed")
+    from .fragment_source_range import equal, FragmentRangeError
+    try:
+        equal("source_digest", source_digest, key.get("sourceDigest"))
+        equal("function_identity", raw_authority.get("functionIdentity"), key.get("functionIdentity"))
+        equal("candidate_key", dict(key), candidate.get("fragmentBindingKey"))
+        for field in ("complete", "compilerStructureComplete", "operandClassificationComplete"):
+            equal(field, True, candidate.get(field))
+        if ranged:
+            validate_fragment_source_range(raw_authority["sourceRangeBinding"], key,
+                fragment_id=fragment_id, source_digest=source_digest,
+                begin_offset=begin_offset, end_offset=end_offset, frontend_fragment=frontend_fragment)
+        else:
+            equal("begin_offset", begin_offset, key.get("beginOffset"))
+            equal("end_offset", end_offset, key.get("endOffset"))
+    except FragmentRangeError as exc:
+        raise AtomicAuthorityError(exc.reason_code, str(exc), exc.failure_stage) from exc
+    try:
+        validate_closed_compiler_fragment_candidate(candidate)
+    except ValueError as exc:
+        raise AtomicAuthorityError("ATOMIC_COMPILER_CLOSURE_INVALID", str(exc)) from exc
+    return candidate, objects
+
+
+def validated_compiler_memory_object(objects, *, declaration, source_digest, width_bits):
+    """Validate the existing bounded harness object contract; no instruction claim."""
+    memory_object = objects.get(declaration)
+    if not isinstance(memory_object, Mapping):
+        raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_MISSING", "atomic memory object binding is missing")
+    object_required = {
+        "schemaVersion", "objectIdentity", "baseDeclarationIdentity",
+        "objectSizeBytes", "provenAlignmentBytes", "aliasDomainIdentity",
+        "addressSpaceIdentity", "volatile", "bindingOrigin",
+        "producerIdentity", "sourceDigest", "bindingIdentity",
+    }
+    object_unsigned = {k: v for k, v in memory_object.items()
+                       if k != "bindingIdentity"}
+    alignment = memory_object.get("provenAlignmentBytes")
+    size = memory_object.get("objectSizeBytes")
+    if (set(memory_object) != object_required
+            or memory_object.get("schemaVersion") != "riscv2x86.memory-object-binding.v1"
+            or memory_object.get("sourceDigest") != source_digest
+            or memory_object.get("baseDeclarationIdentity") != declaration
+            or memory_object.get("bindingIdentity") != _identity(object_unsigned)
+            or not isinstance(alignment, int) or isinstance(alignment, bool)
+            or alignment < width_bits // 8 or alignment & (alignment - 1)
+            or type(memory_object.get("volatile")) is not bool
+            or not all(isinstance(memory_object.get(k), str) and memory_object[k]
+                for k in ("objectIdentity", "aliasDomainIdentity", "addressSpaceIdentity",
+                          "bindingOrigin", "producerIdentity"))):
+        raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_PROVENANCE_INVALID", "atomic memory object alignment/provenance is incomplete")
+    if not isinstance(size, int) or isinstance(size, bool) or size < width_bits // 8:
+        raise AtomicAuthorityError("ATOMIC_MEMORY_OBJECT_BOUNDS_UNPROVEN", "atomic access is not covered by the bound object")
+    if memory_object["addressSpaceIdentity"] != "c.default":
+        raise AtomicAuthorityError("ATOMIC_ADDRESS_SPACE_UNSUPPORTED", "Only explicitly bound default C memory is supported")
+    # v1 describes a harness-owned object at offset zero. It is not a static
+    # proof of arbitrary caller memory; do not silently turn it into one.
+    if (memory_object["bindingOrigin"] != "automatic-aligned-memory-object-harness-v1"
+            or memory_object["producerIdentity"] != "automatic-l1-memory-harness.v1"):
+        raise AtomicAuthorityError("ATOMIC_OBJECT_ENVIRONMENT_CONTRACT_REQUIRED", "Non-harness memory needs a versioned object/environment contract")
+    return memory_object

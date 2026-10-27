@@ -1709,6 +1709,7 @@ def run(
         from .lrsc_diagnostics import decision as lrsc_decision
         lrsc_record = lrsc_decision(
             f.fragment, ar.machine_code, base_address=lift_base, xlen_bits=xlen,
+            runtime_facts=f.translationRuntimeFacts, source_digest=str(getattr(f, "sourceDigest", "")),
         )
         if lrsc_record is not None:
             f.routeAuthorityDiagnostics.append(lrsc_record)
