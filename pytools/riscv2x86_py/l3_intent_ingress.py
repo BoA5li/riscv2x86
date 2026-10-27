@@ -10,6 +10,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
+import time
 
 from .l3_intent_requirements import _hash, parse_l3_intent_profile
 from .l3_provider_resolution import _binary_fingerprints
@@ -56,6 +57,22 @@ def validate_manifest(value, source):
         raise ValueError('l3.intent.producer-identity-invalid')
     if value['toolFingerprints'] != list(_binary_fingerprints(tuple(command))):
         raise ValueError('l3.intent.producer-changed')
+
+
+def translation_timeout(command, source, execution_timeout):
+    """Give the enclosing translation enough time for its separately bound producer.
+
+    This changes no build/program runner timeout or semantic prerequisite.
+    The selected manifest is authenticated exactly as at producer invocation.
+    """
+    flag = '--l3-intent-producer'
+    if flag not in command:
+        return execution_timeout
+    if command.count(flag) != 1 or command.index(flag) + 1 >= len(command):
+        raise ValueError('l3.intent.producer-command-invalid')
+    manifest = json.loads(Path(command[command.index(flag) + 1]).read_text())
+    validate_manifest(manifest, source)
+    return execution_timeout + manifest['timeoutSeconds']
 
 
 def produce_intents(source, report, manifest_path, *, replay=False):
@@ -122,11 +139,20 @@ def produce_intents(source, report, manifest_path, *, replay=False):
                'sourcePath': str(source), 'sourceDigest': digest(source),
                'producerIdentity': value['producerIdentity'], 'candidates': items}
     request['requestIdentity'] = _hash(request)
+    started = time.monotonic()
     try:
         completed = subprocess.run(value['command'], input=json.dumps(request, sort_keys=True),
             text=True, capture_output=True, timeout=value['timeoutSeconds'], check=False)
     except subprocess.TimeoutExpired as exc:
-        raise ValueError('l3.intent.producer-timed-out') from exc
+        tail = exc.stderr or ''
+        if isinstance(tail, bytes):
+            tail = tail.decode('utf-8', errors='replace')
+        detail = {'reasonCode': 'l3.intent.producer-timed-out',
+                  'failureStage': 'l3_intent_production',
+                  'timeoutSeconds': value['timeoutSeconds'],
+                  'elapsedSeconds': time.monotonic() - started,
+                  'command': value['command'], 'stderrTail': tail[-8000:]}
+        raise ValueError('l3.intent.producer-timed-out:' + json.dumps(detail, sort_keys=True)) from exc
     validate_manifest(value, source)
     if manifest_path.read_bytes() != original_manifest:
         raise ValueError('l3.intent.producer-modified-manifest')
@@ -192,6 +218,9 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     with transcript.open('x') as stream:
         json.dump({'schemaVersion': 'riscv2x86.l3-intent-production-transcript.v1',
                    'producerManifest': value, 'request': request, 'response': response,
+                   'producerExecution': {'timeoutSeconds': value['timeoutSeconds'],
+                       'elapsedSeconds': time.monotonic() - started,
+                       'stderrTail': completed.stderr[-8000:]},
                    'semanticApproval': False}, stream, indent=2, ensure_ascii=False)
     return data
 

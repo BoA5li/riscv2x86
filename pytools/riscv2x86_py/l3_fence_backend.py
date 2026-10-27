@@ -13,15 +13,16 @@ from .l3_trace_support import Elf,digest,identity,run,save
 
 SCHEMA='riscv2x86.qemu-executed-fence-backend.v1'
 KINDS=('full','partial','missing')
-DEPENDENCIES=('l3_fence_backend.py','l3_fence_machine.py','l3_status.py','l3_trace_support.py',
+DEPENDENCIES=('l3_backend_validation.py','l3_fence_backend.py','l3_fence_machine.py','l3_status.py','l3_trace_support.py',
  'l3_fence_deployment.py','l3_fence_spec.py','l3_fence_compare.py','l3_fence_route.py','l3_fence_intent.py',
  'l3_control_deployment.py','l3_property_obligations.py','l3_sync_obligations.py','l2_fence_ordering.py','fence_semantics.py')
 parse_capture=control.parse_capture
 
 
-def base(value):
+def base(value,context=None):
     if digest(value['controlBackendPath'])!=value['controlBackendDigest']:raise ValueError('L3_FENCE_BASE_CHANGED')
-    return control.validate(value['controlBackendPath'])
+    from .l3_backend_validation import checked
+    return checked(context,control.validate,value['controlBackendPath'],nested=True)
 
 
 def command(value,side,binary,region,trace,token):
@@ -47,8 +48,8 @@ def region(elf):
     return {'start':elf.symbol('begin')[0],'end':elf.symbol('end')[0],'exits':[elf.symbol('end')[0]]}
 
 
-def check_calibration(value,r):
-    b=base(value);side,kind=r['side'],r['kind'];binary=Path(r['binary']);elf=Elf(binary);reg=region(elf)
+def check_calibration(value,r,b=None):
+    b=base(value) if b is None else b;side,kind=r['side'],r['kind'];binary=Path(r['binary']);elf=Elf(binary);reg=region(elf)
     e=r['evidence'];trace=Path(e['rawTracePath']);cmd=trace.with_name('execute.command.json')
     build=Path(r['assembly']).with_name('build.command.json');c=json.loads(cmd.read_text());bc=json.loads(build.read_text())
     flags=['-march=rv64gc','-mabi=lp64d','-Wl,--no-relax'] if side=='source' else []
@@ -57,7 +58,7 @@ def check_calibration(value,r):
             or Path(r['assembly']).read_text()!=probe(side,kind) or digest(build)!=r['buildCommandDigest']
             or bc['command']!=expected_command or bc['returnCode']!=0 or bc['timedOut'] is not False
             or digest(trace)!=e['rawTraceDigest'] or digest(cmd)!=e['commandRecordDigest']
-            or c['command']!=command(value,side,str(binary),reg,trace,e['token'])
+            or c['command']!=control.command(b,side,str(binary),reg,trace,e['token'])
             or c['returnCode']!=0 or c['timedOut'] is not False or c['stdout'] or c['stderr']):
         raise ValueError('L3_FENCE_CALIBRATION_CHANGED')
     observed=control.parse_capture(trace.read_text(),e['token'],'riscv64' if side=='source' else 'x86_64',reg,1)
@@ -68,13 +69,13 @@ def check_calibration(value,r):
     if mechanism['kind']!=expected or r['mechanism']!=mechanism:raise ValueError('L3_FENCE_CALIBRATION_MECHANISM_MISMATCH')
 
 
-def validate(path):
+def validate(path,*,_context=None):
     value=json.loads(Path(path).read_text()) if isinstance(path,(str,Path)) else path
     fields={'schemaVersion','controlBackendPath','controlBackendDigest','files','calibration','backendIdentity',*control.TOOLS}
     if (not isinstance(value,dict) or set(value)!=fields or value['schemaVersion']!=SCHEMA
             or value['backendIdentity']!=identity({k:v for k,v in value.items() if k!='backendIdentity'})):
         raise ValueError('L3_FENCE_BACKEND_INVALID')
-    b=base(value)
+    b=base(value,_context)
     if any(value[k]!=b[k] for k in control.TOOLS):raise ValueError('L3_FENCE_BACKEND_TOOL_CHANGED')
     required={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}
     if set(value['files'])!=required:raise ValueError('L3_FENCE_BACKEND_DEPENDENCIES_MISSING')
@@ -83,7 +84,7 @@ def validate(path):
     records=value['calibration']
     if not isinstance(records,list) or len(records)!=6 or {(r['side'],r['kind']) for r in records}!={(s,k) for s in ('source','target') for k in KINDS}:
         raise ValueError('L3_FENCE_CALIBRATION_INCOMPLETE')
-    for r in records:check_calibration(value,r)
+    for r in records:check_calibration(value,r,b)
     return value
 
 

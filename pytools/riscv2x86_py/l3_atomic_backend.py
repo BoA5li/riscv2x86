@@ -8,7 +8,7 @@ from .l3_trace_support import Elf,digest,identity,run,save
 from .l3_status import write_status_atomic,record_failure
 
 SCHEMA='riscv2x86.qemu-direct-atomic-backend.v1'
-DEPENDENCIES=('l3_atomic_backend.py','l3_atomic_machine.py','l3_atomic_spec.py','l3_atomic_compare.py',
+DEPENDENCIES=('l3_backend_validation.py','l3_atomic_backend.py','l3_atomic_machine.py','l3_atomic_spec.py','l3_atomic_compare.py',
  'l3_atomic_deployment.py','l3_atomic_route.py','l3_atomic_intent.py','l3_trace_support.py','l3_status.py',
  'l3_control_machine.py','l3_property_obligations.py','l3_sync_obligations.py','l3_source_eligibility.py',
  'l2_atomic_authority.py','atomic_builtin_shell.py')
@@ -19,9 +19,10 @@ CASES += [{'side':'target','operation':'fetch_add','width':w,'ordering':'unprove
 parse_capture=control.parse_capture
 
 
-def base(value):
+def base(value,context=None):
     if digest(value['controlBackendPath'])!=value['controlBackendDigest']:raise ValueError('L3_ATOMIC_BASE_BACKEND_CHANGED')
-    return control.validate(value['controlBackendPath'])
+    from .l3_backend_validation import checked
+    return checked(context,control.validate,value['controlBackendPath'],nested=True)
 
 
 def command(value,side,binary,region,trace,token):
@@ -99,13 +100,13 @@ def callback_shape(value,side,insn):
     return list(shapes.pop())
 
 
-def validate(path):
+def validate(path,*,_context=None):
     value=json.loads(Path(path).read_text()) if isinstance(path,(str,Path)) else path
     fields={'schemaVersion','controlBackendPath','controlBackendDigest','files','calibration','backendIdentity',*control.TOOLS}
     if (not isinstance(value,dict) or set(value)!=fields or value['schemaVersion']!=SCHEMA
             or value['backendIdentity']!=identity({k:v for k,v in value.items() if k!='backendIdentity'})):
         raise ValueError('L3_ATOMIC_BACKEND_INVALID')
-    b=base(value)
+    b=base(value,_context)
     if any(value[k]!=b[k] for k in control.TOOLS):raise ValueError('L3_ATOMIC_BACKEND_TOOL_CHANGED')
     required={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}
     if set(value['files'])!=required or any(digest(p)!=sha for p,sha in value['files'].items()):raise ValueError('L3_ATOMIC_BACKEND_DEPENDENCY_CHANGED')

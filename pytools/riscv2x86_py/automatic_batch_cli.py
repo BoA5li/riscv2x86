@@ -942,6 +942,7 @@ def _explicit_l2_providers(
 def prepare_automatic_inventory(
     input_path: str | Path, inventory_directory: str | Path, *, frontend: str | Path,
     timeout: int = 60, allow_functional_fallbacks: bool = False,
+    l3_producer_timeout: int = 120,
     harness_directory: str | Path | None = None,
     privileged_config_directory: str | Path | None = None,
     l2_provider_directory: str | Path | None = None,
@@ -967,6 +968,8 @@ def prepare_automatic_inventory(
                sorted(item for item in root.rglob("*.c")
                       if not item.name.endswith(".harness.c")))
     source_root = root.parent if root.is_file() else root
+    if type(l3_producer_timeout) is not int or not 1 <= l3_producer_timeout <= 3600:
+        raise ValueError('L3_PRODUCER_TIMEOUT_INVALID')
     trace_backend=None; trace_model=None;trace_selections=None
     if l3_mechanism_selections is not None:
         if any(x is not None for x in (l3_memory_backend,l3_control_backend,l3_program_backend,l3_fence_backend,l3_atomic_backend,l3_cache_model)):
@@ -1247,13 +1250,10 @@ def prepare_automatic_inventory(
                 from .l3_program_intent import DEPENDENCIES
                 dependencies=DEPENDENCIES
             if trace_selections is not None:
-                from .l3_program_intent import DEPENDENCIES as pd
-                from .l3_control_intent import DEPENDENCIES as cd
-                from .l3_fence_intent import DEPENDENCIES as fd
-                from .l3_atomic_intent import DEPENDENCIES as ad
+                from .l3_mechanism_selection import producer_dependencies
                 module='l3_mechanism_selection';implementation=Path(__file__).with_name(module+'.py').resolve()
                 command=[sys.executable,'-m','riscv2x86_py.'+module,'--implementation',str(implementation),'--selection-file',str(Path(l3_mechanism_selections).resolve())]
-                dependencies=sorted(set(pd)|set(cd)|set(fd)|set(ad)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py','l3_atomic_intent.py','l3_atomic_backend.py'})
+                dependencies=sorted(producer_dependencies())
             for dependency in dependencies:
                 command.extend(('--dependency',str(implementation.with_name(dependency))))
             if trace_model is not None:
@@ -1262,7 +1262,8 @@ def prepare_automatic_inventory(
                 command.extend(('--cache-model-file',str(model_path.resolve())))
             producer_path=case_dir/'memory-intent-producer.json'
             _write_json(producer_path,producer_manifest(source,command,
-                'registered obligation-first compiler-region data-access policy; no physical hardware claim'))
+                'registered obligation-first compiler-region data-access policy; no physical hardware claim',
+                timeout=l3_producer_timeout))
             translation.extend(('--l3-intent-producer',str(producer_path.resolve())))
         translation.extend(("--csr-target-build-contract", "automatic-gcc-separate-tu-no-lto-v1"))
         if allow_functional_fallbacks:
@@ -1773,6 +1774,8 @@ def main() -> int:
     parser.add_argument("--output-directory", required=True)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument("--l3-producer-timeout-seconds", type=int, default=120,
+                        help="separate intent producer/replay budget in seconds (1..3600); does not change program execution budget")
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--harness-directory",
                         help="directory containing <source>.harness.json sidecars")
@@ -1815,6 +1818,7 @@ def main() -> int:
     try:
         prepare_automatic_inventory(args.input, inventory, frontend=args.frontend,
                                     timeout=args.timeout_seconds,
+                                    l3_producer_timeout=args.l3_producer_timeout_seconds,
                                     allow_functional_fallbacks=args.allow_functional_fallbacks,
                                     harness_directory=args.harness_directory,
                                     privileged_config_directory=args.privileged_config_directory,

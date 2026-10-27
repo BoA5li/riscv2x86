@@ -119,18 +119,19 @@ def check_calibration(raw,record):
     if observed['memory']!=expected:raise ValueError('L3_CONTROL_CALIBRATION_MEMORY_MISMATCH')
 
 
-def validate(raw,*,uncalibrated=False):
+def validate(raw,*,uncalibrated=False,_context=None):
     if isinstance(raw,(str,Path)):raw=json.loads(Path(raw).read_text())
     fields={'schemaVersion','baseBackendPath','baseBackendDigest','plugin','files','calibration','backendIdentity',*TOOLS}
     if not isinstance(raw,dict) or set(raw)!=fields or raw['schemaVersion']!=SCHEMA or raw['backendIdentity']!=identity({k:v for k,v in raw.items() if k!='backendIdentity'}):raise ValueError('L3_CONTROL_BACKEND_IDENTITY_INVALID')
     from .l3_qemu_backend import validate_backend
     if digest(raw['baseBackendPath'])!=raw['baseBackendDigest']:raise ValueError('L3_CONTROL_BASE_BACKEND_CHANGED')
-    base=validate_backend(raw['baseBackendPath'])
+    from .l3_backend_validation import checked
+    base=checked(_context,validate_backend,raw['baseBackendPath'])
     if any(raw[k]!=base[k] for k in TOOLS):raise ValueError('L3_CONTROL_BASE_TOOL_SELECTION_CHANGED')
     implementation=Path(__file__).resolve();plugin_source=implementation.parents[1].parent/'runtime/l3_qemu_control_trace.c'
     headers=[p for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h')]
     build_path=Path(raw['plugin']).with_name('plugin.command.json')
-    required=[raw['plugin'],str(implementation),str(plugin_source),str(build_path),*headers]
+    required=[raw['plugin'],str(implementation),str(implementation.with_name('l3_backend_validation.py')),str(plugin_source),str(build_path),*headers]
     if len(headers)!=1 or not set(required)<=set(raw['files']):raise ValueError('L3_CONTROL_BACKEND_FILES_INCOMPLETE')
     for path,sha in raw['files'].items():
         if digest(path)!=sha:raise ValueError('L3_CONTROL_BACKEND_FILE_CHANGED:'+path)
@@ -156,7 +157,7 @@ def prepare(base_path,output):
         source=Path(__file__).resolve().parents[2]/'runtime/l3_qemu_control_trace.c';plugin=output/'control-trace.so'
         run([base['targetCompiler'],'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(header.parents[1]),source,'-o',plugin],output,'plugin')
         raw={'schemaVersion':SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),
-             **{k:base[k] for k in TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in (source,plugin,header,Path(__file__).resolve(),output/'plugin.command.json')},'calibration':[]}
+             **{k:base[k] for k in TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in (source,plugin,header,Path(__file__).resolve(),Path(__file__).with_name('l3_backend_validation.py').resolve(),output/'plugin.command.json')},'calibration':[]}
         raw['backendIdentity']=identity(raw);status['stage']='calibration';checkpoint();records=[]
         for side in ('source','target'):
             for kind in KINDS:

@@ -9,19 +9,35 @@ from .l3_execution_plan import build
 SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
 
-def load(path):
-    path=Path(path).resolve();raw=json.loads(path.read_text())
+def load(path,*,progress=None):
+    path=Path(path).resolve();selection_digest=digest(path);raw=json.loads(path.read_text())
     if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
     from .l3_qemu_backend import validate_backend
     from .l3_control_backend import validate as control
     from .l3_program_backend import validate as program
     from .l3_fence_backend import validate as fence
     from .l3_atomic_backend import validate as atomic
-    result={}
-    for name,p in sorted(raw['backends'].items()):
-        if not isinstance(p,str) or not p:raise ValueError('L3_MECHANISM_BACKEND_PATH_INVALID')
-        p=str((Path(p) if Path(p).is_absolute() else path.parent/p).resolve());b={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence,'atomic':atomic}[name](p)
-        result[name]={'path':p,'digest':digest(p),'backendIdentity':b['backendIdentity']}
+    from .l3_backend_validation import BackendValidationSession
+    result={};roots=[]
+    validators={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence,'atomic':atomic}
+    with BackendValidationSession(progress) as context:
+        for name,p in sorted(raw['backends'].items()):
+            if not isinstance(p,str) or not p:raise ValueError('L3_MECHANISM_BACKEND_PATH_INVALID')
+            p=str((Path(p) if Path(p).is_absolute() else path.parent/p).resolve())
+            if progress:progress({'stage':'mechanism-validation','mechanism':name,'state':'started'})
+            before=digest(p)
+            b=(context.check(control,p,nested=True) if name=='control' else
+               context.check(validate_backend,p) if name=='memory' else
+               validators[name](p,_context=context))
+            if digest(p)!=before:raise ValueError('L3_MECHANISM_BACKEND_CHANGED_DURING_VALIDATION')
+            result[name]={'path':p,'digest':before,'backendIdentity':b['backendIdentity']}
+            if name not in {'control','memory'}:roots.append((validators[name],p,b))
+            if progress:progress({'stage':'mechanism-validation','mechanism':name,'state':'complete'})
+        for validator,p,expected in roots:
+            if validator(p,_context=context)!=expected:
+                raise ValueError("L3_MECHANISM_BACKEND_CHANGED_DURING_VALIDATION")
+    if digest(path)!=selection_digest or any(digest(v["path"])!=v["digest"] for v in result.values()):
+        raise ValueError("L3_MECHANISM_SELECTION_CHANGED_DURING_VALIDATION")
     return result
 
 
@@ -87,13 +103,21 @@ def build_route(config):
     return validate
 
 
-def main():
+def producer_dependencies():
     from .l3_program_intent import DEPENDENCIES as pd
     from .l3_control_intent import DEPENDENCIES as cd
     from .l3_fence_intent import DEPENDENCIES as fd
     from .l3_atomic_intent import DEPENDENCIES as ad
-    deps=set(pd)|set(cd)|set(fd)|set(ad)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py','l3_atomic_intent.py','l3_atomic_backend.py'}
+    deps=set(pd)|set(cd)|set(fd)|set(ad)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py','l3_atomic_intent.py','l3_atomic_backend.py','l3_backend_validation.py'}
+    return deps
+
+
+def main():
+    deps=producer_dependencies()
     p=argparse.ArgumentParser();p.add_argument('--implementation',required=True);p.add_argument('--dependency',action='append',default=[]);p.add_argument('--selection-file',required=True);a=p.parse_args()
     if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str(Path(__file__).with_name(n).resolve()) for n in deps}:raise ValueError('L3_MECHANISM_DEPENDENCIES_UNPINNED')
-    print(json.dumps(produce(json.load(sys.stdin),load(a.selection_file)),sort_keys=True))
+    request=json.load(sys.stdin)
+    progress=lambda event:print(json.dumps(event,sort_keys=True),file=sys.stderr,flush=True)
+    selections=load(a.selection_file,progress=progress)
+    print(json.dumps(produce(request,selections),sort_keys=True))
 if __name__=='__main__':main()

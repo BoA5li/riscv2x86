@@ -48,6 +48,7 @@ def main():
     parser.add_argument('--cache-model')
     parser.add_argument('--output',required=True)
     parser.add_argument('--timeout-seconds',type=int,default=180)
+    parser.add_argument('--l3-producer-timeout-seconds',type=int,default=120)
     args=parser.parse_args()
     output=Path(args.output).resolve()
     if output.exists():
@@ -72,7 +73,7 @@ def main():
                       frontendDigest=digest(frontend),currentStage='normal_production')
         command=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(source),
             '--frontend',str(frontend),'--output-directory',str(output/'batch'),'--jobs','1',
-            '--timeout-seconds',str(args.timeout_seconds),'--l3-memory-backend',str(Path(args.backend).resolve()),'--require-l3']
+            '--timeout-seconds',str(args.timeout_seconds),'--l3-producer-timeout-seconds',str(args.l3_producer_timeout_seconds),'--l3-memory-backend',str(Path(args.backend).resolve()),'--require-l3']
         if args.cache_model:command.extend(['--l3-cache-model',str(Path(args.cache_model).resolve())])
         write()
         with (output/'batch.log').open('w') as log:

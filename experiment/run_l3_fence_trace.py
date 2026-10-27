@@ -9,7 +9,7 @@ from riscv2x86_py.l3_status import write_status_atomic, record_failure
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--input',required=True);p.add_argument('--frontend',required=True);p.add_argument('--backend',required=True);p.add_argument('--output',required=True);p.add_argument('--timeout-seconds',type=int,default=240);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--input',required=True);p.add_argument('--frontend',required=True);p.add_argument('--backend',required=True);p.add_argument('--output',required=True);p.add_argument('--timeout-seconds',type=int,default=240);p.add_argument('--l3-producer-timeout-seconds',type=int,default=120);a=p.parse_args()
     out=Path(a.output).resolve()
     if out.exists():print(json.dumps({'reasonCode':'L3_FENCE_OUTPUT_EXISTS','output':str(out)}));return 2
     out.mkdir(parents=True)
@@ -24,7 +24,7 @@ def main():
         validate(a.backend)
         if a.timeout_seconds<=0:raise ValueError('L3_FENCE_TIMEOUT_INVALID')
         status.update(currentStage='normal_production',backendDigest=digest(a.backend),frontendDigest=digest(a.frontend));write()
-        cmd=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(Path(a.input).resolve()),'--frontend',str(Path(a.frontend).resolve()),'--output-directory',str(out/'batch'),'--jobs','1','--timeout-seconds',str(a.timeout_seconds),'--l3-fence-backend',str(Path(a.backend).resolve()),'--require-l3']
+        cmd=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(Path(a.input).resolve()),'--frontend',str(Path(a.frontend).resolve()),'--output-directory',str(out/'batch'),'--jobs','1','--timeout-seconds',str(a.timeout_seconds),'--l3-producer-timeout-seconds',str(a.l3_producer_timeout_seconds),'--l3-fence-backend',str(Path(a.backend).resolve()),'--require-l3']
         with (out/'batch.log').open('w') as log:r=subprocess.run(cmd,stdout=log,stderr=subprocess.STDOUT,check=False)
         status['steps'].append({'stage':'normal_production','command':cmd,'returnCode':r.returncode});write()
         if not (out/'batch/batch-evaluation.json').is_file():

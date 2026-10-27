@@ -257,3 +257,66 @@ def test_missing_effect_relation_keeps_unknown_requirements_without_invoking_pro
     assert requirement['eligibilityStatus']=='inconclusive'
     assert requirement['reasonCodes']==['l3.intent.effect-relation-required','l3.intent.prerequisites_missing']
     assert json.loads(report.with_name(report.name+'.l3-intent-production.json').read_text())['producerInvoked'] is False
+
+
+def test_timeout_retains_budget_and_backend_progress(ingress, monkeypatch):
+    import subprocess
+    from riscv2x86_py import l3_intent_ingress as subject
+    source, report, manifest, tool, artifact, seal = ingress
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs['timeout'], stderr=b'backend-validation: atomic')
+    monkeypatch.setattr(subject.subprocess, 'run', timeout)
+    with pytest.raises(ValueError, match='producer-timed-out') as failure:
+        produce_intents(source, report, manifest)
+    detail = json.loads(str(failure.value).split(':', 1)[1])
+    assert detail['timeoutSeconds'] == 120
+    assert detail['elapsedSeconds'] >= 0
+    assert detail['stderrTail'] == 'backend-validation: atomic'
+    assert not report.with_name(report.name + '.l3-intent-production.json').exists()
+
+
+@pytest.mark.parametrize('budget', [1, 600, 3600])
+def test_producer_budget_is_bound_and_outer_translation_budget_is_separate(ingress, budget):
+    from riscv2x86_py.l3_intent_ingress import translation_timeout
+    source, report, manifest, tool, artifact, seal = ingress
+    value = producer_manifest(source, [sys.executable, str(tool)], 'budget fixture', timeout=budget)
+    manifest.write_text(json.dumps(value))
+    command = ('translator', '--l3-intent-producer', str(manifest))
+    assert translation_timeout(command, source, 240) == 240 + budget
+    assert translation_timeout(('translator',), source, 240) == 240
+    value['timeoutSeconds'] += 1
+    manifest.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        translation_timeout(command, source, 240)
+
+
+def test_evaluator_uses_enclosing_translation_budget_only(tmp_path):
+    from dataclasses import replace
+    from tests.test_evaluation_runner import _setup
+    from riscv2x86_py.evaluation import run_evaluation
+    request, source, attempt = _setup(tmp_path)
+    tool = tmp_path / 'producer.py'; tool.write_text('pass')
+    manifest = tmp_path / 'producer.json'
+    manifest.write_text(json.dumps(producer_manifest(source / 'case.c',
+        [sys.executable, str(tool)], 'budget fixture', timeout=600)))
+    request = replace(request, translation_command=('translator', '--l3-intent-producer', str(manifest)))
+    seen = []
+    def executor(command, work, timeout, phase):
+        seen.append((timeout, phase))
+        raise RuntimeError('stop before translation; budget test only')
+    with pytest.raises(RuntimeError, match='budget test only'):
+        run_evaluation(request, work_directory=tmp_path/'run', command_executor=executor)
+    assert seen == [(610, 'translation')]
+
+
+def test_actual_slow_producer_stays_inconclusive_without_transcript(ingress):
+    source, report, manifest, tool, artifact, seal = ingress
+    tool.write_text('import time\ntime.sleep(10)\n')
+    value = producer_manifest(source, [sys.executable, str(tool)], 'real timeout fixture', timeout=1)
+    manifest.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match='producer-timed-out') as failure:
+        produce_intents(source, report, manifest)
+    detail = json.loads(str(failure.value).split(':', 1)[1])
+    assert detail['timeoutSeconds'] == 1 and detail['elapsedSeconds'] >= 0.8
+    assert json.loads(report.read_text())['findings'][0].get('l3IntentProfile') is None
+    assert not report.with_name(report.name + '.l3-intent-production.json').exists()

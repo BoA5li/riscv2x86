@@ -173,6 +173,7 @@ def calibration_tools(tmp_path,monkeypatch):
     monkeypatch.setattr(b,'Elf',FakeElf);monkeypatch.setattr(b,'region',reg);monkeypatch.setattr(b,'region_mechanism',mech)
     def command(value,side,binary,region,trace,token):return ['/fake/executor',str(binary),token]
     monkeypatch.setattr(b,'command',command)
+    monkeypatch.setattr(b.control,'command',command)
     def run(cmd,work,tag):
         Path(cmd[-1]).write_text('test-binary')
         from riscv2x86_py.l3_trace_support import save
@@ -276,3 +277,23 @@ def test_driver_preserves_primary_configuration_failure(tmp_path,monkeypatch,cap
     assert not status['productionAcceptanceComplete']
     assert 'compiler prerequisite missing' in status['normalProductionLogTail']
     assert status['steps'][0]['returnCode']==2
+
+
+def test_fence_validation_checks_base_once_but_replays_every_probe(calibration_tools, monkeypatch):
+    b, base, out = calibration_tools
+    value = b.prepare(base, out)
+    original_base = b.base
+    calls = []
+    def counted(value, context=None):
+        calls.append(1)
+        return original_base(value, context)
+    monkeypatch.setattr(b, 'base', counted)
+    assert b.validate(value) == value
+    assert len(calls) == 1
+    for record in value['calibration']:
+        trace = Path(record['evidence']['rawTracePath'])
+        original = trace.read_bytes()
+        trace.write_bytes(b'changed')
+        with pytest.raises(ValueError):
+            b.validate(value)
+        trace.write_bytes(original)

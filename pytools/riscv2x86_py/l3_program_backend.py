@@ -86,14 +86,15 @@ def check_calibration(b,r):
     if events!=expected:raise ValueError('L3_PROGRAM_CALIBRATION_MISMATCH')
 
 
-def validate(value,*,uncalibrated=False):
+def validate(value,*,uncalibrated=False,_context=None):
     b=json.loads(Path(value).read_text()) if isinstance(value,(str,Path)) else value
     fields={'schemaVersion','baseBackendPath','baseBackendDigest','plugin','files','calibration','backendIdentity',*TOOLS}
     if not isinstance(b,dict) or set(b)!=fields or b['schemaVersion']!=SCHEMA or b['backendIdentity']!=identity({k:v for k,v in b.items() if k!='backendIdentity'}):raise ValueError('L3_PROGRAM_BACKEND_INVALID')
-    base=validate_backend(b['baseBackendPath'])
+    from .l3_backend_validation import checked
+    base=checked(_context,validate_backend,b['baseBackendPath'])
     if digest(b['baseBackendPath'])!=b['baseBackendDigest'] or any(b[k]!=base[k] for k in TOOLS):raise ValueError('L3_PROGRAM_BASE_CHANGED')
     impl=Path(__file__).resolve();source=impl.parents[2]/'runtime/l3_qemu_program_trace.c';headers=[p for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h')];build=Path(b['plugin']).with_name('plugin.command.json')
-    if len(headers)!=1 or not {str(impl),str(impl.with_name('l3_status.py')),str(source),str(build),b['plugin'],headers[0]}<=set(b['files']):raise ValueError('L3_PROGRAM_BACKEND_FILES_MISSING')
+    if len(headers)!=1 or not {str(impl),str(impl.with_name('l3_status.py')),str(impl.with_name('l3_backend_validation.py')),str(source),str(build),b['plugin'],headers[0]}<=set(b['files']):raise ValueError('L3_PROGRAM_BACKEND_FILES_MISSING')
     for p,sha in b['files'].items():
         if digest(p)!=sha:raise ValueError('L3_PROGRAM_BACKEND_FILE_CHANGED:'+p)
     c=json.loads(build.read_text())
@@ -112,7 +113,7 @@ def prepare(base_path,output):
         checkpoint()
         impl=Path(__file__).resolve();source=impl.parents[2]/'runtime/l3_qemu_program_trace.c';header=next(Path(p) for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h'));plugin=out/'program-trace.so'
         run([base['targetCompiler'],'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(header.parents[1]),source,'-o',plugin],out,'plugin')
-        b={'schemaVersion':SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),**{k:base[k] for k in TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in (impl,impl.with_name('l3_status.py'),source,header,plugin,out/'plugin.command.json')},'calibration':[]}
+        b={'schemaVersion':SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),**{k:base[k] for k in TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in (impl,impl.with_name('l3_status.py'),impl.with_name('l3_backend_validation.py'),source,header,plugin,out/'plugin.command.json')},'calibration':[]}
         b['backendIdentity']=identity(b);status['stage']='calibration';checkpoint();records=[]
         for side in ('source','target'):
             for kind in ('empty','read','skip'):

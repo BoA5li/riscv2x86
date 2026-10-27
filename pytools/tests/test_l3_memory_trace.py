@@ -212,7 +212,8 @@ def test_explicit_backend_inventory_uses_normal_translation_and_l3_registry(tmp_
     monkeypatch.setattr(auto,'inspect_entry_points',lambda *a:(False,({'name':'renamed','arity':1,
         'returnType':'unsigned long','parameterTypes':['const unsigned long *']},)))
     inventory=tmp_path/'inventory'
-    auto.prepare_automatic_inventory(source,inventory,frontend=frontend,l3_memory_backend=backend)
+    auto.prepare_automatic_inventory(source,inventory,frontend=frontend,l3_memory_backend=backend,
+        timeout=240,l3_producer_timeout=600)
     case=inventory/'cases/renamed'
     descriptor=json.loads((case/'riscv2x86-evaluation.json').read_text())['request']
     assert '--l3-intent-producer' in descriptor['translationCommand']
@@ -224,6 +225,8 @@ def test_explicit_backend_inventory_uses_normal_translation_and_l3_registry(tmp_
     plan=json.loads((case/'validation-plan.json').read_text());assert plan['profile']=='microarch'
     manifest=json.loads((case/'memory-intent-producer.json').read_text())
     validate_manifest(manifest,source)
+    assert manifest['timeoutSeconds']==600
+    assert plan['timeoutSeconds']==240
 
 
 def test_driver_records_preparation_failure_before_any_execution(tmp_path):

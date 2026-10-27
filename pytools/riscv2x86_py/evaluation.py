@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import time
 from typing import Callable, Mapping, Sequence
 
 from .candidate_materialization import (
@@ -258,27 +259,31 @@ class CommandRecord:
     stderr: str
     timed_out: bool
     status: ValidationStatus
+    timeout_seconds: int | None = None
+    elapsed_seconds: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {"phase": self.phase, "command": list(self.command), "returnCode": self.returncode,
                 "stdout": self.stdout, "stderr": self.stderr, "timedOut": self.timed_out,
-                "status": self.status.value}
+                "status": self.status.value, "timeoutSeconds": self.timeout_seconds,
+                "elapsedSeconds": self.elapsed_seconds}
 
 
 CommandExecutor = Callable[[Sequence[str], Path, int], CommandRecord]
 
 
 def _execute(command: Sequence[str], cwd: Path, timeout: int, phase: str) -> CommandRecord:
+    started = time.monotonic()
     try:
         result = subprocess.run(command, cwd=cwd, text=True, capture_output=True,
                                 check=False, timeout=timeout)
         status = ValidationStatus.VERIFIED if result.returncode == 0 else ValidationStatus.FAILED
-        return CommandRecord(phase, tuple(command), result.returncode, result.stdout, result.stderr, False, status)
+        return CommandRecord(phase, tuple(command), result.returncode, result.stdout, result.stderr, False, status, timeout, time.monotonic() - started)
     except FileNotFoundError as exc:
-        return CommandRecord(phase, tuple(command), 127, "", str(exc), False, ValidationStatus.INCONCLUSIVE)
+        return CommandRecord(phase, tuple(command), 127, "", str(exc), False, ValidationStatus.INCONCLUSIVE, timeout, time.monotonic() - started)
     except subprocess.TimeoutExpired as exc:
         return CommandRecord(phase, tuple(command), 124, str(exc.stdout or ""),
-                             str(exc.stderr or ""), True, ValidationStatus.INCONCLUSIVE)
+                             str(exc.stderr or ""), True, ValidationStatus.INCONCLUSIVE, timeout, time.monotonic() - started)
 
 
 def _replace(value: object, variables: Mapping[str, str]) -> object:
@@ -606,7 +611,9 @@ def run_evaluation(
                     "artifactPath": str(preflight_path), "exceptionType": "FileExistsError",
                     "detail": "Preflight artifact predates command invocation; use a fresh work directory"})
         command = tuple(str(item) for item in _replace(list(request.translation_command), variables))
-        record = command_executor(command, work, plan.timeout_seconds, "translation")
+        from .l3_intent_ingress import translation_timeout
+        translation_budget = translation_timeout(command, source_root / request.source_relative_path, plan.timeout_seconds)
+        record = command_executor(command, work, translation_budget, "translation")
         commands.append(record)
         if (record.status is not ValidationStatus.VERIFIED
                 or Path(str(report) + ".preflight.json").exists()
