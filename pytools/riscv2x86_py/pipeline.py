@@ -1704,6 +1704,14 @@ def run(
         compiler_authority = getattr(
             f.fragment, "compilerFragmentAuthority", {},
         )
+        # A decoded LR/SC candidate is diagnostic evidence, not an AMO or
+        # permission to bypass operand closure/the Phase-6 proof gate.
+        from .lrsc_diagnostics import decision as lrsc_decision
+        lrsc_record = lrsc_decision(
+            f.fragment, ar.machine_code, base_address=lift_base, xlen_bits=xlen,
+        )
+        if lrsc_record is not None:
+            f.routeAuthorityDiagnostics.append(lrsc_record)
         atomic_inputs = {
             "machineBytes": ar.machine_code.hex(),
             "machineCodeIdentity": content_identity(ar.machine_code.hex()),
