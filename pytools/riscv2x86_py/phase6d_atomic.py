@@ -4,6 +4,9 @@ from .phase6d_common import PreservationConclusion, SemanticProofReasonCode, fin
 def prove_atomic(r):
     """Proof gate for the concrete x86 lock-atomic contract."""
     c, s = r.constraints, r.source_model
+    if c.lrsc_sequence_contract is not None:
+        from .lrsc_target import prove
+        return prove(r)
     contract = c.x86_atomic_contract
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
     if contract is None or not isinstance(semantic_id, str):

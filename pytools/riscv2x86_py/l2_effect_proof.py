@@ -291,7 +291,15 @@ def build_effect_proof_facts(request, evidence, fragment_id: str) -> L2EffectPro
     atomic_present = bool(getattr(atomic, "present", False))
     # One relation describes a semantic effect family; observations carry a
     # separate sample identity and all reference this stable relation.
-    if atomic_present:
+    if source.lrsc_sequence is not None:
+        from .lrsc_target import expected_contract, symbolic_proof
+        if constraints.lrsc_sequence_contract != expected_contract(source):
+            raise EffectClassificationError("LRSC sequence refinement contract missing")
+        symbolic_proof(constraints.lrsc_sequence_contract)
+        effects = [("atomic:lrsc-rmw", "AtomicReadModifyWrite", source.lrsc_sequence.memory_object_identity,
+            ("kind", "subject", "value", "memory_coordinates", "memory_order", "atomicity",
+             "read_modify_write", "result_extension", "all_register_outputs", "completion_state"))]
+    elif atomic_present:
         if (not atomic.complete or not atomic.memory_object_identity
                 or not atomic.read_effect_identity or not atomic.write_effect_identity
                 or not atomic.authority_identity or atomic.width_bits not in {32, 64}

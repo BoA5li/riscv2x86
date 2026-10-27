@@ -451,6 +451,7 @@ class TargetConstraintReasonCode(str, Enum):
 
     # Phase 6C-6 keeps atomic and barrier contracts separate from ordinary
     # memory inline asm.  These reason codes are stable routing outcomes.
+    LRSC_SEQUENCE_CONTRACT_REJECTED = "phase6c.lrsc_sequence_contract_rejected"
     X86_ATOMIC_PLAN_KIND_MISMATCH = "phase6c.x86_atomic_plan_kind_mismatch"
     X86_ATOMIC_SOURCE_INCOMPLETE = "phase6c.x86_atomic_source_incomplete"
     X86_ATOMIC_FACTS_INCOMPLETE = "phase6c.x86_atomic_facts_incomplete"
@@ -1195,6 +1196,7 @@ class TargetConstraintModel:
     x86_gnu_inline_asm_contract: object | None = None
     x86_memory_inline_asm_contract: object | None = None
     x86_atomic_contract: object | None = None
+    lrsc_sequence_contract: object | None = None
     x86_barrier_contract: object | None = None
     structured_control_flow_contract: object | None = None
     helper_abi_contract: object | None = None
@@ -1282,6 +1284,10 @@ class TargetConstraintModel:
             from .c_module.phase6c_x86_memory_inline_asm import X86MemoryInlineAsmContract
             if not isinstance(self.x86_memory_inline_asm_contract, X86MemoryInlineAsmContract):
                 raise TypeError("x86_memory_inline_asm_contract must be X86MemoryInlineAsmContract or None")
+        if self.lrsc_sequence_contract is not None:
+            from .lrsc_target import LrScTargetContract
+            if not isinstance(self.lrsc_sequence_contract, LrScTargetContract):
+                raise TypeError("lrsc_sequence_contract must be LrScTargetContract")
         if self.x86_atomic_contract is not None:
             from .c_module.phase6c_x86_atomic_barrier import X86AtomicContract
             if not isinstance(self.x86_atomic_contract, X86AtomicContract):
@@ -1340,6 +1346,7 @@ class TargetConstraintModel:
             self.x86_gnu_inline_asm_contract,
             self.x86_memory_inline_asm_contract,
             self.x86_atomic_contract,
+            self.lrsc_sequence_contract,
             self.x86_barrier_contract,
             self.structured_control_flow_contract,
             self.helper_abi_contract,
@@ -2548,6 +2555,10 @@ def derive_target_constraints(
             },
         )
 
+    if source_model.lrsc_sequence is not None:
+        from .lrsc_target import derive
+        return _validate_result_invariants(candidate_plan=candidate_plan,
+            result=derive(source_model, candidate_plan, target_environment))
     if candidate_plan.kind is TargetLoweringKind.ABI_WRAPPER_CALL:
         result=_derive_abi_wrapper_0(source_model=source_model,candidate_plan=candidate_plan,target_environment=target_environment,abi_wrapper_registry=abi_wrapper_registry)
         return _validate_result_invariants(candidate_plan=candidate_plan,result=result)

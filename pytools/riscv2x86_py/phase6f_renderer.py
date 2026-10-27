@@ -403,6 +403,11 @@ def _serialize_asm(node: GnuAsmNode, *, is_goto: bool) -> str:
 
 def _render_gnu(request: Phase6FRenderRequest, recipe: GnuInlineAsmRecipe, *, is_goto: bool) -> RenderedReplacement:
     a, ctx = request.approved_plan, request.renderer_context
+    if a.constraints.lrsc_sequence_contract is not None:
+        from .lrsc_target import recipe as registered_lrsc_recipe
+        expected = registered_lrsc_recipe(a)
+        if expected is None or recipe != expected[1]:
+            return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
     if not request.target_environment.supports_gnu_inline_asm or request.target_environment.asm_dialect is not TargetAsmDialect.GNU_ATT:
         return _failure(request, RenderReasonCode.RENDERER_CAPABILITY_UNAVAILABLE, internal=False)
     if is_goto and not request.target_environment.supports_gnu_asm_goto:

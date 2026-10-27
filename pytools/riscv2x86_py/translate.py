@@ -851,12 +851,18 @@ def _output(
         if sequence is not None:
             from .route_authority import RouteAuthorityDecision, content_identity
             payload = sequence.to_dict()
+            approved_sequence = output_metadata.get("approvalArtifact", {}).get("proofStatus") == "approved"
+            if approved_sequence:
+                payload['targetProofIdentity'] = output_metadata['approvalArtifact'].get('proofIdentity')
+            code = ("LRSC_SOURCE_SEQUENCE_BOUND_TO_TARGET_PROOF" if approved_sequence else
+                    "LRSC_SOURCE_SEQUENCE_MODEL_COMPLETE_TARGET_PROOF_REQUIRED")
             sequence_decision = RouteAuthorityDecision("atomic", context.fragment.id,
-                "lrsc_source_sequence", "LRSC_SOURCE_SEQUENCE_MODEL_COMPLETE_TARGET_PROOF_REQUIRED",
+                "lrsc_source_sequence", code,
+                "Source sequence bound to registered target proof" if approved_sequence else
                 "Complete source sequence and operands; target proof, L2 materialization and L3 execution remain required",
-                content_identity(payload), False, payload).to_dict()
+                content_identity(payload), approved_sequence, payload).to_dict()
             output_metadata.setdefault("routeAuthorityDiagnostics", []).append(sequence_decision)
-            merged_reason_codes.append(sequence_decision["reasonCode"])
+            if not approved_sequence: merged_reason_codes.append(code)
         from .source_operand_coverage import decision as operand_coverage_decision
         coverage = operand_coverage_decision(context.fragment.id, context.sourceModel)
         if coverage is not None:
@@ -889,6 +895,9 @@ def _output(
                 approval['l2AsmGotoProofFacts'] = goto_facts
             from .l2_atomic_authority import atomic_proof_facts
             atomic_facts = atomic_proof_facts(context.fragment.id, context.sourceModel, approval)
+            if context.sourceModel.lrsc_sequence is not None:
+                from .l2_lrsc_authority import proof_facts as lrsc_proof_facts
+                approval['l2LrscProofFacts'] = lrsc_proof_facts(context.sourceModel, approval)
             if atomic_facts is not None:
                 approval['l2AtomicProofFacts'] = atomic_facts
                 if approval.get('atomicBuiltinCompilerBarrierShell') is True:
@@ -3480,13 +3489,6 @@ def translate(
     context.sourceModel = source_model
     context.decision = source_model.preservation
 
-    if source_model.lrsc_sequence is not None:
-        # A complete source contract is not an approved target plan. Never
-        # fall through to legacy LR/SC matchers or single-AMO proof recipes.
-        return _unsupported(context,
-            reason="LR/SC source sequence is complete; registered target proof, L2 authority and L3 observation are required",
-            reason_code="LRSC_TARGET_SEQUENCE_PROOF_UNAVAILABLE")
-
     # CSR effects have one production path only.  Do not permit the legacy
     # privileged classifier, plan selector, or renderer to synthesize a CSR
     # replacement independently of the 6A -> 6F CSR pipeline.  The adapter
@@ -3792,6 +3794,7 @@ def _translate_phase6_proof_pipeline(
             "c.builtin.atomic-fetch-xor.u32-u64.v2",
             "c.builtin.atomic-exchange.u32-u64.v2",
             "c.builtin.atomic-signal-fence.compiler-barrier.seq-cst.v1",
+            "x86.gnu-att.lrsc.locked-cas.multi-output.v1",
             "x86.gnu-att.atomic.lock-xadd.u32-u64.seq-cst.v1",
             "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
             "x86.gnu-att.mfence.ordinary-rw.v2",

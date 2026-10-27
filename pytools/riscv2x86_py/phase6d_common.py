@@ -173,7 +173,7 @@ def constraint_identity(c):
         item for item in (
             c.c_expression_constraint, c.c_builtin_constraint,
             c.x86_gnu_inline_asm_contract, c.x86_memory_inline_asm_contract,
-            c.x86_atomic_contract, c.x86_barrier_contract,
+            c.x86_atomic_contract, c.x86_barrier_contract, c.lrsc_sequence_contract,
             c.structured_control_flow_contract, c.helper_abi_contract,
             c.stack_rebinding_constraint,
             c.virtual_private_frame_constraint,
@@ -193,7 +193,7 @@ def source_model_identity(s):
     """One proof/selection identity; barrier source semantics cannot be swapped."""
     stack=s.stack_frame
     stack_id="none" if stack is None else ":".join((stack.kind.value,str(stack.initial_sp_origin),str(stack.frame_size_bytes),str(stack.required_alignment_bytes),str(stack.source_abi_alignment_bytes),str(stack.net_stack_delta_bytes),repr(stack.adjustments),repr(stack.accesses),repr(stack.pointer_uses),repr(stack.rebinding_accesses),str(stack.stack_address_rebinding_eligible),repr(stack.virtual_private_frame),str(stack.virtual_private_frame_eligible),repr(stack.escape_facts),str(stack.pointer_escapes),str(stack.requires_real_stack_identity),str(stack.has_dynamic_adjustment),str(stack.complete),repr(stack.missing_fact_codes)))
-    return "|".join((s.operation.kind.value, ",".join(sorted(x.value for x in s.features)), ",".join(sorted(s.reason_codes)), stack_id,repr(s.abi_effects),repr(s.privileged_state))) + ("|" + repr(s.barrier) if s.barrier.present else "")
+    return "|".join((s.operation.kind.value, ",".join(sorted(x.value for x in s.features)), ",".join(sorted(s.reason_codes)), stack_id,repr(s.abi_effects),repr(s.privileged_state))) + ("|" + repr(s.barrier) if s.barrier.present else "") + ("|lrsc:" + s.lrsc_sequence.to_dict()["modelIdentity"] if s.lrsc_sequence is not None else "")
 
 def _evidence(request, conclusions, requirements, privileged_effect_evidence=()):
     e=request.target_environment
@@ -268,6 +268,8 @@ def validate_common(request: SemanticProofRequest):
                     semantic_contract_id if isinstance(semantic_contract_id, str) else None
                 ),
             })
+    lrsc = (s.lrsc_sequence is not None and s.lrsc_sequence.complete
+            and c.lrsc_sequence_contract is not None and p.kind is TargetLoweringKind.X86_ATOMIC)
     rebinding_complete = p.kind in {TargetLoweringKind.STACK_ADDRESS_REBINDING,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME} and s.stack_frame is not None and (s.stack_frame.stack_address_rebinding_eligible or s.stack_frame.virtual_private_frame_eligible)
     operand_complete = s.operands.complete or rebinding_complete
     implicit_complete = s.implicit_state.complete or rebinding_complete
@@ -276,7 +278,7 @@ def validate_common(request: SemanticProofRequest):
     if not all((operation_complete,operand_complete,implicit_complete,s.control_flow.cfg_ok,not s.control_flow.has_unknown_target,control_complete,not s.registers.has_unresolved_register_identity,s.completeness.runtime_facts_structurally_valid)) : return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     stack_sensitive = s.registers.reads_or_writes_stack_pointer or s.registers.reads_or_writes_frame_pointer
     if stack_sensitive and (s.stack_frame is None or not s.stack_frame.complete): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
-    if (s.atomic.present and not s.atomic.complete) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete and p.kind not in {TargetLoweringKind.STACK_ADDRESS_REBINDING,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME}): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
+    if (s.atomic.present and not s.atomic.complete and not lrsc) or (s.barrier.present and not s.barrier.complete) or (s.helper_abi.present and not s.helper_abi.complete and p.kind not in {TargetLoweringKind.STACK_ADDRESS_REBINDING,TargetLoweringKind.VIRTUAL_PRIVATE_FRAME}): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     if s.microarch.explicitly_microarch_sensitive and any(value is None for value in (s.microarch.has_timing_source,s.microarch.has_cache_operation,s.microarch.has_speculation_control)): return reject(request,SemanticProofReasonCode.SOURCE_INCOMPLETE)
     return None
 
@@ -391,6 +393,9 @@ def _validate_operand_bindings(request):
             any(item.value == "memory" for item in target.allowed_classes) and
             source.access.value == "address"
         )
+        sequence_pointer = (request.constraints.lrsc_sequence_contract is not None
+            and source.access.value == "address" and target.role.value == "input"
+            and target.source_operand_index == dict(request.constraints.lrsc_sequence_contract.role_indexes)["address"])
         direct_memory_address = (
             request.candidate_plan.kind is TargetLoweringKind.X86_GNU_INLINE_ASM and
             request.constraints.x86_memory_inline_asm_contract is not None and
@@ -398,7 +403,7 @@ def _validate_operand_bindings(request):
             any(item.value == "general_register" for item in target.allowed_classes) and
             source.access.value == "address"
         )
-        if target.role.value != source.access.value and not atomic_memory_address and not direct_memory_address:
+        if target.role.value != source.access.value and not atomic_memory_address and not direct_memory_address and not sequence_pointer:
             return reject(request,SemanticProofReasonCode.BINDING_UNSAFE)
     return None
 

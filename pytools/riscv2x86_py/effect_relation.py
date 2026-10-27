@@ -20,6 +20,7 @@ OBSERVABLE_REQUIREMENTS = {
     "trap_cause", "trap_continuation", "trap_termination", "external_detail",
     "csr_value", "privilege_state", "compiler_ordering", "hardware_ordering",
     "atomicity", "read_modify_write", "result_extension",
+    "all_register_outputs", "completion_state",
 }
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 

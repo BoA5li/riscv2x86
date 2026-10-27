@@ -49,10 +49,16 @@ def build(finding, profile, proof, sidecar):
             if set(roles) != {e.effect_id for e in proof.source_effects}:
                 raise ValueError('L3_SYNC_UNCLASSIFIED_SOURCE_EFFECT')
         elif kind == 'atomic':
-            from .l2_atomic_authority import validate_atomic_proof_facts
-            atom, width = validate_atomic_proof_facts(a['l2AtomicProofFacts'], a, fid)
-            basis = {'atomicFactsIdentity': a['l2AtomicProofFacts']['factsIdentity'],
-                     'operation': atom, 'widthRoles': width}
+            if a.get('l2LrscProofFacts') is not None:
+                from .l2_lrsc_authority import validate as validate_lrsc
+                atom, width, _ = validate_lrsc(finding)
+                basis = {'lrscFactsIdentity': a['l2LrscProofFacts']['factsIdentity'],
+                         'operation': atom, 'widthRoles': width, 'sourceMechanism': 'lrsc-sequence'}
+            else:
+                from .l2_atomic_authority import validate_atomic_proof_facts
+                atom, width = validate_atomic_proof_facts(a['l2AtomicProofFacts'], a, fid)
+                basis = {'atomicFactsIdentity': a['l2AtomicProofFacts']['factsIdentity'],
+                         'operation': atom, 'widthRoles': width}
             roles = {e.effect_id: 'source-operation' for e in proof.source_effects}
     except (ValueError, KeyError, TypeError) as exc:
         reasons.append('L3_SYNC_BASIS_INCOMPLETE:' + str(exc))

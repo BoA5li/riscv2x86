@@ -304,7 +304,13 @@ def profile_from_source_model(
         elif kind == "memory" and access in {"input", "output", "read_write"}:
             address = getattr(item, "address", None)
             valid = bool(address and getattr(address, "memory_object_identity", None))
-            if atomic:
+            sequence = getattr(source_model, 'lrsc_sequence', None)
+            if atomic and sequence is not None:
+                valid = valid and (item.source_operand_index == sequence.memory_operand_index
+                    and item.width_bits == sequence.memory_width_bits
+                    and address.memory_object_identity == sequence.memory_object_identity
+                    and address.byte_offset == 0 and address.provenance_known)
+            elif atomic:
                 from .atomic_memory_binding import model_binding_reason
                 valid = valid and not model_binding_reason(item, operands, atomic_model, fragment_id)
             address_bindings.append(address if valid else None)

@@ -931,6 +931,13 @@ def materialize_automatic_l2_authority(
                     "evidenceProductionDisposition":"not_produced"}
                 diagnostic["failureIdentity"]=_identity(diagnostic)
                 approval["l2RuntimeAuthorityFailure"]=diagnostic
+        elif isinstance(approval, dict) and approval.get('l2LrscProofFacts') is not None:
+            from .l2_lrsc_authority import materialize as materialize_lrsc_authority
+            failures = []
+            sidecar = materialize_lrsc_authority(finding, functions, producer_digest, failure_details=failures)
+            if failures:
+                approval['l2AuthorityMaterializationReasonCode'] = failures[0]['reasonCode']
+                approval['l2LrscAuthorityFailure'] = failures[0]
         else:
             sidecar = (_functional_relation_authority(finding, producer_digest)
                        or materialize_atomic_authority(finding, functions, producer_digest)

@@ -195,9 +195,10 @@ def test_normal_translate_entry_keeps_target_gate_closed(monkeypatch):
     context=t.TranslationContext(fragment=f,blocks=[],cfg=CFGResult(ok=True),summary=summary,
         machine_code=m,xlen=64,shell=None,bindings=None,runtimeFacts=r)
     monkeypatch.setattr(t,'_create_context',lambda **kwargs:(context,''))
-    result=t.translate(f,None,summary,m,64,blocks=[],cfg=context.cfg,runtime_facts=r)
-    assert result.kind=='unsupported' and not result.replacement
-    assert 'LRSC_TARGET_SEQUENCE_PROOF_UNAVAILABLE' in result.reasonCodes
+    result=t.translate(f,None,summary,m,64,blocks=[],cfg=context.cfg,runtime_facts=r,
+        target_semantic_catalog=t.TargetSemanticCatalog(frozenset(),frozenset(),'no-lrsc-contract'))
+    assert result.kind=='unsupported' and 'lock cmpxchg' not in result.replacement
+    assert not result.metadata.get('approvalArtifact')
     assert context.sourceModel.operands.complete and context.sourceModel.lrsc_sequence.complete
     assert not result.metadata.get('approvalArtifact')
 

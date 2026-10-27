@@ -2064,8 +2064,11 @@ def run(
             str(code) for code in (getattr(tr, "reasonCodes", ()) or ())
             if str(code)
         ))
+        sequence_approved = (translation_metadata.get("approvalArtifact", {}).get("proofStatus") == "approved"
+                             and translation_metadata.get("approvalArtifact", {}).get("l2LrscProofFacts") is not None)
         f.translationReasonCodes.extend(d["reasonCode"] for d in f.routeAuthorityDiagnostics
-                                        if not d["accepted"] and d["reasonCode"] not in f.translationReasonCodes)
+            if not d["accepted"] and d["reasonCode"] not in f.translationReasonCodes
+            and not (sequence_approved and d["reasonCode"] == "LRSC_COMPILER_BINDING_COMPLETE_SEMANTIC_PROOF_REQUIRED"))
         raw_plan_attempts = translation_metadata.get("attempts", ())
         f.translationPlanAttempts = [
             {

@@ -38,6 +38,11 @@ def collect(root):
                     'operandShape': (finding.get('l2SemanticProfile') or {}).get('operandShape'),
                     'runtimeEvidencePresent': bool((finding.get('translationRuntimeFacts') or {}).get('lrscSequenceEvidence')),
                     'approvalArtifactPresent': bool(finding.get('approvalArtifact')),
+                    'proofStatus': (finding.get('approvalArtifact') or {}).get('proofStatus'),
+                    'targetProofApproved': (finding.get('approvalArtifact') or {}).get('proofStatus') == 'approved',
+                    'rendererSemanticContractId': (finding.get('approvalArtifact') or {}).get('rendererSemanticContractId'),
+                    'l2AuthoritySidecarPresent': bool((finding.get('approvalArtifact') or {}).get('l2AuthoritySidecar')),
+                    'l2MaterializationDecision': (finding.get('approvalArtifact') or {}).get('l2MaterializationDecision'),
                     'remainingObligations': payload.get('remainingObligations'),
                     'diagnostics': [{'stage': r.get('failureStage'), 'reasonCode': r.get('reasonCode'),
                         'detail': r.get('detail')} for r in diagnostics]})

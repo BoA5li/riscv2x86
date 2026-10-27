@@ -113,8 +113,13 @@ def build_atomic_validator(config):
             finding=_finding(json.loads(Path(config['translatedReport']).read_text()),artifact.fragment_id)
             if finding is None:return reject('L2_ATOMIC_FINDING_MISSING')
             approval=finding['approvalArtifact'];fragment=finding['fragment']
-            atom,width=validate_atomic_proof_facts(approval.get('l2AtomicProofFacts'),approval,artifact.fragment_id)
-            if (approval.get('rendererSemanticContractId')!=BUILTINS[atom['rmw_operation']]
+            is_lrsc = approval.get('l2LrscProofFacts') is not None
+            if is_lrsc:
+                from .l2_lrsc_authority import validate as validate_lrsc, materialize as materialize_lrsc, require_observable_scope
+                atom,width,lrsc_source=validate_lrsc(finding)
+            else:
+                atom,width=validate_atomic_proof_facts(approval.get('l2AtomicProofFacts'),approval,artifact.fragment_id)
+            if (approval.get('rendererSemanticContractId')!=('x86.gnu-att.lrsc.locked-cas.multi-output.v1' if is_lrsc else BUILTINS[atom['rmw_operation']])
                     or getattr(artifact,'renderer_semantic_contract_id','')!=approval['rendererSemanticContractId']):
                 return reject('L2_ATOMIC_STATIC_TARGET_CONTRACT_UNSUPPORTED')
             function=_function_for(finding,config['functions'])
@@ -133,7 +138,8 @@ def build_atomic_validator(config):
                     or scope.get('asmBegin')!=key['beginOffset'] or scope.get('asmEnd')!=key['endOffset']):
                 return reject('L2_ATOMIC_FUNCTION_EFFECT_SCOPE_UNPROVEN')
             sidecar=l2_authority_sidecar_from_dict(approval['l2AuthoritySidecar'])
-            rebuilt=materialize_atomic_authority(finding,fresh,sidecar.producer.producer_binary_digest)
+            if is_lrsc:require_observable_scope(finding,function,lrsc_source)
+            rebuilt=(materialize_lrsc if is_lrsc else materialize_atomic_authority)(finding,fresh,sidecar.producer.producer_binary_digest)
             if rebuilt is None or rebuilt.authority_identity!=sidecar.authority_identity:
                 return reject('L2_ATOMIC_COMPILER_PROOF_JOIN_MISMATCH')
             relations,reason=_approved_relations(finding,artifact,function)
@@ -169,9 +175,10 @@ def build_atomic_validator(config):
             status=ValidationStatus.VERIFIED if success else ValidationStatus.FAILED
             reason='' if success else 'L2_ATOMIC_RMW_VALUE_RELATION_FAILED' if not values_valid else 'L2_ATOMIC_EXECUTION_OBSERVATION_MISMATCH'
             observation={'schemaVersion':'riscv2x86.atomic-observation.v1','fragmentId':artifact.fragment_id,
-                'approvedRelationAuthority':relations,'atomicProofFacts':approval['l2AtomicProofFacts'],
+                'approvedRelationAuthority':relations,'atomicProofFacts':approval['l2LrscProofFacts'] if is_lrsc else approval['l2AtomicProofFacts'],
                 'source':{'events':source_events,**execution['source']},'target':{'events':target_events,**execution['target']},
-                'atomicityEvidenceKind':'approved-phase6d-compiler-builtin-contract',
+                'atomicityEvidenceKind':('approved-phase6d-locked-cas-sequence-contract' if is_lrsc
+                    else 'approved-phase6d-compiler-builtin-contract'),
                 'orderingEvidenceKind':'approved-phase6d-contract-not-litmus-inference','reasonCode':reason}
             properties={L2Dimension.LOGICAL_OPERANDS:('operand_binding','operand_value','operand_width'),
                 L2Dimension.MEMORY_EFFECTS:('object','offset','width','old_value','new_value'),

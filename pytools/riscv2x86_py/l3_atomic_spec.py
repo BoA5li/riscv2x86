@@ -24,6 +24,8 @@ def unsigned_width(typ):
 
 
 def spec(finding,functions):
+    if (finding.get("approvalArtifact") or {}).get("l2LrscProofFacts") is not None:
+        raise ValueError("L3_LRSC_SOURCE_OBSERVATION_BACKEND_REQUIRED")
     ob=analyze(finding,functions);a=finding['approvalArtifact'];f=finding['fragment'];sync=ob.get('synchronizationObligations') or {}
     if (not sync.get('basisComplete') or sync.get('mechanismFamily')!='atomic-rmw'
             or {p['propertyId'] for p in sync['requiredSubproperties']}!={'sync.compiler-contract','sync.atomic-mechanism','sync.atomic-outcome','sync.ordering-contract'}

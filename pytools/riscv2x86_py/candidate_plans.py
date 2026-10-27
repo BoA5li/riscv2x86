@@ -1298,6 +1298,9 @@ def generate_candidate_plans(
     高风险路径采用优先分派和早返回，保证 generic generator 不会把不安全的
     C_EXPRESSION 或 register-only candidate 重新加入候选集。
     """
+    if getattr(source_model, "lrsc_sequence", None) is not None:
+        from .lrsc_target import candidate
+        return candidate(source_model)
     facts = _facts_from(source_model)
 
     # Privileged architectural state is an exclusive family.  It may never
