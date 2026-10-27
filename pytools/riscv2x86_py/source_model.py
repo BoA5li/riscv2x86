@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace, field
 from types import MappingProxyType
-from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import TYPE_CHECKING, FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
+if TYPE_CHECKING:
+    from .lrsc_source import SourceLrScSequenceModel
+
 from .route_authority import RouteAuthorityDecision, content_identity
 from .pcode_ir import conditional_transfer_from_op
 try:
@@ -444,6 +447,8 @@ class SourceSemanticModel:
     # from stack-frame facts and is the sole input for ABI wrapper lowering.
     abi_effects: SourceAbiEffectModel | None = None
     whole_function_route: WholeFunctionRouteDecision | None = None
+    # Complete local state description does not approve a target translation.
+    lrsc_sequence: SourceLrScSequenceModel | None = None
 
     @property
     def read_only_csr(self) -> SourceReadOnlyCounterCsrModel | None:
@@ -1112,6 +1117,7 @@ def build_source_semantic_model(
         PrivilegedPreservationPolicy.STRICT_ARCHITECTURAL
     ),
     whole_function_facts: object | None = None,
+    machine_code: bytes | None = None,
 ) -> SourceSemanticModel:
     """
     Construct the authoritative immutable Phase-6A SourceSemanticModel.
@@ -1133,6 +1139,25 @@ def build_source_semantic_model(
     runtime_facts_available = runtime_facts is not None
     runtime_status = _runtime_fact_status(runtime_facts)
 
+    from .lrsc_source import build_source_sequence, source_operands as lrsc_source_operands
+    lrsc_sequence = build_source_sequence(fragment, runtime_facts, xlen_bits=xlen,
+                                          machine_code=machine_code)
+    if lrsc_sequence is not None:
+        from .lrsc_sequence import SequenceError
+        if (getattr(summary, "atomic_semantics", None) is not None
+                or getattr(runtime_facts, "atomic_memory_objects", {})):
+            raise SequenceError("LRSC_CONFLICTING_SINGLE_AMO_AUTHORITY")
+        # Decoder-owned full-region facts cannot be erased by an incomplete
+        # p-code summary. No target equivalence or nontrapping claim follows.
+        summary = replace(summary, has_atomic=True, has_branch=True,
+                          reads_mem=True, writes_mem=True)
+        # The compiler/assembler join has already checked alias equivalence
+        # and rejected conflicts. Use that witnessed map for byte-owned GPR
+        # effects; never infer operand positions from register numbers.
+        canonical_bindings = runtime_facts.lrsc_sequence_evidence.to_dict()["binding"]["assemblerRegisterBindings"]
+        runtime_status = replace(runtime_status,
+                                 rv_to_operand_index=MappingProxyType(canonical_bindings))
+
     control_flow = _build_control_flow_model(
         shell=shell,
         blocks=blocks,
@@ -1147,12 +1172,13 @@ def build_source_semantic_model(
     # Phase 6C-1 semantic facts.
     # ------------------------------------------------------------------
 
-    operands = _build_operand_model(
+    operands = (lrsc_source_operands(lrsc_sequence, shell, runtime_facts)
+                if lrsc_sequence is not None else _build_operand_model(
         shell=shell,
         blocks=blocks,
         runtime_facts=runtime_facts,
         runtime_status=runtime_status,
-    )
+    ))
 
     goto_diagnostics: list[RouteAuthorityDecision] = []
     asm_goto_authority = _build_asm_goto_control_flow_authority(
@@ -1183,12 +1209,13 @@ def build_source_semantic_model(
     read_only_csr_candidate = _build_read_only_csr_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
     )
-    # A matched local select has no calls, returns, indirect edges or
-    # microarchitecture operation.  Record these facts here at the Phase-6A
+    # A matched local select/jump or closed LR/SC region has no calls,
+    # returns, indirect edges or separate microarchitecture operation.  Record these facts here at the Phase-6A
     # boundary instead of treating the summary producer's former
     # straight-line-only policy as an unknown semantic effect.
     analysis_summary = summary
-    if local_branch_select is not None or local_unconditional_jump is not None:
+    if (local_branch_select is not None or local_unconditional_jump is not None
+            or lrsc_sequence is not None):
         analysis_summary = replace(
             summary, has_return=False, has_tail_call=False,
             has_indirect_control_flow=False, has_timing_source=False,
@@ -1204,6 +1231,15 @@ def build_source_semantic_model(
         fragment=fragment, shell=shell, summary=analysis_summary,
     )
     registers = _build_register_model(analysis_summary)
+    if lrsc_sequence is not None:
+        # The finite byte decoder owns the exact GPR effects of this region;
+        # reservation state is modeled separately, never as a GNU register.
+        role_registers = dict(lrsc_sequence.register_roles)
+        reads = {canonicalize_riscv_register_name("x" + str(r)) for r in role_registers.values()}
+        writes = {canonicalize_riscv_register_name("x" + str(role_registers[k]))
+                  for k in ("old", "next", "status")}
+        registers = _build_register_model(replace(analysis_summary,
+                                                  reads_regs=reads, writes_regs=writes))
 
     operation = _build_operation_model(
         shell=shell,
@@ -1417,6 +1453,7 @@ def build_source_semantic_model(
         stack_frame=stack_frame_model,
         abi_effects=abi_effects,
         whole_function_route=whole_function_route,
+        lrsc_sequence=lrsc_sequence,
     )
 
 def _build_control_flow_model(

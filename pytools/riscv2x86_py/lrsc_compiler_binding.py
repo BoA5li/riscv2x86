@@ -26,13 +26,15 @@ def bind(sequence, authority, *, fragment_id, source_digest, begin_offset,
     be permuted. No fixed register allocation or source identifier is used.
     """
     seq = replay(sequence)
+    _require(seq['inputRegister'] != 0, 'LRSC_CONSTANT_INPUT_REQUIRES_CONSTANT_SLOT_CONTRACT')
     candidate, objects = validated_compiler_fragment_authority(
         authority, fragment_id=fragment_id, source_digest=source_digest,
         begin_offset=begin_offset, end_offset=end_offset,
         frontend_fragment=frontend_fragment)
     raw = candidate.get('expressionClosureInputs', {}).get('fragment', {})
     def partition(fragment, name):
-        return [{k: op.get(k) for k in ('constraint', 'compilerType', 'compilerAddressType')}
+        return [{k: op.get(k, {} if k != 'constraint' else None)
+                 for k in ('constraint', 'compilerType', 'compilerAddressType')}
                 for op in fragment.get(name, [])]
     _require(all(partition(raw, name) == partition(frontend_fragment, name)
                  for name in ('outputs', 'inputs')), 'LRSC_FRONTEND_PARTITION_MISMATCH')

@@ -1713,6 +1713,18 @@ def run(
         )
         if lrsc_record is not None:
             f.routeAuthorityDiagnostics.append(lrsc_record)
+            # Produce formal evidence from independent inputs, never deserialize
+            # an approval or model from the diagnostic record above.
+            try:
+                from .lrsc_source import LrScRuntimeEvidence
+                lrsc_evidence = LrScRuntimeEvidence.produce(
+                    f.fragment, ar.machine_code, base_address=lift_base, xlen_bits=xlen,
+                    runtime_facts=f.translationRuntimeFacts,
+                    source_digest=str(getattr(f, "sourceDigest", "")))
+                f.translationRuntimeFacts = replace(f.translationRuntimeFacts,
+                    lrsc_sequence_evidence=lrsc_evidence)
+            except (ValueError, KeyError, TypeError, IndexError) as exc:
+                f.notes.append("lrsc-source-ingress: " + str(exc))
         atomic_inputs = {
             "machineBytes": ar.machine_code.hex(),
             "machineCodeIdentity": content_identity(ar.machine_code.hex()),
@@ -1722,7 +1734,8 @@ def run(
                 if isinstance(compiler_authority, Mapping) else ""),
             "compilerFragmentJoin": dict(getattr(f.fragment, "compilerFragmentJoin", {}) or {}),
         }
-        if summary.has_atomic and getattr(summary, "atomic_semantics", None) is None:
+        if (summary.has_atomic and getattr(summary, "atomic_semantics", None) is None
+                and f.translationRuntimeFacts.lrsc_sequence_evidence is None):
             d = RouteAuthorityDecision("atomic", str(f.fragment.id), "atomic_decoder",
                 "ATOMIC_CANONICAL_OPERATION_UNAVAILABLE",
                 "Decoder/canonical ingress supplied no supported typed atomic operation",

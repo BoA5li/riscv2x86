@@ -847,6 +847,16 @@ def _output(
         output_metadata.update(metadata)
 
     if context.sourceModel is not None and context.fragment.id:
+        sequence = getattr(context.sourceModel, "lrsc_sequence", None)
+        if sequence is not None:
+            from .route_authority import RouteAuthorityDecision, content_identity
+            payload = sequence.to_dict()
+            sequence_decision = RouteAuthorityDecision("atomic", context.fragment.id,
+                "lrsc_source_sequence", "LRSC_SOURCE_SEQUENCE_MODEL_COMPLETE_TARGET_PROOF_REQUIRED",
+                "Complete source sequence and operands; target proof, L2 materialization and L3 execution remain required",
+                content_identity(payload), False, payload).to_dict()
+            output_metadata.setdefault("routeAuthorityDiagnostics", []).append(sequence_decision)
+            merged_reason_codes.append(sequence_decision["reasonCode"])
         from .source_operand_coverage import decision as operand_coverage_decision
         coverage = operand_coverage_decision(context.fragment.id, context.sourceModel)
         if coverage is not None:
@@ -3448,6 +3458,7 @@ def translate(
             summary=context.summary,
             runtime_facts=context.runtimeFacts,
             xlen=context.xlen,
+            machine_code=context.machine_code,
             stack_rebinding_facts=context.stackRebindingFacts,
             abi_call_bindings=context.abiCallBindings,
             privileged_state=context.privilegedStateFacts,
@@ -3468,6 +3479,13 @@ def translate(
 
     context.sourceModel = source_model
     context.decision = source_model.preservation
+
+    if source_model.lrsc_sequence is not None:
+        # A complete source contract is not an approved target plan. Never
+        # fall through to legacy LR/SC matchers or single-AMO proof recipes.
+        return _unsupported(context,
+            reason="LR/SC source sequence is complete; registered target proof, L2 authority and L3 observation are required",
+            reason_code="LRSC_TARGET_SEQUENCE_PROOF_UNAVAILABLE")
 
     # CSR effects have one production path only.  Do not permit the legacy
     # privileged classifier, plan selector, or renderer to synthesize a CSR

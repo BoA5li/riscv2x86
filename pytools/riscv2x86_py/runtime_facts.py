@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from collections.abc import Mapping
+
+if TYPE_CHECKING:
+    from .lrsc_source import LrScRuntimeEvidence
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,14 @@ class TranslationRuntimeFacts:
         default_factory=dict
     )
     asm_goto_machine_join: Mapping[str, object] = field(default_factory=dict)
+    # Replayed byte/compiler/object evidence, independent of AMO effect approval.
+    lrsc_sequence_evidence: LrScRuntimeEvidence | None = None
+
+    def __post_init__(self):
+        if self.lrsc_sequence_evidence is not None:
+            from .lrsc_source import LrScRuntimeEvidence
+            if not isinstance(self.lrsc_sequence_evidence, LrScRuntimeEvidence):
+                raise ValueError("LRSC_TYPED_RUNTIME_EVIDENCE_REQUIRED")
 
 
 class TranslationFactsError(ValueError):
@@ -547,6 +558,8 @@ def translation_runtime_facts_to_dict(
     规范化由 build_translation_runtime_facts() 完成。
     """
     return {
+        **({"lrscSequenceEvidence": facts.lrsc_sequence_evidence.to_dict()}
+           if facts.lrsc_sequence_evidence is not None else {}),
         "rvToOperandIndex": dict(facts.rv_to_operand_index),
         "operandWidthBits": dict(facts.operand_width_bits),
         "asmGotoMachineJoin": dict(facts.asm_goto_machine_join),
@@ -718,7 +731,12 @@ def translation_runtime_facts_from_dict(
                 f"bound GNU operand %{operand_index}"
             )
 
+    sequence_evidence = value.get("lrscSequenceEvidence")
+    if sequence_evidence is not None:
+        from .lrsc_source import LrScRuntimeEvidence
+        sequence_evidence = LrScRuntimeEvidence.from_dict(sequence_evidence)
     return TranslationRuntimeFacts(
+        lrsc_sequence_evidence=sequence_evidence,
         rv_to_operand_index=rv_to_operand_index,
         operand_width_bits=operand_width_bits,
         asm_goto_condition_kind=asm_goto_condition_kind,
@@ -1157,6 +1175,7 @@ def build_translation_runtime_facts(
             instruction_stream_sync_proof_id=proof_id,
             asm_goto_machine_join=dict(_read_field(container, "asm_goto_machine_join", "asmGotoMachineJoin", default={}) or {}),
             atomic_memory_objects=dict(_read_field(container, "atomic_memory_objects", default={}) or {}),
+            lrsc_sequence_evidence=_read_field(container, "lrsc_sequence_evidence", default=None),
             asm_goto_condition_kind=_read_field(container,"asm_goto_condition_kind","asmGotoConditionKind",default=None),
             asm_goto_condition_operand_index=_read_field(container,"asm_goto_condition_operand_index","asmGotoConditionOperandIndex",default=None),
             provenance=str(_read_field(container,"provenance",default="assembled") or "assembled"),
