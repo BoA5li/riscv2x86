@@ -42,7 +42,7 @@ def replay(detail,source,target,artifact):
     if digest(contract_path)!=detail['contractDigest']:raise ValueError('L3_ATOMIC_CONTRACT_CHANGED')
     contract=json.loads(contract_path.read_text())
     if contract.get('schemaVersion')!=CONTRACT or contract.get('contractIdentity')!=identity({k:v for k,v in contract.items() if k!='contractIdentity'}):raise ValueError('L3_ATOMIC_CONTRACT_IDENTITY_INVALID')
-    if contract['atomicPolicy']!='executed-rmw-outcomes-and-approved-contract.v1' or contract['limitations']!=sorted(LIMITS):raise ValueError('L3_ATOMIC_CONTRACT_POLICY_CHANGED')
+    if contract['atomicPolicy']!='executed-rmw-outcomes-and-approved-contract.v2' or contract['limitations']!=sorted(LIMITS):raise ValueError('L3_ATOMIC_CONTRACT_POLICY_CHANGED')
     if digest(contract['backendPath'])!=contract['backendDigest']:raise ValueError('L3_ATOMIC_BACKEND_SELECTION_CHANGED')
     backend=backend_validate(contract['backendPath']);deployment=replay_deployment(contract['deployment'],backend,source,target)
     from .l3_intent_ingress import validate_receipt
@@ -100,7 +100,7 @@ def build_route(config):
                     or req['requiredProperties']!=[p.to_dict() for p in profile.required_properties]
                     or req['profileIdentity']!=profile.profile_identity or req['proofIdentity']!=artifact.proof_identity or req['approvedTargetRelationIdentity']!=artifact.effect_relation_set_identity):raise ValueError('L3_ATOMIC_PROFILE_OR_ARTIFACT_MISMATCH')
             body={'schemaVersion':CONTRACT,'backendPath':config['backendPath'],'backendDigest':config['backendDigest'],
-                  'requirement':req,'deployment':deployment,'atomicPolicy':'executed-rmw-outcomes-and-approved-contract.v1','limitations':sorted(LIMITS)}
+                  'requirement':req,'deployment':deployment,'atomicPolicy':'executed-rmw-outcomes-and-approved-contract.v2','limitations':sorted(LIMITS)}
             contract=dict(body,contractIdentity=identity(body));contract_path=save(work/'atomic-contract.json',contract)
             context=kwargs['l3_execution_context'];context.validate(source,target);bindings={s:context.request_binding(s) for s in ('source','target')};reports={};stage='capture'
             for side in ('source','target'):

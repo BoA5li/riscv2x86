@@ -7,12 +7,12 @@ from riscv2x86_py.l3_trace_support import identity, digest
 from tests.test_l3_scalar_trace import request
 
 
-def atomic_fixture(tmp_path):
+def atomic_fixture(tmp_path,operation="fetch_add"):
     from tests.test_l2_atomic_production import atomic_finding
     from riscv2x86_py.l2_semantic_profile import profile_from_source_model
     from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
     from riscv2x86_py.l2_fragment_execution import materialize_fragment_execution_authority
-    f,functions,model,_=atomic_finding(expression=True)
+    f,functions,model,_=atomic_finding(expression=True,operation=operation)
     f['l2SemanticProfile']=profile_from_source_model(f['fragment']['id'],model).to_dict()
     f['approvalArtifact'].update(architectureSemanticsPreserved=True,shellSemanticsPreserved=True)
     f['translationOutcome']='emitted';f['sourceDigest']=functions[0]['sourceDigest']

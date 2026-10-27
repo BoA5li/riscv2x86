@@ -1,0 +1,150 @@
+{
+  "purpose": "diagnostic machine-code fixtures only; no semantic approval",
+  "compiler": "GCC 7.5.0 Ubuntu 18.04",
+  "records": [
+    {
+      "optimization": "-O0",
+      "name": "probe_and_32_old",
+      "base": 0,
+      "bytes": "554889e548897df88975f4488b55f88b0289c689c1234df4f00fb10a0f94c184c974ee89f05dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_and_32_discard",
+      "base": 39,
+      "bytes": "554889e548897df88975f4488b45f88b55f4f02110905dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_and_64_old",
+      "base": 63,
+      "bytes": "554889e548897df8488975f0488b55f8488b024889c64889c148234df0f0480fb10a0f94c184c974ea4889f05dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_and_64_discard",
+      "base": 109,
+      "bytes": "554889e548897df8488975f0488b45f8488b55f0f0482110905dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_or_32_old",
+      "base": 136,
+      "bytes": "554889e548897df88975f4488b55f88b0289c689c10b4df4f00fb10a0f94c184c974ee89f05dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_or_32_discard",
+      "base": 175,
+      "bytes": "554889e548897df88975f4488b45f88b55f4f00910905dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_or_64_old",
+      "base": 199,
+      "bytes": "554889e548897df8488975f0488b55f8488b024889c64889c1480b4df0f0480fb10a0f94c184c974ea4889f05dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_or_64_discard",
+      "base": 245,
+      "bytes": "554889e548897df8488975f0488b45f8488b55f0f0480910905dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_xor_32_old",
+      "base": 272,
+      "bytes": "554889e548897df88975f4488b55f88b0289c689c1334df4f00fb10a0f94c184c974ee89f05dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_xor_32_discard",
+      "base": 311,
+      "bytes": "554889e548897df88975f4488b45f88b55f4f03110905dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_xor_64_old",
+      "base": 335,
+      "bytes": "554889e548897df8488975f0488b55f8488b024889c64889c148334df0f0480fb10a0f94c184c974ea4889f05dc3"
+    },
+    {
+      "optimization": "-O0",
+      "name": "probe_xor_64_discard",
+      "base": 381,
+      "bytes": "554889e548897df8488975f0488b45f8488b55f0f0483110905dc3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_and_32_old",
+      "base": 0,
+      "bytes": "8b0789c189c221f1f00fb10f75f489d0c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_and_32_discard",
+      "base": 32,
+      "bytes": "f02137c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_and_64_old",
+      "base": 48,
+      "bytes": "488b074889c14889c24821f1f0480fb10f75f04889d0c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_and_64_discard",
+      "base": 80,
+      "bytes": "f0482137c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_or_32_old",
+      "base": 96,
+      "bytes": "8b0789c189c209f1f00fb10f75f489d0c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_or_32_discard",
+      "base": 128,
+      "bytes": "f00937c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_or_64_old",
+      "base": 144,
+      "bytes": "488b074889c14889c24809f1f0480fb10f75f04889d0c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_or_64_discard",
+      "base": 176,
+      "bytes": "f0480937c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_xor_32_old",
+      "base": 192,
+      "bytes": "8b0789c189c231f1f00fb10f75f489d0c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_xor_32_discard",
+      "base": 224,
+      "bytes": "f03137c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_xor_64_old",
+      "base": 240,
+      "bytes": "488b074889c14889c24831f1f0480fb10f75f04889d0c3"
+    },
+    {
+      "optimization": "-O2",
+      "name": "probe_xor_64_discard",
+      "base": 272,
+      "bytes": "f0483137c3"
+    }
+  ]
+}

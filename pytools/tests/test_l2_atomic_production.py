@@ -21,7 +21,7 @@ from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
 from riscv2x86_py.atomic_builtin_shell import fnv,build_atomic_builtin_shell,validate_atomic_builtin_shell
 
 
-def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_override=None):
+def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_override=None,operation="fetch_add"):
     from tests.test_atomic_expression_consumer import authority_for_expression
     from tests.test_atomic_expression_consumer import memory_only_authority
     compiler=memory_only_authority(memory_width) if memory_only else authority_for_expression(memory_width=memory_width) if expression else _compiler_authority()
@@ -44,7 +44,7 @@ def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_o
             'compilerType':compiler['candidate']['expressionClosureInputs']['fragment']['outputs'][1]['compilerType']}
         compiler['authorityIdentity']=identity({k:v for k,v in compiler.items() if k!='authorityIdentity'})
     runtime=TranslationRuntimeFacts(rv_to_operand_index={'a0':0,'a1':pointer_index},operand_width_bits={i:64 for i in range(pointer_index+1)})
-    decoded=_atomic();decoded.width_bits=memory_width;decoded.register_width_bits=64;decoded.result_extension='sign_extend' if memory_width==32 else 'identity'
+    decoded=_atomic();decoded.operation_kind=operation;decoded.width_bits=memory_width;decoded.register_width_bits=64;decoded.result_extension='sign_extend' if memory_width==32 else 'identity'
     obj=atomic_runtime_object_from_compiler_authority(compiler,fragment_id=compiler['fragmentId'],
         source_digest=compiler['sourceDigest'],begin_offset=100,end_offset=frontend_range['endOffset'],
         frontend_fragment={'id':compiler['fragmentId'],**frontend_range},runtime_facts=runtime,atomic_operation=decoded)[pointer_index]
@@ -65,7 +65,9 @@ def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_o
         from riscv2x86_py.source_model import SourceOperandKind,SourceOperandAccess
         pointer=replace(pointer,kind=SourceOperandKind.MEMORY,access=SourceOperandAccess.READ_WRITE,
             writes=True,read_before_write=True,lvalue=value.lvalue,width_bits=memory_width)
-    atom=replace(model.atomic,address_projection=obj.address_projection,width_bits=memory_width,wraparound_width_bits=memory_width,
+    from riscv2x86_py.source_model import SourceAtomicRmwOperation
+    atom=replace(model.atomic,rmw_operation=SourceAtomicRmwOperation(operation),
+        arithmetic_relation={'fetch_add':'add_mod_2n','fetch_and':'and_bits','fetch_or':'or_bits','fetch_xor':'xor_bits','exchange':'exchange'}[operation],address_projection=obj.address_projection,width_bits=memory_width,wraparound_width_bits=memory_width,
         register_width_bits=64,result_extension=decoded.result_extension,address_operand_index=pointer_index,memory_object_identity=obj.object_identity,authority_identity=obj.authority_identity,
         read_effect_identity=obj.read_effect_identity,write_effect_identity=obj.write_effect_identity)
     model_operands=(value,pointer)
@@ -83,7 +85,7 @@ def atomic_finding(expression=False,memory_width=64,memory_only=False,compiler_o
         model_operands=(value,memory,pointer)
     model=replace(model,shell=SourceShellModel.from_fragment(fragment),atomic=atom,
         runtime_facts=RuntimeFactStatus.from_runtime_facts(runtime),operands=SourceOperandModel(model_operands,True))
-    plan=next(p for p in generate_candidate_plans(model) if p.plan_id=='c-builtin.atomic-fetch-add')
+    plan=next(p for p in generate_candidate_plans(model) if p.plan_id=='c-builtin.atomic-'+model.atomic.rmw_operation.value.replace('_','-'))
     environment=TargetEnvironment.fixed_sysv_amd64_gnu_att(available_features={'compiler:atomic-builtin'},
         builtin_capabilities={'c_builtin:atomic','c_builtin:compiler_barrier'})
     derived=derive_target_constraints(source_model=model,candidate_plan=plan,target_environment=environment)
@@ -197,7 +199,7 @@ def test_memory_operand_cannot_reuse_pointer_contract_without_projection():
     pointer=replace(pointer,address=replace(pointer.address,address_projection=None))
     model=replace(model,atomic=replace(model.atomic,address_projection=None),
         operands=replace(model.operands,operands=(model.operands.operands[0],pointer)))
-    plan=next(p for p in generate_candidate_plans(model) if p.plan_id=='c-builtin.atomic-fetch-add')
+    plan=next(p for p in generate_candidate_plans(model) if p.plan_id=='c-builtin.atomic-'+model.atomic.rmw_operation.value.replace('_','-'))
     env=TargetEnvironment.fixed_sysv_amd64_gnu_att(available_features={'compiler:atomic-builtin'},
         builtin_capabilities={'c_builtin:atomic','c_builtin:compiler_barrier'})
     result=derive_target_constraints(source_model=model,candidate_plan=plan,target_environment=env)

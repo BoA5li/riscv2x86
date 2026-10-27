@@ -16,13 +16,13 @@ from riscv2x86_py.l3_atomic_spec import spec,samples,harness,parse_samples
 
 def rv(op='fetch_add',width=64,order='relaxed',rd=12):
     aq=order in ('acquire','acq_rel');rl=order in ('release','acq_rel')
-    word=((0 if op=='fetch_add' else 1)<<27)|(aq<<26)|(rl<<25)|(11<<20)|(10<<15)|((3 if width==64 else 2)<<12)|(rd<<7)|0x2f
+    word=({'fetch_add':0,'exchange':1,'fetch_xor':4,'fetch_or':8,'fetch_and':12}[op]<<27)|(aq<<26)|(rl<<25)|(11<<20)|(10<<15)|((3 if width==64 else 2)<<12)|(rd<<7)|0x2f
     return word.to_bytes(4,'little')
 
 
-def fixture(tmp_path):
+def fixture(tmp_path,operation="fetch_add"):
     from tests.test_l3_atomic_eligibility import atomic_fixture
-    f,functions=atomic_fixture(tmp_path);fn=functions[0];key=f['fragment']['compilerFragmentAuthority']['fragmentBindingKey']
+    f,functions=atomic_fixture(tmp_path,operation=operation);fn=functions[0];key=f['fragment']['compilerFragmentAuthority']['fragmentBindingKey']
     scope={'schemaVersion':'riscv2x86.compiler-atomic-function-scope.v1','sourceDigest':fn['sourceDigest'],'functionIdentity':fn['functionId'],
            'asmBegin':key['beginOffset'],'asmEnd':key['endOffset'],'scope':'single_asm_no_other_memory_or_control_effects'}
     fn['compilerAtomicFunctionScope']=dict(scope,scopeIdentity=identity(scope))
@@ -185,7 +185,17 @@ def calibration_tools(tmp_path,monkeypatch):
     monkeypatch.setattr(b.control,'validate',lambda _:base)
     def code(case):
         if case['side']=='source':return rv(case['operation'],case['width'],case['ordering'],0 if case['discard'] else 12)
-        return (b'\xf0' if case['locked'] and case['operation']=='fetch_add' else b'')+(b'\x48' if case['width']==64 else b'')+(b'\x01' if case['discard'] else b'\x0f\xc1' if case['operation']=='fetch_add' else b'\x87')+b'\x37'
+        if case.get('implementation')=='cas-loop':
+            wide=case['width']==64
+            initial=(bytes.fromhex('48c7c000000000') if wide else bytes.fromhex('b800000000')) if case['retry'] else bytes.fromhex('488b07' if wide else '8b07')
+            body=bytes.fromhex('4989c04889c2' if wide else '4189c089c2')
+            body+=(b'\x48' if wide else b'')+bytes([{'fetch_and':0x21,'fetch_or':9,'fetch_xor':0x31}[case['operation']],0xf2])
+            body+=(b'\xf0' if case['locked'] else b'')+(b'\x48' if wide else b'')+bytes.fromhex('0fb117')
+            if case['predicate']=='setcc':body+=bytes.fromhex('0f94c184c9')
+            body+=bytes([0x74 if case['predicate']=='setcc' else 0x75,(-len(body)-2)&255])
+            return initial+body
+        return (b'\xf0' if case['locked'] and case['operation']!='exchange' else b'')+(b'\x48' if case['width']==64 else b'')+(
+            bytes([{'fetch_add':1,'fetch_and':0x21,'fetch_or':9,'fetch_xor':0x31}[case['operation']]]) if case['discard'] else b'\x0f\xc1' if case['operation']=='fetch_add' else b'\x87')+b'\x37'
     class FakeElf:
         def __init__(self,p):
             self.case=b.CASES[int(Path(p).parent.name)];self.machine=243 if self.case['side']=='source' else 62
@@ -201,8 +211,21 @@ def calibration_tools(tmp_path,monkeypatch):
         save(Path(work)/(tag+'.command.json'),{'command':list(map(str,cmd)),'returnCode':0,'timedOut':False})
     monkeypatch.setattr(b,'run',run)
     def capture(value,side,binary,region,directory,calls,timeout):
-        d=Path(directory);d.mkdir();trace=d/'guest-trace.log';token='a'*64;t='riscv64' if side=='source' else 'x86_64';end=format(region['end'],'x');width=FakeElf(binary).case['width']//8
-        trace.write_text('H 2 '+token+' '+t+' 1000 '+end+'\nB 0 1000\nP 0 0 1000\nM 0 0 1000 2000 '+str(width)+' W\nX 0 '+end+'\nF 1 1 1 1 0\n')
+        d=Path(directory);d.mkdir();trace=d/'guest-trace.log';token='a'*64;t='riscv64' if side=='source' else 'x86_64';end=format(region['end'],'x');elf=FakeElf(binary);width=elf.case['width']//8
+        machine=b.retry_machine(elf,region,elf.case) if elf.case.get('implementation')=='cas-loop' else None
+        pcs=machine['retry']['prefixPCs']+machine['retry']['loopPCs']*(2 if elf.case['retry'] else 1) if machine else [region['start']]
+        lines=['H 2 '+token+' '+t+' 1000 '+end,'B 0 1000'];memory_count=0;attempt=0
+        for step,pc in enumerate(pcs):
+            lines.append('P '+str(step)+' 0 '+format(pc,'x'));kind=None
+            if machine:
+                if pc==machine['retry']['casPC']:
+                    attempt+=1;kind='R' if elf.case['retry'] and attempt==1 else 'W'
+                elif pc in {r['pc'] for r in machine['retry']['initialMemory']}:kind='R'
+            else:kind='W'
+            if kind:
+                lines.append('M '+str(memory_count)+' 0 '+format(pc,'x')+' 2000 '+str(width)+' '+kind);memory_count+=1
+        lines+=['X 0 '+end,'F 1 1 '+str(len(pcs))+' '+str(memory_count)+' 0']
+        trace.write_text('\n'.join(lines)+'\n')
         from riscv2x86_py.l3_trace_support import save
         cp=d/'execute.command.json';save(cp,{'command':command(value,side,binary,region,trace,token),'returnCode':0,'timedOut':False,'stdout':'','stderr':''})
         e={'token':token,'rawTracePath':str(trace),'rawTraceDigest':digest(trace),'commandRecordDigest':digest(cp)}
@@ -214,13 +237,13 @@ def calibration_tools(tmp_path,monkeypatch):
 def test_all_calibration_records_are_replayed_and_rehashed_raw_tamper_rejected(calibration_tools):
     b,path,out=calibration_tools;value=b.prepare(path,out);assert b.validate(out/'backend.json')==value
     state=json.loads((out/'build-status.json').read_text())
-    assert state['complete'] and len(state['calibrationCompleted'])==42 and state['semanticApproval'] is False
+    assert state['complete'] and len(state['calibrationCompleted'])==len(b.CASES) and state['semanticApproval'] is False
     r=value['calibration'][0];trace=Path(r['evidence']['rawTracePath']);trace.write_text(trace.read_text().replace('2000','2008'))
     r['evidence']['rawTraceDigest']=digest(trace);value['backendIdentity']=identity({k:v for k,v in value.items() if k!='backendIdentity'})
     with pytest.raises(ValueError):b.validate(value)
 
 
-@pytest.mark.parametrize('index',range(42))
+@pytest.mark.parametrize('index',range(138))
 def test_any_calibration_failure_preserves_progress_and_prevents_publication(calibration_tools,monkeypatch,index):
     b,path,out=calibration_tools;original=b.check_calibration
     def check(value,record,base):
@@ -308,3 +331,25 @@ def test_result_discarding_add_cannot_prove_old_value_return():
     atom={'rmw_operation':'fetch_add','width_bits':64,'result_semantics':'old_value'}
     assert not satisfies(a,atom,'target')
     atom['result_semantics']='none';assert satisfies(a,atom,'target')
+
+
+def test_rehashed_retry_trace_cannot_erase_failed_attempt(calibration_tools):
+    b,path,out=calibration_tools;value=b.prepare(path,out)
+    record=next(r for r in value['calibration'] if r['case'].get('retry'))
+    trace=Path(record['evidence']['rawTracePath'])
+    # This remains a syntactically complete capture, but claims one attempt for
+    # a probe whose actual canonical machine program forces an initial failure.
+    machine=b.retry_machine(b.Elf(record['binary']),b.region(b.Elf(record['binary'])),record['case'])
+    pcs=machine['retry']['prefixPCs']+machine['retry']['loopPCs']
+    token=record['evidence']['token'];start=machine['region']['start'];end=machine['region']['end']
+    lines=['H 2 '+token+' x86_64 '+format(start,'x')+' '+format(end,'x'),'B 0 '+format(start,'x')];n=0
+    for step,pc in enumerate(pcs):
+        lines.append('P '+str(step)+' 0 '+format(pc,'x'))
+        if pc==machine['retry']['casPC']:
+            lines.append('M 0 0 '+format(pc,'x')+' 2000 '+str(record['case']['width']//8)+' W');n+=1
+    lines+=['X 0 '+format(end,'x'),'F 1 1 '+str(len(pcs))+' '+str(n)+' 0']
+    trace.write_text('\n'.join(lines)+'\n')
+    record['evidence']['rawTraceDigest']=digest(trace)
+    record['callbackAccessKinds']=['write']
+    value['backendIdentity']=identity({k:v for k,v in value.items() if k!='backendIdentity'})
+    with pytest.raises(ValueError,match='ATTEMPT_MISMATCH'):b.validate(value)

@@ -1,9 +1,10 @@
 """Decode real direct RMW instructions and bounded straight-line functions.
 
-Calls, branches, CAS loops and unknown encodings remain unsupported. This module
+Calls and unknown encodings remain unsupported; CAS loops require a separate invariant proof. This module
 never derives atomicity from an observed pair of ordinary memory callbacks.
 """
 from .l3_trace_support import identity
+from .l3_atomic_semantics import RV_OPERATIONS
 from .l3_control_machine import decode as integer_decode
 
 
@@ -11,9 +12,9 @@ def atomic_instruction(code,machine):
     code=bytes(code)
     if machine==243 and len(code)==4:
         w=int.from_bytes(code,'little');op=(w>>27)&31;f=(w>>12)&7
-        if w&127==0x2f and f in (2,3) and op in (0,1):
+        if w&127==0x2f and f in (2,3) and op in RV_OPERATIONS:
             aq,rl=bool(w&(1<<26)),bool(w&(1<<25))
-            return {'op':'atomic','operation':('fetch_add' if op==0 else 'exchange'),
+            return {'op':'atomic','operation':RV_OPERATIONS[op],
                     'width':32 if f==2 else 64,'addressRegister':(w>>15)&31,'inputRegister':(w>>20)&31,
                     'resultRegister':(w>>7)&31,'mechanism':'rv-amo',
                     'ordering':'acq_rel' if aq and rl else 'acquire' if aq else 'release' if rl else 'relaxed'}
@@ -24,7 +25,8 @@ def atomic_instruction(code,machine):
         width=64 if rex&8 else 32
         if code[i:i+2]==b'\x0f\xc1':operation='fetch_add';i+=2
         elif code[i:i+1]==b'\x87':operation='exchange';i+=1
-        elif code[i:i+1]==b'\x01':operation='fetch_add';i+=1;discard=True
+        elif code[i:i+1] in (b'\x01',b'\x21',b'\x09',b'\x31'):
+            operation={1:'fetch_add',0x21:'fetch_and',9:'fetch_or',0x31:'fetch_xor'}[code[i]];i+=1;discard=True
         else:return None
         if i>=len(code):return None
         m=code[i];i+=1;mod=m>>6;rm=m&7
@@ -41,7 +43,7 @@ def atomic_instruction(code,machine):
         return {'op':'atomic','operation':operation,'width':width,'addressRegister':base,'displacement':disp,
                 'inputRegister':((m>>3)&7)+(8 if rex&4 else 0),
                 'resultRegister':None if discard else ((m>>3)&7)+(8 if rex&4 else 0),
-                'mechanism':('x86-locked-add' if locked else 'x86-unlocked-add') if discard else 'x86-locked-xadd' if locked and operation=='fetch_add' else
+                'mechanism':(('x86-locked-' if locked else 'x86-unlocked-')+{'fetch_add':'add','fetch_and':'and','fetch_or':'or','fetch_xor':'xor'}[operation]) if discard else 'x86-locked-xadd' if locked and operation=='fetch_add' else
                             'x86-unlocked-xadd' if operation=='fetch_add' else 'x86-memory-xchg',
                 'ordering':'ordinary-memory-full-order' if locked or operation=='exchange' else 'unproved'}
     return None
@@ -88,8 +90,14 @@ def decode(code,base,machine):
     return rows
 
 
-def function_mechanism(elf,name):
-    address=elf.symbol(name)[0];rows=decode(elf.code(name),address,elf.machine)
+def function_mechanism(elf,name,invocation=None):
+    address=elf.symbol(name)[0]
+    try:
+        rows=decode(elf.code(name),address,elf.machine)
+    except ValueError:
+        if elf.machine!=62:raise
+        from .l3_atomic_retry import prove
+        return prove(elf.code(name),address,invocation)
     atoms=[r for r in rows if r['op']=='atomic']
     if len(atoms)!=1 or not rows or rows[-1]['op']!='return' or any(r['op']=='return' for r in rows[:-1]):
         raise ValueError('L3_ATOMIC_SINGLE_STRAIGHT_LINE_OPERATION_REQUIRED')
@@ -104,7 +112,7 @@ def function_mechanism(elf,name):
 def satisfies(instruction,operation,side):
     if instruction['operation']!=operation['rmw_operation'] or instruction['width']!=operation['width_bits']:return False
     if operation.get('result_semantics')=='old_value' and (instruction['resultRegister'] is None or side=='source' and instruction['resultRegister']==0):return False
-    if side=='target':return instruction['mechanism'] in {'x86-locked-xadd','x86-locked-add','x86-memory-xchg'}
+    if side=='target':return instruction['mechanism'] in {'x86-locked-xadd','x86-locked-add','x86-memory-xchg','x86-locked-and','x86-locked-or','x86-locked-xor','x86-locked-cas-loop'}
     orders={'relaxed':set(),'acquire':{'acquire'},'release':{'release'},'acq_rel':{'acquire','release'}}
     need=operation['success_ordering'];actual=instruction['ordering']
     return need in orders and actual in orders and orders[need]<=orders[actual]

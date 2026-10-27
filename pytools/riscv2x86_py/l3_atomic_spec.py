@@ -6,13 +6,14 @@ from .l3_property_obligations import analyze
 from .l2_atomic_authority import validate_atomic_proof_facts,materialize_atomic_authority
 from .l2_authority import l2_authority_sidecar_from_dict
 
-CAPABILITY='qemu-direct-atomic-rmw-v1'
-LIMITS=['single-thread-successful-region-execution','boundary-value-samples-not-exhaustive-input-proof','ordinary-aligned-memory-only',
+CAPABILITY='qemu-attributed-atomic-rmw-v2'
+LIMITS=['single-thread-successful-region-execution','bounded-cas-retry-paths-not-concurrent-progress-proof','boundary-value-samples-not-exhaustive-input-proof','ordinary-aligned-memory-only',
         'atomicity-and-order-from-approved-contract-and-attributed-machine-mechanism',
         'raw-callbacks-not-expanded-into-synthetic-read-write-pairs',
+        'failed-cas-callbacks-may-be-absent-only-when-explicitly-calibrated;failed-values-not-observed',
         'concurrent-linearizability-and-physical-memory-order-not-measured',
         'outside-fragment-effects-not-compared','physical-cache-timing-prediction-speculation-not-claimed']
-OPERATIONS={'fetch_add':'c.builtin.atomic-fetch-add.u32-u64.v2','exchange':'c.builtin.atomic-exchange.u32-u64.v2'}
+from .l3_atomic_semantics import OPERATIONS
 UNSIGNED=re.compile(r'(?:uint(32|64)_t|unsigned (int|long|long long)(?: int)?)')
 
 

@@ -7,7 +7,7 @@ from .l3_trace_support import identity
 from .l3_intent_requirements import parse_l3_intent_profile
 from .l3_atomic_spec import spec,CAPABILITY,LIMITS
 
-DEPENDENCIES=('l3_atomic_spec.py','l3_atomic_machine.py','l3_atomic_compare.py','l3_atomic_backend.py','l3_control_machine.py',
+DEPENDENCIES=('l3_atomic_retry_observation.py','l3_atomic_semantics.py','l3_atomic_retry.py','l3_atomic_spec.py','l3_atomic_machine.py','l3_atomic_compare.py','l3_atomic_backend.py','l3_control_machine.py',
  'l3_property_obligations.py','l3_sync_obligations.py','l3_source_eligibility.py','l2_atomic_authority.py','atomic_builtin_shell.py',
  'l2_materialization.py','l2_fragment_execution.py','l2_control_flow.py','l2_asm_goto.py','automatic_l2_authority.py',
  'compiler_provenance.py','l2_authority.py','l2_effect_proof.py','l2_semantic_profile.py','l3_trace_support.py','l3_intent_requirements.py')

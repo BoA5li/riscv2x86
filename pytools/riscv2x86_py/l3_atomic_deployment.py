@@ -39,7 +39,7 @@ def build_side(path,side,plan,function,backend,artifact,work,atomic):
     final=Elf(binary)
     if final.type!=2 or final.machine!=original.machine or final.code(function['name'])!=original.code(function['name']):
         raise ValueError('L3_ATOMIC_LINKED_FUNCTION_BYTES_CHANGED:'+side)
-    machine=function_mechanism(final,function['name']);region=machine['region']
+    machine=function_mechanism(final,function['name'],atomic);region=machine['region']
     return {'semanticArtifact':{'artifactId':artifact.artifact_id,'artifactPath':str(Path(artifact.artifact_path).resolve()),'artifactDigest':artifact.artifact_digest,'buildIdentity':artifact.build_identity},
             'executionArtifact':{'artifactPath':str(binary),'artifactDigest':digest(binary)},
             'region':region,'machineMechanism':machine,
