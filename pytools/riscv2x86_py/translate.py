@@ -847,6 +847,11 @@ def _output(
         output_metadata.update(metadata)
 
     if context.sourceModel is not None and context.fragment.id:
+        from .source_operand_coverage import decision as operand_coverage_decision
+        coverage = operand_coverage_decision(context.fragment.id, context.sourceModel)
+        if coverage is not None:
+            output_metadata.setdefault("routeAuthorityDiagnostics", []).append(coverage)
+            merged_reason_codes.append(coverage["reasonCode"])
         route_decision = context.sourceModel.control_flow.asm_goto_authority_decision
         if route_decision is not None:
             output_metadata.setdefault("routeAuthorityDiagnostics", []).append(route_decision.to_dict())

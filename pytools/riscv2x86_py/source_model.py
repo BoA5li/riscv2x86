@@ -4064,28 +4064,37 @@ def _build_operand_model(
         ),
     )
 
-    if not shell.has_operands:
-        return SourceOperandModel(
-            operands=(),
-            complete=True,
-        )
-
     missing_codes: list[str] = []
     result: list[SourceOperandBinding] = []
+
+    # GNU slot enumeration is used only to check coverage, never to invent
+    # a register/object binding. Iterating runtime bindings alone previously
+    # made a fully modelled subset appear complete (e.g. an unbound +A slot).
+    expected_indexes = set(range(len(shell.all_operands)))
+    supplied_indexes = set(authoritative_bindings)
+    for index in sorted(expected_indexes - supplied_indexes):
+        missing_codes.append(f"missing_authoritative_operand_index_binding:{index}")
+    for index in sorted(supplied_indexes - expected_indexes):
+        missing_codes.append(f"unexpected_authoritative_operand_index_binding:{index}")
+
+    if not shell.has_operands:
+        return SourceOperandModel(operands=(), complete=not missing_codes,
+                                  missing_fact_codes=tuple(missing_codes))
 
     if not authoritative_bindings:
         return SourceOperandModel(
             operands=(),
             complete=False,
-            missing_fact_codes=(
-                "missing_authoritative_operand_index_binding",
-            ),
+            missing_fact_codes=tuple(sorted(set(missing_codes + [
+                "missing_authoritative_operand_index_binding"]))),
         )
 
     for source_operand_index, binding in sorted(
         authoritative_bindings.items(),
         key=lambda item: item[0],
     ):
+        if source_operand_index not in expected_indexes:
+            continue
         semantic = authoritative_semantics.get(source_operand_index)
         width_bits = authoritative_widths.get(source_operand_index)
 
@@ -4398,7 +4407,18 @@ def _runtime_operand_semantics(
         else:
             access = SourceOperandAccess.INPUT
         memory_lvalue = (index in atomic_objects
-            and atomic_objects[index].operand_role == "memory_lvalue")
+            and atomic_objects[index].operand_role == "memory_lvalue"
+            and atomic_objects[index].authority_complete)
+        # A supplied register map cannot turn a GNU memory-lvalue slot into
+        # a scalar register operand. Its object authority must close first.
+        from .gnu_operand_contract import parse_riscv_operand
+        try:
+            declared_contract = parse_riscv_operand(constraint, output=operand.is_output)
+        except ValueError:
+            declared_contract = None
+        if (declared_contract is not None
+                and declared_contract.role == "memory_lvalue" and not memory_lvalue):
+            continue
         if memory_lvalue:
             from .gnu_operand_contract import parse_riscv_operand
             try:memory_contract=parse_riscv_operand(constraint,output=operand.is_output)
