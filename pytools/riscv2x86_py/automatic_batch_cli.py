@@ -738,7 +738,7 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                 function['compilerAtomicFunctionScope'] = atomic_scope
             from .compiler_continuation_sites import memory_store_function_scope
             store_scope=memory_store_function_scope(node,source_digest=source_digest,
-                function_identity=function_identity,source_range=_source_range)
+                function_identity=function_identity,source_range=_source_range,pointer_parameter_indexes=pointer_parameters)
             if store_scope is not None:function['compilerStoreFunctionScope']=store_scope
             function["l2OperandBoundary"] = _l2_operand_boundary_facts(
                 node, source_digest=source_digest,
@@ -748,6 +748,9 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             from .compiler_integer_signature import export as integer_signature
             call=integer_signature(function,param_types,return_type,resolve_compiler_type)
             if call is not None:function['compilerIntegerCallSignature']=call
+            from .compiler_memory_signature import export as memory_signature
+            memory_call=memory_signature(function,param_types,return_type,resolve_compiler_type)
+            if memory_call is not None:function['compilerMemoryCallSignature']=memory_call
             from .compiler_program_regions import export as program_regions
             regions=program_regions(node,source_digest=source_digest,function_identity=function_identity,source_range=_source_range)
             if regions is not None:function['compilerProgramRegions']=regions
@@ -1004,7 +1007,7 @@ def prepare_automatic_inventory(
         if trace_selections is not None:
             selection_kind=next(iter(trace_selections))
             if selection_kind=='memory':
-                from .l3_qemu_backend import validate_backend
+                from .l3_memory_backend import validate_backend
             elif selection_kind=='lrsc':
                 from .l3_lrsc_backend import validate as validate_backend
             elif selection_kind=='atomic':
@@ -1024,7 +1027,7 @@ def prepare_automatic_inventory(
         elif trace_control:
             from .l3_control_backend import validate as validate_backend
         else:
-            from .l3_qemu_backend import validate_backend
+            from .l3_memory_backend import validate_backend
         from .l3_cache_model import validate as validate_cache_model
         trace_backend=validate_backend(l3_memory_backend)
         if l3_cache_model is not None:

@@ -11,7 +11,8 @@ from pathlib import Path
 from .l3_trace_support import digest, identity, save
 from .l3_memory_intent import memory_spec, CAPABILITY, LIMITATIONS
 from .l3_cache_model import validate as cache_validate, evaluate as cache_evaluate
-from .l3_qemu_backend import validate_backend, capture, parse_capture
+from .l3_memory_backend import validate_backend, capture
+from .l3_qemu_backend import parse_capture
 from .l3_trace_deployment import prepare as prepare_deployment, validate as validate_deployment
 from .l3_evidence_closure import close_fragment, validate_fragment_against_requirement
 from .l3_intent_requirements import parse_l3_intent_profile, parse_l3_requirement_manifest
@@ -20,6 +21,7 @@ from .validation_status import ValidationStatus
 
 CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v1'
 STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v2'
+TYPED_STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v5'
 SCALAR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v3'
 VECTOR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v4'
 ROUTE_SCHEMA='riscv2x86.compiler-region-trace-route.v1'
@@ -34,11 +36,13 @@ def parse_contract(value):
             'requirementIdentity','approvedTargetRelationIdentity','programId','fragmentId','spec',
             'deployment','backendPath','backendDigest','cacheModel','requiredProperties','propertyBindings',
             'sampleCount','knownNonEquivalences'}
+    typed_store=isinstance(value,dict) and value.get('schemaVersion')==TYPED_STORE_CONTRACT_SCHEMA
+    if typed_store:fields.add('storeCall')
     vector=isinstance(value,dict) and value.get('schemaVersion')==VECTOR_CONTRACT_SCHEMA
     scalar=isinstance(value,dict) and value.get('schemaVersion') in {SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}
     if scalar:fields.add('propertyObligations')
     if vector:fields.add('samplePlan')
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}:
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,TYPED_STORE_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}:
         raise ValueError('L3_TRACE_CONTRACT_SCHEMA_INVALID')
     if type(value['sampleCount']) is not int or not 2<=value['sampleCount']<=16:
         raise ValueError('L3_TRACE_SAMPLE_COUNT_INVALID')
@@ -71,7 +75,14 @@ def parse_contract(value):
             raise ValueError('L3_TRACE_CONTRACT_OBJECT_DOMAIN_INVALID')
         if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId'] or spec['access'] not in {'read','write'}:
             raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
-        if spec['access']=='write' and (value['schemaVersion']!=STORE_CONTRACT_SCHEMA or spec['width']!=8):
+        if typed_store:
+            if spec['access']!='write':raise ValueError('L3_MEMORY_STORE_ACCESS_REQUIRED')
+            require_json_match(value['deployment']['functionScope']['callSignature'],value['storeCall'],'L3_MEMORY_STORE_CALL_CHANGED')
+            if value['storeCall']['widthBytes']!=spec['width']:
+                raise ValueError('L3_MEMORY_STORE_CALL_WIDTH_MISMATCH')
+        if spec['access']=='write' and not typed_store and 'callSignature' in value['deployment'].get('functionScope',{}):
+            raise ValueError('L3_MEMORY_TYPED_STORE_CONTRACT_VERSION_REQUIRED')
+        if spec['access']=='write' and not typed_store and (value['schemaVersion']!=STORE_CONTRACT_SCHEMA or spec['width']!=8):
             raise ValueError('L3_TRACE_STORE_CONTRACT_VERSION_REQUIRED')
     if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId']:
         raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
@@ -132,18 +143,22 @@ def parse_objects(stdout, token, spec, samples, signature=None):
                 value['token']!=token or type(value['sample']) is not int or value['sample']!=len(objects) or
                 type(value['objectSize']) is not int or value['objectSize']<spec['size'] or
                 int(value['objectBase'],16)%spec['alignment'] or int(value['objectBase'],16)<=0 or
-                not isinstance(value['value'],str) or len(value['value'])!=16):
+                not ((signature and spec['access']=='write' and signature.get('returnKind')=='void' and value['value'] is None)
+                     or isinstance(value['value'],str) and len(value['value'])==16)):
             raise ValueError('L3_TRACE_RUNTIME_OBJECT_BINDING_INVALID')
-        int(value['value'],16)
+        if value['value'] is not None:int(value['value'],16)
         if spec['access']=='write':
-            if value['objectSize']!=((spec['size']+7)//8)*8:
+            unit=spec['width'] if signature else 8
+            if value['objectSize']!=((spec['size']+unit-1)//unit)*unit:
                 raise ValueError('L3_TRACE_RUNTIME_OBJECT_BINDING_INVALID')
             # Both executions must match the declared input and full object
             # result, not merely each other or an identical return value.
             expected=bytearray((0x31+17*i+len(objects))&255 for i in range(value['objectSize']))
-            written=0x1020304050607080+len(objects)
-            expected[spec['offset']:spec['offset']+spec['width']]=written.to_bytes(8,'little')
-            if (value.get('objectHex')!=expected.hex() or int(value['value'],16)!=written):
+            from .l3_memory_call import store_value
+            written=store_value(len(objects),spec['width'])
+            expected[spec['offset']:spec['offset']+spec['width']]=written.to_bytes(spec['width'],'little')
+            void=signature is not None and signature.get('returnKind')=='void'
+            if (value.get('objectHex')!=expected.hex() or (value['value'] is not None if void else value['value'] is None or int(value['value'],16)!=written)):
                 raise ValueError('L3_TRACE_STORE_VALUE_OR_OBJECT_MISMATCH')
         objects.append(value)
     if len(objects)!=samples: raise ValueError('L3_TRACE_RUNTIME_SAMPLES_MISSING')
@@ -345,13 +360,15 @@ def build_route(config):
             properties=[x.to_dict() for x in profile.required_properties]
             bindings=[dict(p,comparatorId=('object-relative-cache-model.v1' if p['dimension']=='cache_model' else 'logical-access-contract.v1'),
                 obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else (['memory:empty-executed-region'] if spec['access']=='none' else ['memory:approved-'+spec['access']])) for p in properties]
-            contract={'schemaVersion':VECTOR_CONTRACT_SCHEMA if spec['access']=='none' else (STORE_CONTRACT_SCHEMA if spec['access']=='write' else CONTRACT_SCHEMA),'experimentId':'compiler-region:'+profile.profile_identity,
+            contract={'schemaVersion':VECTOR_CONTRACT_SCHEMA if spec['access']=='none' else ((TYPED_STORE_CONTRACT_SCHEMA if 'callSignature' in deployment['functionScope'] else STORE_CONTRACT_SCHEMA) if spec['access']=='write' else CONTRACT_SCHEMA),'experimentId':'compiler-region:'+profile.profile_identity,
                 'translationPlanId':kwargs['translation_artifact'].translation_plan_id,'proofIdentity':profile.proof_identity,
                 'intentProfileIdentity':profile.profile_identity,'requirementIdentity':req['requirementIdentity'],
                 'approvedTargetRelationIdentity':profile.approved_target_relation_identity,'programId':spec['programId'],'fragmentId':spec['fragmentId'],
                 'spec':spec,'deployment':deployment,'backendPath':str(Path(config['backendPath']).resolve()),'backendDigest':config['backendDigest'],
                 'cacheModel':model,'requiredProperties':properties,'propertyBindings':bindings,'sampleCount':samples,
                 'knownNonEquivalences':list(profile.not_claimed_properties)}
+            if spec['access']=='write' and 'callSignature' in deployment['functionScope']:
+                contract['storeCall']=deployment['functionScope']['callSignature']
             if spec['access']=='none':
                 from .l3_scalar_call import sample_plan
                 contract['propertyObligations']=obligations

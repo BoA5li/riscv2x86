@@ -85,8 +85,8 @@ def atomic_function_scope(function, *, source_digest, function_identity, source_
     return {**payload,'scopeIdentity':identity(payload)}
 
 
-def memory_store_function_scope(function, *, source_digest, function_identity, source_range):
-    """Sole asm followed by return of an indexed uint64 parameter object.
+def memory_store_function_scope(function, *, source_digest, function_identity, source_range, pointer_parameter_indexes=(0,)):
+    """Sole asm with void return or return of an indexed parameter object.
 
     This additional C read is outside the observed asm region. Its exact
     object/index is exposed for the deployment consumer to bind to the store.
@@ -95,7 +95,15 @@ def memory_store_function_scope(function, *, source_digest, function_identity, s
     bodies=[n for n in function.get('inner',[]) if n.get('kind')=='CompoundStmt']
     if len(params)!=2 or len(bodies)!=1:return None
     statements=bodies[0].get('inner',[])
-    if [n.get('kind') for n in statements]!=['GCCAsmStmt','ReturnStmt']:return None
+    kinds=[n.get('kind') for n in statements]
+    if kinds not in (['GCCAsmStmt'],['GCCAsmStmt','ReturnStmt']):return None
+    extent=source_range(statements[0])
+    if extent is None:return None
+    if len(statements)==1 or not statements[1].get('inner'):
+        payload={'schemaVersion':'riscv2x86.compiler-store-function-scope.v1',
+            'sourceDigest':source_digest,'functionIdentity':function_identity,
+            'asmBegin':extent[0],'asmEnd':extent[1],'scope':'single_asm_void'}
+        return dict(payload,scopeIdentity=identity(payload))
     def strip(node):
         while node.get('kind') in {'ParenExpr','ImplicitCastExpr'}:
             if node.get('kind')=='ImplicitCastExpr' and node.get('castKind') not in {'LValueToRValue','NoOp'}:return {}
@@ -105,10 +113,16 @@ def memory_store_function_scope(function, *, source_digest, function_identity, s
         return node
     returned=statements[1].get('inner',[])
     if len(returned)!=1:return None
-    array=strip(returned[0]); children=array.get('inner',[])
+    outer=returned[0]
+    if outer.get('kind')=='ImplicitCastExpr' and outer.get('castKind')=='IntegralCast':
+        inner=outer.get('inner',[])
+        if len(inner)!=1:return None
+        outer=inner[0]
+    array=strip(outer); children=array.get('inner',[])
     if array.get('kind')!='ArraySubscriptExpr' or len(children)!=2:return None
     base,index=strip(children[0]),strip(children[1])
-    if (base.get('kind')!='DeclRefExpr' or base.get('referencedDecl',{}).get('id')!=params[0].get('id')
+    positions=[i for i,p in enumerate(params) if p.get('id')==base.get('referencedDecl',{}).get('id')]
+    if (base.get('kind')!='DeclRefExpr' or len(positions)!=1 or positions[0] not in pointer_parameter_indexes
             or index.get('kind')!='IntegerLiteral'):return None
     try:offset=int(index['value'])
     except (KeyError,TypeError,ValueError):return None
@@ -117,6 +131,6 @@ def memory_store_function_scope(function, *, source_digest, function_identity, s
     if extent is None:return None
     payload={'schemaVersion':'riscv2x86.compiler-store-function-scope.v1',
         'sourceDigest':source_digest,'functionIdentity':function_identity,
-        'asmBegin':extent[0],'asmEnd':extent[1], 'returnObjectParameterIndex':0,
+        'asmBegin':extent[0],'asmEnd':extent[1], 'returnObjectParameterIndex':positions[0],
         'returnElementIndex':offset,'scope':'single_asm_and_bound_object_return'}
     return {**payload,'scopeIdentity':identity(payload)}

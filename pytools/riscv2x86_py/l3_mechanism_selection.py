@@ -13,7 +13,7 @@ SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 def load(path,*,progress=None):
     path=Path(path).resolve();selection_digest=digest(path);raw=json.loads(path.read_text())
     if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic','lrsc'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
-    from .l3_qemu_backend import validate_backend
+    from .l3_memory_backend import validate_backend
     from .l3_control_backend import validate as control
     from .l3_program_backend import validate as program
     from .l3_fence_backend import validate as fence

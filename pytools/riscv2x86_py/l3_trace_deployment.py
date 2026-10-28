@@ -61,6 +61,19 @@ def function_scope(source, report, finding, *, legacy_scalar=False):
         return {'name':name,'callSignature':signature,
                 'functionIdentity':function['functionId'],'scopeIdentity':scope['scopeIdentity']}
     if spec['access']=='write':
+        normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
+        legacy_store=(normalized in [['uint64_t *','uint64_t'],['unsigned long *','unsigned long']]
+            and result in {'uint64_t','unsigned long'} and spec['width']==8)
+        if function.get('compilerMemoryCallSignature') is not None and not legacy_store:
+            from .l3_memory_call import bind
+            if (name!=finding['fragment'].get('enclosingFunction') or
+                    function.get('functionId')!=boundary.get('functionId') or
+                    re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name or '') is None or
+                    function.get('sourceDigest')!=digest(source)):
+                raise ValueError('L3_MEMORY_CALL_FUNCTION_BINDING_INVALID')
+            call=bind(function,finding,spec)
+            return {'name':name,'callSignature':call,'functionIdentity':function['functionId'],
+                'scopeIdentity':call['scopeIdentity']}
         store=function.get('compilerStoreFunctionScope') or {}
         normalized=[re.sub(r'\s+',' ',p.strip()) for p in parameters or []]
         if (not isinstance(name,str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) is None
@@ -115,10 +128,12 @@ int main(int argc,char **argv){
 
 
 def prepare(source, target, report, finding, backend, source_artifact, target_artifact, directory, samples):
-    from .l3_qemu_backend import validate_backend
+    from .l3_memory_backend import validate_backend
     backend=validate_backend(backend)
     directory=Path(directory).resolve(); directory.mkdir(parents=True,exist_ok=False)
     spec=trace_spec(finding); scope=function_scope(source,report,finding)
+    from .l3_memory_backend import require_access
+    require_access(backend,spec)
     source=Path(source).resolve(); target=Path(target).resolve()
     if digest(source)!=finding['sourceDigest']: raise ValueError('L3_TRACE_SOURCE_CHANGED')
     from .approved_replacement import approved_replacement
@@ -181,6 +196,8 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
 
 def validate(value, backend, source_artifact, target_artifact):
     require_json_document(value,'L3_TRACE_DEPLOYMENT_JSON_INVALID')
+    from .l3_memory_backend import require_access
+    require_access(backend,value['spec'])
     fields={'schemaVersion','backendIdentity','spec','functionScope','sampleCount','sourceAndTargetFiles','sides',
             'captureBoundary','compilerRegionWitness','outsideFragmentEffectsClaimed','deploymentIdentity','inputs'}
     if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {SCHEMA,SCALAR_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}):
@@ -253,6 +270,8 @@ def validate(value, backend, source_artifact, target_artifact):
 
 def store_harness(scope, spec, samples):
     """Observe object post-state outside the compiler asm trace boundary."""
+    if 'callSignature' in scope:
+        return typed_store_harness(scope,spec,samples)
     return r'''#include <stdint.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -274,3 +293,24 @@ int main(int argc,char **argv){
 }
 ''' % (scope['returnType'],scope['name'],scope['parameterType'],scope['valueParameterType'],
        (spec['size']+7)//8,samples,scope['name'],scope['parameterType'],scope['valueParameterType'])
+
+
+def typed_store_harness(scope,spec,samples):
+    call=scope['callSignature'];signature=call['compilerSignature'];params=signature['parameters']
+    pointer=call['pointerParameter'];value=call['valueParameter'];pointee=params[pointer]['pointee']['cType']
+    arguments=['',''];arguments[pointer]='object';arguments[value]='('+params[value]['cType']+')written'
+    invoke=scope['name']+'('+','.join(arguments)+')'
+    if call['returnKind']=='void':
+        invocation=invoke+';';returned='fputs("null",stdout);'
+    else:
+        invocation='uint64_t actual=(uint64_t)'+invoke+';'
+        returned='printf("\\\"%016" PRIx64 "\\\"",actual);'
+    return ('#include <stdint.h>\n#include <inttypes.h>\n#include <stdio.h>\n#include <string.h>\n'
+        +'extern '+signature['result']['cType']+' '+scope['name']+'('+','.join(p['cType'] for p in params)+');\n'
+        +'int main(int argc,char **argv){if(argc!=2 || strlen(argv[1])!=64)return 2;\n'
+        +'_Alignas(64) '+pointee+' object['+str((spec['size']+spec['width']-1)//spec['width'])+'];\n'
+        +'for(unsigned sample=0;sample<'+str(samples)+';++sample){unsigned char *bytes=(unsigned char*)object;\n'
+        +'for(unsigned i=0;i<sizeof object;++i)bytes[i]=(unsigned char)(0x31u+17u*i+sample);\n'
+        +'uint64_t written=UINT64_C(0x1020304050607080)+sample;'+invocation+'\n'
+        +'printf("{\\\"token\\\":\\\"%s\\\",\\\"sample\\\":%u,\\\"objectBase\\\":\\\"%" PRIxPTR "\\\",\\\"objectSize\\\":%zu,\\\"value\\\":",argv[1],sample,(uintptr_t)object,sizeof object);\n'
+        +returned+'fputs(",\\\"objectHex\\\":\\\"",stdout);for(unsigned i=0;i<sizeof object;++i)printf("%02x",bytes[i]);puts("\\\"}");}return 0;}\n')

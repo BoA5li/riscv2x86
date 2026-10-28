@@ -77,13 +77,16 @@ def memory_spec(finding):
         raise ValueError('L3_MEMORY_OBJECT_DOMAIN_INCOMPLETE')
     operands=authority.get('operands',[])
     address=[x for x in operands if x.get('operandIndex')==facts.get('addressOperandIndex')]
-    if (len(address)!=1 or address[0].get('typeKind')!='pointer' or address[0].get('parameterIndex')!=0 or
+    if (len(address)!=1 or address[0].get('typeKind')!='pointer' or type(address[0].get('parameterIndex')) is not int or address[0]['parameterIndex']<0 or
             address[0].get('accessMode')!='address' or not boundary.get('programId')):
+        raise ValueError('L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE')
+    if facts['accessKind']=='load' and address[0]['parameterIndex']!=0:
         raise ValueError('L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE')
     if facts['accessKind']=='store':
         values=[x for x in operands if x.get('operandIndex')==facts.get('valueOperandIndex')]
-        if (width!=8 or len(values)!=1 or values[0].get('typeKind')!='integer'
-                or values[0].get('parameterIndex')!=1 or values[0].get('accessMode')!='input'):
+        if (len(values)!=1 or values[0].get('typeKind')!='integer'
+                or type(values[0].get('parameterIndex')) is not int or values[0]['parameterIndex']<0
+                or values[0]['parameterIndex']==address[0]['parameterIndex'] or values[0].get('accessMode')!='input'):
             raise ValueError('L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE')
     return {'fragmentId':fragment['id'],'programId':boundary['programId'], 'objectId':obj['objectId'],
             'sourceEffectId':effects[0]['effectId'], 'offset':offset,'width':width,'size':size,

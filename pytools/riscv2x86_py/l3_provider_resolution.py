@@ -281,7 +281,7 @@ def resolve_l3_execution_plan(
                                                        EXPERIMENT_CONTRACT_STATISTICAL_SCHEMA}
                                                        | {EXPERIMENT_CONTRACT_SPECIALIZED_SCHEMA,
                                                           "riscv2x86.microarchitecture-experiment-contract.v7",
-                                                          "riscv2x86.compiler-region-trace-experiment.v1", "riscv2x86.compiler-region-trace-experiment.v2", "riscv2x86.compiler-region-trace-experiment.v3", "riscv2x86.compiler-region-trace-experiment.v4"}
+                                                          "riscv2x86.compiler-region-trace-experiment.v1", "riscv2x86.compiler-region-trace-experiment.v2", "riscv2x86.compiler-region-trace-experiment.v3", "riscv2x86.compiler-region-trace-experiment.v4","riscv2x86.compiler-region-trace-experiment.v5"}
                 or contract.intent_profile_identity != profile.profile_identity
                 or contract.requirement_identity != requirement["requirementIdentity"]
                 or contract.approved_target_relation_identity != profile.approved_target_relation_identity
@@ -458,7 +458,7 @@ def build_l3_capability_registry_validator(
                                              for side in ("source", "target")}
                         if provider_detail.get("executionBindings") != expected_bindings:
                             raise ValueError("l3.execution.provider-binding-missing-or-stale")
-                    if contract.payload["schemaVersion"] in {"riscv2x86.compiler-region-trace-experiment.v1","riscv2x86.compiler-region-trace-experiment.v2", "riscv2x86.compiler-region-trace-experiment.v3", "riscv2x86.compiler-region-trace-experiment.v4"}:
+                    if contract.payload["schemaVersion"] in {"riscv2x86.compiler-region-trace-experiment.v1","riscv2x86.compiler-region-trace-experiment.v2", "riscv2x86.compiler-region-trace-experiment.v3", "riscv2x86.compiler-region-trace-experiment.v4","riscv2x86.compiler-region-trace-experiment.v5"}:
                         from .l3_qemu_memory_route import verify_detail
                         verify_detail(provider_detail, contract, source_artifact, target_artifact)
                     fragment_raw = provider_detail["fragmentResult"]

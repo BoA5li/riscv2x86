@@ -62,7 +62,7 @@ def main():
         (output/'run-status.json').write_text(json.dumps(status,indent=2,ensure_ascii=False))
     write()
     try:
-        from riscv2x86_py.l3_qemu_backend import validate_backend
+        from riscv2x86_py.l3_memory_backend import validate_backend
         from riscv2x86_py.l3_production_acceptance import audit_evaluation
         from riscv2x86_py.l3_trace_support import digest
         backend=validate_backend(args.backend)

@@ -90,6 +90,8 @@ def test_selection_reuses_shared_graph_and_rechecks_before_return(tmp_path, monk
         checked(_context, cvalidate, ctl, nested=True)
         return {'backendIdentity': digest(path)}
     monkeypatch.setattr(qemu, 'validate_backend', qvalidate)
+    from riscv2x86_py import l3_memory_backend as memory
+    monkeypatch.setattr(memory, 'validate_backend', qvalidate)
     monkeypatch.setattr(control, 'validate', cvalidate)
     for module in (atomic, fence, program):monkeypatch.setattr(module, 'validate', rootvalidate)
     paths = {'memory': str(base), 'control': str(ctl)}
