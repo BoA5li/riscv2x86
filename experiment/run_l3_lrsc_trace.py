@@ -32,12 +32,23 @@ def main():
         if not (out/'batch/batch-evaluation.json').is_file():
             status['normalProductionLogTail']=(out/'batch.log').read_text(errors='replace')[-12000:]
             raise ValueError('L3_LRSC_NORMAL_PRODUCTION_REPORT_MISSING:exit='+str(r.returncode))
-        status['currentStage']='independent_result_audit';write()
+        status['currentStage']='normal_production_result';write()
         from run_l3_memory_trace import batch_diagnostics
         batch=json.loads((out/'batch/batch-evaluation.json').read_text());cases=batch_diagnostics(out/'batch',batch);status['caseDiagnostics']=cases;write()
-        from riscv2x86_py.l3_lrsc_route import audit_result
+        from riscv2x86_py.l3_lrsc_route import audit_result,audit_prerequisites
+        reports=[json.loads(Path(case['reportPath']).read_text()) for case in cases]
+        try:
+            for report in reports: audit_prerequisites(report)
+        except ValueError as exc:
+            status['independentAuditDisposition']={'status':'not_run','reasonCode':str(exc)}
+            status['upstreamFailures']=[{'caseId':case['caseId'],
+                **{key:report[key] for key in ('reasonCodes','detail','orchestrationFailure','requirementStagingFailure') if report.get(key)}}
+                for case,report in zip(cases,reports)]
+            raise
+        status['currentStage']='independent_result_audit';write()
         audits=[]
-        for case in cases:audits.append(dict(audit_result(json.loads(Path(case['reportPath']).read_text())),caseId=case['caseId'],reportPath=case['reportPath']))
+        for case,report in zip(cases,reports):
+            audits.append(dict(audit_result(report),caseId=case['caseId'],reportPath=case['reportPath']))
         complete=bool(audits) and all(x['independentResultAuditComplete'] for x in audits)
         accepted=complete and all(x['status']=='verified' for x in audits)
         if (accepted and r.returncode!=0) or (not accepted and r.returncode==0):raise ValueError('L3_LRSC_BATCH_EXIT_STATUS_MISMATCH')

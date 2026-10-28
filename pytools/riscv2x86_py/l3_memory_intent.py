@@ -1,4 +1,5 @@
 """Proof-consuming bounded ordinary-memory intent producer, not mnemonic classification."""
+from .l3_trace_support import emit_json
 import argparse
 import json
 from pathlib import Path
@@ -160,7 +161,7 @@ def main():
     required={str(Path(__file__).with_name(n).resolve()) for n in ('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py')}
     if set(map(lambda p:str(Path(p).resolve()),args.dependency))!=required: raise ValueError('L3_MEMORY_PRODUCER_DEPENDENCIES_UNPINNED')
     model=None if not args.cache_model_file else json.loads(Path(args.cache_model_file).read_text())
-    print(json.dumps(produce(json.load(sys.stdin),model),sort_keys=True))
+    emit_json(lambda: produce(json.load(sys.stdin),model))
 
 
 if __name__=='__main__': main()

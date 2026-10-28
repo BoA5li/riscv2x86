@@ -51,6 +51,8 @@ def read_staged_requirements(report):
         error = RequirementArtifactError(level, failure_path, ValueError(failure["detail"]))
         error.detail.update({key: failure[key] for key in (
             "failureStage", "exceptionType", "detail", "artifactPath", "schema", "jsonPath")})
+        if "producerFailure" in failure:
+            error.detail["producerFailure"] = failure["producerFailure"]
         raise error
     try:
         staging = json.loads(marker.read_text(encoding="utf-8"))
@@ -200,5 +202,10 @@ def write_requirement_failure(report, exc, stage):
         "detail": str(exc), "artifactPath": str(report),
         "schema": "translated-report", "jsonPath": "$",
     }
+    diagnostic = getattr(exc, "producer_failure", None)
+    if isinstance(diagnostic, dict):
+        payload.update(producerFailure=diagnostic,
+            artifactPath=diagnostic["executionTranscriptPath"],
+            schema="riscv2x86.l3-intent-execution-diagnostic.v1", jsonPath="$.stdout")
     atomic_json(str(report) + ".requirement-failure.json",
                 {**payload, "failureIdentity": content_identity(payload)})

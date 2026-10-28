@@ -119,8 +119,10 @@ printf 'machine_preflight_status=%s\n' "$PREFLIGHT_STATUS"
 cat "$PHASE116_ROOT/machine-preflight.txt"
 ```
 
-A zero collector exit code alone is not preflight acceptance: require both
-source and target machine descriptions for both inputs, with no *_ERROR lines.
+Phase117 updates the inspector to return nonzero on missing or failed machine
+proofs. Require exit0 and the final complete=true/errors=[] summary, with both
+source and target machine descriptions for both inputs. See
+`phase117-l3-protocol-and-elf-resolution.md` for the corrected protocol and rerun guide.
 
 Then build and calibrate the dedicated backend. Do not substitute old AMO
 manifests or modify their stored hashes.

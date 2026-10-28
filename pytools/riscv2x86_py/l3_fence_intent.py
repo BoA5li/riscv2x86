@@ -1,4 +1,5 @@
 """Explicit fence-backend intent ingress; no synthesized synchronization observations."""
+from .l3_trace_support import emit_json
 import argparse
 import json
 from pathlib import Path
@@ -45,6 +46,6 @@ def produce(request):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--implementation',required=True);p.add_argument('--dependency',action='append',default=[]);a=p.parse_args()
     if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}:raise ValueError('L3_FENCE_PRODUCER_DEPENDENCIES_UNPINNED')
-    print(json.dumps(produce(json.load(sys.stdin)),sort_keys=True))
+    emit_json(lambda: produce(json.load(sys.stdin)))
 
 if __name__=='__main__':main()

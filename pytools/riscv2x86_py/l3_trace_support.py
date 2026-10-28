@@ -4,6 +4,20 @@ import json
 from pathlib import Path
 import struct
 import subprocess
+import sys
+from contextlib import redirect_stdout
+
+
+def emit_json(operation):
+    """Reserve stdout for one JSON document; nested diagnostics go to stderr.
+
+    Exceptions still propagate and the receiving process parses the entire
+    stdout. This is output-channel ownership, not response recovery.
+    """
+    with redirect_stdout(sys.stderr):
+        response = operation()
+        encoded = json.dumps(response, sort_keys=True)
+    print(encoded, flush=True)
 
 
 def digest(path):
@@ -60,21 +74,30 @@ class Elf:
             raise ValueError('L3_TRACE_ELF_SECTION_TABLE_INVALID')
         self.sections = [struct.unpack('<IIQQQQIIQQ', self.slice(offset+i*64, 64)) for i in range(count)]
         self.symbols = {}
-        for section in self.sections:
+        for table_index, section in enumerate(self.sections):
             if section[1] not in (2, 11): continue
             if section[9] != 24 or section[5] % 24 or section[6] >= count:
                 raise ValueError('L3_TRACE_ELF_SYMBOL_TABLE_INVALID')
             table = self.sections[section[6]]
+            if table[1] != 3:
+                raise ValueError('L3_TRACE_ELF_STRING_TABLE_INVALID')
             names = self.slice(table[4], table[5])
             for i in range(section[5] // 24):
                 name, info, other, idx, value, size = struct.unpack('<IBBHQQ', self.slice(section[4]+i*24, 24))
                 if name >= len(names): raise ValueError('L3_TRACE_ELF_SYMBOL_NAME_INVALID')
-                label = names[name:].split(b'\0', 1)[0].decode('utf-8')
+                end = names.find(b'\0', name)
+                if end < 0: raise ValueError('L3_TRACE_ELF_SYMBOL_NAME_INVALID')
+                try:
+                    label = names[name:end].decode('utf-8')
+                except UnicodeDecodeError as exc:
+                    raise ValueError('L3_TRACE_ELF_SYMBOL_NAME_INVALID') from exc
                 if idx and idx < count and label:
-                    symbol = (value, size, idx, info & 15)
-                    if label in self.symbols and self.symbols[label] != symbol:
-                        raise ValueError('L3_TRACE_ELF_AMBIGUOUS_SYMBOL:' + label)
-                    self.symbols[label] = symbol
+                    # STB_LOCAL names have translation-unit scope. Retain all
+                    # definitions and table provenance; resolve only on demand.
+                    record = {'symbol': (value, size, idx, info & 15),
+                              'binding': info >> 4, 'visibility': other & 3,
+                              'tableIndex': table_index, 'entryIndex': i}
+                    self.symbols.setdefault(label, []).append(record)
 
     def slice(self, offset, size):
         if offset < 0 or size < 0 or offset+size > len(self.data):
@@ -82,8 +105,17 @@ class Elf:
         return self.data[offset:offset+size]
 
     def symbol(self, name):
-        if name not in self.symbols: raise ValueError('L3_TRACE_ELF_SYMBOL_MISSING:' + name)
-        return self.symbols[name]
+        candidates = self.symbols.get(name, [])
+        if not candidates: raise ValueError('L3_TRACE_ELF_SYMBOL_MISSING:' + name)
+        # A name-only public query denotes its external definition when one
+        # exists. Multiple distinct external definitions remain ambiguous;
+        # weak/global strength is not permission to choose arbitrary bytes.
+        external = [r for r in candidates if r['binding'] in (1, 2, 10)]
+        candidates = external or candidates
+        definitions = {(r['symbol'], r['binding'], r['visibility']) for r in candidates}
+        if len(definitions) != 1:
+            raise ValueError('L3_TRACE_ELF_AMBIGUOUS_SYMBOL:' + name)
+        return next(iter(definitions))[0]
 
     def code(self, name):
         address, size, index, kind = self.symbol(name)

@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING, FrozenSet, Iterable, Mapping, Optional, Sequence, Set, Tuple, Union
 from enum import Enum
+import logging
 if TYPE_CHECKING:
     from .lrsc_source import SourceLrScSequenceModel
 
@@ -1301,7 +1302,8 @@ def build_source_semantic_model(
     # later Phase-6 stage consumes it and it never changes a lowering choice.
     # Keeping the ledger at this boundary prevents debugging from becoming a
     # raw-asm or textual-pcode backdoor in 6B--6F.
-    if (value_operation is None and local_branch_select is None and
+    if (logging.getLogger(__name__).isEnabledFor(logging.DEBUG) and
+            value_operation is None and local_branch_select is None and
             local_unconditional_jump is None and
             read_only_csr_candidate is None and
             not memory.has_instruction_barrier):
@@ -1315,7 +1317,7 @@ def build_source_semantic_model(
                              else None),
             }
 
-        print("[DEBUG] phase6a-unmodelled-canonical-dataflow:", {
+        logging.getLogger(__name__).debug("phase6a-unmodelled-canonical-dataflow: %s", {
             "operation_kind": operation.kind.value,
             "operation_complete": operation.complete,
             "may_trap": operation.may_trap,

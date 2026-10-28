@@ -1,4 +1,5 @@
 """Registered obligation-first dispatcher for bounded compiler-region traces."""
+from .l3_trace_support import emit_json
 import argparse
 import json
 from pathlib import Path
@@ -78,7 +79,7 @@ def main():
     if Path(a.implementation).resolve()!=Path(__file__).resolve() or set(str(Path(x).resolve()) for x in a.dependency)!=expected:
         raise ValueError('L3_TRACE_PRODUCER_DEPENDENCIES_UNPINNED')
     model=None if a.cache_model_file is None else json.loads(Path(a.cache_model_file).read_text())
-    print(json.dumps(produce(json.load(sys.stdin),model),sort_keys=True))
+    emit_json(lambda: produce(json.load(sys.stdin),model))
 
 
 if __name__=='__main__':main()

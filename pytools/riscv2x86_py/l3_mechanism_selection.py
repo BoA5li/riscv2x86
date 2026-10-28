@@ -124,6 +124,6 @@ def main():
     if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str(Path(__file__).with_name(n).resolve()) for n in deps}:raise ValueError('L3_MECHANISM_DEPENDENCIES_UNPINNED')
     request=json.load(sys.stdin)
     progress=lambda event:print(json.dumps(event,sort_keys=True),file=sys.stderr,flush=True)
-    selections=load(a.selection_file,progress=progress)
-    print(json.dumps(produce(request,selections),sort_keys=True))
+    from .l3_trace_support import emit_json
+    emit_json(lambda: produce(request,load(a.selection_file,progress=progress)))
 if __name__=='__main__':main()

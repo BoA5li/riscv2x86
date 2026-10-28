@@ -11,12 +11,21 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import tempfile
+import os
 
 from .l3_intent_requirements import _hash, parse_l3_intent_profile
 from .l3_provider_resolution import _binary_fingerprints
 
 SCHEMA = 'riscv2x86.l3-intent-producer.v1'
 TRUST = 'explicit-reviewed-external-semantic-producer'
+
+
+class IntentProducerError(ValueError):
+    """Typed diagnostic; never a semantic producer response."""
+    def __init__(self, diagnostic):
+        self.producer_failure = diagnostic
+        super().__init__(diagnostic['reasonCode'] + ':' + json.dumps(diagnostic, sort_keys=True))
 
 
 def digest(path):
@@ -73,6 +82,31 @@ def translation_timeout(command, source, execution_timeout):
     manifest = json.loads(Path(command[command.index(flag) + 1]).read_text())
     validate_manifest(manifest, source)
     return execution_timeout + manifest['timeoutSeconds']
+
+
+def _execution_transcript(report, request, command, stdout, stderr, returncode,
+                          timed_out, elapsed, timeout, *, replay=False):
+    """Immutable diagnostic evidence, including malformed protocol responses.
+
+    This record grants no semantic authority and is never a replacement for a
+    validated producer response. Unique names also preserve independent replays.
+    """
+    def text(value):
+        return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else (value or '')
+    stdout, stderr = text(stdout), text(stderr)
+    record = {'schemaVersion': 'riscv2x86.l3-intent-execution-diagnostic.v1',
+              'requestIdentity': request['requestIdentity'], 'command': command,
+              'stdout': stdout, 'stderr': stderr, 'returnCode': returncode,
+              'timedOut': timed_out, 'elapsedSeconds': elapsed,
+              'timeoutSeconds': timeout, 'semanticApproval': False,
+              'stdoutDigest': 'sha256:' + sha256(stdout.encode()).hexdigest(),
+              'stderrDigest': 'sha256:' + sha256(stderr.encode()).hexdigest()}
+    # Audit replays must not require write access to the evidence directory.
+    fd, name = tempfile.mkstemp(prefix=report.name + '.l3-intent-execution-',
+                                suffix='.json', dir=None if replay else report.parent)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        json.dump(record, stream, indent=2, ensure_ascii=False)
+    return {'executionTranscriptPath': name, 'executionTranscriptDigest': digest(name)}
 
 
 def produce_intents(source, report, manifest_path, *, replay=False):
@@ -144,6 +178,8 @@ def produce_intents(source, report, manifest_path, *, replay=False):
         completed = subprocess.run(value['command'], input=json.dumps(request, sort_keys=True),
             text=True, capture_output=True, timeout=value['timeoutSeconds'], check=False)
     except subprocess.TimeoutExpired as exc:
+        evidence = _execution_transcript(report, request, value['command'], exc.stdout, exc.stderr,
+            None, True, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
         tail = exc.stderr or ''
         if isinstance(tail, bytes):
             tail = tail.decode('utf-8', errors='replace')
@@ -151,16 +187,31 @@ def produce_intents(source, report, manifest_path, *, replay=False):
                   'failureStage': 'l3_intent_production',
                   'timeoutSeconds': value['timeoutSeconds'],
                   'elapsedSeconds': time.monotonic() - started,
-                  'command': value['command'], 'stderrTail': tail[-8000:]}
-        raise ValueError('l3.intent.producer-timed-out:' + json.dumps(detail, sort_keys=True)) from exc
+                  'command': value['command'], 'stderrTail': tail[-8000:], **evidence}
+        raise IntentProducerError(detail) from exc
+    except OSError as exc:
+        evidence = _execution_transcript(report, request, value['command'], '', str(exc),
+            None, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+        raise IntentProducerError({'reasonCode':'l3.intent.producer-start-failed',
+            'failureStage':'l3_intent_production', **evidence}) from exc
+    evidence = _execution_transcript(report, request, value['command'], completed.stdout, completed.stderr,
+        completed.returncode, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
     validate_manifest(value, source)
     if manifest_path.read_bytes() != original_manifest:
         raise ValueError('l3.intent.producer-modified-manifest')
     if report.read_bytes() != original:
         raise ValueError('l3.intent.producer-modified-input-report')
     if completed.returncode:
-        raise ValueError('l3.intent.producer-failed:' + str(completed.returncode) + ':' + completed.stderr[-2000:])
-    response = json.loads(completed.stdout)
+        raise IntentProducerError({'reasonCode':'l3.intent.producer-failed',
+            'failureStage':'l3_intent_production', 'returnCode':completed.returncode,
+            'stderrTail':completed.stderr[-2000:], **evidence})
+    try:
+        response = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        detail = {'reasonCode': 'l3.intent.producer-response-json-invalid',
+                  'failureStage': 'l3_intent_response_parse', **evidence,
+                  'line': exc.lineno, 'column': exc.colno, 'offset': exc.pos}
+        raise IntentProducerError(detail) from exc
     response_version=response.get('schemaVersion') if isinstance(response,dict) else None
     response_fields={'schemaVersion','requestIdentity','profiles'}
     if response_version=='riscv2x86.l3-intent-producer-response.v2': response_fields.add('dispositions')
@@ -168,7 +219,8 @@ def produce_intents(source, report, manifest_path, *, replay=False):
             response_version not in {'riscv2x86.l3-intent-producer-response.v1','riscv2x86.l3-intent-producer-response.v2'} or
             response['requestIdentity'] != request['requestIdentity'] or not isinstance(response['profiles'], list) or
             (response_version.endswith('.v2') and not isinstance(response['dispositions'], list))):
-        raise ValueError('l3.intent.producer-response-invalid')
+        raise IntentProducerError({'reasonCode':'l3.intent.producer-response-invalid',
+            'failureStage':'l3_intent_response_validation', **evidence})
     expected = {(item['finding']['fragment']['id']): item for item in items}
     if len(expected) != len(items):
         raise ValueError('l3.intent.duplicate-candidate-fragment')
