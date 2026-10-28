@@ -237,6 +237,19 @@ def main() -> int:
             validation_runner=validation_runner,
         )
     except Exception as exc:
+        # Diagnostic failure must never replace the original pipeline exception.
+        import traceback
+        try:
+            from .translation_backend_failure import digest
+            failure = {"schemaVersion": "riscv2x86.translation-pipeline-failure.v1",
+                       "semanticApproval": False, "backendExecuted": True,
+                       "exceptionType": type(exc).__name__, "message": str(exc),
+                       "traceback": traceback.format_exc(),
+                       "inputDigest": digest(Path(args.inp).read_bytes())}
+            with Path(str(args.out) + ".pipeline-failure.json").open("x", encoding="utf-8") as stream:
+                json.dump(failure, stream, ensure_ascii=False, indent=2)
+        except (OSError, TypeError, ValueError) as diagnostic_error:
+            print("Pipeline diagnostic could not be saved: " + str(diagnostic_error), file=sys.stderr)
         print(
             "[riscv2x86-py] translation pipeline failed: "
             f"{type(exc).__name__}: {exc}",

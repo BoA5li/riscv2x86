@@ -890,6 +890,8 @@ def _memory_renderer_semantic_contract_id(
 ) -> str | None:
     """Return a registered direct scalar memory route, never a generic asm fallback."""
     from .source_model import SourceOperandAccess, SourceOperandKind, SourceOperationKind
+    from .memory_access_semantics import value_matches
+    width = source_model.memory.access_width_bits
     operands = tuple(source_model.operands.operands)
     address = [item for item in operands if item.kind is SourceOperandKind.ADDRESS]
     if len(address) != 1 or address[0].address is None or not address[0].address.provenance_known:
@@ -902,14 +904,14 @@ def _memory_renderer_semantic_contract_id(
         return None
     if source_model.operation.kind is SourceOperationKind.LOAD:
         values = [item for item in operands if item.access is SourceOperandAccess.OUTPUT]
-        if len(operands) == 2 and len(values) == 1 and values[0].width_bits in {32, 64}:
+        if len(operands) == 2 and len(values) == 1 and width in {32, 64} and value_matches(source_model.memory, values[0], width, "load"):
             suffix = "gpr-address" if displacement == 0 else "gpr-address-disp32"
-            return f"x86.gnu-att.memory.load.{suffix}.u{values[0].width_bits}.v1"
+            return f"x86.gnu-att.memory.load.{suffix}.u{width}.v1"
     if source_model.operation.kind is SourceOperationKind.STORE:
         values = [item for item in operands if item.access is SourceOperandAccess.INPUT]
-        if len(operands) == 2 and len(values) == 1 and values[0].width_bits in {32, 64}:
+        if len(operands) == 2 and len(values) == 1 and width in {8, 16, 32, 64} and value_matches(source_model.memory, values[0], width, "store"):
             suffix = "gpr-address" if displacement == 0 else "gpr-address-disp32"
-            return f"x86.gnu-att.memory.store.{suffix}.u{values[0].width_bits}.v1"
+            return f"x86.gnu-att.memory.store.{suffix}.u{width}.v1"
     return None
 
 

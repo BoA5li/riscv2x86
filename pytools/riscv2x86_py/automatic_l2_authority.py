@@ -535,7 +535,7 @@ def _memory_authority(
             or address_operand is None or address_operand.type_kind != "pointer"
             or address_operand.access_mode != "address"
             or value_operand is None or value_operand.type_kind != "integer"
-            or value_operand.width_bits != facts.width_bytes * 8):
+            or not facts.matches_value_width(value_operand.width_bits)):
         return None
     try:
         memory_object, object_id = bind_memory_object_authority(
@@ -743,7 +743,7 @@ def _memory_authority_failure_reason(
     if not _INTEGER_POINTER.fullmatch(str(address_declaration.get("type", "")).strip()):
         return "L2_MEMORY_ADDRESS_NOT_TYPED_POINTER"
     value_width = _width(str(value_declaration.get("type", "")))
-    if value_width != facts.width_bytes * 8:
+    if not facts.matches_value_width(value_width):
         return "L2_MEMORY_VALUE_WIDTH_MISMATCH"
     if asm_ids[facts.address_operand_index] not in params:
         return "L2_MEMORY_ADDRESS_NOT_FUNCTION_ARGUMENT"

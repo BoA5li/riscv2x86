@@ -13,8 +13,12 @@ def prove(r):
         "x86.gnu-att.memory.load.gpr-address.u64.v1": ("load", 64),
         "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1": ("load", 32),
         "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": ("load", 64),
+        "x86.gnu-att.memory.store.gpr-address.u8.v1": ("store", 8),
+        "x86.gnu-att.memory.store.gpr-address.u16.v1": ("store", 16),
         "x86.gnu-att.memory.store.gpr-address.u32.v1": ("store", 32),
         "x86.gnu-att.memory.store.gpr-address.u64.v1": ("store", 64),
+        "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1": ("store", 8),
+        "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1": ("store", 16),
         "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": ("store", 32),
         "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": ("store", 64),
     }.get(semantic_id)
@@ -31,6 +35,7 @@ def prove(r):
         or (contract.operation_kind == "store" and s.memory.writes_memory
             and not s.memory.reads_memory)
     )
+    from .memory_access_semantics import value_matches
     expected_value_access = "output" if contract.operation_kind == "load" else "input"
     if (expected is None or contract.semantic_contract_id != semantic_id or
             semantic_id not in r.target_semantic_catalog.semantic_contract_ids or
@@ -41,7 +46,9 @@ def prove(r):
             address is None or value is None or
             getattr(getattr(address, "access", None), "value", "") != "address" or
             getattr(getattr(value, "access", None), "value", "") != expected_value_access or
-            value.width_bits != contract.value_width_bits or
+            not value_matches(s.memory, value, contract.value_width_bits, contract.operation_kind) or
+            contract.carrier_width_bits != value.width_bits or
+            contract.value_projection != s.memory.value_projection or
             not isinstance(displacement, int) or isinstance(displacement, bool) or
             not -(1 << 31) <= displacement < (1 << 31) or
             contract.address_displacement_bytes != displacement or

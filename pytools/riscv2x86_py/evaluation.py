@@ -412,6 +412,20 @@ def _translation_command_failure_result(
                        ("evaluation.translation-preflight-rejected", failure["reasonCode"]), None,
                        plan=plan, environment=environment, preflight_failure=failure)
     if not archive_path.is_file():
+        backend_path = Path(str(_path(request.translated_report, work)) + ".backend-failure.json")
+        if backend_path.is_file():
+            from .translation_backend_failure import read_failure
+            try:
+                failure = read_failure(_path(request.translated_report, work),
+                    _path(request.source_root, work) / request.source_relative_path, record.command, record.returncode)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                failure = {"failureStage": "backend_failure_diagnostic", "detail": str(exc)}
+                code = "evaluation.translation-backend-diagnostic-invalid"
+            else:
+                code = "evaluation.translation-backend-failed"
+            return _result(request, work, commands, (), ValidationStatus.FAILED,
+                (code, "evaluation.translation-attempt-archive-missing"), None,
+                plan=plan, environment=environment, backend_failure=failure)
         return _result(
             request, work, commands, (), ValidationStatus.FAILED,
             ("evaluation.translation-attempt-archive-missing",), None,
@@ -949,7 +963,8 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
             target_program: ProgramArtifact | None = None,
             requirement_failure: Mapping[str, object] | None = None,
             skip_requirement_linkage: bool = False,
-            preflight_failure: Mapping[str, object] | None = None) -> dict[str, object]:
+            preflight_failure: Mapping[str, object] | None = None,
+            backend_failure: Mapping[str, object] | None = None) -> dict[str, object]:
     def program(value: ProgramArtifact | None) -> object:
         return None if value is None else {
             "artifact_id": value.artifact_id, "artifact_path": value.artifact_path,
@@ -957,7 +972,9 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
             "build_identity": value.build_identity,
         }
     try:
-        linkage = ({"schemaVersion": "riscv2x86.translation-preflight-evaluation-link.v1",
+        linkage = ({"schemaVersion": "riscv2x86.translation-backend-evaluation-link.v1",
+                    "backendFailure": dict(backend_failure)} if backend_failure is not None else
+                   {"schemaVersion": "riscv2x86.translation-preflight-evaluation-link.v1",
                     "preflightFailure": dict(preflight_failure)} if preflight_failure is not None
                    else {} if requirement_failure is not None or skip_requirement_linkage
                    else _translation_evaluation_linkage(request, work, attempts))

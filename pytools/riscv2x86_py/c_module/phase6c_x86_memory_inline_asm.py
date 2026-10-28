@@ -35,6 +35,8 @@ class X86MemoryInlineAsmContract:
     value_operand_index: int | None = None
     value_width_bits: int | None = None
     address_displacement_bytes: int | None = None
+    carrier_width_bits: int | None = None
+    value_projection: str = ""
 
 
 _LOAD_IDS = {
@@ -44,8 +46,12 @@ _LOAD_IDS = {
     "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": 64,
 }
 _STORE_IDS = {
+    "x86.gnu-att.memory.store.gpr-address.u8.v1": 8,
+    "x86.gnu-att.memory.store.gpr-address.u16.v1": 16,
     "x86.gnu-att.memory.store.gpr-address.u32.v1": 32,
     "x86.gnu-att.memory.store.gpr-address.u64.v1": 64,
+    "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1": 8,
+    "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1": 16,
     "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": 32,
     "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": 64,
 }
@@ -109,7 +115,8 @@ def derive_x86_memory_inline_asm_constraints(source_model: SourceSemanticModel, 
     if len(source_model.operands.operands) != 2 or len(values) != 1:
         return _fail(candidate_plan, "X86_MEMORY_ASM_ADDRESS_BINDING_MISSING")
     value = values[0]
-    if (value.kind is not SourceOperandKind.REGISTER or value.width_bits != width or
+    from ..memory_access_semantics import value_matches
+    if (value.kind is not SourceOperandKind.REGISTER or not value_matches(source_model.memory, value, width, expected_kind.value) or
             value.early_clobber or value.tied_to_source_operand_index is not None):
         return _fail(candidate_plan, "X86_MEMORY_ASM_ADDRESS_BINDING_MISSING")
 
@@ -125,7 +132,7 @@ def derive_x86_memory_inline_asm_constraints(source_model: SourceSemanticModel, 
             source_operand_index=value.source_operand_index,
             role=(TargetOperandRole.OUTPUT if expected_kind is SourceOperationKind.LOAD else TargetOperandRole.INPUT),
             allowed_classes=frozenset({TargetOperandClass.GENERAL_REGISTER}),
-            required_width_bits=width,
+            required_width_bits=value.width_bits,
             required_signedness=value.signedness,
         ),
     ]
@@ -138,6 +145,8 @@ def derive_x86_memory_inline_asm_constraints(source_model: SourceSemanticModel, 
         address_operand_index=address.source_operand_index,
         value_operand_index=value.source_operand_index,
         value_width_bits=width,
+        carrier_width_bits=value.width_bits,
+        value_projection=source_model.memory.value_projection,
         address_displacement_bytes=displacement,
     )
     memory = TargetMemoryConstraint(

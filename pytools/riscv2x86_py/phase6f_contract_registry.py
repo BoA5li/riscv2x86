@@ -1132,8 +1132,12 @@ def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
         "x86.gnu-att.memory.load.gpr-address.u64.v1": ("load", 64),
         "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1": ("load", 32),
         "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": ("load", 64),
+        "x86.gnu-att.memory.store.gpr-address.u8.v1": ("store", 8),
+        "x86.gnu-att.memory.store.gpr-address.u16.v1": ("store", 16),
         "x86.gnu-att.memory.store.gpr-address.u32.v1": ("store", 32),
         "x86.gnu-att.memory.store.gpr-address.u64.v1": ("store", 64),
+        "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1": ("store", 8),
+        "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1": ("store", 16),
         "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": ("store", 32),
         "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": ("store", 64),
     }.get(semantic_id)
@@ -1160,9 +1164,14 @@ def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
             address.role is not TargetOperandRole.INPUT or
             address.allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
             value.allowed_classes != frozenset({TargetOperandClass.GENERAL_REGISTER}) or
-            value.required_width_bits != expected[1]):
+            value.required_width_bits != contract.carrier_width_bits or
+            not ((contract.value_projection == "identity" and contract.carrier_width_bits == expected[1])
+                 or (expected[0] == "store" and contract.value_projection == "low_bits"
+                     and contract.carrier_width_bits in {16,32,64}
+                     and contract.carrier_width_bits > expected[1]))):
         return None
-    suffix = "l" if expected[1] == 32 else "q"
+    suffix = {8: "b", 16: "w", 32: "l", 64: "q"}[expected[1]]
+    value_view = {8: "b", 16: "w", 32: "k", 64: "q"}[expected[1]]
     address_format = "(%1)" if expected[0] == "load" else "(%0)"
     if displacement:
         address_format = f"{displacement}{address_format}"
@@ -1178,7 +1187,7 @@ def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
         if value.role is not TargetOperandRole.INPUT:
             return None
         recipe = GnuInlineAsmRecipe(
-            template=f"mov{suffix} %1, {address_format}",
+            template=f"mov{suffix} %{value_view}1, {address_format}",
             output_operand_indexes=(),
             input_operand_indexes=(address.source_operand_index, value.source_operand_index),
         )
@@ -1433,8 +1442,12 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
                 "x86.gnu-att.memory.load.gpr-address.u64.v1",
                 "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1",
                 "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1",
+                "x86.gnu-att.memory.store.gpr-address.u8.v1",
+                "x86.gnu-att.memory.store.gpr-address.u16.v1",
                 "x86.gnu-att.memory.store.gpr-address.u32.v1",
                 "x86.gnu-att.memory.store.gpr-address.u64.v1",
+                "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1",
+                "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1",
                 "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1",
                 "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1",
             )

@@ -268,7 +268,8 @@ def main() -> int:
 
     if any(Path(str(report) + suffix).exists() for suffix in (
             "", ".attempts.json", ".requirement-staging.json", ".requirement-failure.json",
-            ".l2-requirements.json", ".l3-requirements.json", ".l3-intent-production.json", ".preflight.json")):
+            ".l2-requirements.json", ".l3-requirements.json", ".l3-intent-production.json", ".preflight.json",
+            ".pipeline-failure.json", ".backend-failure.json")):
         if Path(str(report) + ".preflight.json").exists():
             print("Preflight artifact already exists; use a fresh work directory", file=sys.stderr)
             return 2
@@ -453,6 +454,13 @@ def main() -> int:
     (report.parent / "backend.stderr").write_text(back.stderr, encoding="utf-8")
     if back.returncode:
         print(back.stderr, file=sys.stderr)
+        try:
+            from .translation_backend_failure import write_failure
+            write_failure(report, args.source,
+                          [sys.executable, "-m", "riscv2x86_py.automatic_translation_command", *sys.argv[1:]],
+                          backend, back)
+        except (OSError, ValueError, TypeError) as diagnostic_error:
+            print("Backend failure diagnostic could not be saved: " + str(diagnostic_error), file=sys.stderr)
     # Positive backend exit codes include semantic terminal/withheld outcomes.
     # Classify authenticated artifacts before deciding the command exit code.
     if back.returncode >= 0 and report.is_file():

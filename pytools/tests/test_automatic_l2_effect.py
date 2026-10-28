@@ -64,7 +64,7 @@ def test_store_trace_rejects_multiple_unmodelled_writes():
 
 
 def _memory_authority():
-    return {"memoryObjects": [{"sizeBytes": 32}]}
+    return {"memoryObjects": [{"sizeBytes": 32, "minimumAlignment": 8}]}
 
 
 def test_pointer_only_load_harness_does_not_emit_unused_sample_values():

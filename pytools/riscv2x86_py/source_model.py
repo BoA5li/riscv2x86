@@ -326,6 +326,10 @@ class SourceMemoryModel:
 
     has_atomic: bool
     atomic_orderings: FrozenSet[str]
+    # Decoder IR access width and an explicitly traced value operand.
+    access_width_bits: int | None = None
+    value_operand_index: int | None = None
+    value_projection: str = ""
 
 @dataclass(frozen=True)
 class SourceMicroArchModel:
@@ -1168,6 +1172,11 @@ def build_source_semantic_model(
     )
 
     memory = _build_memory_model(summary, runtime_facts)
+    from .memory_access_semantics import decoded_access
+    access = decoded_access(blocks, runtime_facts)
+    if access is not None:
+        memory = replace(memory, access_width_bits=access[0],
+                         value_operand_index=access[1], value_projection=access[2])
 
     # ------------------------------------------------------------------
     # Phase 6C-1 semantic facts.

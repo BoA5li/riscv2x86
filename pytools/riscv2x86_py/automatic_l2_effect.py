@@ -399,6 +399,17 @@ def _object_relative_memory_wrapper(
         raise ValueError("automatic memory harness supports one scalar value operand")
     size, offset, width = (int(objects[0]["sizeBytes"]), int(getattr(facts, "byte_offset")),
                            int(getattr(facts, "width_bytes")))
+    # The called C function may dereference/return the pointee. Its backing
+    # object must therefore have that effective type, not a char-array type.
+    from .l2_memory_object import _c_scalar_width_bytes
+    pointer_type = str(parameter_types[pointer_index]).strip()
+    if pointer_type.count("*") != 1 or not pointer_type.endswith("*"):
+        raise ValueError("memory harness requires a typed scalar pointer")
+    pointee = " ".join(pointer_type[:-1].replace("const", "").replace("volatile", "").split())
+    element_bytes = _c_scalar_width_bytes(pointee)
+    alignment = max(16, int(objects[0]["minimumAlignment"]))
+    if not element_bytes or size % element_bytes or alignment & (alignment - 1):
+        raise ValueError("memory harness typed object extent/alignment is invalid")
     samples = 8 if scalar_indexes else 1
     values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
               "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
@@ -418,7 +429,9 @@ def _object_relative_memory_wrapper(
     if scalar_indexes:
         lines.append("static const uint64_t values[8]={" + ",".join(values) + "};")
     lines += [f"for(unsigned sample=0;sample<{samples};++sample){{",
-             f"_Alignas(16) unsigned char object[{size}], before[{size}];",
+             f"_Alignas({alignment}) {pointee} typed_object[{size // element_bytes}];",
+             "unsigned char *object=(unsigned char *)typed_object;",
+             f"unsigned char before[{size}];",
              f"for(unsigned i=0;i<{size};++i) object[i]=(unsigned char)(0x31u+i*17u);",
              f"memcpy(before,object,{size});", "uint64_t observed=0;", "int outside=0;"]
     invocation = f"{name}({','.join(args)})"

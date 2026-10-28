@@ -412,7 +412,7 @@ def assess_memory_authority_materializability(
         proven_alignment = 0
     value_declaration = declarations.get(value_id)
     if (not value_id or not isinstance(value_declaration, Mapping)
-            or _c_scalar_width_bytes(value_declaration.get("type")) != facts.width_bytes
+            or not facts.matches_value_width(_c_scalar_width_bytes(value_declaration.get("type")) * 8)
             or facts.value_operand_index == facts.address_operand_index):
         reasons.add("L2_MEMORY_VALUE_FLOW_UNPROVED")
     alias_domain = object_binding.get("aliasDomainIdentity")
@@ -476,18 +476,20 @@ class L2MemoryProofFacts:
     decoder_address_node_identity: str
     facts_identity: str = ""
     schema_version: str = L2_MEMORY_PROOF_FACTS_SCHEMA
+    carrier_width_bits: int = 0
+    value_projection: str = ""
 
     def __post_init__(self) -> None:
-        if self.schema_version != L2_MEMORY_PROOF_FACTS_SCHEMA or not self.fragment_id:
+        if self.schema_version not in {L2_MEMORY_PROOF_FACTS_SCHEMA, "riscv2x86.l2-memory-proof-facts.v3"} or not self.fragment_id:
             raise ValueError("memory proof facts schema/fragment is invalid")
         if self.access_kind not in {"load", "store"}:
             raise ValueError("memory proof access kind is unsupported")
         if any(isinstance(x, bool) or not isinstance(x, int) or x < 0 for x in
                (self.address_operand_index, self.value_operand_index, self.byte_offset)):
             raise ValueError("memory proof operand index/offset is invalid")
-        if self.width_bytes not in {1, 2, 4, 8}:
+        if type(self.width_bytes) is not int or self.width_bytes not in {1, 2, 4, 8}:
             raise ValueError("memory proof width is unsupported")
-        if (self.required_alignment <= 0
+        if (type(self.required_alignment) is not int or self.required_alignment <= 0
                 or self.byte_offset % self.required_alignment != 0):
             raise ValueError("memory proof alignment is invalid")
         if (not self.object_origin_kind or not self.object_lifetime_scope
@@ -498,10 +500,25 @@ class L2MemoryProofFacts:
                       self.alias_complete, self.non_atomic))
         if self.complete != closed:
             raise ValueError("memory proof completeness does not match safety facts")
+        if self.schema_version.endswith(".v3"):
+            if not self.matches_value_width(self.carrier_width_bits):
+                raise ValueError("memory proof value projection is invalid")
+        elif self.carrier_width_bits or self.value_projection:
+            raise ValueError("legacy memory proof cannot carry projection facts")
         expected = _identity(self._payload(False))
         if self.facts_identity and self.facts_identity != expected:
             raise ValueError("memory proof identity does not match content")
         object.__setattr__(self, "facts_identity", expected)
+
+    def matches_value_width(self, width_bits: int) -> bool:
+        if type(width_bits) is not int or width_bits not in {8, 16, 32, 64}:
+            return False
+        if self.schema_version == L2_MEMORY_PROOF_FACTS_SCHEMA:
+            return width_bits == self.width_bytes * 8
+        return (width_bits == self.carrier_width_bits and
+                ((self.value_projection == "identity" and width_bits == self.width_bytes * 8)
+                 or (self.access_kind == "store" and self.value_projection == "low_bits"
+                     and width_bits > self.width_bytes * 8)))
 
     def _payload(self, include_identity: bool) -> dict[str, object]:
         result = {"schemaVersion": self.schema_version, "fragmentId": self.fragment_id,
@@ -514,6 +531,8 @@ class L2MemoryProofFacts:
           "boundsProven": self.bounds_proven, "alignmentProven": self.alignment_proven,
           "aliasComplete": self.alias_complete, "nonAtomic": self.non_atomic,
           "memoryOrder": self.memory_order, "complete": self.complete}
+        if self.schema_version.endswith(".v3"):
+            result.update(carrierWidthBits=self.carrier_width_bits, valueProjection=self.value_projection)
         result["decoderAddressNodeIdentity"] = self.decoder_address_node_identity
         if include_identity:
             result["factsIdentity"] = self.facts_identity
@@ -542,14 +561,16 @@ def memory_proof_facts_from_source_model(
     if len(addresses) != 1 or len(values) != 1:
         return None
     address, value = addresses[0].address, values[0]
-    width = getattr(value, "width_bits", None)
+    memory = getattr(source_model, "memory", None)
+    width = getattr(memory, "access_width_bits", None)
+    from .memory_access_semantics import value_matches
+    if not value_matches(memory, value, width, kind):
+        return None
     offset = getattr(address, "byte_offset", None)
-    alignment = getattr(address, "alignment_bytes", None)
-    # A typed scalar C pointer supplies its pointee alignment at the compiler
-    # boundary.  If Phase 6A has no numeric alignment yet, require natural
-    # alignment and let the frontend sidecar binder prove the pointer type.
-    required_alignment = alignment if isinstance(alignment, int) else (
-        width // 8 if isinstance(width, int) else 0)
+    # This route requires natural access alignment, not carrier alignment.
+    # These structural coordinates are not object authority: the later binder
+    # must independently prove base alignment, actual size, lifetime and ranges.
+    required_alignment = width // 8 if type(width) is int else 0
     safe = dict(
         unique_object=bool(getattr(address, "provenance_known", False)),
         bounds_proven=isinstance(offset, int) and offset >= 0,
@@ -559,14 +580,17 @@ def memory_proof_facts_from_source_model(
         non_atomic=not bool(getattr(getattr(source_model, "memory", None), "has_atomic", True)),
     )
     if (not isinstance(width, int) or width % 8 or width // 8 not in {1, 2, 4, 8}
-            or not isinstance(offset, int) or required_alignment <= 0):
+            or type(offset) is not int or offset < 0 or required_alignment <= 0
+            or offset % required_alignment):
         return None
     return L2MemoryProofFacts(
         fragment_id, kind, addresses[0].source_operand_index,
         value.source_operand_index, offset, width // 8, required_alignment,
         "function_argument", "function_call", "object:0",
         memory_order="relaxed", complete=all(safe.values()),
-        decoder_address_node_identity=str(getattr(address, "address_id", "")), **safe,
+        decoder_address_node_identity=str(getattr(address, "address_id", "")),
+        schema_version="riscv2x86.l2-memory-proof-facts.v3",
+        carrier_width_bits=value.width_bits, value_projection=memory.value_projection, **safe,
     )
 
 
@@ -577,6 +601,9 @@ def memory_proof_facts_from_dict(value: Mapping[str, object]) -> L2MemoryProofFa
       "boundsProven", "alignmentProven", "aliasComplete", "nonAtomic",
       "memoryOrder", "complete", "factsIdentity"}
     fields.add("decoderAddressNodeIdentity")
+    projected = value.get("schemaVersion") == "riscv2x86.l2-memory-proof-facts.v3"
+    if projected:
+        fields.update({"carrierWidthBits", "valueProjection"})
     if set(value) != fields:
         raise ValueError("memory proof facts fields are incomplete or unknown")
     def text(key: str) -> str:
@@ -603,6 +630,8 @@ def memory_proof_facts_from_dict(value: Mapping[str, object]) -> L2MemoryProofFa
         flag("nonAtomic"), text("memoryOrder"), flag("complete"),
         text("decoderAddressNodeIdentity"),
         text("factsIdentity"), text("schemaVersion"),
+        integer("carrierWidthBits") if projected else 0,
+        text("valueProjection") if projected else "",
     )
 
 

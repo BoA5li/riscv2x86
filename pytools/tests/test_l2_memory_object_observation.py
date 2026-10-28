@@ -99,8 +99,10 @@ def test_source_model_requires_one_proven_object_and_natural_alignment():
                         address=address),
     ))
     model = SimpleNamespace(operation=SimpleNamespace(kind=SimpleNamespace(value="load")),
-                            operands=operands, memory=SimpleNamespace(has_atomic=False))
-    assert memory_proof_facts_from_source_model("fragment:any", model) == _facts()
+                            operands=operands, memory=SimpleNamespace(has_atomic=False,
+                                access_width_bits=64, value_operand_index=0, value_projection="identity"))
+    assert memory_proof_facts_from_source_model("fragment:any", model) == _facts(schema_version="riscv2x86.l2-memory-proof-facts.v3",
+                      carrier_width_bits=64, value_projection="identity")
     ambiguous = SimpleNamespace(operation=model.operation,
         operands=SimpleNamespace(complete=True, operands=operands.operands + (operands.operands[1],)),
         memory=model.memory)
