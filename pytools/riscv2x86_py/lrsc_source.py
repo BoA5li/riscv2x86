@@ -176,6 +176,10 @@ class SourceLrScSequenceModel:
             **asdict(self),
             'role_operand_indexes': dict(self.role_operand_indexes),
             'register_roles': dict(self.register_roles),
+            # The immutable model uses tuples; the public wire DTO uses JSON
+            # arrays so a saved/reloaded contract is structurally identical.
+            'lr_ordering_bits': list(self.lr_ordering_bits),
+            'sc_ordering_bits': list(self.sc_ordering_bits),
             'sourceStateModelComplete': True, 'semanticApproval': False,
             'states': ['load_reserved', 'compute_next', 'store_conditional',
                        'retry_or_exit'],

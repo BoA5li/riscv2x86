@@ -11,4 +11,6 @@ def spec(finding,functions):
     if not (finding.get('approvalArtifact') or {}).get('l2LrscProofFacts'):
         raise ValueError('L3_LRSC_APPROVED_SEQUENCE_REQUIRED')
     from .l3_atomic_spec import spec as common
-    return common(finding,functions,_sequence=True)
+    from .l3_trace_support import require_json_document
+    return require_json_document(common(finding,functions,_sequence=True),
+                                 'L3_LRSC_SPEC_JSON_INVALID')

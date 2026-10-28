@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-from .l3_trace_support import digest,identity,save
+from .l3_trace_support import digest,identity,save,require_json_document,require_json_match
 from .l3_lrsc_spec import CAPABILITY,LIMITS
 from .l3_lrsc_backend import validate as backend_validate,capture,parse_capture,command
 from .l3_lrsc_deployment import prepare as deploy,validate as replay_deployment
@@ -38,6 +38,7 @@ def dimensions(contract,reports,bindings,artifact,source,target,prior,l2_scope):
 
 
 def replay(detail,source,target,artifact):
+    require_json_document(detail,'L3_LRSC_REPLAY_JSON_INVALID')
     contract_path=Path(detail['contractPath'])
     if digest(contract_path)!=detail['contractDigest']:raise ValueError('L3_LRSC_CONTRACT_CHANGED')
     contract=json.loads(contract_path.read_text())
@@ -57,7 +58,7 @@ def replay(detail,source,target,artifact):
             or tuple(profile.source_capabilities)!=(CAPABILITY,) or tuple(profile.target_capabilities)!=(CAPABILITY,)
             or [p.to_dict() for p in profile.required_properties]!=deployment['spec']['obligations']['requiredProperties']):
         raise ValueError('L3_LRSC_REPLAY_RECEIPT_OR_REQUIREMENT_CHANGED')
-    if detail.get('lrscDeployment')!=deployment:raise ValueError('L3_LRSC_REPORTED_DEPLOYMENT_MISMATCH')
+    require_json_match(deployment,detail.get('lrscDeployment'),'L3_LRSC_REPORTED_DEPLOYMENT_MISMATCH')
     from .l3_lrsc_spec import parse_samples
     rebuilt={}
     for side in ('source','target'):
@@ -68,8 +69,8 @@ def replay(detail,source,target,artifact):
         paths=parse_capture(trace.read_text(),e['token'],'riscv64' if side=='source' else 'x86_64',region,len(deployment['samplePlan']['inputs']))
         rows=parse_samples(cmd['stdout'],e['token'],deployment['samplePlan'])
         rebuilt[side]=report(side,backend,deployment,paths,rows,e)
-        if rebuilt[side]!=observed:raise ValueError('L3_LRSC_OBSERVATION_REPLAY_MISMATCH')
-    if detail['comparison']!=comparison(rebuilt,deployment['spec']):raise ValueError('L3_LRSC_COMPARISON_REPLAY_MISMATCH')
+        require_json_match(rebuilt[side],observed,'L3_LRSC_OBSERVATION_REPLAY_MISMATCH')
+    require_json_match(comparison(rebuilt,deployment['spec']),detail['comparison'],'L3_LRSC_COMPARISON_REPLAY_MISMATCH')
     return contract
 
 
@@ -116,7 +117,7 @@ def build_route(config):
             stage='independent_replay';replay(detail,source,target,artifact);save(work/'observation-result.json',detail)
             return ValidationLayerResult(ValidationLevel.L3,ValidationStatus(fragment['status']),identity(detail),json.dumps(detail,sort_keys=True))
         except (OSError,ValueError,KeyError,TypeError,IndexError,subprocess.TimeoutExpired) as exc:
-            return ValidationLayerResult(ValidationLevel.L3,ValidationStatus.INCONCLUSIVE,detail=json.dumps({'reasonCodes':[str(exc)],'failureStage':'l3-atomic-'+stage,'evidenceProductionDisposition':'not_complete'}))
+            return ValidationLayerResult(ValidationLevel.L3,ValidationStatus.INCONCLUSIVE,detail=json.dumps({'reasonCodes':[str(exc)],'failureStage':'l3-lrsc-'+stage,'evidenceProductionDisposition':'not_complete'}))
     return validate
 
 
@@ -175,6 +176,9 @@ def audit_result(evaluation):
     if any(b['contextIdentity']!=context for b in bindings.values()):raise ValueError('L3_LRSC_AUDIT_CONTEXT_MISMATCH')
     prior=[SimpleNamespace(evidence_identity=l['evidenceIdentity']) for l in layers[:3]];l2_scope=json.loads(layers[2]['detail'])['claimScope']
     expected,cmp=dimensions(contract,detail['platformReports'],bindings,artifact,source,target,prior,l2_scope)
+    require_json_match(expected,detail['fragmentResult'],'L3_LRSC_AUDIT_RESULT_REPLAY_MISMATCH')
+    require_json_match(cmp,detail['comparison'],'L3_LRSC_AUDIT_RESULT_REPLAY_MISMATCH')
+    require_json_match(contract['deployment']['spec']['obligations'],detail['propertyObligations'],'L3_LRSC_AUDIT_RESULT_REPLAY_MISMATCH')
     if (l2_scope!='architectural' or expected!=detail['fragmentResult'] or cmp!=detail['comparison']
             or detail.get('physicalMicroarchitectureClaimed') is not False
             or detail.get('reasonCodes')!=sorted({r for c in cmp.values() for r in c['reasonCodes']})

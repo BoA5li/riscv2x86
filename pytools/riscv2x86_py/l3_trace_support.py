@@ -1,6 +1,7 @@
 """Small immutable-file and ELF helpers for the registered TCG trace route."""
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 import struct
 import subprocess
@@ -26,6 +27,68 @@ def digest(path):
 
 def identity(value):
     return 'sha256:' + sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+
+
+def require_json_document(value, code='L3_JSON_DOCUMENT_INVALID'):
+    """Require a lossless JSON-native DTO; do not coerce tuples, keys or types.
+
+    Internal symbolic terms may use tuples. Only exported/persisted DTOs cross
+    this boundary. Booleans and integers remain distinct during replay.
+    """
+    active = set()
+    def visit(item, path):
+        kind = type(item)
+        if kind in (str, bool, int, type(None)):
+            return
+        if kind is float and math.isfinite(item):
+            return
+        if kind not in (dict, list) or id(item) in active:
+            raise ValueError(code + ':' + json.dumps(
+                {'path': path, 'type': kind.__name__, 'reason': 'non-json-native-or-cyclic'}, sort_keys=True))
+        active.add(id(item))
+        if kind is dict:
+            for key, child in item.items():
+                if type(key) is not str:
+                    raise ValueError(code + ':' + json.dumps(
+                        {'path': path, 'type': type(key).__name__, 'reason': 'non-string-key'}, sort_keys=True))
+                visit(child, path + '[' + json.dumps(key) + ']')
+        else:
+            for index, child in enumerate(item):
+                visit(child, path + '[' + str(index) + ']')
+        active.remove(id(item))
+    visit(value, '$')
+    return value
+
+
+def require_json_match(expected, actual, code):
+    """Strict, type-preserving structural equality with bounded diagnostics.
+
+    This checks every field, including identities; it neither drops fields nor
+    equates documents merely because their serialized hashes match.
+    """
+    require_json_document(expected, code)
+    require_json_document(actual, code)
+    def difference(a, b, path):
+        if type(a) is not type(b):
+            return {'path': path, 'reason': 'type', 'expectedType': type(a).__name__, 'actualType': type(b).__name__}
+        if type(a) is dict:
+            if set(a) != set(b):
+                return {'path': path, 'reason': 'keys', 'missing': sorted(set(a)-set(b)), 'extra': sorted(set(b)-set(a))}
+            for key in sorted(a):
+                found = difference(a[key], b[key], path + '[' + json.dumps(key) + ']')
+                if found is not None: return found
+        elif type(a) is list:
+            if len(a) != len(b):
+                return {'path': path, 'reason': 'length', 'expectedLength': len(a), 'actualLength': len(b)}
+            for index, (left, right) in enumerate(zip(a, b)):
+                found = difference(left, right, path + '[' + str(index) + ']')
+                if found is not None: return found
+        elif a != b:
+            return {'path': path, 'reason': 'value', 'expected': repr(a)[:160], 'actual': repr(b)[:160]}
+        return None
+    detail = difference(expected, actual, '$')
+    if detail is not None:
+        raise ValueError(code + ':' + json.dumps(detail, sort_keys=True))
 
 
 def save(path, value):
