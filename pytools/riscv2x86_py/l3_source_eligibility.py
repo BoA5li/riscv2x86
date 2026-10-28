@@ -9,7 +9,12 @@ def atomic_boundary(finding, functions, sidecar):
     from .compiler_provenance import bind_compiler_provenance
     approval = finding['approvalArtifact']
     fragment = finding['fragment']
-    validate_atomic_proof_facts(approval.get('l2AtomicProofFacts'), approval, fragment['id'])
+    sequence=approval.get('l2LrscProofFacts') is not None
+    if sequence:
+        from .l2_lrsc_authority import validate,materialize as sequence_materialize
+        validate(finding)
+    else:
+        validate_atomic_proof_facts(approval.get('l2AtomicProofFacts'), approval, fragment['id'])
     if not isinstance(functions, list):
         raise ValueError('L3_ATOMIC_COMPILER_SNAPSHOT_REQUIRED')
     compiler = fragment['compilerFragmentAuthority']
@@ -20,7 +25,7 @@ def atomic_boundary(finding, functions, sidecar):
     if (function.get('sourceDigest') != compiler['sourceDigest']
             or finding.get('sourceDigest') != compiler['sourceDigest']):
         raise ValueError('L3_ATOMIC_COMPILER_SOURCE_MISMATCH')
-    rebuilt = materialize_atomic_authority(finding, functions, sidecar.producer.producer_binary_digest)
+    rebuilt = (sequence_materialize if sequence else materialize_atomic_authority)(finding, functions, sidecar.producer.producer_binary_digest)
     if rebuilt is None or rebuilt.to_dict() != sidecar.to_dict():
         raise ValueError('L3_ATOMIC_AUTHORITY_REPLAY_MISMATCH')
     bind_compiler_provenance(fragment, rebuilt)

@@ -22,9 +22,13 @@ def build(findings,functions,capabilities):
                 route_reasons.append('L3_PLAN_FENCE_PREREQUISITE:'+str(exc))
         if kind=='atomic' and len(findings)==1:
             try:
-                from .l3_atomic_spec import spec
+                sequence=bool(f.get('approvalArtifact',{}).get('l2LrscProofFacts'))
+                if sequence:
+                    from .l3_lrsc_spec import spec
+                else:
+                    from .l3_atomic_spec import spec
                 spec(f,functions)
-                mechanism='atomic'
+                mechanism='lrsc' if sequence else 'atomic'
             except (OSError,ValueError,KeyError,TypeError,IndexError) as exc:
                 route_reasons.append('L3_PLAN_ATOMIC_PREREQUISITE:'+str(exc))
         available=mechanism != 'unavailable' and mechanism in capabilities

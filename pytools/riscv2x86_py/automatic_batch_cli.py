@@ -1005,6 +1005,8 @@ def prepare_automatic_inventory(
             selection_kind=next(iter(trace_selections))
             if selection_kind=='memory':
                 from .l3_qemu_backend import validate_backend
+            elif selection_kind=='lrsc':
+                from .l3_lrsc_backend import validate as validate_backend
             elif selection_kind=='atomic':
                 from .l3_atomic_backend import validate as validate_backend
             elif selection_kind=='fence':

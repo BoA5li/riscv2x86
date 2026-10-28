@@ -30,6 +30,15 @@ def audit_evaluation(evaluation):
         audited=audit_result(evaluation)
         return {'status':audited['status'],'requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
             'fragments':audited['fragments'],'programExecutionUnitCount':audited['programExecutionUnitCount'],'physicalMicroarchitectureEquivalenceClaimed':False}
+    lrsc=[layer for attempt in evaluation.get('attempts',[]) for layer in (attempt.get('validation') or {}).get('layers',[])
+          if layer.get('level')=='L3' and _detail(layer).get('lrscDeployment') is not None]
+    if lrsc:
+        if len(lrsc)!=1:raise ValueError('l3.acceptance.lrsc-fragment-ambiguous')
+        from .l3_lrsc_route import audit_result
+        audited=audit_result(evaluation)
+        if audited['status']!='verified':raise ValueError('l3.acceptance.lrsc-result-not-verified')
+        return {'status':'verified','requirementManifestIdentity':evaluation['translationEvaluationLink']['l3Requirements']['manifestIdentity'],
+                'fragments':[audited],'physicalMicroarchitectureEquivalenceClaimed':False}
     atomic=[]
     for attempt in evaluation.get('attempts',[]):
         for layer in (attempt.get('validation') or {}).get('layers',[]):

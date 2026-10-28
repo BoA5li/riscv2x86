@@ -11,15 +11,16 @@ SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
 def load(path,*,progress=None):
     path=Path(path).resolve();selection_digest=digest(path);raw=json.loads(path.read_text())
-    if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
+    if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic','lrsc'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
     from .l3_qemu_backend import validate_backend
     from .l3_control_backend import validate as control
     from .l3_program_backend import validate as program
     from .l3_fence_backend import validate as fence
     from .l3_atomic_backend import validate as atomic
+    from .l3_lrsc_backend import validate as lrsc
     from .l3_backend_validation import BackendValidationSession
     result={};roots=[]
-    validators={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence,'atomic':atomic}
+    validators={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence,'atomic':atomic,'lrsc':lrsc}
     with BackendValidationSession(progress) as context:
         for name,p in sorted(raw['backends'].items()):
             if not isinstance(p,str) or not p:raise ValueError('L3_MECHANISM_BACKEND_PATH_INVALID')
@@ -54,6 +55,7 @@ def produce(request,selections):
     from .l3_trace_intent import produce as memory_produce
     from .l3_fence_intent import produce as fence_produce
     from .l3_atomic_intent import produce as atomic_produce
+    from .l3_lrsc_intent import produce as lrsc_produce
     if request.get('requestIdentity')!=identity({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_MECHANISM_REQUEST_CHANGED')
     try:
         candidates=request['candidates'];functions=candidates[0]['compilerFunctions']
@@ -67,7 +69,7 @@ def produce(request,selections):
         for d in value['dispositions']:
             d['reasonCodes']=sorted(set(d['reasonCodes']+[str(exc)]));d['dispositionIdentity']=identity({k:v for k,v in d.items() if k!='dispositionIdentity'})
         return value
-    return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce,'fence':fence_produce,'atomic':atomic_produce}[kind](request)
+    return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce,'fence':fence_produce,'atomic':atomic_produce,'lrsc':lrsc_produce}[kind](request)
 
 
 def build_route(config):
@@ -84,6 +86,9 @@ def build_route(config):
             c.update(backendPath=selected['path'],backendDigest=selected['digest'])
             if kind=='memory':
                 from .l3_qemu_memory_route import build_route as factory
+            elif kind=='lrsc':
+                from .l3_lrsc_route import build_route as factory
+                c.update(schemaVersion='riscv2x86.lrsc-trace-route.v1',sampleCount=None,clang=config['routeConfig']['clang'])
             elif kind=='atomic':
                 from .l3_atomic_route import build_route as factory
                 c.update(schemaVersion='riscv2x86.atomic-trace-route.v1',sampleCount=None,clang=config['routeConfig']['clang'])
@@ -108,7 +113,8 @@ def producer_dependencies():
     from .l3_control_intent import DEPENDENCIES as cd
     from .l3_fence_intent import DEPENDENCIES as fd
     from .l3_atomic_intent import DEPENDENCIES as ad
-    deps=set(pd)|set(cd)|set(fd)|set(ad)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py','l3_atomic_intent.py','l3_atomic_backend.py','l3_backend_validation.py'}
+    from .l3_lrsc_intent import DEPENDENCIES as ld
+    deps=set(pd)|set(cd)|set(fd)|set(ad)|set(ld)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py','l3_atomic_intent.py','l3_atomic_backend.py','l3_backend_validation.py'}
     return deps
 
 

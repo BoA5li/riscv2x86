@@ -23,16 +23,23 @@ def unsigned_width(typ):
     return int(m[1]) if m[1] else 32 if m[2]=='int' else 64
 
 
-def spec(finding,functions):
-    if (finding.get("approvalArtifact") or {}).get("l2LrscProofFacts") is not None:
+def spec(finding,functions,*,_sequence=False):
+    if not _sequence and (finding.get("approvalArtifact") or {}).get("l2LrscProofFacts") is not None:
         raise ValueError("L3_LRSC_SOURCE_OBSERVATION_BACKEND_REQUIRED")
     ob=analyze(finding,functions);a=finding['approvalArtifact'];f=finding['fragment'];sync=ob.get('synchronizationObligations') or {}
     if (not sync.get('basisComplete') or sync.get('mechanismFamily')!='atomic-rmw'
             or {p['propertyId'] for p in sync['requiredSubproperties']}!={'sync.compiler-contract','sync.atomic-mechanism','sync.atomic-outcome','sync.ordering-contract'}
-            or [p['dimension'] for p in ob['requiredProperties']]!=['access_pattern','synchronization']):
+            or [p['dimension'] for p in ob['requiredProperties']]!=(['control_flow','access_pattern','synchronization'] if _sequence else ['access_pattern','synchronization'])):
         raise ValueError('L3_ATOMIC_OBLIGATION_DOMAIN_UNSUPPORTED')
-    atom,width=validate_atomic_proof_facts(a['l2AtomicProofFacts'],a,f['id'])
-    if (width['sourceXlen']!=64 or atom['rmw_operation'] not in OPERATIONS or a.get('rendererSemanticContractId')!=OPERATIONS[atom['rmw_operation']]
+    sequence=None
+    if _sequence:
+        from .l2_lrsc_authority import validate as validate_sequence,materialize as sequence_materialize,require_observable_scope
+        atom,width,source=validate_sequence(finding);sequence=source.lrsc_sequence.to_dict()
+        bits=source.lrsc_sequence.lr_ordering_bits+source.lrsc_sequence.sc_ordering_bits
+        atom=dict(atom,success_ordering='acq_rel' if bits[0] and bits[3] else 'acquire' if bits[0] else 'release' if bits[3] else 'relaxed',atomicity_scope='system')
+    else:
+        atom,width=validate_atomic_proof_facts(a['l2AtomicProofFacts'],a,f['id'])
+    if (width['sourceXlen']!=64 or atom['rmw_operation'] not in OPERATIONS or a.get('rendererSemanticContractId')!=('x86.gnu-att.lrsc.locked-cas.multi-output.v1' if _sequence else OPERATIONS[atom['rmw_operation']])
             or atom['success_ordering'] not in {'relaxed','acquire','release','acq_rel'}
             or atom['alignment_bytes']<atom['width_bits']//8 or atom['alignment_bytes']>4096
             or atom['alignment_bytes']&(atom['alignment_bytes']-1) or atom['atomicity_scope']!='system'):
@@ -45,7 +52,9 @@ def spec(finding,functions):
             or scope.get('sourceDigest')!=fn['sourceDigest'] or scope.get('functionIdentity')!=fn['functionId']
             or (scope.get('asmBegin'),scope.get('asmEnd'))!=(key['beginOffset'],key['endOffset'])):
         raise ValueError('L3_ATOMIC_FUNCTION_SCOPE_REQUIRED')
-    sidecar=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar']);rebuilt=materialize_atomic_authority(finding,functions,sidecar.producer.producer_binary_digest)
+    sidecar=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar'])
+    if _sequence:require_observable_scope(finding,fn,source)
+    rebuilt=(sequence_materialize if _sequence else materialize_atomic_authority)(finding,functions,sidecar.producer.producer_binary_digest)
     if rebuilt is None or rebuilt.to_dict()!=sidecar.to_dict():raise ValueError('L3_ATOMIC_AUTHORITY_REPLAY_MISMATCH')
     if (len(sidecar.memory_objects)!=1 or not sidecar.memory_objects[0].complete
             or sidecar.memory_objects[0].object_id!=atom['memory_object_identity']
@@ -75,6 +84,7 @@ def spec(finding,functions):
           'pointerParameter':pointer,'valueParameter':1-pointer,'parameterTypes':types,'returnType':fn['returnType'],
           'objectSizeBytes':sidecar.memory_objects[0].size_bytes,'obligations':ob,'authorityIdentity':sidecar.authority_identity,
           'physicalMicroarchitectureClaimed':False}
+    if _sequence:body.update(sourceMechanism='lrsc-sequence',sourceSequence=sequence)
     return dict(body,specIdentity=identity(body))
 
 
