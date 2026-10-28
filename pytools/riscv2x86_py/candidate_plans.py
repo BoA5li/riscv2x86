@@ -904,9 +904,9 @@ def _memory_renderer_semantic_contract_id(
         return None
     if source_model.operation.kind is SourceOperationKind.LOAD:
         values = [item for item in operands if item.access is SourceOperandAccess.OUTPUT]
-        if len(operands) == 2 and len(values) == 1 and width in {32, 64} and value_matches(source_model.memory, values[0], width, "load"):
-            suffix = "gpr-address" if displacement == 0 else "gpr-address-disp32"
-            return f"x86.gnu-att.memory.load.{suffix}.u{width}.v1"
+        if len(operands) == 2 and len(values) == 1 and value_matches(source_model.memory, values[0], width, "load"):
+            from .memory_contracts import load_id
+            return load_id(width,values[0].width_bits,source_model.memory.value_projection,displacement)
     if source_model.operation.kind is SourceOperationKind.STORE:
         values = [item for item in operands if item.access is SourceOperandAccess.INPUT]
         if len(operands) == 2 and len(values) == 1 and width in {8, 16, 32, 64} and value_matches(source_model.memory, values[0], width, "store"):

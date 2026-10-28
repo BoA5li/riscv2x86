@@ -15,8 +15,11 @@ def spec(findings,functions):
     from .automatic_l2_authority import _scalar_authority
     from .l2_authority import l2_authority_sidecar_from_dict
     from .l2_fragment_execution import materialize_fragment_execution_authority
-    if len(functions)!=1 or not 2<=len(findings)<=16:raise ValueError('L3_PROGRAM_MEMBER_DOMAIN_UNSUPPORTED')
-    fn=functions[0];scope=fn.get('compilerProgramRegions')
+    if not 2<=len(findings)<=16:raise ValueError('L3_PROGRAM_MEMBER_DOMAIN_UNSUPPORTED')
+    identities={f['fragment']['compilerFragmentAuthority']['functionIdentity'] for f in findings}
+    if len(identities)!=1:raise ValueError('L3_PROGRAM_ENTRY_CLOSURE_REQUIRED')
+    from .l3_entry_binding import entry
+    fn=entry(functions,identities.pop());scope=fn.get('compilerProgramRegions')
     if (not scope or scope.get('schemaVersion')!='riscv2x86.compiler-program-regions.v1' or scope['scope']!='direct-acyclic-pure-shell'
             or scope['sourceDigest']!=fn['sourceDigest'] or scope['functionIdentity']!=fn['functionId']
             or scope['scopeIdentity']!=identity({k:v for k,v in scope.items() if k!='scopeIdentity'}) or len(scope['sites'])!=len(findings)):

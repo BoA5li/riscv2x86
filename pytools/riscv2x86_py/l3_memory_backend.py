@@ -1,7 +1,8 @@
-"""Width-calibrated ordinary-store wrapper over an unchanged reviewed QEMU base.
+"""Width-calibrated ordinary-memory wrappers over an unchanged reviewed QEMU base.
 
 Legacy backends remain valid for their existing domain. Narrow stores require
-fresh 1/2/4/8-byte calibration on both ISAs; no manifest hash substitution.
+fresh 1/2/4/8-byte calibration on both ISAs. The optional v2 wrapper also
+calibrates reads independently; no manifest hash substitution.
 """
 import argparse
 import json
@@ -13,13 +14,30 @@ from .l3_implementation_dependencies import implementation_paths
 from .l3_status import write_status_atomic, record_failure
 
 SCHEMA='riscv2x86.qemu-typed-store-backend.v1'
+LOAD_SCHEMA='riscv2x86.qemu-typed-memory-backend.v2'
 TOOLS=('sourceExecutor','targetExecutor','sourceCompiler','targetCompiler',
        'sourceRunnerArguments','targetRunnerArguments','plugin')
 CASES=[{'side':side,'width':width} for side in ('source','target') for width in (1,2,4,8)]
 
+LOAD_CASES=[dict(case,access=access) for access in ('read','write') for case in CASES]
+
 
 def probe(case):
     width=case['width']
+    if case.get('access')=='read':
+        if case['side']=='source':
+            # Unsigned narrow loads calibrate the actual callback width; signed
+            # extension is separately proved and exercised by production tests.
+            load={1:'lbu',2:'lhu',4:'lwu',8:'ld'}[width]
+            return ('.option norvc\n.text\n.globl _start\n_start:la a0,data\n'
+                '.globl begin\nbegin:'+load+' a1,0(a0)\n'
+                '.globl end\nend:li t0,128\nbne a1,t0,bad\nli a0,0\nj done\n'
+                'bad:li a0,9\ndone:li a7,93\necall\n.data\n.balign 8\n.globl data\ndata:.quad 128\n')
+        load={1:'movzbq (%rdi),%rsi',2:'movzwq (%rdi),%rsi',4:'movl (%rdi),%esi',8:'movq (%rdi),%rsi'}[width]
+        return ('.text\n.globl _start\n_start:lea data(%rip),%rdi\n'
+            '.globl begin\nbegin:'+load+'\n.globl end\nend:cmpq $128,%rsi\njne bad\n'
+            'xorq %rdi,%rdi\njmp done\nbad:movq $9,%rdi\ndone:movq $60,%rax\nsyscall\n'
+            '.data\n.balign 8\n.globl data\ndata:.quad 128\n')
     if case['side']=='source':
         return ('.option norvc\n.text\n.globl _start\n_start:la a0,data\nli a1,128\n'
             '.globl begin\nbegin:'+{1:'sb',2:'sh',4:'sw',8:'sd'}[width]+' a1,0(a0)\n'
@@ -32,6 +50,10 @@ def probe(case):
 
 
 def expected_code(case):
+    if case.get('access')=='read':
+        if case['side']=='source':
+            return ((10<<15)|({1:4,2:5,4:6,8:3}[case['width']]<<12)|(11<<7)|3).to_bytes(4,'little')
+        return bytes.fromhex({1:'480fb637',2:'480fb737',4:'8b37',8:'488b37'}[case['width']])
     if case['side']=='source':
         return ((11<<20)|(10<<15)|({1:0,2:1,4:2,8:3}[case['width']]<<12)|0x23).to_bytes(4,'little')
     return bytes.fromhex({1:'408837',2:'668937',4:'8937',8:'488937'}[case['width']])
@@ -83,12 +105,12 @@ def validate_record(record,backend):
     events=base.parse_capture(trace.read_text(),token=evidence['token'],
         target='riscv64' if side=='source' else 'x86_64',region=reg,calls=1)
     require_json_match([{'sample':0,'pc':reg['start'],'address':elf.symbol('data')[0],
-        'size':case['width'],'access':'write'}],events,'L3_STORE_CALIBRATION_EVENT_MISMATCH')
+        'size':case['width'],'access':case.get('access','write')}],events,'L3_STORE_CALIBRATION_EVENT_MISMATCH')
 
 
 def validate_backend(value, *, _context=None):
     if isinstance(value,(str,Path)):value=json.loads(Path(value).read_text())
-    if not isinstance(value,dict) or value.get('schemaVersion')!=SCHEMA:
+    if not isinstance(value,dict) or value.get('schemaVersion') not in {SCHEMA,LOAD_SCHEMA}:
         return base.validate_backend(value)
     require_json_document(value,'L3_STORE_BACKEND_JSON_INVALID')
     fields={'schemaVersion','baseBackendPath','baseBackendDigest','files','calibration','backendIdentity',*TOOLS}
@@ -101,37 +123,40 @@ def validate_backend(value, *, _context=None):
     if set(value['files'])!=set(implementation_paths()) or any(digest(p)!=sha for p,sha in value['files'].items()):
         raise ValueError('L3_STORE_IMPLEMENTATION_CHANGED')
     records=value['calibration']
-    if type(records) is not list or len(records)!=len(CASES):raise ValueError('L3_STORE_CALIBRATION_INCOMPLETE')
-    require_json_match(CASES,[r['case'] for r in records],'L3_STORE_CALIBRATION_COVERAGE_INVALID')
+    cases=LOAD_CASES if value['schemaVersion']==LOAD_SCHEMA else CASES
+    if type(records) is not list or len(records)!=len(cases):raise ValueError('L3_STORE_CALIBRATION_INCOMPLETE')
+    require_json_match(cases,[r['case'] for r in records],'L3_STORE_CALIBRATION_COVERAGE_INVALID')
     for record in records:validate_record(record,backend)
     return value
 
 
 def require_access(backend,spec):
-    if spec['access']=='write' and spec['width']!=8 and backend.get('schemaVersion')!=SCHEMA:
+    if spec['access']=='read' and spec['width']!=8 and backend.get('schemaVersion')!=LOAD_SCHEMA:
+        raise ValueError('L3_MEMORY_LOAD_WIDTH_CALIBRATION_REQUIRED:'+str(spec['width']))
+    if spec['access']=='write' and spec['width']!=8 and backend.get('schemaVersion') not in {SCHEMA,LOAD_SCHEMA}:
         raise ValueError('L3_MEMORY_STORE_WIDTH_CALIBRATION_REQUIRED:'+str(spec['width']))
 
 
 def capture(backend,*args,**kwargs):
     validated=validate_backend(backend)
-    inner=(base.validate_backend(validated['baseBackendPath']) if validated.get('schemaVersion')==SCHEMA else validated)
+    inner=(base.validate_backend(validated['baseBackendPath']) if validated.get('schemaVersion') in {SCHEMA,LOAD_SCHEMA} else validated)
     result=base.capture(inner,*args,**kwargs)
     validate_backend(backend)
     return result
 
 
-def prepare(base_path,output):
+def prepare(base_path,output,*,loads=False):
     base_path=Path(base_path).resolve();out=Path(output).resolve();out.mkdir(parents=True,exist_ok=False)
     status={'stage':'base-validation','complete':False,'semanticApproval':False,'calibrationCompleted':[]}
     def checkpoint():write_status_atomic(out/'build-status.json',status)
     checkpoint()
     try:
         backend=base.validate_backend(base_path)
-        value={'schemaVersion':SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),
+        value={'schemaVersion':LOAD_SCHEMA if loads else SCHEMA,'baseBackendPath':str(base_path),'baseBackendDigest':digest(base_path),
             **{k:backend[k] for k in TOOLS},'files':{p:digest(p) for p in implementation_paths()},'calibration':[]}
         status['stage']='calibration';checkpoint()
-        for case in CASES:
-            work=out/'calibration'/case['side']/str(case['width']);work.mkdir(parents=True)
+        for case in (LOAD_CASES if loads else CASES):
+            work=out/'calibration'/case['side']/(case.get('access','write')+'-'+str(case['width']));work.mkdir(parents=True)
             src=work/'probe.s';binary=work/'probe';src.write_text(probe(case))
             run(build_command(backend,case,src,binary),work,'build',120)
             _,_,evidence=base.capture(backend,case['side'],binary,region(Elf(binary)),work,1,120)
@@ -149,8 +174,8 @@ def prepare(base_path,output):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--base-backend',required=True);parser.add_argument('--output',required=True)
-    args=parser.parse_args();value=prepare(args.base_backend,args.output)
+    parser.add_argument('--base-backend',required=True);parser.add_argument('--output',required=True);parser.add_argument('--include-loads',action='store_true')
+    args=parser.parse_args();value=prepare(args.base_backend,args.output,loads=args.include_loads)
     print(json.dumps({'backendPath':str(Path(args.output).resolve()/'backend.json'),
         'backendIdentity':value['backendIdentity'],'semanticApproval':False}))
 

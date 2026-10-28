@@ -480,7 +480,7 @@ class L2MemoryProofFacts:
     value_projection: str = ""
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {L2_MEMORY_PROOF_FACTS_SCHEMA, "riscv2x86.l2-memory-proof-facts.v3"} or not self.fragment_id:
+        if self.schema_version not in {L2_MEMORY_PROOF_FACTS_SCHEMA, "riscv2x86.l2-memory-proof-facts.v3", "riscv2x86.l2-memory-proof-facts.v4"} or not self.fragment_id:
             raise ValueError("memory proof facts schema/fragment is invalid")
         if self.access_kind not in {"load", "store"}:
             raise ValueError("memory proof access kind is unsupported")
@@ -500,7 +500,9 @@ class L2MemoryProofFacts:
                       self.alias_complete, self.non_atomic))
         if self.complete != closed:
             raise ValueError("memory proof completeness does not match safety facts")
-        if self.schema_version.endswith(".v3"):
+        if self.schema_version.endswith(".v4") and (self.access_kind!="load" or self.value_projection not in {"sign_extend","zero_extend"}):
+            raise ValueError("extended load proof schema/projection is invalid")
+        if self.schema_version in {"riscv2x86.l2-memory-proof-facts.v3","riscv2x86.l2-memory-proof-facts.v4"}:
             if not self.matches_value_width(self.carrier_width_bits):
                 raise ValueError("memory proof value projection is invalid")
         elif self.carrier_width_bits or self.value_projection:
@@ -518,7 +520,10 @@ class L2MemoryProofFacts:
         return (width_bits == self.carrier_width_bits and
                 ((self.value_projection == "identity" and width_bits == self.width_bytes * 8)
                  or (self.access_kind == "store" and self.value_projection == "low_bits"
-                     and width_bits > self.width_bytes * 8)))
+                     and width_bits > self.width_bytes * 8)
+                 or (self.schema_version.endswith(".v4") and self.access_kind=="load"
+                     and self.value_projection in {"sign_extend","zero_extend"}
+                     and width_bits>self.width_bytes*8)))
 
     def _payload(self, include_identity: bool) -> dict[str, object]:
         result = {"schemaVersion": self.schema_version, "fragmentId": self.fragment_id,
@@ -531,7 +536,7 @@ class L2MemoryProofFacts:
           "boundsProven": self.bounds_proven, "alignmentProven": self.alignment_proven,
           "aliasComplete": self.alias_complete, "nonAtomic": self.non_atomic,
           "memoryOrder": self.memory_order, "complete": self.complete}
-        if self.schema_version.endswith(".v3"):
+        if self.schema_version in {"riscv2x86.l2-memory-proof-facts.v3","riscv2x86.l2-memory-proof-facts.v4"}:
             result.update(carrierWidthBits=self.carrier_width_bits, valueProjection=self.value_projection)
         result["decoderAddressNodeIdentity"] = self.decoder_address_node_identity
         if include_identity:
@@ -589,7 +594,7 @@ def memory_proof_facts_from_source_model(
         "function_argument", "function_call", "object:0",
         memory_order="relaxed", complete=all(safe.values()),
         decoder_address_node_identity=str(getattr(address, "address_id", "")),
-        schema_version="riscv2x86.l2-memory-proof-facts.v3",
+        schema_version=("riscv2x86.l2-memory-proof-facts.v4" if memory.value_projection in {"sign_extend","zero_extend"} else "riscv2x86.l2-memory-proof-facts.v3"),
         carrier_width_bits=value.width_bits, value_projection=memory.value_projection, **safe,
     )
 
@@ -601,7 +606,7 @@ def memory_proof_facts_from_dict(value: Mapping[str, object]) -> L2MemoryProofFa
       "boundsProven", "alignmentProven", "aliasComplete", "nonAtomic",
       "memoryOrder", "complete", "factsIdentity"}
     fields.add("decoderAddressNodeIdentity")
-    projected = value.get("schemaVersion") == "riscv2x86.l2-memory-proof-facts.v3"
+    projected = value.get("schemaVersion") in {"riscv2x86.l2-memory-proof-facts.v3","riscv2x86.l2-memory-proof-facts.v4"}
     if projected:
         fields.update({"carrierWidthBits", "valueProjection"})
     if set(value) != fields:

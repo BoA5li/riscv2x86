@@ -21,6 +21,7 @@ from .validation_status import ValidationStatus
 
 CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v1'
 STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v2'
+TYPED_LOAD_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v6'
 TYPED_STORE_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v5'
 SCALAR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v3'
 VECTOR_CONTRACT_SCHEMA='riscv2x86.compiler-region-trace-experiment.v4'
@@ -36,13 +37,15 @@ def parse_contract(value):
             'requirementIdentity','approvedTargetRelationIdentity','programId','fragmentId','spec',
             'deployment','backendPath','backendDigest','cacheModel','requiredProperties','propertyBindings',
             'sampleCount','knownNonEquivalences'}
+    typed_load=isinstance(value,dict) and value.get('schemaVersion')==TYPED_LOAD_CONTRACT_SCHEMA
+    if typed_load:fields.add('loadCall')
     typed_store=isinstance(value,dict) and value.get('schemaVersion')==TYPED_STORE_CONTRACT_SCHEMA
     if typed_store:fields.add('storeCall')
     vector=isinstance(value,dict) and value.get('schemaVersion')==VECTOR_CONTRACT_SCHEMA
     scalar=isinstance(value,dict) and value.get('schemaVersion') in {SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}
     if scalar:fields.add('propertyObligations')
     if vector:fields.add('samplePlan')
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,TYPED_STORE_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}:
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {CONTRACT_SCHEMA,STORE_CONTRACT_SCHEMA,TYPED_STORE_CONTRACT_SCHEMA,TYPED_LOAD_CONTRACT_SCHEMA,SCALAR_CONTRACT_SCHEMA,VECTOR_CONTRACT_SCHEMA}:
         raise ValueError('L3_TRACE_CONTRACT_SCHEMA_INVALID')
     if type(value['sampleCount']) is not int or not 2<=value['sampleCount']<=16:
         raise ValueError('L3_TRACE_SAMPLE_COUNT_INVALID')
@@ -75,6 +78,15 @@ def parse_contract(value):
             raise ValueError('L3_TRACE_CONTRACT_OBJECT_DOMAIN_INVALID')
         if spec['fragmentId']!=value['fragmentId'] or spec['programId']!=value['programId'] or spec['access'] not in {'read','write'}:
             raise ValueError('L3_TRACE_CONTRACT_SPEC_MISMATCH')
+        if typed_load:
+            if spec['access']!='read':raise ValueError('L3_MEMORY_LOAD_ACCESS_REQUIRED')
+            if value['deployment'].get('schemaVersion')!='riscv2x86.compiler-region-execution-deployment.v3':raise ValueError('L3_MEMORY_LOAD_DEPLOYMENT_VERSION_REQUIRED')
+            from .l3_memory_call import validate_load_call
+            validate_load_call(value['loadCall'])
+            require_json_match(value['deployment']['functionScope']['callSignature'],value['loadCall'],'L3_MEMORY_LOAD_CALL_CHANGED')
+            if value['loadCall']['widthBytes']!=spec['width']:raise ValueError('L3_MEMORY_LOAD_CALL_WIDTH_MISMATCH')
+        if spec['access']=='read' and not typed_load and 'callSignature' in value['deployment'].get('functionScope',{}):
+            raise ValueError('L3_MEMORY_TYPED_LOAD_CONTRACT_VERSION_REQUIRED')
         if typed_store:
             if spec['access']!='write':raise ValueError('L3_MEMORY_STORE_ACCESS_REQUIRED')
             require_json_match(value['deployment']['functionScope']['callSignature'],value['storeCall'],'L3_MEMORY_STORE_CALL_CHANGED')
@@ -134,11 +146,12 @@ def parse_objects(stdout, token, spec, samples, signature=None):
     if spec['access']=='none':
         from .l3_scalar_trace import parse_samples
         return parse_samples(stdout,token,samples,signature)
+    typed_load=bool(signature and signature.get('schemaVersion')=='riscv2x86.l3-memory-load-call.v1')
     objects=[]
     for line in stdout.splitlines():
         value=json.loads(line)
         fields={'token','sample','objectBase','objectSize','value'}
-        if spec['access']=='write':fields.add('objectHex')
+        if spec['access']=='write' or typed_load:fields.add('objectHex')
         if (not isinstance(value,dict) or set(value)!=fields or
                 value['token']!=token or type(value['sample']) is not int or value['sample']!=len(objects) or
                 type(value['objectSize']) is not int or value['objectSize']<spec['size'] or
@@ -160,6 +173,15 @@ def parse_objects(stdout, token, spec, samples, signature=None):
             void=signature is not None and signature.get('returnKind')=='void'
             if (value.get('objectHex')!=expected.hex() or (value['value'] is not None if void else value['value'] is None or int(value['value'],16)!=written)):
                 raise ValueError('L3_TRACE_STORE_VALUE_OR_OBJECT_MISMATCH')
+        if typed_load:
+            import re
+            if re.fullmatch('[0-9a-f]{16}',value['value']) is None:raise ValueError('L3_MEMORY_LOAD_RESULT_ENCODING_INVALID')
+            from .l3_memory_call import load_value,load_initial_bytes
+            expected=load_initial_bytes(spec,len(objects))
+            raw=int.from_bytes(expected[spec['offset']:spec['offset']+spec['width']],'little')
+            if (value['objectSize']!=len(expected) or value['objectHex']!=expected.hex()
+                    or int(value['value'],16)!=load_value(raw,signature)):
+                raise ValueError('L3_TRACE_LOAD_VALUE_OR_OBJECT_MISMATCH')
         objects.append(value)
     if len(objects)!=samples: raise ValueError('L3_TRACE_RUNTIME_SAMPLES_MISSING')
     return objects
@@ -186,7 +208,7 @@ def normalize(events, objects, spec):
 def report_from_capture(side, backend, deployment, events, objects, evidence):
     spec=deployment['spec']; normalized,reasons=normalize(events,objects,spec)
     scalar=spec['access']=='none'
-    return {'schemaVersion':('riscv2x86.compiler-region-trace-observation.v3' if scalar and 'callSignature' in deployment.get('functionScope',{}) else 'riscv2x86.compiler-region-trace-observation.v2' if scalar else 'riscv2x86.compiler-region-trace-observation.v1'),'side':side,
+    return {'schemaVersion':('riscv2x86.compiler-region-trace-observation.v4' if spec['access']=='read' and 'callSignature' in deployment.get('functionScope',{}) else 'riscv2x86.compiler-region-trace-observation.v3' if scalar and 'callSignature' in deployment.get('functionScope',{}) else 'riscv2x86.compiler-region-trace-observation.v2' if scalar else 'riscv2x86.compiler-region-trace-observation.v1'),'side':side,
             'backendIdentity':backend['backendIdentity'],'deploymentIdentity':deployment['deploymentIdentity'],
             'captureBoundary':'compiler-asm-region-only',('samples' if scalar else 'objects'):objects,'events':normalized,
             'evidence':evidence,'environment':{'executor':backend[side+'Executor'],
@@ -360,7 +382,7 @@ def build_route(config):
             properties=[x.to_dict() for x in profile.required_properties]
             bindings=[dict(p,comparatorId=('object-relative-cache-model.v1' if p['dimension']=='cache_model' else 'logical-access-contract.v1'),
                 obligationIds=['fragment-stream-lru-state'] if p['dimension']=='cache_model' else (['memory:empty-executed-region'] if spec['access']=='none' else ['memory:approved-'+spec['access']])) for p in properties]
-            contract={'schemaVersion':VECTOR_CONTRACT_SCHEMA if spec['access']=='none' else ((TYPED_STORE_CONTRACT_SCHEMA if 'callSignature' in deployment['functionScope'] else STORE_CONTRACT_SCHEMA) if spec['access']=='write' else CONTRACT_SCHEMA),'experimentId':'compiler-region:'+profile.profile_identity,
+            contract={'schemaVersion':VECTOR_CONTRACT_SCHEMA if spec['access']=='none' else ((TYPED_STORE_CONTRACT_SCHEMA if 'callSignature' in deployment['functionScope'] else STORE_CONTRACT_SCHEMA) if spec['access']=='write' else (TYPED_LOAD_CONTRACT_SCHEMA if 'callSignature' in deployment['functionScope'] else CONTRACT_SCHEMA)),'experimentId':'compiler-region:'+profile.profile_identity,
                 'translationPlanId':kwargs['translation_artifact'].translation_plan_id,'proofIdentity':profile.proof_identity,
                 'intentProfileIdentity':profile.profile_identity,'requirementIdentity':req['requirementIdentity'],
                 'approvedTargetRelationIdentity':profile.approved_target_relation_identity,'programId':spec['programId'],'fragmentId':spec['fragmentId'],
@@ -369,6 +391,8 @@ def build_route(config):
                 'knownNonEquivalences':list(profile.not_claimed_properties)}
             if spec['access']=='write' and 'callSignature' in deployment['functionScope']:
                 contract['storeCall']=deployment['functionScope']['callSignature']
+            if spec['access']=='read' and 'callSignature' in deployment['functionScope']:
+                contract['loadCall']=deployment['functionScope']['callSignature']
             if spec['access']=='none':
                 from .l3_scalar_call import sample_plan
                 contract['propertyObligations']=obligations

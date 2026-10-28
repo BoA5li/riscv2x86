@@ -45,7 +45,7 @@ def spec(finding,functions,*,_sequence=False):
             or atom['alignment_bytes']&(atom['alignment_bytes']-1) or atom['atomicity_scope']!='system'):
         raise ValueError('L3_ATOMIC_DIRECT_OPERATION_CONTRACT_UNSUPPORTED')
     matches=[fn for fn in functions if fn.get('functionId')==f['compilerFragmentAuthority']['functionIdentity']]
-    if len(matches)!=1 or len(functions)!=1:raise ValueError('L3_ATOMIC_SINGLE_FUNCTION_REQUIRED')
+    if len(matches)!=1:raise ValueError('L3_ATOMIC_FUNCTION_BINDING_AMBIGUOUS')
     fn=matches[0];scope=fn.get('compilerAtomicFunctionScope') or {};key=f['compilerFragmentAuthority']['fragmentBindingKey']
     if (scope.get('scope')!='single_asm_no_other_memory_or_control_effects'
             or scope.get('scopeIdentity')!=identity({k:v for k,v in scope.items() if k!='scopeIdentity'})

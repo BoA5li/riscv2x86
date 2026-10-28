@@ -1,6 +1,6 @@
 """Single-access value semantics from typed canonical IR, never assembly text.
 
-Only identity/low-bit transparent definitions are admitted. Arithmetic, merges,
+Identity/low-bit stores and explicitly extended loads are admitted. Arithmetic, merges,
 multiple writes and unknown register provenance cannot authorize this route.
 """
 from .pcode_ir import VarKind
@@ -65,21 +65,47 @@ def decoded_access(blocks, runtime_facts):
     if store:
         index = resolve(value, before, set())
     else:
-        # Loads with post-load extension need a separate proven contract.
-        if any(value in op.inputs or
+        # Follow the actual LOAD definition, never infer extension from C types.
+        cursor=value; limit=before+1; projection='identity'
+        while True:
+            users=[(i,op) for i,op in enumerate(ops[limit:],limit) if cursor in op.inputs]
+            if cursor.kind is VarKind.REG and not users:
+                break
+            if len(users)!=1:
+                return None
+            i,op=users[0]
+            if op.output is None or type(op.output.size) is not int or not 0<op.output.size<=8:
+                return None
+            if op.opcode=='COPY' and len(op.inputs)==1 and op.output.size==cursor.size:
+                pass
+            elif (op.opcode in {'INT_SEXT','INT_ZEXT'} and len(op.inputs)==1
+                    and op.output.size>cursor.size and projection=='identity'):
+                projection='sign_extend' if op.opcode=='INT_SEXT' else 'zero_extend'
+            else:
+                return None
+            cursor=op.output;limit=i+1
+        if any(cursor in op.inputs or
                (op.output is not None and op.output.kind is VarKind.REG
-                and value.kind is VarKind.REG and op.output.space == value.space
-                and op.output.offset < value.offset + value.size
-                and value.offset < op.output.offset + op.output.size)
-               for op in ops[before + 1:]):
+                and op.output.space==cursor.space
+                and op.output.offset<cursor.offset+cursor.size
+                and cursor.offset<op.output.offset+op.output.size)
+               for op in ops[limit:]):
             return None
-        index = names.get(canonicalize_riscv_register_name(value.name)) if value.kind is VarKind.REG else None
+        index=names.get(canonicalize_riscv_register_name(cursor.name))
+        carrier=widths.get(index)
+        if type(carrier) is not int or cursor.size*8<carrier:
+            return None
+        if carrier==width:
+            projection='identity'  # C output truncates the proved extension.
+        elif carrier<width or projection=='identity':
+            return None
+
     carrier = widths.get(index)
     if type(index) is not int or type(carrier) is not int or carrier not in {8,16,32,64}:
         return None
-    if carrier < width or (not store and carrier != width):
+    if carrier < width:
         return None
-    return width, index, ("low_bits" if store and carrier > width else "identity")
+    return width, index, (("low_bits" if carrier > width else "identity") if store else projection)
 
 
 def value_matches(memory, value, width, kind):
@@ -91,4 +117,6 @@ def value_matches(memory, value, width, kind):
             and type(value.width_bits) is int
             and ((memory.value_projection == "identity" and value.width_bits == width)
                  or (kind == "store" and memory.value_projection == "low_bits"
+                     and value.width_bits > width and value.width_bits in {16,32,64})
+                 or (kind == "load" and memory.value_projection in {"sign_extend","zero_extend"}
                      and value.width_bits > width and value.width_bits in {16,32,64})))

@@ -19,9 +19,14 @@ def type_fact(text):
     text=' '.join(text.split())
     if text=='void':return {'kind':'void','cType':'void'}
     if text.endswith('*'):
-        pointee=type_fact(text[:-1].strip())
+        pointee_text=text[:-1].strip()
+        qualifiers=[]
+        while pointee_text.startswith('const '):
+            qualifiers.append('const');pointee_text=pointee_text[6:]
+        if len(qualifiers)>1:return None
+        pointee=type_fact(pointee_text)
         if pointee is None or pointee['kind']!='integer':return None
-        return {'kind':'pointer','cType':text,'widthBits':64,'pointee':pointee}
+        return dict({'kind':'pointer','cType':text,'widthBits':64,'pointee':pointee},**({'pointeeQualifiers':qualifiers} if qualifiers else {}))
     width=UNSIGNED.get(text) or SIGNED.get(text)
     if width is None:return None
     return {'kind':'integer','cType':text,'widthBits':width,'signed':text in SIGNED}

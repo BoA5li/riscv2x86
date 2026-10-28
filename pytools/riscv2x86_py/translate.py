@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .memory_contracts import LOAD_ROLES
 
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -3799,6 +3800,7 @@ def _translate_phase6_proof_pipeline(
             "x86.gnu-att.atomic.xchg.u32-u64.seq-cst.v1",
             "x86.gnu-att.mfence.ordinary-rw.v2",
             "x86.gnu-att.serialize.instruction-serialization.v1",
+            *LOAD_ROLES,
             "x86.gnu-att.memory.load.gpr-address.u32.v1",
             "x86.gnu-att.memory.load.gpr-address.u64.v1",
             "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1",

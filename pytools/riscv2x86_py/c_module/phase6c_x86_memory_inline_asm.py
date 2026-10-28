@@ -39,22 +39,9 @@ class X86MemoryInlineAsmContract:
     value_projection: str = ""
 
 
-_LOAD_IDS = {
-    "x86.gnu-att.memory.load.gpr-address.u32.v1": 32,
-    "x86.gnu-att.memory.load.gpr-address.u64.v1": 64,
-    "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1": 32,
-    "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": 64,
-}
-_STORE_IDS = {
-    "x86.gnu-att.memory.store.gpr-address.u8.v1": 8,
-    "x86.gnu-att.memory.store.gpr-address.u16.v1": 16,
-    "x86.gnu-att.memory.store.gpr-address.u32.v1": 32,
-    "x86.gnu-att.memory.store.gpr-address.u64.v1": 64,
-    "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1": 8,
-    "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1": 16,
-    "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": 32,
-    "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": 64,
-}
+from ..memory_contracts import LOAD_ROLES, STORE_WIDTHS
+_LOAD_IDS = {key:roles[0] for key,roles in LOAD_ROLES.items()}
+_STORE_IDS = STORE_WIDTHS
 
 
 def _fail(plan, code, details=None):
@@ -115,6 +102,9 @@ def derive_x86_memory_inline_asm_constraints(source_model: SourceSemanticModel, 
     if len(source_model.operands.operands) != 2 or len(values) != 1:
         return _fail(candidate_plan, "X86_MEMORY_ASM_ADDRESS_BINDING_MISSING")
     value = values[0]
+    if (expected_kind is SourceOperationKind.LOAD and LOAD_ROLES[semantic_id] !=
+            (width,value.width_bits,source_model.memory.value_projection)):
+        return _fail(candidate_plan, "X86_MEMORY_ASM_SOURCE_INCOMPLETE")
     from ..memory_access_semantics import value_matches
     if (value.kind is not SourceOperandKind.REGISTER or not value_matches(source_model.memory, value, width, expected_kind.value) or
             value.early_clobber or value.tied_to_source_operand_index is not None):

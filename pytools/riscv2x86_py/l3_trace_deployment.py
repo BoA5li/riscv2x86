@@ -16,6 +16,7 @@ from .l3_scalar_trace import trace_spec
 
 SCHEMA='riscv2x86.compiler-region-execution-deployment.v1'
 SCALAR_SCHEMA='riscv2x86.compiler-region-execution-deployment.v2'
+LOAD_SCHEMA='riscv2x86.compiler-region-execution-deployment.v3'
 _INTEGER=r'(?:u?int(?:8|16|32|64)_t|unsigned(?: (?:char|short|int|long|long long))?|signed(?: (?:char|short|int|long|long long))?|char|short|int|long|long long)'
 
 
@@ -35,8 +36,13 @@ def function_scope(source, report, finding, *, legacy_scalar=False):
     fid=finding['fragment']['id']; bound,snapshot=compiler_bound_finding(source,report,fid)
     if bound!=finding: raise ValueError('L3_TRACE_FINDING_CHANGED')
     functions=snapshot['functions']; boundary=finding['approvalArtifact']['l2FragmentOperandBoundary']
-    if len(functions)!=1: raise ValueError('L3_TRACE_SINGLE_FUNCTION_SCOPE_REQUIRED')
-    function=functions[0]; scope=function.get('compilerAtomicFunctionScope') or {}
+    from .l3_entry_binding import entry
+    spec=trace_spec(finding)
+    try:function=entry(functions,boundary.get('functionId'))
+    except ValueError as exc:
+        if spec['access']=='none':raise ValueError('L3_TRACE_COMPILER_SCALAR_SCOPE_UNSUPPORTED:'+str(exc)) from exc
+        raise
+    scope=function.get('compilerAtomicFunctionScope') or {}
     name=function.get('name'); result=function.get('returnType'); parameters=function.get('parameterTypes')
     spec=trace_spec(finding)
     if spec['access']=='none':
@@ -90,6 +96,13 @@ def function_scope(source, report, finding, *, legacy_scalar=False):
         return {'name':name,'returnType':result,'parameterType':parameters[0],
                 'valueParameterType':parameters[1],'functionIdentity':function['functionId'],
                 'scopeIdentity':store['scopeIdentity']}
+    if function.get('compilerMemoryCallSignature') is not None:
+        if (name!=finding['fragment'].get('enclosingFunction') or function.get('functionId')!=boundary.get('functionId')
+                or function.get('sourceDigest')!=digest(source)):
+            raise ValueError('L3_MEMORY_LOAD_FUNCTION_BINDING_INVALID')
+        from .l3_memory_call import bind_load
+        call=bind_load(function,finding,spec)
+        return {'name':name,'callSignature':call,'functionIdentity':function['functionId'],'scopeIdentity':call['scopeIdentity']}
     if (not isinstance(name,str) or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name) is None or
             name!=finding['fragment'].get('enclosingFunction') or function.get('functionId')!=boundary.get('functionId') or
             scope.get('scope')!='single_asm_no_other_memory_or_control_effects' or scope.get('sourceDigest')!=digest(source) or
@@ -106,6 +119,7 @@ def harness(scope, spec, samples):
         from .l3_scalar_trace import scalar_harness
         return scalar_harness(scope,samples)
     if spec['access']=='write': return store_harness(scope,spec,samples)
+    if 'callSignature' in scope:return typed_load_harness(scope,spec,samples)
     # Metadata is emitted outside the observed asm region. The object is real,
     # initialized and private. No timing/non-interference claim is made for it.
     return '''#include <stdint.h>
@@ -184,7 +198,7 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
               'files':files,'executor':backend[side+'Executor'],'executorDigest':digest(backend[side+'Executor']),
               'runnerArguments':backend[side+'RunnerArguments']}
         deployments[side]=body
-    value={'schemaVersion':SCALAR_SCHEMA if 'callSignature' in scope else SCHEMA,'backendIdentity':backend['backendIdentity'],'spec':spec,'functionScope':scope,
+    value={'schemaVersion':LOAD_SCHEMA if spec['access']=='read' and 'callSignature' in scope else SCALAR_SCHEMA if 'callSignature' in scope else SCHEMA,'backendIdentity':backend['backendIdentity'],'spec':spec,'functionScope':scope,
            'sampleCount':samples,'sourceAndTargetFiles':code_files,'inputs':{'source':str(source),'target':str(target),'report':str(Path(report).resolve())},'sides':deployments,
            'captureBoundary':'compiler-asm-region-only','compilerRegionWitness':'zero-byte-labels-and-exact-function-bytes',
            'outsideFragmentEffectsClaimed':False}
@@ -200,14 +214,16 @@ def validate(value, backend, source_artifact, target_artifact):
     require_access(backend,value['spec'])
     fields={'schemaVersion','backendIdentity','spec','functionScope','sampleCount','sourceAndTargetFiles','sides',
             'captureBoundary','compilerRegionWitness','outsideFragmentEffectsClaimed','deploymentIdentity','inputs'}
-    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {SCHEMA,SCALAR_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}):
+    if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {SCHEMA,SCALAR_SCHEMA,LOAD_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}):
         raise ValueError('L3_TRACE_DEPLOYMENT_IDENTITY_INVALID')
     if (value['backendIdentity']!=backend['backendIdentity'] or value['captureBoundary']!='compiler-asm-region-only' or
             value['compilerRegionWitness']!='zero-byte-labels-and-exact-function-bytes' or value['outsideFragmentEffectsClaimed'] is not False):
         raise ValueError('L3_TRACE_DEPLOYMENT_SCOPE_INVALID')
     for path,expected in value['sourceAndTargetFiles'].items():
         if digest(path)!=expected: raise ValueError('L3_TRACE_DEPLOYMENT_SOURCE_CHANGED')
-    if (value['schemaVersion']==SCALAR_SCHEMA) != ('callSignature' in value['functionScope']):
+    typed_load=(value['spec']['access']=='read' and 'callSignature' in value['functionScope'])
+    if (value['schemaVersion']==LOAD_SCHEMA)!=typed_load:raise ValueError('L3_MEMORY_LOAD_DEPLOYMENT_VERSION_REQUIRED')
+    if (value['schemaVersion'] in {SCALAR_SCHEMA,LOAD_SCHEMA}) != ('callSignature' in value['functionScope']):
         raise ValueError('L3_TRACE_DEPLOYMENT_CALL_VERSION_MISMATCH')
     inputs=value['inputs']; data=json.loads(Path(inputs['report']).read_text())
     findings=[f for f in data['findings'] if (f.get('fragment') or {}).get('id')==value['spec']['fragmentId']]
@@ -314,3 +330,31 @@ def typed_store_harness(scope,spec,samples):
         +'uint64_t written=UINT64_C(0x1020304050607080)+sample;'+invocation+'\n'
         +'printf("{\\\"token\\\":\\\"%s\\\",\\\"sample\\\":%u,\\\"objectBase\\\":\\\"%" PRIxPTR "\\\",\\\"objectSize\\\":%zu,\\\"value\\\":",argv[1],sample,(uintptr_t)object,sizeof object);\n'
         +returned+'fputs(",\\\"objectHex\\\":\\\"",stdout);for(unsigned i=0;i<sizeof object;++i)printf("%02x",bytes[i]);puts("\\\"}");}return 0;}\n')
+
+
+def typed_load_harness(scope,spec,samples):
+    from .l3_memory_call import validate_load_call
+    call=validate_load_call(scope['callSignature']);signature=call['compilerSignature']
+    pointer=signature['parameters'][0];pointee=pointer['pointee']['cType'];result=signature['result']['cType']
+    if re.fullmatch(r'[A-Za-z_]\w*',scope['name']) is None:raise ValueError('L3_MEMORY_LOAD_NAME_INVALID')
+    return r'''#include <stdint.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
+extern %s %s(%s);
+int main(int argc,char **argv){
+ if(argc!=2 || strlen(argv[1])!=64)return 2;
+ _Alignas(64) %s object[%d];
+ for(unsigned sample=0;sample<%d;++sample){
+  unsigned char *bytes=(unsigned char *)object;
+  for(unsigned i=0;i<sizeof object;++i)bytes[i]=(unsigned char)(0x31u+17u*i+sample);
+  uint64_t initial=sample%%4==0?0:sample%%4==1?UINT64_C(0x%x):sample%%4==2?UINT64_C(0x%x):UINT64_C(0x%x);
+  memcpy(bytes+%d,&initial,%d);
+  uint64_t value=(uint64_t)%s((%s)object);
+  printf("{\"token\":\"%%s\",\"sample\":%%u,\"objectBase\":\"%%" PRIxPTR "\",\"objectSize\":%%zu,\"value\":\"%%016" PRIx64 "\",\"objectHex\":\"",argv[1],sample,(uintptr_t)object,sizeof object,value);
+  for(unsigned i=0;i<sizeof object;++i)printf("%%02x",bytes[i]);
+  puts("\"}");
+ }
+ return 0;
+}
+''' % (result,scope['name'],pointer['cType'],pointee,(spec['size']+spec['width']-1)//spec['width'],samples,(1<<(spec['width']*8-1))-1,1<<(spec['width']*8-1),(1<<(spec['width']*8))-1,spec['offset'],spec['width'],scope['name'],pointer['cType'])

@@ -8,20 +8,8 @@ def prove(r):
     if (s.shell.has_memory_clobber and not c.memory_constraint.requires_memory_clobber):return reject(r,SemanticProofReasonCode.MEMORY_UNPRESERVED)
     contract = c.x86_memory_inline_asm_contract
     semantic_id = r.candidate_plan.metadata.get("renderer_semantic_contract_id")
-    expected = {
-        "x86.gnu-att.memory.load.gpr-address.u32.v1": ("load", 32),
-        "x86.gnu-att.memory.load.gpr-address.u64.v1": ("load", 64),
-        "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1": ("load", 32),
-        "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": ("load", 64),
-        "x86.gnu-att.memory.store.gpr-address.u8.v1": ("store", 8),
-        "x86.gnu-att.memory.store.gpr-address.u16.v1": ("store", 16),
-        "x86.gnu-att.memory.store.gpr-address.u32.v1": ("store", 32),
-        "x86.gnu-att.memory.store.gpr-address.u64.v1": ("store", 64),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1": ("store", 8),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1": ("store", 16),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": ("store", 32),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": ("store", 64),
-    }.get(semantic_id)
+    from .memory_contracts import CONTRACTS, LOAD_ROLES
+    expected = CONTRACTS.get(semantic_id)
     address = next((item for item in s.operands.operands
                     if item.source_operand_index == contract.address_operand_index), None)
     value = next((item for item in s.operands.operands
@@ -40,6 +28,8 @@ def prove(r):
     if (expected is None or contract.semantic_contract_id != semantic_id or
             semantic_id not in r.target_semantic_catalog.semantic_contract_ids or
             operation_kind != contract.operation_kind or not memory_shape_matches or
+            (contract.operation_kind == "load" and LOAD_ROLES.get(semantic_id) !=
+             (contract.value_width_bits,contract.carrier_width_bits,contract.value_projection)) or
             contract.operation_kind != expected[0] or contract.value_width_bits != expected[1] or
             contract.address_operand_index is None or contract.value_operand_index is None or
             contract.address_operand_index == contract.value_operand_index or

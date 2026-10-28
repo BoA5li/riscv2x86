@@ -324,6 +324,13 @@ def _object_relative_memory_events(
     return result if result else None
 
 
+def _full_load_returns(text):
+    rows=[line for line in text.splitlines() if line.startswith("l2ret;")]
+    if len(rows)!=4 or any(re.fullmatch(r"l2ret;sample="+str(i)+r";value=[0-9a-f]{16}",row) is None for i,row in enumerate(rows)):
+        return None
+    return rows
+
+
 def _effect_dimension_evidence(
     observation: Mapping[str, object], dimensions: tuple[L2Dimension, ...],
 ) -> dict[L2Dimension, L2DimensionEvidence]:
@@ -410,7 +417,9 @@ def _object_relative_memory_wrapper(
     alignment = max(16, int(objects[0]["minimumAlignment"]))
     if not element_bytes or size % element_bytes or alignment & (alignment - 1):
         raise ValueError("memory harness typed object extent/alignment is invalid")
-    samples = 8 if scalar_indexes else 1
+    extended_load = (getattr(facts,"access_kind")=="load" and
+                     getattr(facts,"value_projection","") in {"sign_extend","zero_extend"})
+    samples = 8 if scalar_indexes else 4 if extended_load else 1
     values = ("0", "1", "UINT64_MAX", "UINT64_C(0x7fffffff)",
               "UINT64_C(0x80000000)", "UINT64_C(0xffffffff)",
               "UINT64_C(0x5a17d3e4c29b806f)", "UINT64_C(0xc4ceb9fe1a85ec53)")
@@ -438,6 +447,11 @@ def _object_relative_memory_wrapper(
     if getattr(facts, "access_kind") == "load":
         if return_type == "void":
             raise ValueError("memory load harness requires an observable result")
+        if extended_load:
+            bits=width*8
+            lines += [f"uint64_t initial=sample%4==0?0:sample%4==1?UINT64_C({(1<<(bits-1))-1}):sample%4==2?UINT64_C({1<<(bits-1)}):UINT64_C({(1<<bits)-1});",
+                      f"memcpy(object+{offset},&initial,{width});",
+                      f"memcpy(before,object,{size});"]
         lines += [f"observed=(uint64_t){invocation};",
                   f"outside=memcmp(before,object,{size})!=0;"]
     else:
@@ -455,6 +469,8 @@ def _object_relative_memory_wrapper(
                   f"memcpy(&observed,object+{offset},{width});",
                   f"for(unsigned i=0;i<{size};++i) if(({outside_range})"
                   "&&object[i]!=before[i]) outside=1;"]
+    if extended_load:
+        lines.append('printf("l2ret;sample=%u;value=%016llx\\n",sample,(unsigned long long)observed);')
     mask = "UINT64_MAX" if width == 8 else f"((UINT64_C(1)<<{width * 8})-1)"
     lines += [f'observed&={mask};',
               'printf("l2mem;sample=%u;value=%016llx;outside=%d\\n",sample,'
@@ -884,11 +900,23 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
                          "harnessDigest":"sha256:"+sha256(wrapper.encode()).hexdigest(),
                          "source":{"exitCode":left.returncode,"stderr":left.stderr,"events":source_events},
                          "target":{"exitCode":right.returncode,"stderr":right.stderr,"events":target_events}}
+            load_returns_match=True
+            load_returns_complete=True
+            if (mode=="memory-object-functions" and memory_facts.access_kind=="load"
+                    and memory_facts.value_projection in {"sign_extend","zero_extend"}):
+                actual={"source":_full_load_returns(left.stdout),"target":_full_load_returns(right.stdout)}
+                load_returns_complete=all(value is not None for value in actual.values())
+                for side in actual:observation[side]["returnedValues"]=actual[side]
+                load_returns_match=actual['source'] is not None and actual['source']==actual['target']
             if source_events is None or target_events is None:
                 status=ValidationStatus.INCONCLUSIVE
                 reason = (fence_reason if mode == "fence-functions" else "L2_EFFECT_TRACE_INCOMPLETE")
             elif left.returncode or right.returncode or left.stderr or right.stderr:
                 status=ValidationStatus.FAILED; reason="L2_EFFECT_EXECUTION_FAILED"
+            elif not load_returns_complete:
+                status=ValidationStatus.INCONCLUSIVE;reason="L2_MEMORY_OUTPUT_OBSERVATION_INCOMPLETE"
+            elif not load_returns_match:
+                status=ValidationStatus.FAILED;reason="L2_MEMORY_OUTPUT_VALUE_MISMATCH"
             elif mode == "control-flow-functions" and source_control is not None and target_control is not None:
                 matches, reason = exact_control_flow_observations_match(
                     source_control, target_control, approved,

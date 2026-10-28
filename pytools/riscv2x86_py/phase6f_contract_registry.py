@@ -4,6 +4,7 @@ Recipes are registered target semantic contracts, never inferred from source
 asm text, mnemonics, plan kind, or renderer convenience.
 """
 from __future__ import annotations
+from .memory_contracts import LOAD_ROLES
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Callable, Mapping
@@ -1127,20 +1128,8 @@ def _x86_barrier_recipe(approved: ApprovedTargetLoweringPlan):
 def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
     """Encode only a checked scalar ``mov`` address-register contract."""
     semantic_id = approved.plan.metadata.get("renderer_semantic_contract_id")
-    expected = {
-        "x86.gnu-att.memory.load.gpr-address.u32.v1": ("load", 32),
-        "x86.gnu-att.memory.load.gpr-address.u64.v1": ("load", 64),
-        "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1": ("load", 32),
-        "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1": ("load", 64),
-        "x86.gnu-att.memory.store.gpr-address.u8.v1": ("store", 8),
-        "x86.gnu-att.memory.store.gpr-address.u16.v1": ("store", 16),
-        "x86.gnu-att.memory.store.gpr-address.u32.v1": ("store", 32),
-        "x86.gnu-att.memory.store.gpr-address.u64.v1": ("store", 64),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u8.v1": ("store", 8),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u16.v1": ("store", 16),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u32.v1": ("store", 32),
-        "x86.gnu-att.memory.store.gpr-address-disp32.u64.v1": ("store", 64),
-    }.get(semantic_id)
+    from .memory_contracts import CONTRACTS, LOAD_ROLES, load_template
+    expected = CONTRACTS.get(semantic_id)
     contract = approved.constraints.x86_memory_inline_asm_contract
     memory = approved.constraints.memory_constraint
     displacement = getattr(contract, "address_displacement_bytes", None)
@@ -1168,7 +1157,9 @@ def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
             not ((contract.value_projection == "identity" and contract.carrier_width_bits == expected[1])
                  or (expected[0] == "store" and contract.value_projection == "low_bits"
                      and contract.carrier_width_bits in {16,32,64}
-                     and contract.carrier_width_bits > expected[1]))):
+                     and contract.carrier_width_bits > expected[1])
+                 or (expected[0] == "load" and LOAD_ROLES.get(semantic_id)==
+                     (contract.value_width_bits,contract.carrier_width_bits,contract.value_projection)))):
         return None
     suffix = {8: "b", 16: "w", 32: "l", 64: "q"}[expected[1]]
     value_view = {8: "b", 16: "w", 32: "k", 64: "q"}[expected[1]]
@@ -1179,7 +1170,7 @@ def _x86_direct_memory_recipe(approved: ApprovedTargetLoweringPlan):
         if value.role is not TargetOperandRole.OUTPUT:
             return None
         recipe = GnuInlineAsmRecipe(
-            template=f"mov{suffix} {address_format}, %0",
+            template=load_template(semantic_id,address_format),
             output_operand_indexes=(value.source_operand_index,),
             input_operand_indexes=(address.source_operand_index,),
         )
@@ -1438,10 +1429,7 @@ GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
                 frozenset({"x86:gpr_inline_asm"}),
             )
             for semantic_id in (
-                "x86.gnu-att.memory.load.gpr-address.u32.v1",
-                "x86.gnu-att.memory.load.gpr-address.u64.v1",
-                "x86.gnu-att.memory.load.gpr-address-disp32.u32.v1",
-                "x86.gnu-att.memory.load.gpr-address-disp32.u64.v1",
+                *LOAD_ROLES,
                 "x86.gnu-att.memory.store.gpr-address.u8.v1",
                 "x86.gnu-att.memory.store.gpr-address.u16.v1",
                 "x86.gnu-att.memory.store.gpr-address.u32.v1",

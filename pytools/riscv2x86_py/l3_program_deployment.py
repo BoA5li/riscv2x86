@@ -80,7 +80,8 @@ def bound(source,target,report,clang):
     if any(a[1]>b[0] for a,b in zip(ordered,ordered[1:])):raise ValueError('L3_PROGRAM_REPLACEMENTS_OVERLAP')
     for a,b,text in sorted(edits,reverse=True):original=original[:a]+text+original[b:]
     if original!=Path(target).read_bytes():raise ValueError('L3_PROGRAM_TARGET_MATERIALIZATION_MISMATCH')
-    return program,functions[0]
+    from .l3_entry_binding import entry
+    return program,entry(functions,program['functionIdentity'])
 
 
 def flags(side):return ['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC'])
@@ -92,8 +93,9 @@ def build_side(path,side,program,function,backend,artifact,work,clang,count):
     if side=='source':scope=program['scope']
     else:
         _,functions=inspect_entry_points(Path(path),clang=clang,target_isa='x86_64')
-        if len(functions)!=1 or functions[0]['name']!=function['name']:raise ValueError('L3_PROGRAM_TARGET_FUNCTION_CHANGED')
-        scope=functions[0].get('compilerProgramRegions')
+        matches=[f for f in functions if f['name']==function['name']]
+        if len(matches)!=1:raise ValueError('L3_PROGRAM_TARGET_FUNCTION_CHANGED')
+        scope=matches[0].get('compilerProgramRegions')
     if not scope or len(scope['sites'])!=len(program['members']) or scope['sourceDigest']!=digest(path):raise ValueError('L3_PROGRAM_TARGET_REGIONS_MISSING')
     c=work/'input.c';c.write_bytes(instrument(data,scope['sites']));asm=work/'compiler.s';marked=work/'regions.s';obj=work/'regions.o';h=work/'harness.c';binary=work/'program';cc=backend[side+'Compiler']
     run([cc,*flags(side),'-S',c,'-o',asm],work,'compile');marked.write_text(label_assembly(asm.read_text(),len(program['members'])))
