@@ -146,7 +146,8 @@ def test_common_inventory_passes_bound_producer_budget_and_canonical_dependencie
     validate_manifest(manifest,source)
     assert manifest['timeoutSeconds']==600
     cmd=manifest['command']
-    deps={Path(cmd[i+1]).name for i,x in enumerate(cmd) if x=='--dependency'}
+    package=Path(selection.__file__).resolve().parent
+    deps={Path(cmd[i+1]).resolve().relative_to(package).as_posix() for i,x in enumerate(cmd) if x=='--dependency'}
     assert deps==selection.producer_dependencies()
     plan=json.loads(next(inventory.rglob('validation-plan.json')).read_text())
     assert plan['timeoutSeconds']==240

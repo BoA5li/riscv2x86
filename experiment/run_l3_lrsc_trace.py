@@ -35,16 +35,10 @@ def main():
         status['currentStage']='normal_production_result';write()
         from run_l3_memory_trace import batch_diagnostics
         batch=json.loads((out/'batch/batch-evaluation.json').read_text());cases=batch_diagnostics(out/'batch',batch);status['caseDiagnostics']=cases;write()
-        from riscv2x86_py.l3_lrsc_route import audit_result,audit_prerequisites
+        from riscv2x86_py.l3_lrsc_route import audit_result
+        from riscv2x86_py.l3_audit_prerequisites import batch as prepare_audit
         reports=[json.loads(Path(case['reportPath']).read_text()) for case in cases]
-        try:
-            for report in reports: audit_prerequisites(report)
-        except ValueError as exc:
-            status['independentAuditDisposition']={'status':'not_run','reasonCode':str(exc)}
-            status['upstreamFailures']=[{'caseId':case['caseId'],
-                **{key:report[key] for key in ('reasonCodes','detail','orchestrationFailure','requirementStagingFailure') if report.get(key)}}
-                for case,report in zip(cases,reports)]
-            raise
+        prepare_audit(status,cases,reports,'L3_LRSC')
         status['currentStage']='independent_result_audit';write()
         audits=[]
         for case,report in zip(cases,reports):

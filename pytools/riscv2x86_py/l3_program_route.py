@@ -14,6 +14,8 @@ from .validation_status import ValidationStatus
 SCHEMA='riscv2x86.scalar-program-route.v1'
 
 
+from .l3_trace_support import require_json_document,require_json_match
+
 def platform(side,b,deployment,events,rows,evidence):
     return {'schemaVersion':'riscv2x86.program-region-observation.v1','side':side,
         'backendIdentity':b['backendIdentity'],'deploymentIdentity':deployment['deploymentIdentity'],
@@ -23,6 +25,7 @@ def platform(side,b,deployment,events,rows,evidence):
 
 
 def replay_group(group,source,target):
+    require_json_document(group,'L3_PROGRAM_CAPTURE_JSON_INVALID')
     if (group.get('schemaVersion')!='riscv2x86.program-region-capture.v1' or group['groupIdentity']!=identity({k:v for k,v in group.items() if k!='groupIdentity'})
             or digest(group['backendPath'])!=group['backendDigest']):raise ValueError('L3_PROGRAM_CAPTURE_GROUP_CHANGED')
     b=backend_validate(group['backendPath']);d=replay_deployment(group['deployment'],b,source,target)
@@ -36,7 +39,7 @@ def replay_group(group,source,target):
                 or c['returnCode']!=0 or c['timedOut'] is not False or c['stderr']):raise ValueError('L3_PROGRAM_RAW_EXECUTION_CHANGED')
         events=parse_capture(path.read_text(),e['token'],side,item['regions'],len(d['samplePlan']['inputs']))
         rows=parse_samples(c['stdout'],e['token'],d['samplePlan'])
-        if platform(side,b,d,events,rows,e)!=r:raise ValueError('L3_PROGRAM_OBSERVATION_REPLAY_MISMATCH')
+        require_json_match(platform(side,b,d,events,rows,e),r,'L3_PROGRAM_OBSERVATION_REPLAY_MISMATCH')
     return group
 
 
@@ -120,11 +123,17 @@ def build_route(config):
     return validate
 
 
+def audit_prerequisites(evaluation):
+    from .l3_audit_prerequisites import check
+    check(evaluation,'L3_PROGRAM',single_fragment=False)
+
+
 def audit_result(evaluation):
     from types import SimpleNamespace
     from .translation_validation import program_artifact_from_dict,translation_artifact_from_dict
     from .l3_execution_context import L3ExecutionContext
     from .l3_evidence_closure import aggregate_statuses
+    audit_prerequisites(evaluation)
     source=program_artifact_from_dict(evaluation['sourceProgramArtifact']);target=program_artifact_from_dict(evaluation['targetProgramArtifact'])
     requirements=parse_l3_requirement_manifest(evaluation['translationEvaluationLink']['l3Requirements']).requirements
     reqs={r['fragmentId']:r for r in requirements};attempts=evaluation['attempts'];seen=set();closed=[];groups=set();replayed={}
@@ -154,6 +163,8 @@ def audit_result(evaluation):
         if bindings!={s:context.request_binding(s) for s in ('source','target')}:raise ValueError('L3_PROGRAM_AUDIT_CONTEXT_CHANGED')
         reports=project(group,ids.index(fid));prior=[SimpleNamespace(evidence_identity=l['evidenceIdentity']) for l in layers[:3]]
         result,cmp=fragment_result(req,group,reports,artifact,source,target,prior)
+        require_json_match({'reports':reports,'result':result,'comparison':cmp},
+            {'reports':detail['platformReports'],'result':detail['fragmentResult'],'comparison':detail['comparison']},'L3_PROGRAM_AUDIT_RESULT_CHANGED')
         if (detail['platformReports']!=reports or detail['fragmentResult']!=result or detail['comparison']!=cmp or detail['reasonCodes']!=cmp['reasonCodes']
                 or detail['programCaptureIdentity']!=group['groupIdentity'] or detail['physicalMicroarchitectureClaimed'] is not False
                 or layers[3]['evidenceIdentity']!=identity(detail) or any(s!=result['status'] for s in (layers[3]['status'],attempt['status'],attempt['validation']['status']))):raise ValueError('L3_PROGRAM_AUDIT_RESULT_CHANGED')

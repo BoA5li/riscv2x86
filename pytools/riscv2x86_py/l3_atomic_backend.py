@@ -8,10 +8,7 @@ from .l3_trace_support import Elf,digest,identity,run,save
 from .l3_status import write_status_atomic,record_failure
 
 SCHEMA='riscv2x86.qemu-attributed-atomic-backend.v2'
-DEPENDENCIES=('l3_atomic_retry_observation.py','l3_atomic_semantics.py','l3_atomic_retry.py','l3_backend_validation.py','l3_atomic_backend.py','l3_atomic_machine.py','l3_atomic_spec.py','l3_atomic_compare.py',
- 'l3_atomic_deployment.py','l3_atomic_route.py','l3_atomic_intent.py','l3_trace_support.py','l3_status.py',
- 'l3_control_machine.py','l3_property_obligations.py','l3_sync_obligations.py','l3_source_eligibility.py',
- 'l2_atomic_authority.py','atomic_builtin_shell.py')
+
 CASES=[{'side':s,'operation':o,'width':w,'ordering':order,'locked':locked,'discard':discard}
        for s in ('source','target') for o in ('fetch_add','exchange') for w in (32,64)
        for order in (('relaxed','acquire','release','acq_rel') if s=='source' else ('full',)) for locked in (True,) for discard in ((False,True) if s=='source' or o=='fetch_add' else (False,))]
@@ -26,6 +23,9 @@ CASES += [{'side':'target','operation':op,'width':w,'ordering':'full' if locked 
            'locked':locked,'discard':False,'implementation':'cas-loop','predicate':predicate,'retry':retry}
           for op in ('fetch_and','fetch_or','fetch_xor') for w in (32,64)
           for predicate in ('direct','setcc') for locked,retry in ((True,False),(True,True),(False,False))]
+
+from .l3_implementation_dependencies import implementation_dependencies,implementation_paths
+DEPENDENCIES=implementation_dependencies()
 
 
 def parse_capture(text,token,target,region,calls):
@@ -204,7 +204,7 @@ def validate(path,*,_context=None):
         raise ValueError('L3_ATOMIC_BACKEND_INVALID')
     b=base(value,_context)
     if any(value[k]!=b[k] for k in control.TOOLS):raise ValueError('L3_ATOMIC_BACKEND_TOOL_CHANGED')
-    required={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}
+    required=set(implementation_paths())
     if set(value['files'])!=required or any(digest(p)!=sha for p,sha in value['files'].items()):raise ValueError('L3_ATOMIC_BACKEND_DEPENDENCY_CHANGED')
     records=value['calibration']
     if (not isinstance(records,list) or len(records)!=len(CASES)
@@ -220,7 +220,7 @@ def prepare(control_path,output):
     try:
         write_status_atomic(out/'build-status.json',status)
         value={'schemaVersion':SCHEMA,'controlBackendPath':str(control_path),'controlBackendDigest':digest(control_path),
-               **{k:b[k] for k in control.TOOLS},'files':{str(Path(__file__).with_name(n).resolve()):digest(Path(__file__).with_name(n)) for n in DEPENDENCIES},'calibration':[]}
+               **{k:b[k] for k in control.TOOLS},'files':{name:digest(name) for name in implementation_paths()},'calibration':[]}
         for i,case in enumerate(CASES):
             status['calibrationCurrent']=case;write_status_atomic(out/'build-status.json',status)
             work=out/'calibration'/str(i);work.mkdir(parents=True);asm=work/'probe.S';asm.write_text(probe(case));binary=work/'probe'

@@ -100,7 +100,7 @@ def test_actual_lrsc_cli_replays_source_and_emits_one_json_document(tmp_path):
     import riscv2x86_py.l3_lrsc_intent as producer
     path=Path(producer.__file__).resolve()
     command=[sys.executable,'-m','riscv2x86_py.l3_lrsc_intent','--implementation',str(path)]
-    for name in producer.DEPENDENCIES:command+=['--dependency',str(path.with_name(name))]
+    for name in producer.DEPENDENCIES:command+=['--dependency',str((path.parent/name))]
     result=subprocess.run(command,input=json.dumps(lrsc_request(tmp_path)),capture_output=True,text=True)
     assert result.returncode==0,result.stderr
     response=json.loads(result.stdout)
@@ -235,7 +235,7 @@ def test_actual_selection_cli_owns_stdout_during_backend_loading(tmp_path):
         'def noisy_load(*args,**kwargs):\n print("backend diagnostic")\n return {}\n'
         'm.load=noisy_load\n'
         'sys.argv=["producer","--implementation",str(p),"--selection-file","fixture"]\n'
-        'for name in m.producer_dependencies():sys.argv += ["--dependency",str(p.with_name(name))]\n'
+        'for name in m.producer_dependencies():sys.argv += ["--dependency",str((p.parent/name))]\n'
         'm.main()\n')
     result=subprocess.run([sys.executable,'-c',script],input=request.read_text(),capture_output=True,text=True)
     assert result.returncode==0,result.stderr

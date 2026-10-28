@@ -25,12 +25,17 @@ def main():
         status.update(currentStage='normal_production',backendDigest=digest(a.backend),frontendDigest=digest(a.frontend));write()
         cmd=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(Path(a.input).resolve()),'--frontend',str(Path(a.frontend).resolve()),'--output-directory',str(out/'batch'),'--jobs','1','--timeout-seconds',str(a.timeout_seconds),'--l3-producer-timeout-seconds',str(a.l3_producer_timeout_seconds),'--l3-control-backend',str(Path(a.backend).resolve()),'--require-l3']
         with (out/'batch.log').open('w') as log:r=subprocess.run(cmd,stdout=log,stderr=subprocess.STDOUT,check=False)
-        status['steps'].append({'stage':'normal_production','command':cmd,'returnCode':r.returncode});status['currentStage']='independent_result_audit';write()
+        status['steps'].append({'stage':'normal_production','command':cmd,'returnCode':r.returncode});status['currentStage']='normal_production_result';write()
         from run_l3_memory_trace import batch_diagnostics
         batch=json.loads((out/'batch/batch-evaluation.json').read_text());cases=batch_diagnostics(out/'batch',batch);status['caseDiagnostics']=cases;write()
         from riscv2x86_py.l3_control_route import audit_result
+        from riscv2x86_py.l3_audit_prerequisites import batch as prepare_audit
+        reports=[json.loads(Path(case['reportPath']).read_text()) for case in cases]
+        prepare_audit(status,cases,reports,'L3_CONTROL')
+        status['currentStage']='independent_result_audit';write()
         audits=[]
-        for case in cases:audits.append(dict(audit_result(json.loads(Path(case['reportPath']).read_text())),caseId=case['caseId'],reportPath=case['reportPath']))
+        for case,report in zip(cases,reports):
+            audits.append(dict(audit_result(report),caseId=case['caseId'],reportPath=case['reportPath']))
         complete=bool(audits) and all(x['independentResultAuditComplete'] for x in audits)
         accepted=complete and all(x['status']=='verified' for x in audits)
         if (accepted and r.returncode!=0) or (not accepted and r.returncode==0):raise ValueError('L3_CONTROL_BATCH_EXIT_STATUS_MISMATCH')

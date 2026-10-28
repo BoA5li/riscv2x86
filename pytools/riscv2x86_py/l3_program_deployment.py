@@ -10,6 +10,8 @@ from .l3_scalar_trace import vector_harness
 SCHEMA='riscv2x86.scalar-program-deployment.v1'
 
 
+from .l3_trace_support import require_json_document,require_json_match
+
 def marker(i,side):return '__asm__ volatile ('+json.dumps('.globl __rv2x86_r'+str(i)+'_'+side+'\n.hidden __rv2x86_r'+str(i)+'_'+side+'\n__rv2x86_r'+str(i)+'_'+side+':\n')+');\n'
 
 
@@ -118,17 +120,20 @@ def prepare(source,target,report,backend,source_artifact,target_artifact,work,cl
         'inputs':{'source':str(source),'target':str(target),'report':str(report)},'inputDigests':{str(p):digest(p) for p in (source,target,report)},
         'sides':{s:build_side(p,s,program,function,backend,a,work/s,clang,count) for s,p,a in (('source',source,source_artifact),('target',target,target_artifact))},
         'physicalMicroarchitectureClaimed':False,'executionUnit':'whole-function-all-ordered-regions'}
+    require_json_document(body,'L3_PROGRAM_DEPLOYMENT_JSON_INVALID')
     value=dict(body,deploymentIdentity=identity(body));save(work/'deployment.json',value);return value
 
 
 def validate(value,backend,source,target):
+    require_json_document(value,'L3_PROGRAM_DEPLOYMENT_JSON_INVALID')
     if value.get('schemaVersion')!=SCHEMA or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['physicalMicroarchitectureClaimed'] is not False or value['executionUnit']!='whole-function-all-ordered-regions':raise ValueError('L3_PROGRAM_DEPLOYMENT_INVALID')
     for p,sha in value['inputDigests'].items():
         if digest(p)!=sha:raise ValueError('L3_PROGRAM_INPUT_CHANGED')
     if digest(value['clang'])!=value['clangDigest']:raise ValueError('L3_PROGRAM_AST_COMPILER_CHANGED')
     with tempfile.TemporaryDirectory(prefix='rv2x86-program-replay-') as temp:
         fresh=prepare(**{k:value['inputs'][k] for k in ('source','target','report')},backend=backend,source_artifact=source,target_artifact=target,work=Path(temp)/'deployment',clang=value['clang'],count=len(value['samplePlan']['inputs']))
-        if fresh['spec']!=value['spec'] or fresh['samplePlan']!=value['samplePlan']:raise ValueError('L3_PROGRAM_FACT_REPLAY_MISMATCH')
+        require_json_match({'spec':fresh['spec'],'samplePlan':fresh['samplePlan']},
+            {'spec':value['spec'],'samplePlan':value['samplePlan']},'L3_PROGRAM_FACT_REPLAY_MISMATCH')
         for side in ('source','target'):
             a=value['sides'][side];b=fresh['sides'][side]
             for p,sha in a['files'].items():

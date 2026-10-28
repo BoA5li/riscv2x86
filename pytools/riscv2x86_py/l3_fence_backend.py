@@ -13,10 +13,11 @@ from .l3_trace_support import Elf,digest,identity,run,save
 
 SCHEMA='riscv2x86.qemu-executed-fence-backend.v1'
 KINDS=('full','partial','missing')
-DEPENDENCIES=('l3_backend_validation.py','l3_fence_backend.py','l3_fence_machine.py','l3_status.py','l3_trace_support.py',
- 'l3_fence_deployment.py','l3_fence_spec.py','l3_fence_compare.py','l3_fence_route.py','l3_fence_intent.py',
- 'l3_control_deployment.py','l3_property_obligations.py','l3_sync_obligations.py','l2_fence_ordering.py','fence_semantics.py')
+
 parse_capture=control.parse_capture
+
+from .l3_implementation_dependencies import implementation_dependencies,implementation_paths
+DEPENDENCIES=implementation_dependencies()
 
 
 def base(value,context=None):
@@ -77,7 +78,7 @@ def validate(path,*,_context=None):
         raise ValueError('L3_FENCE_BACKEND_INVALID')
     b=base(value,_context)
     if any(value[k]!=b[k] for k in control.TOOLS):raise ValueError('L3_FENCE_BACKEND_TOOL_CHANGED')
-    required={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}
+    required=set(implementation_paths())
     if set(value['files'])!=required:raise ValueError('L3_FENCE_BACKEND_DEPENDENCIES_MISSING')
     for p,sha in value['files'].items():
         if digest(p)!=sha:raise ValueError('L3_FENCE_BACKEND_FILE_CHANGED:'+p)
@@ -94,7 +95,7 @@ def prepare(control_path,output):
     try:
         write_status_atomic(out/'build-status.json',status)
         value={'schemaVersion':SCHEMA,'controlBackendPath':str(control_path),'controlBackendDigest':digest(control_path),
-               **{k:b[k] for k in control.TOOLS},'files':{str(Path(__file__).with_name(n).resolve()):digest(Path(__file__).with_name(n)) for n in DEPENDENCIES},'calibration':[]}
+               **{k:b[k] for k in control.TOOLS},'files':{name:digest(name) for name in implementation_paths()},'calibration':[]}
         for side in ('source','target'):
             for kind in KINDS:
                 status['calibrationCurrent']={'side':side,'kind':kind};write_status_atomic(out/'build-status.json',status)

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-from .l3_trace_support import digest,identity,save
+from .l3_trace_support import digest,identity,save,require_json_document,require_json_match
 from .l3_control_spec import CAPABILITY,LIMITS
 from .l3_control_machine import selected_path,condition,value_of
 from .l3_control_backend import validate as backend_validate,capture,parse_capture,command
@@ -107,6 +107,7 @@ def dimensions(contract,reports,bindings,artifact,source,target,prior,l2_scope):
 
 
 def replay(detail,source,target):
+    require_json_document(detail,'L3_CONTROL_REPLAY_JSON_INVALID')
     contract_path=Path(detail['contractPath'])
     if digest(contract_path)!=detail['contractDigest']:raise ValueError('L3_CONTROL_CONTRACT_CHANGED')
     contract=json.loads(contract_path.read_text())
@@ -114,7 +115,7 @@ def replay(detail,source,target):
     if contract['controlPolicy']!='logical-continuation-and-actual-transfer-shape.v1' or contract['limitations']!=sorted(LIMITS):raise ValueError('L3_CONTROL_CONTRACT_POLICY_CHANGED')
     if digest(contract['backendPath'])!=contract['backendDigest']:raise ValueError('L3_CONTROL_BACKEND_SELECTION_CHANGED')
     backend=backend_validate(contract['backendPath']);deployment=replay_deployment(contract['deployment'],backend,source,target)
-    if detail.get('controlDeployment')!=deployment:raise ValueError('L3_CONTROL_REPORTED_DEPLOYMENT_MISMATCH')
+    require_json_match(deployment,detail.get('controlDeployment'),'L3_CONTROL_REPORTED_DEPLOYMENT_MISMATCH')
     from .l3_control_spec import parse_samples
     rebuilt={}
     for side in ('source','target'):
@@ -125,8 +126,8 @@ def replay(detail,source,target):
         paths=parse_capture(trace.read_text(),e['token'],'riscv64' if side=='source' else 'x86_64',region,len(deployment['samplePlan']['inputs']))
         rows=parse_samples(cmd['stdout'],e['token'],deployment['samplePlan'])
         rebuilt[side]=report(side,backend,deployment,paths,rows,e)
-        if rebuilt[side]!=observed:raise ValueError('L3_CONTROL_OBSERVATION_REPLAY_MISMATCH')
-    if detail['comparison']!=comparison(rebuilt,deployment['spec']):raise ValueError('L3_CONTROL_COMPARISON_REPLAY_MISMATCH')
+        require_json_match(rebuilt[side],observed,'L3_CONTROL_OBSERVATION_REPLAY_MISMATCH')
+    require_json_match(comparison(rebuilt,deployment['spec']),detail['comparison'],'L3_CONTROL_COMPARISON_REPLAY_MISMATCH')
     return contract
 
 
@@ -177,10 +178,16 @@ def build_route(config):
     return validate
 
 
+def audit_prerequisites(evaluation):
+    from .l3_audit_prerequisites import check
+    check(evaluation,'L3_CONTROL',single_fragment=True)
+
+
 def audit_result(evaluation):
     """Audit verified AND counterexample results; never promote a failed result."""
     from .translation_validation import program_artifact_from_dict,translation_artifact_from_dict
     from types import SimpleNamespace
+    audit_prerequisites(evaluation)
     source=program_artifact_from_dict(evaluation['sourceProgramArtifact']);target=program_artifact_from_dict(evaluation['targetProgramArtifact'])
     requirements=parse_l3_requirement_manifest(evaluation['translationEvaluationLink']['l3Requirements']).requirements
     attempts=evaluation['attempts']
@@ -201,6 +208,8 @@ def audit_result(evaluation):
     if any(b['contextIdentity']!=context for b in bindings.values()):raise ValueError('L3_CONTROL_AUDIT_CONTEXT_MISMATCH')
     prior=[SimpleNamespace(evidence_identity=l['evidenceIdentity']) for l in layers[:3]];l2_scope=json.loads(layers[2]['detail'])['claimScope']
     expected,cmp=dimensions(contract,detail['platformReports'],bindings,artifact,source,target,prior,l2_scope)
+    require_json_match(expected,detail['fragmentResult'],'L3_CONTROL_AUDIT_RESULT_REPLAY_MISMATCH')
+    require_json_match(cmp,detail['comparison'],'L3_CONTROL_AUDIT_RESULT_REPLAY_MISMATCH')
     if (l2_scope!='architectural' or expected!=detail['fragmentResult'] or cmp!=detail['comparison']
             or detail.get('physicalMicroarchitectureClaimed') is not False
             or detail.get('reasonCodes')!=sorted({r for c in cmp.values() for r in c['reasonCodes']})

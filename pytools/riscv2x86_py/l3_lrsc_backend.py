@@ -8,19 +8,13 @@ from .l3_atomic_backend import parse_capture,memory_by_step
 from .l3_trace_support import Elf,digest,identity,save,run
 from .l3_status import write_status_atomic,record_failure
 SCHEMA='riscv2x86.qemu-lrsc-sequence-backend.v1'
-DEPENDENCIES=('l3_lrsc_backend.py','l3_lrsc_spec.py','l3_lrsc_machine.py','l3_lrsc_observation.py',
-    'l3_lrsc_compare.py','l3_lrsc_deployment.py','l3_lrsc_route.py','l3_lrsc_intent.py',
-    'lrsc_sequence.py','lrsc_source.py','lrsc_target.py','lrsc_compiler_binding.py','l2_lrsc_authority.py',
-    'l3_atomic_retry.py','l3_atomic_spec.py','l3_atomic_backend.py','l3_atomic_compare.py',
-    'l3_control_machine.py','l3_property_obligations.py','l3_sync_obligations.py',
-    'l3_trace_support.py','l3_status.py','l3_backend_validation.py')
-from .l3_atomic_intent import DEPENDENCIES as _ATOMIC_DEPENDENCIES
-DEPENDENCIES=tuple(sorted(set(DEPENDENCIES)|set(_ATOMIC_DEPENDENCIES)|{
-    'l3_atomic_intent.py','l3_source_eligibility.py','l3_mechanism_selection.py',
-    'l3_execution_plan.py','l3_production_acceptance.py','automatic_batch_cli.py'}))
+
 CASES=[{'side':'source','width':w,'retry':retry,'bits':bits} for w in (32,64)
        for bits in range(16) for retry in (False,True)]
 CASES += [{'side':'target','width':w,'retry':retry,'bits':0} for w in (32,64) for retry in (False,True)]
+
+from .l3_implementation_dependencies import implementation_dependencies,implementation_paths
+DEPENDENCIES=implementation_dependencies()
 
 
 def plugin_source():return Path(__file__).resolve().parents[2]/'runtime/l3_qemu_lrsc_trace.c'
@@ -146,7 +140,7 @@ def validate(path,*,_context=None):
     b=checked(_context,control.validate,v['controlBackendPath'],nested=True)
     if any(v[k]!=b[k] for k in control.TOOLS):raise ValueError('L3_LRSC_TOOLS_CHANGED')
     headers=[p for p in b['files'] if p.endswith('/include/qemu/qemu-plugin.h')];build=Path(v['plugin']).with_name('plugin.command.json')
-    required={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}|{str(plugin_source()),v['plugin'],str(build),*headers}
+    required=set(implementation_paths())|{str(plugin_source()),v['plugin'],str(build),*headers}
     if len(headers)!=1 or set(v['files'])!=required or any(digest(p)!=sha for p,sha in v['files'].items()):raise ValueError('L3_LRSC_DEPENDENCIES_CHANGED')
     record=json.loads(build.read_text())
     expected=[v['targetCompiler'],'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(Path(headers[0]).parents[1]),str(plugin_source()),'-o',v['plugin']]
@@ -167,7 +161,7 @@ def prepare(control_path,output):
         headers=[p for p in b['files'] if p.endswith('/include/qemu/qemu-plugin.h')]
         if len(headers)!=1:raise ValueError('L3_LRSC_PLUGIN_HEADER_REQUIRED')
         plugin=out/'lrsc-trace.so';run([b['targetCompiler'],'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(Path(headers[0]).parents[1]),plugin_source(),'-o',plugin],out,'plugin')
-        files=[Path(__file__).with_name(n).resolve() for n in DEPENDENCIES]+[plugin_source(),plugin,out/'plugin.command.json',Path(headers[0])]
+        files=[Path(name) for name in implementation_paths()]+[plugin_source(),plugin,out/'plugin.command.json',Path(headers[0])]
         value={'schemaVersion':SCHEMA,'controlBackendPath':str(control_path),'controlBackendDigest':digest(control_path),
             **{k:b[k] for k in control.TOOLS},'plugin':str(plugin),'files':{str(p):digest(p) for p in files},'calibration':[]}
         status['stage']='calibration';write_status_atomic(out/'build-status.json',status)

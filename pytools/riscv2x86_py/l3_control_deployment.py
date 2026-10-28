@@ -12,6 +12,8 @@ BEGIN='__rv2x86_control_begin';END='__rv2x86_control_end'
 TAKEN='__rv2x86_control_taken';FALL='__rv2x86_control_fall'
 
 
+from .l3_trace_support import require_json_document,require_json_match
+
 def marker(name):return '.globl '+name+'\n.hidden '+name+'\n'+name+':\n'
 
 
@@ -131,10 +133,12 @@ def prepare(source,target,report,finding,backend,source_artifact,target_artifact
           'functionName':function['name'],'inputs':{'source':str(source),'target':str(target),'report':str(report)},
           'inputDigests':{str(p):digest(p) for p in (source,target,report)},'clang':clang,'clangDigest':digest(clang),'sides':sides,
           'outsideFragmentEffectsClaimed':False,'physicalMicroarchitectureClaimed':False}
+    require_json_document(body,'L3_CONTROL_DEPLOYMENT_JSON_INVALID')
     value=dict(body,deploymentIdentity=identity(body));save(directory/'deployment.json',value);return value
 
 
 def validate(value,backend,source_artifact,target_artifact):
+    require_json_document(value,'L3_CONTROL_DEPLOYMENT_JSON_INVALID')
     if value.get('schemaVersion')!=SCHEMA or value.get('deploymentIdentity')!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['outsideFragmentEffectsClaimed'] is not False or value['physicalMicroarchitectureClaimed'] is not False:raise ValueError('L3_CONTROL_DEPLOYMENT_IDENTITY_INVALID')
     for p,sha in value['inputDigests'].items():
         if digest(p)!=sha:raise ValueError('L3_CONTROL_DEPLOYMENT_INPUT_CHANGED')
@@ -142,7 +146,9 @@ def validate(value,backend,source_artifact,target_artifact):
     paths=value['inputs'];data=json.loads(Path(paths['report']).read_text());matches=[f for f in data['findings'] if f['fragment']['id']==value['spec']['fragmentId']]
     if len(matches)!=1:raise ValueError('L3_CONTROL_DEPLOYMENT_FRAGMENT_AMBIGUOUS')
     control,call,plan,function=bound_inputs(paths['source'],paths['target'],paths['report'],matches[0],value['clang'])
-    if (control,call,plan,function['name'])!=(value['spec'],value['callSignature'],value['samplePlan'],value['functionName']):raise ValueError('L3_CONTROL_DEPLOYMENT_FACT_REPLAY_MISMATCH')
+    require_json_match([control,call,plan,function['name']],
+        [value['spec'],value['callSignature'],value['samplePlan'],value['functionName']],
+        'L3_CONTROL_DEPLOYMENT_FACT_REPLAY_MISMATCH')
     for side,artifact in (('source',source_artifact),('target',target_artifact)):
         item=value['sides'][side]
         if item['semanticArtifact']!={'artifactId':artifact.artifact_id,'artifactPath':str(Path(artifact.artifact_path).resolve()),'artifactDigest':artifact.artifact_digest,'buildIdentity':artifact.build_identity}:raise ValueError('L3_CONTROL_SEMANTIC_ARTIFACT_MISMATCH')
@@ -151,6 +157,8 @@ def validate(value,backend,source_artifact,target_artifact):
         with tempfile.TemporaryDirectory(prefix='rv2x86-control-replay-') as temp:
             fresh=build_side(paths[side],side,control,call,plan,function,backend,artifact,Path(temp)/side,value['clang'])
             actual=Elf(item['executionArtifact']['artifactPath']);rebuilt=Elf(fresh['executionArtifact']['artifactPath'])
+            for key in ('region','machineGraph','compilerContinuationSites'):
+                require_json_match(fresh[key],item[key],'L3_CONTROL_DEPLOYMENT_REBUILD_MISMATCH:'+key)
             if (actual.execution_image()!=rebuilt.execution_image() or item['region']!=fresh['region']
                     or item['machineGraph']!=fresh['machineGraph'] or item['compilerContinuationSites']!=fresh['compilerContinuationSites']):raise ValueError('L3_CONTROL_DEPLOYMENT_REBUILD_MISMATCH')
             # Addresses and graph are rebuilt, not trusted merely by content hash.

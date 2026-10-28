@@ -122,33 +122,8 @@ def build_route(config):
 
 
 def audit_prerequisites(evaluation):
-    """Structural readiness, not semantic approval. Counterexamples may audit."""
-    if not isinstance(evaluation, dict):
-        raise ValueError('L3_LRSC_AUDIT_EVALUATION_MAPPING_REQUIRED')
-    for key in ('orchestrationFailure', 'requirementStagingFailure'):
-        if evaluation.get(key):
-            raise ValueError('L3_LRSC_AUDIT_UPSTREAM_FAILURE:' + key + ':' +
-                             json.dumps(evaluation[key], sort_keys=True))
-    for key in ('sourceProgramArtifact', 'targetProgramArtifact'):
-        if not isinstance(evaluation.get(key), dict):
-            raise ValueError('L3_LRSC_AUDIT_PROGRAM_ARTIFACT_REQUIRED:' + key)
-    link = evaluation.get('translationEvaluationLink')
-    if not isinstance(link, dict) or not isinstance(link.get('l3Requirements'), dict):
-        raise ValueError('L3_LRSC_AUDIT_REQUIREMENTS_REQUIRED')
-    attempts = evaluation.get('attempts')
-    if not isinstance(attempts, list) or len(attempts) != 1 or not isinstance(attempts[0], dict):
-        raise ValueError('L3_LRSC_AUDIT_SINGLE_ATTEMPT_REQUIRED')
-    attempt = attempts[0]
-    validation = attempt.get('validation')
-    layers = validation.get('layers') if isinstance(validation, dict) else None
-    if (not isinstance(attempt.get('translationArtifact'), dict) or
-            not isinstance(layers, list) or len(layers) != 4 or
-            any(not isinstance(layer, dict) for layer in layers) or
-            [layer.get('level') for layer in layers] != ['L0', 'L1', 'L2', 'L3'] or
-            any(layer.get('status') != 'verified' for layer in layers[:3]) or
-            layers[3].get('status') not in ('verified', 'failed') or
-            not isinstance(layers[3].get('detail'), (str, dict))):
-        raise ValueError('L3_LRSC_AUDIT_COMPLETED_LAYERS_REQUIRED')
+    from .l3_audit_prerequisites import check
+    check(evaluation,'L3_LRSC')
 
 
 def audit_result(evaluation):

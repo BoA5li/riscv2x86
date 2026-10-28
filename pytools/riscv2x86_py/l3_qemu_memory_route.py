@@ -26,6 +26,8 @@ ROUTE_SCHEMA='riscv2x86.compiler-region-trace-route.v1'
 RUNNER_SCHEMA='riscv2x86.compiler-region-trace-runner.v1'
 
 
+from .l3_trace_support import require_json_document,require_json_match
+
 def parse_contract(value):
     from .l3_experiment_runner import ExperimentContract, LogicalAccess
     fields={'schemaVersion','experimentId','translationPlanId','proofIdentity','intentProfileIdentity',
@@ -180,6 +182,7 @@ def report_from_capture(side, backend, deployment, events, objects, evidence):
 
 def replay_reports(detail, contract, source_artifact, target_artifact):
     """Independently re-read actual trace/command files; hashes are not event facts."""
+    require_json_document(detail,'L3_TRACE_REPLAY_JSON_INVALID')
     raw=contract.payload
     if digest(raw['backendPath'])!=raw['backendDigest']: raise ValueError('L3_TRACE_BACKEND_MANIFEST_CHANGED')
     backend=validate_backend(raw['backendPath'])
@@ -194,7 +197,7 @@ def replay_reports(detail, contract, source_artifact, target_artifact):
             raise ValueError('L3_SCALAR_OBLIGATION_REPLAY_MISMATCH')
     if profile.profile_identity!=contract.intent_profile_identity or profile.proof_identity!=contract.proof_identity:
         raise ValueError('L3_TRACE_DEPLOYMENT_INTENT_CHANGED')
-    if detail.get('traceDeployment')!=deployment: raise ValueError('L3_TRACE_REPORTED_DEPLOYMENT_MISMATCH')
+    require_json_match(deployment,detail.get('traceDeployment'),'L3_TRACE_REPORTED_DEPLOYMENT_MISMATCH')
     reports=detail['platformReports']; rebuilt={}
     for side in ('source','target'):
         report=reports[side]; evidence=report['evidence']
@@ -215,7 +218,7 @@ def replay_reports(detail, contract, source_artifact, target_artifact):
         if command!=[backend[side+'Executor'],*backend[side+'RunnerArguments'],'-plugin',expected_plugin,binary,evidence['token']]:
             raise ValueError('L3_TRACE_LAUNCHED_PROGRAM_MISMATCH')
         rebuilt[side]=report_from_capture(side,backend,deployment,events,objects,evidence)
-        if rebuilt[side]!=report: raise ValueError('L3_TRACE_NORMALIZATION_REPLAY_MISMATCH')
+        require_json_match(rebuilt[side],report,'L3_TRACE_NORMALIZATION_REPLAY_MISMATCH')
     rows='samples' if raw['spec']['access']=='none' else 'objects'
     if [x['value'] for x in rebuilt['source'][rows]] != [x['value'] for x in rebuilt['target'][rows]]:
         raise ValueError('L3_TRACE_DEPLOYMENT_FUNCTIONAL_MISMATCH')
@@ -380,7 +383,7 @@ def verify_detail(detail, contract, source_artifact, target_artifact):
     expected=None
     if contract.payload['cacheModel'] is not None:
         expected={side:cache_evaluate([{k:e[k] for k in ('offset','size','access')} for e in report['events']],contract.payload['cacheModel']) for side,report in reports.items()}
-    if detail.get('cacheModelResults')!=expected: raise ValueError('L3_CACHE_MODEL_REPLAY_MISMATCH')
+    require_json_match(expected,detail.get('cacheModelResults'),'L3_CACHE_MODEL_REPLAY_MISMATCH')
     fragment=detail['fragmentResult']
     bindings=detail['executionBindings']
     expected_execution=identity({'context':bindings['source']['contextIdentity'],'reports':reports,

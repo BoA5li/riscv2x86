@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 
-from .l3_trace_support import Elf, digest, identity, run, save
+from .l3_trace_support import Elf, digest, identity, run, save, require_json_document, require_json_match
 from .l3_scalar_trace import trace_spec
 
 SCHEMA='riscv2x86.compiler-region-execution-deployment.v1'
@@ -173,12 +173,14 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
            'sampleCount':samples,'sourceAndTargetFiles':code_files,'inputs':{'source':str(source),'target':str(target),'report':str(Path(report).resolve())},'sides':deployments,
            'captureBoundary':'compiler-asm-region-only','compilerRegionWitness':'zero-byte-labels-and-exact-function-bytes',
            'outsideFragmentEffectsClaimed':False}
+    require_json_document(value,'L3_TRACE_DEPLOYMENT_JSON_INVALID')
     value['deploymentIdentity']=identity(value)
     save(directory/'deployment.json',value)
     return value
 
 
 def validate(value, backend, source_artifact, target_artifact):
+    require_json_document(value,'L3_TRACE_DEPLOYMENT_JSON_INVALID')
     fields={'schemaVersion','backendIdentity','spec','functionScope','sampleCount','sourceAndTargetFiles','sides',
             'captureBoundary','compilerRegionWitness','outsideFragmentEffectsClaimed','deploymentIdentity','inputs'}
     if not isinstance(value,dict) or set(value)!=fields or value['schemaVersion'] not in {SCHEMA,SCALAR_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}):
@@ -194,6 +196,8 @@ def validate(value, backend, source_artifact, target_artifact):
     findings=[f for f in data['findings'] if (f.get('fragment') or {}).get('id')==value['spec']['fragmentId']]
     if len(findings)!=1 or trace_spec(findings[0])!=value['spec'] or function_scope(inputs['source'],inputs['report'],findings[0],legacy_scalar=value['schemaVersion']==SCHEMA)!=value['functionScope']:
         raise ValueError('L3_TRACE_DEPLOYMENT_PROOF_REPLAY_MISMATCH')
+    require_json_match({'spec':trace_spec(findings[0]),'scope':function_scope(inputs['source'],inputs['report'],findings[0],legacy_scalar=value['schemaVersion']==SCHEMA)},
+        {'spec':value['spec'],'scope':value['functionScope']},'L3_TRACE_DEPLOYMENT_PROOF_REPLAY_MISMATCH')
     from .approved_replacement import approved_replacement
     finding=findings[0]; original=Path(inputs['source']).read_bytes()
     begin=finding['rewriteBeginOffset']; end=finding['rewriteEndOffset']

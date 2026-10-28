@@ -1234,30 +1234,13 @@ def prepare_automatic_inventory(
             module='l3_atomic_intent' if trace_atomic else 'l3_fence_intent' if trace_fence else ('l3_program_intent' if trace_program else ('l3_control_intent' if trace_control else 'l3_trace_intent'))
             implementation=Path(__file__).with_name(module+'.py').resolve()
             command=[sys.executable,'-m','riscv2x86_py.'+module,'--implementation',str(implementation)]
-            dependencies=('l3_trace_support.py','l3_cache_model.py','l3_intent_requirements.py',
-                    'l3_memory_intent.py','l3_property_obligations.py','l3_sync_obligations.py','l2_fence_ordering.py','fence_semantics.py','l3_scalar_trace.py',
-                    'l2_semantic_profile.py','l2_authority.py','l2_effect_proof.py',
-                    'l3_source_eligibility.py','l2_atomic_authority.py','l2_materialization.py','l2_fragment_execution.py',
-                    'compiler_provenance.py')
-            if trace_atomic:
-                from .l3_atomic_intent import DEPENDENCIES
-                dependencies=DEPENDENCIES
-            if trace_fence:
-                from .l3_fence_intent import DEPENDENCIES
-                dependencies=DEPENDENCIES
-            if trace_control:
-                from .l3_control_intent import DEPENDENCIES
-                dependencies=DEPENDENCIES
-            if trace_program:
-                from .l3_program_intent import DEPENDENCIES
-                dependencies=DEPENDENCIES
             if trace_selections is not None:
-                from .l3_mechanism_selection import producer_dependencies
                 module='l3_mechanism_selection';implementation=Path(__file__).with_name(module+'.py').resolve()
                 command=[sys.executable,'-m','riscv2x86_py.'+module,'--implementation',str(implementation),'--selection-file',str(Path(l3_mechanism_selections).resolve())]
-                dependencies=sorted(producer_dependencies())
+            from .l3_implementation_dependencies import implementation_dependencies
+            dependencies=implementation_dependencies()
             for dependency in dependencies:
-                command.extend(('--dependency',str(implementation.with_name(dependency))))
+                command.extend(('--dependency',str(implementation.parent/dependency)))
             if trace_model is not None:
                 model_path=case_dir/'cache-model-selection.json'
                 _write_json(model_path,trace_model)

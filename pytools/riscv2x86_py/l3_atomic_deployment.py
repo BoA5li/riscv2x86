@@ -10,6 +10,8 @@ from .l3_control_deployment import flags
 SCHEMA='riscv2x86.atomic-execution-deployment.v1'
 
 
+from .l3_trace_support import require_json_document,require_json_match
+
 def bound_inputs(source,target,report,finding,clang):
     from .mechanism_route_checks import compiler_bound_finding
     from .approved_replacement import approved_replacement
@@ -55,10 +57,12 @@ def prepare(source,target,report,finding,backend,source_artifact,target_artifact
           'sides':{side:build_side(p,side,plan,function,backend,a,work/side,atomic) for side,p,a in
                    (('source',source,source_artifact),('target',target,target_artifact))},
           'outsideFragmentEffectsClaimed':False,'physicalMicroarchitectureClaimed':False}
+    require_json_document(body,'L3_ATOMIC_DEPLOYMENT_JSON_INVALID')
     value=dict(body,deploymentIdentity=identity(body));save(work/'deployment.json',value);return value
 
 
 def validate(value,backend,source_artifact,target_artifact):
+    require_json_document(value,'L3_ATOMIC_DEPLOYMENT_JSON_INVALID')
     if (value.get('schemaVersion')!=SCHEMA or value.get('deploymentIdentity')!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'})
             or value['backendIdentity']!=backend['backendIdentity'] or value['physicalMicroarchitectureClaimed'] is not False
             or value['outsideFragmentEffectsClaimed'] is not False):raise ValueError('L3_ATOMIC_DEPLOYMENT_INVALID')
@@ -68,7 +72,8 @@ def validate(value,backend,source_artifact,target_artifact):
     paths=value['inputs'];data=json.loads(Path(paths['report']).read_text());findings=data['findings']
     if len(findings)!=1:raise ValueError('L3_ATOMIC_SINGLE_FRAGMENT_REQUIRED')
     atomic,plan,function=bound_inputs(paths['source'],paths['target'],paths['report'],findings[0],value['clang'])
-    if (atomic,plan,function['name'])!=(value['spec'],value['samplePlan'],value['functionName']):raise ValueError('L3_ATOMIC_SPEC_REPLAY_MISMATCH')
+    require_json_match({'spec':atomic,'samplePlan':plan,'functionName':function['name']},
+        {key:value[key] for key in ('spec','samplePlan','functionName')},'L3_ATOMIC_SPEC_REPLAY_MISMATCH')
     for side,artifact in (('source',source_artifact),('target',target_artifact)):
         item=value['sides'][side]
         expected={'artifactId':artifact.artifact_id,'artifactPath':str(Path(artifact.artifact_path).resolve()),'artifactDigest':artifact.artifact_digest,'buildIdentity':artifact.build_identity}
@@ -78,6 +83,8 @@ def validate(value,backend,source_artifact,target_artifact):
         with tempfile.TemporaryDirectory(prefix='rv2x86-atomic-replay-') as temp:
             fresh=build_side(paths[side],side,plan,function,backend,artifact,Path(temp)/side,atomic)
             actual=Elf(item['executionArtifact']['artifactPath']);rebuilt=Elf(fresh['executionArtifact']['artifactPath'])
+            require_json_match({'image':rebuilt.execution_image(),'region':fresh['region'],'machine':fresh['machineMechanism']},
+                {'image':actual.execution_image(),'region':item['region'],'machine':item['machineMechanism']},'L3_ATOMIC_INDEPENDENT_REBUILD_MISMATCH')
             if (actual.execution_image()!=rebuilt.execution_image() or item['region']!=fresh['region']
                     or item['machineMechanism']!=fresh['machineMechanism']
                     or digest(item['executionArtifact']['artifactPath'])!=item['executionArtifact']['artifactDigest']

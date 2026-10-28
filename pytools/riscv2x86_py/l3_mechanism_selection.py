@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from .l3_trace_support import identity,digest
 from .l3_execution_plan import build
+from .l3_intent_requirements import _hash
 
 SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
@@ -44,8 +45,12 @@ def load(path,*,progress=None):
 
 def plan(findings,functions,selections):
     p=build(findings,functions,set(selections));mechanisms={m['mechanism'] for m in p['members']}
-    if len(mechanisms)!=1:raise ValueError('L3_MECHANISM_COMBINATION_NOT_YET_SUPPORTED')
-    if not p['complete']:raise ValueError('L3_MECHANISM_CAPABILITY_INCOMPLETE:'+json.dumps(p))
+    from .l3_intent_refusal import RouteUnavailable
+    if len(mechanisms)!=1:raise RouteUnavailable('L3_MECHANISM_COMBINATION_NOT_YET_SUPPORTED',plan=p)
+    if not p['complete']:
+        missing=any(m['mechanism']!='unavailable' and m['mechanism'] not in selections for m in p['members'])
+        raise RouteUnavailable('L3_MECHANISM_CAPABILITY_INCOMPLETE:'+json.dumps(p),
+            disposition='prerequisites_missing' if missing else 'unsupported',plan=p)
     return p,mechanisms.pop()
 
 
@@ -56,19 +61,14 @@ def produce(request,selections):
     from .l3_fence_intent import produce as fence_produce
     from .l3_atomic_intent import produce as atomic_produce
     from .l3_lrsc_intent import produce as lrsc_produce
-    if request.get('requestIdentity')!=identity({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_MECHANISM_REQUEST_CHANGED')
+    if request.get('requestIdentity')!=_hash({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_MECHANISM_REQUEST_CHANGED')
     try:
         candidates=request['candidates'];functions=candidates[0]['compilerFunctions']
         if any(c['compilerFunctions']!=functions for c in candidates):raise ValueError('L3_MECHANISM_SNAPSHOT_CONFLICT')
         _,kind=plan([c['finding'] for c in candidates],functions,selections)
     except (KeyError,TypeError,ValueError,IndexError) as exc:
-        # The strict program refusal retains all independently known obligations.
-        value=program_produce(request)
-        for p in value['profiles']:
-            if p['complete']:raise ValueError('L3_MECHANISM_REFUSAL_WOULD_ENABLE_ROUTE')
-        for d in value['dispositions']:
-            d['reasonCodes']=sorted(set(d['reasonCodes']+[str(exc)]));d['dispositionIdentity']=identity({k:v for k,v in d.items() if k!='dispositionIdentity'})
-        return value
+        from .l3_intent_refusal import produce as refuse
+        return refuse(request,exc)
     return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce,'fence':fence_produce,'atomic':atomic_produce,'lrsc':lrsc_produce}[kind](request)
 
 
@@ -109,19 +109,14 @@ def build_route(config):
 
 
 def producer_dependencies():
-    from .l3_program_intent import DEPENDENCIES as pd
-    from .l3_control_intent import DEPENDENCIES as cd
-    from .l3_fence_intent import DEPENDENCIES as fd
-    from .l3_atomic_intent import DEPENDENCIES as ad
-    from .l3_lrsc_intent import DEPENDENCIES as ld
-    deps=set(pd)|set(cd)|set(fd)|set(ad)|set(ld)|{'l3_program_intent.py','l3_control_intent.py','l3_trace_intent.py','l3_memory_intent.py','l3_cache_model.py','l3_execution_plan.py','l3_qemu_backend.py','l3_control_backend.py','l3_program_backend.py','l3_qemu_dependencies.py','l3_fence_intent.py','l3_fence_backend.py','l3_atomic_intent.py','l3_atomic_backend.py','l3_backend_validation.py'}
-    return deps
+    from .l3_implementation_dependencies import implementation_dependencies
+    return set(implementation_dependencies())
 
 
 def main():
     deps=producer_dependencies()
     p=argparse.ArgumentParser();p.add_argument('--implementation',required=True);p.add_argument('--dependency',action='append',default=[]);p.add_argument('--selection-file',required=True);a=p.parse_args()
-    if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str(Path(__file__).with_name(n).resolve()) for n in deps}:raise ValueError('L3_MECHANISM_DEPENDENCIES_UNPINNED')
+    if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str((Path(__file__).parent/n).resolve()) for n in deps}:raise ValueError('L3_MECHANISM_DEPENDENCIES_UNPINNED')
     request=json.load(sys.stdin)
     progress=lambda event:print(json.dumps(event,sort_keys=True),file=sys.stderr,flush=True)
     from .l3_trace_support import emit_json

@@ -6,17 +6,15 @@ from pathlib import Path
 import sys
 from .l3_trace_support import identity
 from .l3_program_spec import spec,CAPABILITY,LIMITS
-from .l3_intent_requirements import parse_l3_intent_profile
+from .l3_intent_requirements import parse_l3_intent_profile,_hash
 from .l3_property_obligations import analyze
 
-DEPENDENCIES=('l3_program_spec.py','l3_execution_plan.py','l3_scalar_trace.py','l3_control_spec.py',
- 'l3_scalar_call.py','l3_property_obligations.py','l3_sync_obligations.py','l2_fence_ordering.py','fence_semantics.py','l3_source_eligibility.py','l2_atomic_authority.py',
- 'l2_materialization.py','l2_fragment_execution.py','automatic_l2_authority.py','compiler_provenance.py',
- 'l2_authority.py','l2_effect_proof.py','l2_semantic_profile.py','l3_trace_support.py','l3_intent_requirements.py')
+from .l3_implementation_dependencies import implementation_dependencies,implementation_paths
+DEPENDENCIES=implementation_dependencies()
 
 
 def produce(request):
-    if request.get('schemaVersion')!='riscv2x86.l3-intent-producer-request.v1' or request.get('requestIdentity')!=identity({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_PROGRAM_REQUEST_INVALID')
+    if request.get('schemaVersion')!='riscv2x86.l3-intent-producer-request.v1' or request.get('requestIdentity')!=_hash({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_PROGRAM_REQUEST_INVALID')
     candidates=request['candidates'];program=None;error=None
     try:
         functions=candidates[0]['compilerFunctions']
@@ -38,16 +36,16 @@ def produce(request):
             'sourceCapabilities':[CAPABILITY] if reason is None else [],'targetCapabilities':[CAPABILITY] if reason is None else [],
             'observationBoundary':{'kind':'compiler-program-regions','identity':program['specIdentity']} if reason is None else {'kind':'','identity':''},
             'notClaimedProperties':sorted(LIMITS),'producer':{'kind':'translation-proof','producerIdentity':request['producerIdentity'],'proofIdentity':artifact['proof_identity']},'complete':reason is None}
-        p=parse_l3_intent_profile(dict(body,profileIdentity=identity(body))).to_dict();profiles.append(p)
+        p=parse_l3_intent_profile(dict(body,profileIdentity=_hash(body))).to_dict();profiles.append(p)
         if reason is not None:
             d={'schemaVersion':'riscv2x86.l3-intent-disposition.v1','fragmentId':f['fragment']['id'],'profileIdentity':p['profileIdentity'],
                 'status':'unsupported' if ob is not None else 'prerequisites_missing','reasonCodes':[reason]}
-            dispositions.append(dict(d,dispositionIdentity=identity(d)))
+            dispositions.append(dict(d,dispositionIdentity=_hash(d)))
     return {'schemaVersion':'riscv2x86.l3-intent-producer-response.v2','requestIdentity':request['requestIdentity'],'profiles':profiles,'dispositions':dispositions}
 
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--implementation',required=True);p.add_argument('--dependency',action='append',default=[]);a=p.parse_args()
-    if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!={str(Path(__file__).with_name(n).resolve()) for n in DEPENDENCIES}:raise ValueError('L3_PROGRAM_DEPENDENCIES_UNPINNED')
+    if Path(a.implementation).resolve()!=Path(__file__).resolve() or {str(Path(x).resolve()) for x in a.dependency}!=set(implementation_paths()):raise ValueError('L3_PROGRAM_DEPENDENCIES_UNPINNED')
     emit_json(lambda: produce(json.load(sys.stdin)))
 if __name__=='__main__':main()
