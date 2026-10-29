@@ -724,7 +724,7 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
         raise ValueError("automatic L2 effect config fields/schema are invalid")
     if config.get("mode") not in {"memory-object-functions", "branch-domain-functions",
                                   "control-flow-functions",
-                                  "scalar-effect-functions", "fence-functions", "asm-goto-continuations", "atomic-rmw-functions"}:
+                                  "scalar-effect-functions", "fence-functions", "asm-goto-continuations", "atomic-rmw-functions", "joint-program-functions"}:
         raise ValueError("automatic L2 effect mode is unsupported")
     functions = config.get("functions")
     if not isinstance(functions, list) or not functions:
@@ -732,6 +732,9 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
     timeout = config.get("timeoutSeconds")
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
         raise ValueError("automatic L2 effect timeout is invalid")
+    if config.get('mode') == 'joint-program-functions':
+        from .automatic_l2_joint import build_validator
+        return build_validator(config)
     if config.get('mode') == 'atomic-rmw-functions':
         from .automatic_l2_atomic import build_atomic_validator
         return build_atomic_validator(config)

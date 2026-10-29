@@ -707,7 +707,7 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             if _INTEGER_POINTER_TYPE.fullmatch(item)
         ]
         safe_memory_object = (
-            len(params) <= 3
+            len(params) <= 4
             and len(pointer_parameters) == 1
             and (return_type == "void" or _INTEGER_TYPE.fullmatch(return_type))
             and all(
@@ -769,6 +769,9 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             from .compiler_program_regions import export as program_regions
             regions=program_regions(node,source_digest=source_digest,function_identity=function_identity,source_range=_source_range)
             if regions is not None:function['compilerProgramRegions']=regions
+            from .compiler_joint_scope import export as joint_scope
+            joint=joint_scope(node,source_digest=source_digest,function_identity=function_identity,source_range=_source_range,resolve=resolve_compiler_type)
+            if joint is not None:function['compilerJointScope']=joint
             functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
@@ -1023,6 +1026,8 @@ def prepare_automatic_inventory(
             selection_kind=next(iter(trace_selections))
             if selection_kind=='memory':
                 from .l3_memory_backend import validate_backend
+            elif selection_kind=='joint':
+                from .l3_joint_backend import validate as validate_backend
             elif selection_kind=='lrsc':
                 from .l3_lrsc_backend import validate as validate_backend
             elif selection_kind=='atomic':
@@ -1551,6 +1556,13 @@ def prepare_automatic_inventory(
                     functional_relation_config,
                     binding_kind="runtime_adapter",
                 ))
+            if (trace_selections is not None and 'joint' in trace_selections
+                    and len(functions)==1 and functions[0].get('compilerJointScope')):
+                l2_environment_capabilities.add('joint_program_observation')
+                l2_providers=[provider('automatic-l2-joint-program-v1',
+                    [L2Dimension.LOGICAL_OPERANDS.value,L2Dimension.MEMORY_EFFECTS.value,L2Dimension.SHELL_SEMANTICS.value],
+                    ['scalar','memory_load','memory_store'],['joint_program_observation'],
+                    'automatic-l2-effect-differential',effect_config('joint-program-functions'))]
             time_providers=[p for p in explicit_l2_providers if p['validatorType']=='controlled-time-validation']
             if time_providers:
                 if len(time_providers)!=1 or len(functions)!=1:

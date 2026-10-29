@@ -27,7 +27,10 @@ def assess(findings,functions,capabilities):
         check('source-obligations-and-proof-authority',lambda:analyze(finding,functions),fid)
         def invocation():
             fn=entry(functions,finding['fragment']['compilerFragmentAuthority']['functionIdentity'])
-            if kind in {'memory_load','memory_store'}:
+            if len(findings)>1 and fn.get('compilerJointScope') and 'joint' in capabilities:
+                from .l3_joint_spec import spec
+                spec(findings,functions)
+            elif kind in {'memory_load','memory_store'}:
                 from .l3_memory_intent import memory_spec
                 from .l3_memory_call import bind,bind_load
                 spec=memory_spec(finding)
@@ -58,12 +61,19 @@ def assess(findings,functions,capabilities):
     plan=None
     def selection():
         nonlocal plan
-        plan=build(findings,functions,set(capabilities))
+        if 'joint' in capabilities and any(fn.get('compilerJointScope') for fn in functions):
+            from .l3_mechanism_selection import plan as select
+            plan,_=select(findings,functions,{'joint':{}})
+        else:plan=build(findings,functions,set(capabilities))
         if not plan['complete']:raise ValueError('L3_MEMBER_CAPABILITY_PREREQUISITES_MISSING')
     check('declared-mechanism-availability',selection)
     def composition():
         if not findings:raise ValueError('L3_EMPTY_PROGRAM')
         if len(findings)>1:
+            if 'joint' in capabilities and any(fn.get('compilerJointScope') for fn in functions):
+                from .l3_joint_spec import spec
+                spec(findings,functions)
+                return
             if any(f.get('l2SemanticProfile',{}).get('patternKind')!='scalar' for f in findings):
                 raise ValueError('L3_JOINT_REGION_EXECUTION_CONTRACT_REQUIRED')
             from .l3_program_spec import spec

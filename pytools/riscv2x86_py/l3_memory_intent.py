@@ -35,7 +35,7 @@ def _range_covers(ranges, offset, width, size):
     return any(start <= offset and offset + width <= end for start, end in pairs)
 
 
-def memory_spec(finding):
+def memory_spec(finding, *, joint_region=False):
     approval = finding.get('approvalArtifact') or {}
     if (approval.get('proofStatus') != 'approved' or approval.get('architectureSemanticsPreserved') is not True or
             approval.get('shellSemanticsPreserved') is not True or finding.get('translationOutcome') not in ('emitted','strengthened')):
@@ -80,13 +80,13 @@ def memory_spec(finding):
     if (len(address)!=1 or address[0].get('typeKind')!='pointer' or type(address[0].get('parameterIndex')) is not int or address[0]['parameterIndex']<0 or
             address[0].get('accessMode')!='address' or not boundary.get('programId')):
         raise ValueError('L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE')
-    if facts['accessKind']=='load' and address[0]['parameterIndex']!=0:
+    if not joint_region and facts['accessKind']=='load' and address[0]['parameterIndex']!=0:
         raise ValueError('L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE')
     if facts['accessKind']=='store':
         values=[x for x in operands if x.get('operandIndex')==facts.get('valueOperandIndex')]
         if (len(values)!=1 or values[0].get('typeKind')!='integer'
-                or type(values[0].get('parameterIndex')) is not int or values[0]['parameterIndex']<0
-                or values[0]['parameterIndex']==address[0]['parameterIndex'] or values[0].get('accessMode')!='input'):
+                or (not joint_region and (type(values[0].get('parameterIndex')) is not int or values[0]['parameterIndex']<0
+                or values[0]['parameterIndex']==address[0]['parameterIndex'])) or values[0].get('accessMode')!='input'):
             raise ValueError('L3_MEMORY_POINTER_PARAMETER_BINDING_INCOMPLETE')
     return {'fragmentId':fragment['id'],'programId':boundary['programId'], 'objectId':obj['objectId'],
             'sourceEffectId':effects[0]['effectId'], 'offset':offset,'width':width,'size':size,

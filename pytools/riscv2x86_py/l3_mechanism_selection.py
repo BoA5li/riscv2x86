@@ -12,16 +12,17 @@ SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
 def load(path,*,progress=None):
     path=Path(path).resolve();selection_digest=digest(path);raw=json.loads(path.read_text())
-    if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic','lrsc'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
+    if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic','lrsc','joint'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
     from .l3_memory_backend import validate_backend
     from .l3_control_backend import validate as control
     from .l3_program_backend import validate as program
     from .l3_fence_backend import validate as fence
     from .l3_atomic_backend import validate as atomic
     from .l3_lrsc_backend import validate as lrsc
+    from .l3_joint_backend import validate as joint
     from .l3_backend_validation import BackendValidationSession
     result={};roots=[]
-    validators={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence,'atomic':atomic,'lrsc':lrsc}
+    validators={'memory':validate_backend,'control':control,'scalar-program':program,'fence':fence,'atomic':atomic,'lrsc':lrsc,'joint':joint}
     with BackendValidationSession(progress) as context:
         for name,p in sorted(raw['backends'].items()):
             if not isinstance(p,str) or not p:raise ValueError('L3_MECHANISM_BACKEND_PATH_INVALID')
@@ -46,6 +47,18 @@ def load(path,*,progress=None):
 def plan(findings,functions,selections):
     p=build(findings,functions,set(selections));mechanisms={m['mechanism'] for m in p['members']}
     from .l3_intent_refusal import RouteUnavailable
+    if len(findings)>1 and 'joint' in selections and any(fn.get('compilerJointScope') for fn in functions):
+        try:
+            from .l3_joint_spec import spec
+            program=spec(findings,functions)
+        except (ValueError,KeyError,TypeError,IndexError) as exc:
+            raise RouteUnavailable('L3_JOINT_PREREQUISITE:'+str(exc),plan=p) from exc
+        body={'schemaVersion':'riscv2x86.joint-mechanism-plan.v1','programId':p['programId'],
+            'members':[dict(m,mechanism='joint',status='ready',reasonCodes=[]) for m in p['members']],
+            'jointSpecIdentity':program['specIdentity'],'complete':True,
+            'readinessScope':'static-proof-and-invocation-prerequisites; execution-not-run',
+            'physicalMicroarchitectureClaimed':False}
+        return dict(body,planIdentity=identity(body)),'joint'
     if len(mechanisms)!=1:raise RouteUnavailable('L3_MECHANISM_COMBINATION_NOT_YET_SUPPORTED',plan=p)
     if not p['complete']:
         missing=any(m['mechanism']!='unavailable' and m['mechanism'] not in selections for m in p['members'])
@@ -61,6 +74,7 @@ def produce(request,selections):
     from .l3_fence_intent import produce as fence_produce
     from .l3_atomic_intent import produce as atomic_produce
     from .l3_lrsc_intent import produce as lrsc_produce
+    from .l3_joint_intent import produce as joint_produce
     if request.get('requestIdentity')!=_hash({k:v for k,v in request.items() if k!='requestIdentity'}):raise ValueError('L3_MECHANISM_REQUEST_CHANGED')
     try:
         candidates=request['candidates'];functions=candidates[0]['compilerFunctions']
@@ -69,7 +83,7 @@ def produce(request,selections):
     except (KeyError,TypeError,ValueError,IndexError) as exc:
         from .l3_intent_refusal import produce as refuse
         return refuse(request,exc)
-    return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce,'fence':fence_produce,'atomic':atomic_produce,'lrsc':lrsc_produce}[kind](request)
+    return {'memory':memory_produce,'control':control_produce,'scalar-program':program_produce,'fence':fence_produce,'atomic':atomic_produce,'lrsc':lrsc_produce,'joint':joint_produce}[kind](request)
 
 
 def build_route(config):
@@ -86,6 +100,9 @@ def build_route(config):
             c.update(backendPath=selected['path'],backendDigest=selected['digest'])
             if kind=='memory':
                 from .l3_qemu_memory_route import build_route as factory
+            elif kind=='joint':
+                from .l3_joint_route import build_route as factory
+                c.update(schemaVersion='riscv2x86.joint-program-route.v1',sampleCount=8,workDirectory=str(Path(c['workDirectory']).parent/'joint'),clang=config['routeConfig']['clang'])
             elif kind=='lrsc':
                 from .l3_lrsc_route import build_route as factory
                 c.update(schemaVersion='riscv2x86.lrsc-trace-route.v1',sampleCount=None,clang=config['routeConfig']['clang'])

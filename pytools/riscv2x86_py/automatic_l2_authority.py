@@ -415,7 +415,15 @@ def _scalar_authority(
         return None
     source_effects, relations, shell_identity = proof_authority
     observation_authority = None
-    if parsed_boundary is not None:
+    joint_scope = function.get('compilerJointScope') or {}
+    joint_observer = (joint_scope.get('schemaVersion') == 'riscv2x86.compiler-joint-scope.v1'
+        and joint_scope.get('scopeIdentity') == _identity({k:v for k,v in joint_scope.items() if k!='scopeIdentity'})
+        and joint_scope.get('sourceDigest') == function.get('sourceDigest')
+        and joint_scope.get('functionIdentity') == function.get('functionId'))
+    # The explicit joint provider observes every scalar boundary directly,
+    # including fanout. Do not manufacture one legacy sink/consumer route.
+    # Canonical operands, complete graph, proof and shell gates above remain.
+    if parsed_boundary is not None and not joint_observer:
         try:
             graph = fragment_dependency_graph_from_dict(
                 approval["l2FragmentDependencyGraph"],
@@ -434,7 +442,7 @@ def _scalar_authority(
             return None
     return L2AuthoritySidecar(
         fragment_id,
-        L2AuthorityProducer("frontend-compiler-sidecar", "automatic-fragment-authority",
+        L2AuthorityProducer("frontend-compiler-sidecar", "automatic-joint-fragment-authority" if joint_observer else "automatic-fragment-authority",
                             "v6", producer_digest),
         shell_identity, tuple(operands), (), source_effects, relations,
         (), (), True, control_flow=control_flow, internal_values=internal_values,
