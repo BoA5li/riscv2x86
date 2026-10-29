@@ -1558,11 +1558,9 @@ def prepare_automatic_inventory(
                 ))
             if (trace_selections is not None and 'joint' in trace_selections
                     and len(functions)==1 and functions[0].get('compilerJointScope')):
-                l2_environment_capabilities.add('joint_program_observation')
-                l2_providers=[provider('automatic-l2-joint-program-v1',
-                    [L2Dimension.LOGICAL_OPERANDS.value,L2Dimension.MEMORY_EFFECTS.value,L2Dimension.SHELL_SEMANTICS.value],
-                    ['scalar','memory_load','memory_store'],['joint_program_observation'],
-                    'automatic-l2-effect-differential',effect_config('joint-program-functions'))]
+                from .l2_joint_contract import providers as joint_providers, CAPABILITIES
+                l2_environment_capabilities.update(CAPABILITIES)
+                l2_providers=joint_providers(effect_config('joint-program-functions'), execution_profiles)
             time_providers=[p for p in explicit_l2_providers if p['validatorType']=='controlled-time-validation']
             if time_providers:
                 if len(time_providers)!=1 or len(functions)!=1:

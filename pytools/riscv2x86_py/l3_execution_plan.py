@@ -33,16 +33,18 @@ def build(findings,functions,capabilities):
                 route_reasons.append('L3_PLAN_ATOMIC_PREREQUISITE:'+str(exc))
         available=mechanism != 'unavailable' and mechanism in capabilities
         members.append({'fragmentId':f['fragment']['id'],'obligations':obligations,'mechanism':mechanism,
-            'status':'ready' if available else 'unsupported','reasonCodes':[] if available else route_reasons+['L3_PLAN_CAPABILITY_MISSING:'+mechanism]})
+            'status':'candidate_available' if available else 'capability_unavailable','reasonCodes':[] if available else route_reasons+['L3_PLAN_CAPABILITY_MISSING:'+mechanism]})
     for member in members:
         sync=member['obligations'].get('synchronizationObligations')
         if sync is not None:
             member['requiredSynchronizationCapabilities']=[p['propertyId'] for p in sync['requiredSubproperties']]
-            member['reasonCodes']=sorted(set(member['reasonCodes']+sync['reasonCodes']+([] if member['status']=='ready' else [
+            member['reasonCodes']=sorted(set(member['reasonCodes']+sync['reasonCodes']+([] if member['status']=='candidate_available' else [
                 'L3_PLAN_SYNC_CAPABILITY_MISSING:'+p for p in member['requiredSynchronizationCapabilities']])))
     programs={m['obligations']['programId'] for m in members}
     if len(programs)!=1:raise ValueError('L3_PLAN_PROGRAM_IDENTITY_CONFLICT')
-    body={'schemaVersion':'riscv2x86.l3-mechanism-plan.v1','programId':programs.pop(),
-          'members':members,'complete':all(m['status']=='ready' for m in members),
+    body={'schemaVersion':'riscv2x86.l3-mechanism-plan.v2','programId':programs.pop(),
+          'members':members,'complete':all(m['status']=='candidate_available' for m in members),
+          'statusScope':'mechanism-candidates-only; not invocation, configuration or execution acceptance',
+          'semanticApproval':False,'productionAcceptanceComplete':False,
           'physicalMicroarchitectureClaimed':False}
     return dict(body,planIdentity=identity(body))

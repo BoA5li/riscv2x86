@@ -9,7 +9,7 @@ from pathlib import Path
 from .l3_trace_support import identity,digest,require_json_document
 
 
-def assess(findings,functions,capabilities):
+def assess(findings,functions,capabilities,registry_config=None):
     from .l3_property_obligations import analyze
     from .l3_execution_plan import build
     from .l3_entry_binding import entry
@@ -79,10 +79,23 @@ def assess(findings,functions,capabilities):
             from .l3_program_spec import spec
             spec(findings,functions)
     check('program-composition-and-dependency-closure',composition)
-    body={'schemaVersion':'riscv2x86.l3-capability-assessment.v1',
+    configuration={'stage':'l2-provider-resolution','status':'not_assessed','reasonCodes':['L3_L2_REGISTRY_NOT_SUPPLIED']}
+    if registry_config is not None:
+        try:
+            from .l2_joint_contract import assess as assess_providers
+            configuration['plans']=assess_providers(findings,registry_config['providers'],
+                registry_config['environmentCapabilities'],registry_config['environmentExecutionProfiles'],
+                execution_profile=registry_config.get('executionProfile','rv64gc-user-to-x86_64-user'))
+            configuration.update(status='satisfied',reasonCodes=[])
+        except (OSError,ValueError,KeyError,TypeError,IndexError) as exc:
+            configuration.update(status='unresolved',reasonCodes=[str(exc)])
+    body={'schemaVersion':'riscv2x86.l3-capability-assessment.v2',
         'recordedFindingsIdentity':identity(findings),'compilerFunctionsIdentity':identity(functions),
         'declaredCapabilities':sorted(set(capabilities)),'stages':stages,
         'staticPrerequisitesComplete':all(s['status']=='satisfied' for s in stages),
+        'configurationAssessment':configuration,
+        'configurationPrerequisitesComplete':configuration['status']=='satisfied',
+        'preExecutionPrerequisitesComplete':all(s['status']=='satisfied' for s in stages) and configuration['status']=='satisfied',
         'mechanismPlan':plan,'runtimeStages':{s:'not_run' for s in ('backend-validation','deployment','execution','comparison','independent-audit')},
         'semanticApproval':False,'productionAcceptanceComplete':False,
         'scope':'recorded-static-prerequisites-only; not source recompilation or backend calibration'}
@@ -93,12 +106,15 @@ def assess(findings,functions,capabilities):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--report',required=True);p.add_argument('--output',required=True)
+    p.add_argument('--registry-config',help='L2 requirement-driven config; matching only, no execution')
     p.add_argument('--capability',action='append',default=[],help='Declared only; not a calibrated backend selection')
     a=p.parse_args();report=Path(a.report).resolve();snapshot=report.with_name('compiler-candidates.json')
-    value=assess(json.loads(report.read_text())['findings'],json.loads(snapshot.read_text())['functions'],a.capability)
+    value=assess(json.loads(report.read_text())['findings'],json.loads(snapshot.read_text())['functions'],a.capability,None if not a.registry_config else json.loads(Path(a.registry_config).read_text()))
     value={'assessment':value,'inputDigests':{str(path):digest(path) for path in (report,snapshot)}}
     with Path(a.output).open('x',encoding='utf-8') as stream:json.dump(value,stream,ensure_ascii=False,indent=2)
     print(json.dumps({'staticPrerequisitesComplete':value['assessment']['staticPrerequisitesComplete'],
+                      'configurationPrerequisitesComplete':value['assessment']['configurationPrerequisitesComplete'],
+                      'preExecutionPrerequisitesComplete':value['assessment']['preExecutionPrerequisitesComplete'],
                       'semanticApproval':False,'productionAcceptanceComplete':False}))
     return 0 if value['assessment']['staticPrerequisitesComplete'] else 2
 

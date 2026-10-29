@@ -76,7 +76,10 @@ def spec(findings,functions):
             if operand.access_mode in {'input','address','read_write'} and operand.declaration_id not in defined:raise ValueError('L3_JOINT_UNINITIALIZED_INPUT')
         # All inputs are checked before any output becomes defined.
         defined.update(o['declarationIdentity'] for o in operands if o['access'] in {'output','read_write'})
-        if kind=='scalar':access=scalar_spec(f)
+        if kind=='scalar':
+            from .l2_joint_contract import operand_contract
+            require_json_match(operand_contract(f,fn,side),a['l2JointOperandObservationContract'],'L3_JOINT_OPERAND_CONTRACT_CHANGED')
+            access=scalar_spec(f)
         else:
             access=memory_spec(f,joint_region=True);facts=memory_proof_facts_from_dict(a['l2MemoryProofFacts'])
             if facts.width_bytes!=8 or facts.carrier_width_bits not in (0,64) or facts.value_projection not in ('','identity'):raise ValueError('L3_JOINT_MEMORY64_REQUIRED')

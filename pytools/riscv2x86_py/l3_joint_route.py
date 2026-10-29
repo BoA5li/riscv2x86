@@ -151,6 +151,11 @@ def audit_result(evaluation):
         if member['proofIdentity']!=req['proofIdentity'] or member['relationIdentity']!=req['approvedTargetRelationIdentity']:raise ValueError('L3_JOINT_AUDIT_PROOF_CHANGED')
         from .l3_intent_ingress import validate_receipt
         report=Path(group['deployment']['inputs']['report']);finding=next(f for f in json.loads(report.read_text())['findings'] if f['fragment']['id']==fid)
+        from .l2_results import L2FragmentResult
+        from .l2_provider_artifacts import read_provider_evidence
+        l2=L2FragmentResult.from_dict(json.loads(layers[2]['detail']))
+        if l2.evidence_identity!=layers[2]['evidenceIdentity']:raise ValueError('L3_JOINT_AUDIT_L2_IDENTITY_CHANGED')
+        read_provider_evidence(l2,case_root=report.parents[2],translation_artifact=attempt['translationArtifact'])
         profile=validate_receipt(finding,artifact,group['deployment']['inputs']['source'],report)
         if (profile.profile_identity!=req['profileIdentity'] or [p.to_dict() for p in profile.required_properties]!=req['requiredProperties']
                 or profile.observation_boundary_kind!='compiler-joint-regions' or profile.observation_boundary_identity!=group['deployment']['spec']['specIdentity']

@@ -47,6 +47,27 @@ def main():
         if not accepted:status['blockers']=['L3_JOINT_PROPERTY_COUNTEREXAMPLE']
         write();print(json.dumps(status,ensure_ascii=False));return 0 if accepted else 1
     except (OSError,ValueError,KeyError,TypeError) as exc:
+        if 'reports' in locals():
+            try:
+                from riscv2x86_py.l3_coverage_inventory import diagnose
+                for case,report in zip(cases,reports):
+                    diagnostic=diagnose(report,Path(case['reportPath']).parent)
+                    first=diagnostic['firstRecordedBlocker']
+                    if first is None:continue
+                    reasons=[]
+                    for member in diagnostic['members']:
+                        for blocker in member['blockers']:
+                            if blocker['stage']!=first['stage']:continue
+                            detail=blocker['detail']
+                            if isinstance(detail,dict):
+                                reasons.extend(detail.get('reasonCodes',[]))
+                                for dimension in detail.get('dimensionResults',{}).values():
+                                    reasons.extend(dimension.get('reasonCodes',[]))
+                    status['primaryFailure']=dict(first,reasonCodes=sorted(set(reasons)),caseId=case['caseId'])
+                    status['blockers'].extend(first['stage']+':'+r for r in sorted(set(reasons)))
+                    break
+            except (OSError,ValueError,KeyError,TypeError,IndexError) as diagnostic_error:
+                status['diagnosticError']=str(diagnostic_error)
         status['blockers'].append(str(exc))
         record_failure(out/'run-status.json',status,exc,stage_key='currentStage',
                        completion_keys=('productionAcceptanceComplete',))

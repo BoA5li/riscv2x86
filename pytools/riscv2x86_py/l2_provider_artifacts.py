@@ -279,6 +279,9 @@ def validate_observation_snapshot(snapshot, detail):
             or snapshot['contentIdentity'] != detail.get('observationEvidenceIdentity')):
         raise ValueError('l2.provider-artifact.observation-snapshot-invalid')
     observation = snapshot['payload']
+    if detail.get('mode') == 'joint-program-functions':
+        from .l2_joint_replay import replay
+        replay(observation)
     raw_dimensions = detail.get('dimensionObservations',{})
     if detail.get('schemaVersion') == 'riscv2x86.auto-l2-operand-result.v2':
         for side in ('source','target'):

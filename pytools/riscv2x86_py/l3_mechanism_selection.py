@@ -53,9 +53,10 @@ def plan(findings,functions,selections):
             program=spec(findings,functions)
         except (ValueError,KeyError,TypeError,IndexError) as exc:
             raise RouteUnavailable('L3_JOINT_PREREQUISITE:'+str(exc),plan=p) from exc
-        body={'schemaVersion':'riscv2x86.joint-mechanism-plan.v1','programId':p['programId'],
-            'members':[dict(m,mechanism='joint',status='ready',reasonCodes=[]) for m in p['members']],
+        body={'schemaVersion':'riscv2x86.joint-mechanism-plan.v2','programId':p['programId'],
+            'members':[dict(m,mechanism='joint',status='static_prerequisites_satisfied',reasonCodes=[]) for m in p['members']],
             'jointSpecIdentity':program['specIdentity'],'complete':True,
+            'semanticApproval':False,'productionAcceptanceComplete':False,
             'readinessScope':'static-proof-and-invocation-prerequisites; execution-not-run',
             'physicalMicroarchitectureClaimed':False}
         return dict(body,planIdentity=identity(body)),'joint'

@@ -1066,9 +1066,10 @@ def materialize_automatic_l2_authority(
                     plan_identity = plan.plan_identity
                 observation_authority = sidecar.operand_observation_authority
                 if observation_authority is None:
-                    raise ValueError("sidecar observation authority is missing")
-                approval["l2OperandObservationAuthority"] = \
-                    observation_authority.to_dict()
+                    from .l2_joint_contract import operand_contract
+                    approval["l2JointOperandObservationContract"] = operand_contract(finding, function_matches[0], sidecar)
+                else:
+                    approval["l2OperandObservationAuthority"] = observation_authority.to_dict()
             except ValueError:
                 approval.pop("l2OperandObservationAuthority", None)
                 approval["l2AuthorityMaterializationReasonCode"] = \
