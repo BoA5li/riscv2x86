@@ -478,6 +478,9 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
         if role is not X86OperandRole.INPUT and (op.lvalue is None or not op.lvalue.is_modifiable): return _fail(candidate_plan,"X86_INLINE_ASM_BINDING_INCOMPLETE",{"source_operand_index":op.source_operand_index})
         host=(op.lvalue.c_type_id if role is not X86OperandRole.INPUT else op.expression.c_type_id)
         target_early_clobber = op.early_clobber or (
+            program_route and source_model.value_program.value_schema_version == 2
+            and role is X86OperandRole.OUTPUT
+        ) or (
             candidate_plan.metadata.get("renderer_semantic_contract_id") in {
                 "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
                 "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",

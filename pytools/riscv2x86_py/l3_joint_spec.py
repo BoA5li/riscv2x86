@@ -51,12 +51,15 @@ def spec(findings,functions):
         a=f['approvalArtifact'];fid=f['fragment']['id'];kind=f['l2SemanticProfile']['patternKind'];kinds.add(kind)
         ob=analyze(f,functions)
         if any(p['dimension']!='access_pattern' for p in ob['requiredProperties']):raise ValueError('L3_JOINT_REQUIRED_MECHANISM_UNAVAILABLE')
-        if kind not in {'scalar','memory_load','memory_store'}:raise ValueError('L3_JOINT_SEMANTIC_FAMILY_UNSUPPORTED')
+        from .versioned_program_contract import load as versioned_boundary
+        versioned = versioned_boundary(f) if kind=='composite' else None
+        scalar = kind=='scalar' or versioned is not None
+        if not scalar and kind not in {'memory_load','memory_store'}:raise ValueError('L3_JOINT_SEMANTIC_FAMILY_UNSUPPORTED')
         key=f['fragment']['compilerFragmentAuthority']['fragmentBindingKey']
         if (key['beginOffset'],key['endOffset'])!=(site['begin'],site['end']):raise ValueError('L3_JOINT_SITE_BINDING_MISMATCH')
         if f.get('sourceDigest')!=fn['sourceDigest']:raise ValueError('L3_JOINT_SOURCE_CHANGED')
         side=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar']);producer=side.producer.producer_binary_digest
-        rebuilt=(_scalar_authority if kind=='scalar' else _memory_authority)(deepcopy(f),functions,producer)
+        rebuilt=(_scalar_authority if scalar else _memory_authority)(deepcopy(f),functions,producer)
         if rebuilt is None or rebuilt.to_dict()!=side.to_dict():raise ValueError('L3_JOINT_AUTHORITY_REPLAY_MISMATCH')
         require_json_match(boundaries[fid].to_dict(),a['l2FragmentOperandBoundary'],'L3_JOINT_BOUNDARY_CHANGED')
         require_json_match(graph.to_dict(),a['l2FragmentDependencyGraph'],'L3_JOINT_GRAPH_CHANGED')
@@ -76,10 +79,10 @@ def spec(findings,functions):
             if operand.access_mode in {'input','address','read_write'} and operand.declaration_id not in defined:raise ValueError('L3_JOINT_UNINITIALIZED_INPUT')
         # All inputs are checked before any output becomes defined.
         defined.update(o['declarationIdentity'] for o in operands if o['access'] in {'output','read_write'})
-        if kind=='scalar':
+        if scalar:
             from .l2_joint_contract import operand_contract
             require_json_match(operand_contract(f,fn,side),a['l2JointOperandObservationContract'],'L3_JOINT_OPERAND_CONTRACT_CHANGED')
-            access=scalar_spec(f)
+            access=scalar_spec(f,joint_versioned=True)
         else:
             access=memory_spec(f,joint_region=True);facts=memory_proof_facts_from_dict(a['l2MemoryProofFacts'])
             if facts.width_bytes!=8 or facts.carrier_width_bits not in (0,64) or facts.value_projection not in ('','identity'):raise ValueError('L3_JOINT_MEMORY64_REQUIRED')
@@ -88,7 +91,8 @@ def spec(findings,functions):
             objects.append(access)
         members.append({'fragmentId':fid,'kind':kind,'spec':access,'site':site,'operands':operands,
             'proofIdentity':a['proofIdentity'],'relationIdentity':side.effect_relation_set_identity,'authorityIdentity':side.authority_identity,
-            'memoryFacts':a.get('l2MemoryProofFacts') if kind!='scalar' else None})
+            'memoryFacts':a.get('l2MemoryProofFacts') if not scalar else None,
+            **({'versionedProgramBoundary':a['l2VersionedProgramBoundary']} if versioned is not None else {})})
     if not {'memory_load','memory_store'}<=kinds:raise ValueError('L3_JOINT_READ_WRITE_PROGRAM_REQUIRED')
     if len({(o['objectId'],o['size'],o['alignment']) for o in objects})!=1:raise ValueError('L3_JOINT_SINGLE_PRIVATE_OBJECT_REQUIRED')
     returned=boundary.get('returnDeclarationId')

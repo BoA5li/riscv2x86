@@ -3570,6 +3570,9 @@ class SourceStraightLineValueProgram:
     # is intentionally rejected by the Phase-6A adapter for now.
     variable_shift_count_operand_index: int | None = None
     complete: bool = True
+    # v2 binds each read to its current definition, not to a global COPY map.
+    value_schema_version: int = 1
+    definition_history: Tuple[Tuple[str, ...], ...] = ()
 
     def __post_init__(self) -> None:
         if self.width_bits not in {32, 64}:
@@ -3578,6 +3581,36 @@ class SourceStraightLineValueProgram:
             raise ValueError("straight-line GPR program must contain at least two complete instructions")
         if len(set(self.output_operand_indexes)) != len(self.output_operand_indexes):
             raise ValueError("straight-line program outputs must be unique")
+        if type(self.value_schema_version) is not int or self.value_schema_version not in {1, 2}:
+            raise ValueError("unknown straight-line value schema")
+        destinations = [i.output_operand_index for i in self.instructions]
+        if self.value_schema_version == 1:
+            if self.definition_history or len(set(destinations)) != len(destinations):
+                raise ValueError("redefinitions require versioned dataflow")
+        else:
+            if (self.complete is not True or type(self.width_bits) is not int
+                    or any(type(i) is not int or i < 0 for i in
+                           (*self.input_operand_indexes, *self.output_operand_indexes))):
+                raise ValueError("versioned dataflow requires exact typed operand IDs")
+            if len(self.definition_history) != len(self.instructions):
+                raise ValueError("complete definition history required")
+            current = {i: 'input:'+str(i) for i in self.input_operand_indexes}
+            used = set()
+            for n, (instruction, history) in enumerate(zip(self.instructions, self.definition_history)):
+                if (instruction.opcode not in {SourceStraightLineValueOpcode.UNSIGNED_ADD,
+                        SourceStraightLineValueOpcode.UNSIGNED_SUB, SourceStraightLineValueOpcode.BIT_AND,
+                        SourceStraightLineValueOpcode.BIT_OR, SourceStraightLineValueOpcode.BIT_XOR}
+                        or len(instruction.input_operand_indexes) != 2):
+                    raise ValueError("unsupported versioned instruction contract")
+                expected = ('definition:'+str(n),) + tuple(current.get(i, '') for i in instruction.input_operand_indexes)
+                if (history != expected or '' in expected or
+                        instruction.output_operand_index not in self.output_operand_indexes):
+                    raise ValueError("stale or unbound straight-line definition")
+                used.update(i for i in instruction.input_operand_indexes if i in self.input_operand_indexes)
+                current[instruction.output_operand_index] = history[0]
+            if (set(destinations) != set(self.output_operand_indexes) or used != set(self.input_operand_indexes)
+                    or set(self.output_operand_indexes) & set(self.input_operand_indexes)):
+                raise ValueError("incomplete straight-line operand coverage")
 
 
 @dataclass(frozen=True)
@@ -5077,7 +5110,15 @@ def _build_operation_model(
     )
 
 
-def _build_straight_line_value_program(
+def _build_straight_line_value_program(**kwargs) -> SourceStraightLineValueProgram | None:
+    legacy = _build_legacy_straight_line_value_program(**kwargs)
+    if legacy is not None:
+        return legacy
+    from .source_versioned_program import build
+    return build(**kwargs)
+
+
+def _build_legacy_straight_line_value_program(
     *,
     blocks: Sequence[Block], runtime_status: RuntimeFactStatus,
     operands: SourceOperandModel, operation: SourceOperationModel,

@@ -698,9 +698,13 @@ def run_evaluation(
     emitted_archive = tuple(
         item for item in attributable_archive if item.translation_outcome in _EMITTED
     )
+    unresolved_program_members = tuple(
+        item for item in archive.attempts
+        if item.translation_outcome not in _EMITTED | {TranslationOutcome.KEEP}
+    ) if request.validation_unit == 'program' else ()
     programs = []
     build_specs = [("source-build", request.source_build)]
-    if emitted_archive:
+    if emitted_archive and not unresolved_program_members:
         build_specs.append(("target-build", request.target_build))
     for phase, spec in build_specs:
         output = work / _safe_relative(spec.output_relative_path, phase + " output")
@@ -718,6 +722,20 @@ def run_evaluation(
             variables[("SOURCE" if phase == "source-build" else "TARGET") + "_ARTIFACT_DIGEST"] = programs[-1].artifact_digest
     source_record = next(item for item in commands if item.phase == "source-build")
     target_record = next((item for item in commands if item.phase == "target-build"), None)
+    if emitted_archive and unresolved_program_members:
+        # A partial tree is retained for diagnosis, never passed to the target
+        # compiler as a complete cross-ISA program. Preserve upstream outcomes.
+        reason = 'evaluation.program-translation-incomplete'
+        attempts = tuple(
+            _attempt_result(item, None, ValidationStatus.INCONCLUSIVE, (reason,))
+            if item.translation_outcome in _EMITTED else _non_candidate_result(item)
+            for item in archive.attempts)
+        reasons = {reason}
+        if source_record.status is not ValidationStatus.VERIFIED:
+            reasons.add('evaluation.source-build-not-verified')
+        return _result(request, work, commands, attempts, ValidationStatus.INCONCLUSIVE,
+                       tuple(sorted(reasons)), candidate_manifest, plan=plan,
+                       environment=environment, source_program=programs[0], target_program=None)
     if not emitted_archive:
         per_attempt = tuple(
             _non_candidate_result(item)

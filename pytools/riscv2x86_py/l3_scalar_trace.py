@@ -2,13 +2,15 @@
 from .l3_property_obligations import analyze
 
 
-def scalar_spec(finding):
+def scalar_spec(finding, *, joint_versioned=False):
     obligations=analyze(finding); a=finding['approvalArtifact']
     from .l2_authority import l2_authority_sidecar_from_dict
     sidecar=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar'])
     raw=finding['l2SemanticProfile']; mem=raw['memoryShape']; state=raw['internalStateShape']
-    if (raw['patternKind']!='scalar' or mem['reads'] or mem['writes'] or mem['atomic']
-            or state['hasMultipleOperations'] or state['hasInternalValues']
+    from .versioned_program_contract import load as versioned_boundary
+    versioned = versioned_boundary(finding) if joint_versioned else None
+    if (raw['patternKind'] not in ({'scalar','composite'} if versioned is not None else {'scalar'}) or mem['reads'] or mem['writes'] or mem['atomic']
+            or (versioned is None and (state['hasMultipleOperations'] or state['hasInternalValues']))
             or obligations['requiredProperties']!=[{'propertyId':'memory.fragment-access','dimension':'access_pattern','unit':'fragment'}]
             or sidecar.memory_objects or sidecar.runtime_contracts or sidecar.ignored_state
             or sidecar.control_flow or sidecar.ordering

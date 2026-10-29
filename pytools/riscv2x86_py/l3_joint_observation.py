@@ -23,7 +23,7 @@ unsigned %(symbol)s;
 extern %(result)s %(name)s(%(parameters)s);
 int main(int argc,char **argv){
  if(argc!=2 || strlen(argv[1])!=64)return 2;
- static const uint64_t args[%(count)d][%(arity)d]={%(args)s};
+ %(argument_table)s
  static const unsigned char initial[%(count)d][%(size)d]={%(initial)s};
  for(unsigned sample=0;sample<%(count)d;sample++){
   _Alignas(64) %(pointee)s object[%(cells)d];
@@ -37,6 +37,7 @@ int main(int argc,char **argv){
 }
 ''' % dict(symbol=sample_symbol(program),result=call['result']['cType'],name=name,
     parameters=','.join(p['cType'] for p in params),count=len(plan['inputs']),arity=len(params),args=args,
+    argument_table=('static const uint64_t args['+str(len(plan['inputs']))+']['+str(len(params))+']={'+args+'};' if len(params)>1 else ''),
     initial=initial,size=size,pointee=params[pointer]['pointee']['cType'],cells=size//8,arguments=','.join(arguments),plan=plan['planIdentity'])
 
 
@@ -142,6 +143,12 @@ def parse_l2(text,token,program,plan):
             inputs=[o for o in member['operands'] if o['kind']=='integer' and o['access'] in {'input','read_write'}]
             outputs=[o for o in member['operands'] if o['kind']=='integer' and o['access'] in {'output','read_write'}]
             if any(values.get(o['declarationIdentity'])!=int(v,16) for o,v in zip(inputs,pre['values'])):mismatch('L2_JOINT_DATAFLOW_MISMATCH')
+            if member.get('versionedProgramBoundary') is not None:
+                from .versioned_program_contract import decode, evaluate
+                dataflow = decode(member['versionedProgramBoundary']['program'])
+                expected_outputs = evaluate(dataflow,{o['index']:int(v,16) for o,v in zip(inputs,pre['values'])})
+                if {o['index']:int(v,16) for o,v in zip(outputs,post['values'])} != expected_outputs:
+                    mismatch('L2_JOINT_VERSIONED_FINAL_VALUE_MISMATCH')
             values.update({o['declarationIdentity']:int(v,16) for o,v in zip(outputs,post['values'])})
             if s['access'] in {'none','read'} and before!=after:mismatch('L2_JOINT_UNAPPROVED_WRITE')
             if s['access']=='read':

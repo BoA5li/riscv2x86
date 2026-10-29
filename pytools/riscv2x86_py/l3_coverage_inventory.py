@@ -22,6 +22,10 @@ def diagnose(report,case_root):
         layers=(attempt.get('validation') or {}).get('layers',[])
         row={'fragmentId':attempt.get('fragmentId'),'translationOutcome':attempt.get('translationOutcome'),
             'stages':{level:'not_run' for level in ('L0','L1','L2','L3')},'blockers':[]}
+        if attempt.get('translationOutcome') in {'unsupported','needs_route','failed','not_attempted'}:
+            row['blockers'].append({'stage':'translation','detail':{
+                'translationOutcome':attempt['translationOutcome'],
+                'reasonCodes':attempt.get('reasonCodes',[])}})
         for layer in layers:
             row['stages'][layer['level']]=layer['status']
             if layer['status']!='verified':
@@ -38,6 +42,9 @@ def diagnose(report,case_root):
         if phase in statuses:
             current=statuses[phase];new=command.get('status','inconclusive')
             statuses[phase]=new if current=='not_run' or current=='verified' else current
+    if any(b['stage']=='translation' for row in rows for b in row['blockers']):
+        if statuses['translation'] in {'not_run','verified'}:
+            statuses['translation']='inconclusive'
     for level in ('L0','L1','L2','L3'):
         actual=[row['stages'][level] for row in rows]
         statuses[level]=('verified' if actual and all(x=='verified' for x in actual)

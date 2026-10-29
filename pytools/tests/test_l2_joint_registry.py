@@ -25,10 +25,10 @@ def config(tmp_path, findings, functions):
         timeoutSeconds=30,qemuBinary='joint-native-test-runner')
 
 
-def setup(tmp_path,monkeypatch):
+def setup(tmp_path,monkeypatch,**fixture_options):
     from tests.test_l3_joint_program import fixture
     from riscv2x86_py.l3_joint_spec import spec
-    source,findings,fn=fixture(tmp_path)
+    source,findings,fn=fixture(tmp_path,**fixture_options)
     (tmp_path/'source.c').write_bytes(source);(tmp_path/'target.c').write_bytes(source)
     (tmp_path/'translated_report.json').write_text(json.dumps({'findings':findings}))
     program=spec(findings,[fn])
@@ -95,7 +95,7 @@ def test_production_registration_exact_resolution_and_persisted_native_observati
     with pytest.raises(ValueError):read_provider_evidence(result,case_root=tmp_path)
 
 
-@pytest.mark.parametrize('capability',CAPABILITIES[1:])
+@pytest.mark.parametrize('capability',['logical_operand_observation','object_relative_memory_observation','shell_observation'])
 def test_missing_provider_capability_remains_rejected(tmp_path,monkeypatch,capability):
     findings,fn,c=setup(tmp_path,monkeypatch);defs=providers(c)
     for d in defs:d['requiredCapabilities'].remove(capability)

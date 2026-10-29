@@ -682,6 +682,14 @@ def _gpr_straight_line_program_recipe(approved: ApprovedTargetLoweringPlan):
         elif instruction.opcode in binary:
             if len(sources) != 2:
                 return None
+            if program.value_schema_version == 2 and destination == sources[1] and destination != sources[0]:
+                # Preserve the old RHS before defining this destination. All
+                # v2 outputs are early-clobber and cannot alias live inputs.
+                if instruction.opcode is SourceStraightLineValueOpcode.UNSIGNED_SUB:
+                    lines.extend((f"neg{suffix} {dst}", f"add{suffix} %{sources[0]}, {dst}"))
+                else:
+                    lines.append(f"{binary[instruction.opcode]}{suffix} %{sources[0]}, {dst}")
+                continue
             lines.extend((f"mov{suffix} %{sources[0]}, {dst}",
                           f"{binary[instruction.opcode]}{suffix} %{sources[1]}, {dst}"))
         elif instruction.opcode in shifts:

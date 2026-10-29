@@ -1,7 +1,7 @@
 """Production joint registrations; declared capability is never execution evidence."""
 from copy import deepcopy
 
-CAPABILITIES = ('joint_program_observation', 'logical_operand_observation',
+CAPABILITIES = ('composite_fragment_observation', 'joint_program_observation', 'logical_operand_observation',
                 'object_relative_memory_observation', 'shell_observation')
 EXECUTION_PROFILE = 'rv64gc-user-to-x86_64-user'
 
@@ -11,7 +11,7 @@ def providers(config, execution_profiles=(EXECUTION_PROFILE,)):
         raise ValueError('L2_JOINT_CONFIG_MODE_REQUIRED')
     result = []
     for name, patterns, dimensions in (
-        ('scalar', ['scalar'], ['logical_operands', 'shell_semantics']),
+        ('scalar', ['composite','scalar'], ['logical_operands', 'shell_semantics']),
         ('memory', ['memory_load', 'memory_store'],
          ['logical_operands', 'memory_effects', 'shell_semantics']),
     ):
@@ -55,6 +55,14 @@ def operand_contract(finding, function, sidecar):
     from .l3_trace_support import identity
     from .l2_fragment_execution import fragment_boundary_from_dict, fragment_dependency_graph_from_dict
     scope=function.get('compilerJointScope') or {};a=finding['approvalArtifact']
+    from .versioned_program_contract import load as versioned_boundary
+    program=versioned_boundary(finding)
+    if program is not None:
+        if (program.width_bits!=64
+                or set(program.input_operand_indexes)!={o.operand_index for o in sidecar.operands if o.access_mode=='input'}
+                or set(program.output_operand_indexes)!={o.operand_index for o in sidecar.operands if o.access_mode=='output'}
+                or any(o.access_mode not in {'input','output'} for o in sidecar.operands)):
+            raise ValueError('L2_JOINT_VERSIONED_OPERAND_CONTRACT_MISMATCH')
     if (scope.get('schemaVersion')!='riscv2x86.compiler-joint-scope.v1'
             or scope.get('scope')!='direct-unsigned64-private-object-regions'
             or scope.get('scopeIdentity')!=identity({k:v for k,v in scope.items() if k!='scopeIdentity'})

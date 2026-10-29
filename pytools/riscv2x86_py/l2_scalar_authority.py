@@ -220,7 +220,12 @@ def assess_scalar_authority_materializability(
             reasons.add("L2_SCALAR_EFFECT_RELATION_MISSING")
         if (profile.pattern_kind is L2PatternKind.COMPOSITE
                 and not isinstance(approval.get("l2InternalValueProofFacts"), Mapping)):
-            reasons.add("L2_SCALAR_OBSERVATION_SINK_MISSING")
+            from .versioned_program_contract import load as versioned_boundary
+            try:
+                if versioned_boundary(finding) is None:
+                    reasons.add("L2_SCALAR_OBSERVATION_SINK_MISSING")
+            except (ValueError,KeyError,TypeError):
+                reasons.add("L2_SCALAR_OBSERVATION_SINK_MISSING")
 
     return ScalarAuthorityMaterializationDecision(
         fragment_id, not reasons, boundary_identity, profile_identity,

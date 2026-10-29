@@ -369,7 +369,12 @@ def _scalar_authority(
         return None
     internal_values = ()
     instrumentation_plan_identity = ""
-    if profile.pattern_kind is L2PatternKind.COMPOSITE:
+    from .versioned_program_contract import load as versioned_boundary
+    try:
+        versioned = versioned_boundary(finding)
+    except (ValueError,KeyError,TypeError):
+        return None
+    if profile.pattern_kind is L2PatternKind.COMPOSITE and versioned is None:
         raw_internal = approval.get("l2InternalValueProofFacts")
         if not isinstance(raw_internal, Mapping):
             return None

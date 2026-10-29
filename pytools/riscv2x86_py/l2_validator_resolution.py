@@ -179,6 +179,12 @@ class L2ValidatorProvider:
             reasons.add("l2.environment.execution-profile-unavailable")
         capability = _dimension_capability(dimension, profile.pattern_kind)
         declared = set(self.required_capabilities)
+        if self.config.get('mode') == 'joint-program-functions':
+            joint_required = {'joint_program_observation'}
+            if profile.pattern_kind is L2PatternKind.COMPOSITE:
+                joint_required.add('composite_fragment_observation')
+            if not joint_required <= declared:
+                reasons.add('l2.provider.joint-capability-undeclared')
         if capability not in declared:
             reasons.add("l2.provider.dimension-capability-undeclared")
         available = set(environment.available_capabilities)

@@ -204,6 +204,9 @@ def prove(r):
                     output.required_width_bits != program.width_bits or
                     any(item is None or item.required_width_bits != program.width_bits for item in inputs)):
                 return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
+        if program.value_schema_version == 2 and any(
+                not operands[i].early_clobber for i in program.output_operand_indexes):
+            return reject(r, SemanticProofReasonCode.PLAN_CONTRACT_MISSING)
         return finalize(r, (PreservationConclusion.ARCHITECTURE_EQUIVALENT,
                             PreservationConclusion.SHELL_PRESERVED))
     if semantic_id == "x86.gnu-att.gpr.add-then-shl-imm.u32-u64.early-clobber.v1":

@@ -9,7 +9,7 @@ import pytest
 from riscv2x86_py.l3_trace_support import identity,Elf
 
 
-def fixture(tmp_path,pointer=0):
+def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None):
     from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts,_source_range
     from riscv2x86_py.compiler_fragment_closure import close_compiler_fragment_candidate
     from riscv2x86_py.compiler_memory_signature import export as signature
@@ -24,7 +24,7 @@ def fixture(tmp_path,pointer=0):
     args='unsigned long *address,unsigned long input' if pointer==0 else 'unsigned long input,unsigned long *address'
     source=('unsigned long unrelated('+args+'){unsigned long loaded;unsigned long result;'
         '__asm__ volatile("movq 8(%1),%0":"=r"(loaded):"r"(address):"memory");'
-        '__asm__ volatile("movq %1,%0;addq %2,%0":"=&r"(result):"r"(loaded),"r"(input):"cc");'
+        '__asm__ volatile("'+scalar_template+'":"=&r"(result):"r"(loaded),"r"(input):"cc");'
         '__asm__ volatile("movq %0,16(%1)"::"r"(result),"r"(address):"memory");return result;}').encode()
     def extent(a,b):return {'begin':{'offset':a,'line':1,'col':a+1},'end':{'offset':b-1,'tokLen':1}}
     types={'address':'unsigned long *','input':'unsigned long','loaded':'unsigned long','result':'unsigned long'}
@@ -67,11 +67,17 @@ def fixture(tmp_path,pointer=0):
             'compilerTypeBindings':{str(v['operandIndex']):{'operandIndex':v['operandIndex'],'valueNodeIdentity':v['valueNodeIdentity'],'compilerType':pointertype if (outs+ins)[v['operandIndex']]=='address' else ctype()} for v in closed['operandBindings']}}
         authority['authorityIdentity']=identity(authority);frag['compilerFragmentAuthority']=authority
         kind=(L2PatternKind.MEMORY_LOAD,L2PatternKind.SCALAR,L2PatternKind.MEMORY_STORE)[index]
+        if index==1 and value_program is not None:kind=L2PatternKind.COMPOSITE
         profile=l2_fragment_semantic_profile_from_dict(profile_dict(fid,kind))
         if index!=1:profile=replace(profile,memory_shape=L2MemoryShape(index==0,index==2,False,False,True),profile_identity='')
         f={'fragment':frag,'sourceDigest':S,'translationOutcome':'emitted','rewriteBeginOffset':a,'rewriteEndOffset':b+1,'rawSourceText':source[a:b+1].decode(),
             'approvalArtifact':{'proofStatus':'approved','architectureSemanticsPreserved':True,'shellSemanticsPreserved':True,'planId':S,'constraintsId':F},'l2SemanticProfile':profile.to_dict()}
         attach_effect_proof(f['approvalArtifact'],fid,'scalar' if index==1 else 'memory')
+        if index==1 and value_program is not None:
+            from .test_versioned_gpr_program import _ID
+            from riscv2x86_py.versioned_program_contract import export as export_boundary
+            a=f['approvalArtifact'];a.update(sourceModelId=S,rendererSemanticContractId=_ID)
+            a['l2VersionedProgramBoundary']=export_boundary(value_program,a,fid)
         if index!=1:
             facts=_facts(fragment_id=fid,access_kind='load' if index==0 else 'store',byte_offset=8 if index==0 else 16,value_operand_index=0,address_operand_index=1)
             f['approvalArtifact']['l2MemoryProofFacts']=facts.to_dict()

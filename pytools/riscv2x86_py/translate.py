@@ -928,7 +928,12 @@ def _output(
                 context.fragment.id, context.sourceModel,
             )
             if internal_facts is not None:
-                approval["l2InternalValueProofFacts"] = internal_facts.to_dict()
+                from .versioned_program_contract import export as versioned_boundary
+                projection = versioned_boundary(context.sourceModel.value_program, approval, context.fragment.id)
+                if projection is not None:
+                    approval['l2VersionedProgramBoundary'] = projection
+                else:
+                    approval["l2InternalValueProofFacts"] = internal_facts.to_dict()
 
     privileged = (
         None if context.sourceModel is None

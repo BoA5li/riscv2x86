@@ -50,8 +50,10 @@ def build_validator(config):
                 c=work/(side+'.c');c.write_bytes(instrument(path.read_bytes(),scope['sites'],program));binary=work/side
                 cc=tools['riscv64-linux-gnu-gcc' if side=='source' else 'gcc']
                 flags=['-march=rv64gc','-mabi=lp64d','-static'] if side=='source' else []
+                stage=side+'-build'
                 run([cc,'-std=gnu11','-O2','-Wall','-Wextra','-Werror','-Wl,--build-id=none',*flags,h,c,'-o',binary],work,side+'-build',config['timeoutSeconds'])
                 command=[tools[config['qemuBinary']],str(binary),'a'*64] if side=='source' else [str(binary),'a'*64]
+                stage=side+'-execution'
                 executed=True;r=run(command,work,side+'-execute',config['timeoutSeconds'])
                 if r.stderr:raise ValueError('L2_JOINT_EXECUTION_STDERR')
                 raw_outputs[side]=r.stdout
