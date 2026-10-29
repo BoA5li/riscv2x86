@@ -59,7 +59,9 @@ def test_real_joint_declared_call_and_region_boundaries(tmp_path,arity,regions):
     backend=os.environ.get('RV2X86_L3_JOINT_BACKEND')
     if not backend:pytest.skip('explicit freshly calibrated joint backend required')
     frontend=os.environ.get('RISCV2X86_TEST_FRONTEND');assert frontend and Path(frontend).is_file()
-    source=tmp_path/'boundary.c'
+    # Single-file inputs use their parent as sourceRoot. Keep production
+    # artifacts outside that tree, as required by run_evaluation().
+    inputs=tmp_path/'inputs';inputs.mkdir();source=inputs/'boundary.c'
     parameters=['uint64_t *address']+['uint64_t input'+str(i) for i in range(arity-1)]
     variables=['value'+str(i) for i in range(regions-1)]
     statements=['__asm__ volatile("ld %0,8(%1)":"=r"(value0):"r"(address):"memory");']
