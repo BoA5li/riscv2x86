@@ -146,7 +146,9 @@ def parse_objects(stdout, token, spec, samples, signature=None):
     if spec['access']=='none':
         from .l3_scalar_trace import parse_samples
         return parse_samples(stdout,token,samples,signature)
-    typed_load=bool(signature and signature.get('schemaVersion')=='riscv2x86.l3-memory-load-call.v1')
+    from .l3_memory_call import LOAD_CALL_SCHEMAS, validate_load_call
+    typed_load=bool(signature and signature.get('schemaVersion') in LOAD_CALL_SCHEMAS)
+    if typed_load:validate_load_call(signature)
     objects=[]
     for line in stdout.splitlines():
         value=json.loads(line)

@@ -3,6 +3,10 @@ from .compiler_memory_signature import SCHEMA, type_fact
 from .compiler_value_flow import identity as compiler_identity
 from .l3_trace_support import identity, require_json_document, require_json_match
 
+LOAD_CALL_SCHEMA = 'riscv2x86.l3-memory-load-call.v1'
+LOAD_RETURN_CALL_SCHEMA = 'riscv2x86.l3-memory-load-call.v2'
+LOAD_CALL_SCHEMAS = {LOAD_CALL_SCHEMA, LOAD_RETURN_CALL_SCHEMA}
+
 
 def bind(function, finding, spec):
     call=function.get('compilerMemoryCallSignature')
@@ -85,12 +89,31 @@ def bind_load(function, finding, spec):
     if (address['parameterIndex']!=0 or type(address['parameterIndex']) is not int
             or pointer['declarationIdentity']!=address['declarationId']
             or boundary['parameterDeclarationIds']!=[pointer['declarationIdentity']]
-            or boundary.get('returnDeclarationId')!=value['declarationId']
             or value['typeKind']!='integer' or value['accessMode']!='output'
             or value['signedness'] not in {'signed','unsigned'}
             or not facts.matches_value_width(value['widthBits'])
             or result['widthBits']<value['widthBits']):
         raise ValueError('L3_MEMORY_LOAD_VALUE_BINDING_INVALID')
+    binding=boundary.get('compilerReturnBinding')
+    if binding is not None:
+        from .compiler_return_binding import analyze
+        relation=analyze(binding,source_digest=call['sourceDigest'],
+            function_identity=call['functionIdentity'],result_type=result)
+        if relation['declarationIdentity']!=value['declarationId']:
+            raise ValueError('L3_MEMORY_LOAD_RETURN_DECLARATION_MISMATCH')
+        if (relation['inputType']['widthBits']!=value['widthBits']
+                or relation['inputType']['signed']!=(value['signedness']=='signed')):
+            raise ValueError('L3_MEMORY_LOAD_RETURN_TYPE_MISMATCH')
+        if boundary.get('returnDeclarationId') not in ('',None,value['declarationId']):
+            raise ValueError('L3_MEMORY_LOAD_RETURN_DECLARATION_MISMATCH')
+    else:
+        # Legacy DTOs can establish direct same-type returns only. A function
+        # signature alone never proves an integer conversion at the return site.
+        if boundary.get('returnDeclarationId')!=value['declarationId']:
+            raise ValueError('L3_MEMORY_LOAD_RETURN_BINDING_REQUIRED')
+        if (result['widthBits']!=value['widthBits']
+                or result['signed']!=(value['signedness']=='signed')):
+            raise ValueError('L3_MEMORY_LOAD_RETURN_BINDING_REQUIRED')
     scope=function.get('compilerAtomicFunctionScope') or {}
     key=finding['fragment']['compilerFragmentAuthority']['fragmentBindingKey']
     if (scope.get('scope')!='single_asm_no_other_memory_or_control_effects'
@@ -99,10 +122,11 @@ def bind_load(function, finding, spec):
             or (scope.get('asmBegin'),scope.get('asmEnd'))!=(key['beginOffset'],key['endOffset'])):
         raise ValueError('L3_MEMORY_LOAD_SHELL_AUTHORITY_REQUIRED')
     projection=facts.value_projection or 'identity'
-    body={'schemaVersion':'riscv2x86.l3-memory-load-call.v1','compilerSignature':call,
+    body={'schemaVersion':LOAD_RETURN_CALL_SCHEMA if binding is not None else LOAD_CALL_SCHEMA,'compilerSignature':call,
         'pointerParameter':0,'widthBytes':spec['width'],'outputWidthBits':value['widthBits'],
         'outputSigned':value['signedness']=='signed','valueProjection':projection,
         'proofFactsIdentity':facts.facts_identity,'scopeIdentity':scope['scopeIdentity']}
+    if binding is not None:body['returnBinding']=binding
     return validate_load_call(dict(body,callIdentity=identity(body)))
 
 
@@ -110,7 +134,8 @@ def validate_load_call(call):
     require_json_document(call,'L3_MEMORY_LOAD_CALL_JSON_INVALID')
     fields={'schemaVersion','compilerSignature','pointerParameter','widthBytes','outputWidthBits','outputSigned',
             'valueProjection','proofFactsIdentity','scopeIdentity','callIdentity'}
-    if (not isinstance(call,dict) or set(call)!=fields or call['schemaVersion']!='riscv2x86.l3-memory-load-call.v1'
+    if isinstance(call,dict) and call.get('schemaVersion')==LOAD_RETURN_CALL_SCHEMA:fields.add('returnBinding')
+    if (not isinstance(call,dict) or set(call)!=fields or call['schemaVersion'] not in LOAD_CALL_SCHEMAS
             or call['callIdentity']!=identity({k:v for k,v in call.items() if k!='callIdentity'})
             or type(call['pointerParameter']) is not int or call['pointerParameter']!=0
             or type(call['widthBytes']) is not int or call['widthBytes'] not in (1,2,4,8)
@@ -130,6 +155,15 @@ def validate_load_call(call):
     require_json_match(type_fact(r['cType']),r,'L3_MEMORY_LOAD_CALL_RESULT_INVALID')
     if p['kind']!='pointer' or p['pointee']['widthBits']!=call['widthBytes']*8 or r['kind']!='integer' or r['widthBits']<call['outputWidthBits']:
         raise ValueError('L3_MEMORY_LOAD_CALL_TYPE_INVALID')
+    if call['schemaVersion']==LOAD_RETURN_CALL_SCHEMA:
+        from .compiler_return_binding import analyze
+        relation=analyze(call['returnBinding'],source_digest=signature['sourceDigest'],
+            function_identity=signature['functionIdentity'],result_type=r)
+        if (relation['inputType']['widthBits']!=call['outputWidthBits']
+                or relation['inputType']['signed']!=call['outputSigned']):
+            raise ValueError('L3_MEMORY_LOAD_RETURN_TYPE_MISMATCH')
+    elif r['widthBits']!=call['outputWidthBits'] or r['signed']!=call['outputSigned']:
+        raise ValueError('L3_MEMORY_LOAD_RETURN_BINDING_REQUIRED')
     return call
 
 
@@ -150,6 +184,12 @@ def load_value(raw,call):
         value-=1<<bits
     value&=(1<<out)-1
     if call['outputSigned'] and value&(1<<(out-1)):value-=1<<out
+    if call['schemaVersion']==LOAD_RETURN_CALL_SCHEMA:
+        from .compiler_return_binding import analyze,evaluate
+        signature=call['compilerSignature']
+        relation=analyze(call['returnBinding'],source_digest=signature['sourceDigest'],
+            function_identity=signature['functionIdentity'],result_type=signature['result'])
+        value=evaluate(value,relation)
     result=call['compilerSignature']['result'];width=result['widthBits']
     value&=(1<<width)-1
     if result['signed'] and value&(1<<(width-1)):value-=1<<width

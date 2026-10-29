@@ -593,6 +593,19 @@ def _l2_operand_boundary_facts(
     function_type = (function.get("type", {}).get("qualType", "")
                      if isinstance(function.get("type"), Mapping) else "")
     returns_void = str(function_type).split(" (", 1)[0].strip() == "void"
+    # Keep the legacy carrier identity strict. Numeric conversions have their
+    # own typed expression authority and are never aliases of a declaration.
+    return_binding = None
+    return_binding_reason = "COMPILER_RETURN_EXPRESSION_REQUIRED"
+    if len(returns) == 1 and type_resolver is not None:
+        from .compiler_return_binding import export as export_return_binding
+        try:
+            return_binding = export_return_binding(returns[0], source_digest=source_digest,
+                function_identity=function_identity, declaration_identity=stable_declaration,
+                source_range=_source_range, result_type=str(function_type).split(" (", 1)[0].strip(),
+                type_resolver=type_resolver)
+        except ValueError as exc:
+            return_binding_reason = getattr(exc, 'reason_code', str(exc))
     complete = bool(
         len(asm_nodes) == 1 and asm_ids and all(asm_ids)
         and (return_id or returns_void)
@@ -615,6 +628,8 @@ def _l2_operand_boundary_facts(
              for item in fragment_candidates[0].get("operandCarriers", [])]
             if len(fragment_candidates) == 1 else []),
         "returnDeclarationId": return_id,
+        **({"compilerReturnBinding": return_binding} if return_binding is not None else
+           {"compilerReturnBindingReasonCode": return_binding_reason}),
         "declarations": declarations,
         "declarationReferenceCounts": reference_counts,
         "asmStatementEndOffset": asm_statement_end,
