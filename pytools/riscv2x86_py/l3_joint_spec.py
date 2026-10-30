@@ -33,7 +33,8 @@ def spec(findings,functions):
     for p in call['parameters']:
         require_json_match(type_fact(p['cType']),{k:v for k,v in p.items() if k!='declarationIdentity'},'L3_JOINT_PARAMETER_TYPE_MISMATCH')
     require_json_match(type_fact(call['result']['cType']),call['result'],'L3_JOINT_RESULT_TYPE_MISMATCH')
-    pointer=scope['pointerParameter'];pointer_decl=call['parameters'][pointer]['declarationIdentity']
+    pointers=scope.get('pointerParameters',[scope.get('pointerParameter')]);pointer=pointers[0]
+    pointer_decls={call['parameters'][i]['declarationIdentity'] for i in pointers}
     ordered=sorted(findings,key=lambda f:f['fragment']['compilerFragmentAuthority']['fragmentBindingKey']['beginOffset'])
     from .l2_authority import l2_authority_sidecar_from_dict
     from .automatic_l2_authority import _scalar_authority,_memory_authority
@@ -70,7 +71,7 @@ def spec(findings,functions):
             if (gnu['constraint'] not in {'=r','=&r','r','+r','+&r'} or operand.fixed_register_contract
                     or operand.width_bits!=64 or operand.source_constraint!=gnu['constraint']):raise ValueError('L3_JOINT_OPERAND_DOMAIN_UNSUPPORTED')
             if operand.type_kind=='pointer':
-                if operand.declaration_id!=pointer_decl or operand.access_mode!='address':raise ValueError('L3_JOINT_POINTER_REBINDING_UNSUPPORTED')
+                if operand.declaration_id not in pointer_decls or operand.access_mode!='address':raise ValueError('L3_JOINT_POINTER_REBINDING_UNSUPPORTED')
             elif operand.type_kind!='integer' or operand.signedness!='unsigned':raise ValueError('L3_JOINT_INTEGER64_REQUIRED')
             name=boundary['declarations'][operand.declaration_id]['name']
             operands.append({'index':operand.operand_index,'declarationIdentity':operand.declaration_id,'name':name,
@@ -90,7 +91,7 @@ def spec(findings,functions):
             access=memory_spec(f,joint_region=True);facts=memory_proof_facts_from_dict(a['l2MemoryProofFacts'])
             if not facts.matches_value_width(64):raise ValueError('L3_JOINT_MEMORY_CARRIER_PROOF_REQUIRED')
             address=next(o for o in side.operands if o.operand_index==facts.address_operand_index)
-            if address.declaration_id!=pointer_decl:raise ValueError('L3_JOINT_OBJECT_POINTER_MISMATCH')
+            if address.declaration_id not in pointer_decls:raise ValueError('L3_JOINT_OBJECT_POINTER_MISMATCH')
             objects.append(access)
         members.append({'fragmentId':fid,'kind':kind,'spec':access,'site':site,'operands':operands,
             'proofIdentity':a['proofIdentity'],'relationIdentity':side.effect_relation_set_identity,'authorityIdentity':side.authority_identity,
@@ -98,22 +99,34 @@ def spec(findings,functions):
             **({'fenceBasis':fence_basis} if fence else {}),
             **({'versionedProgramBoundary':a['l2VersionedProgramBoundary']} if versioned is not None else {})})
     if not {'memory_load','memory_store'}<=kinds:raise ValueError('L3_JOINT_READ_WRITE_PROGRAM_REQUIRED')
-    if len({(o['objectId'],o['size'],o['alignment']) for o in objects})!=1:raise ValueError('L3_JOINT_SINGLE_PRIVATE_OBJECT_REQUIRED')
+    multi=len(pointers)>1
+    if not multi and len({(o['objectId'],o['size'],o['alignment']) for o in objects})!=1:raise ValueError('L3_JOINT_SINGLE_PRIVATE_OBJECT_REQUIRED')
     returned=boundary.get('returnDeclarationId')
-    if returned not in defined or returned==pointer_decl:raise ValueError('L3_JOINT_RETURN_BINDING_REQUIRED')
+    if returned not in defined or returned in pointer_decls:raise ValueError('L3_JOINT_RETURN_BINDING_REQUIRED')
     from .joint_object_access_graph import build as object_graph
-    access_graph=object_graph(members)
+    from .object_layout_contract import build as layout_contract
+    layout=layout_contract(fn) if multi else None
+    if multi:
+        by_id={v['objectId']:v for v in layout['views']}
+        if any(o['objectId'] not in by_id or (o['size'],o['alignment'])!=(by_id[o['objectId']]['size'],by_id[o['objectId']]['alignment']) for o in objects):raise ValueError('L3_JOINT_OBJECT_LAYOUT_AUTHORITY_MISMATCH')
+    access_graph=object_graph(members,layout)
     body={'schemaVersion':'riscv2x86.joint-program-spec.v1','programId':program_id,
         'functionName':fn['name'],'functionIdentity':fn['functionId'],'sourceDigest':fn['sourceDigest'],
         'scope':scope,'callSignature':call,'members':members,'objectAccessGraph':access_graph,'pointerParameter':pointer,'returnDeclarationIdentity':returned,
         'object':{k:objects[0][k] for k in ('objectId','size','alignment')},
         'dependencyGraphIdentity':graph.graph_identity,'executionAuthorityIdentity':identity(execution.to_dict())}
+    if multi:
+        body.update(schemaVersion='riscv2x86.joint-program-spec.v2',objectLayout=layout,pointerParameters=pointers)
+        del body['pointerParameter'];del body['object']
     require_json_document(body,'L3_JOINT_JSON_INVALID')
     return dict(body,specIdentity=identity(body))
 
 
 def sample_plan(program,count=8):
     if type(count) is not int or not 4<=count<=16:raise ValueError('L3_JOINT_SAMPLE_DOMAIN_INVALID')
+    if 'objectLayout' in program:
+        from .l3_multi_object_observation import sample_plan as multi_plan
+        return multi_plan(program,count)
     values=[0,1,(1<<64)-1,1<<63,(1<<63)-1,0x5a17d3e4c29b806f,0xc4ceb9fe1a85ec53,0xffffffff]
     params=program['callSignature']['parameters'];pointer=program['pointerParameter']
     rows=[{'sample':s,'arguments':[None if i==pointer else f'{values[(s+i)%len(values)]:016x}' for i in range(len(params))],

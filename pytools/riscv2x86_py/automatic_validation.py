@@ -269,6 +269,9 @@ def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
     offsets.  Its entire post-call state is serialized, so stores cannot pass merely
     because the function returned successfully.
     """
+    if any(len(f.get('pointerParameters',[]))>1 for f in functions):
+        from .multi_object_l1 import wrapper
+        return wrapper(functions)
     lines = ["#include <stdint.h>", "#include <stdio.h>", "#include <string.h>"]
     for function in functions:
         name = function.get("name")
@@ -356,12 +359,13 @@ def _memory_object_wrapper(functions: Sequence[Mapping[str, object]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _memory_object_observations(stdout: str) -> list[dict[str, object]]:
+def _memory_object_observations(stdout: str, *, multi_object: bool = False) -> list[dict[str, object]]:
     pattern = re.compile(
         r"^(?P<function>[A-Za-z_]\w*):object=\["
         r"(?P<values>[0-9a-f]{16}(?:,[0-9a-f]{16}){3})\]$"
     )
-    observations = []
+    from .multi_object_l1 import observations as multi_observations
+    observations = multi_observations(stdout) if multi_object else []
     for order, line in enumerate(stdout.splitlines()):
         match = pattern.fullmatch(line)
         if match is not None:
@@ -673,8 +677,8 @@ def build_auto_l1_validator(config: Mapping[str, object]):
             target_observation = {"exitCode": right.returncode,
                                   "stdout": right.stdout, "stderr": right.stderr}
             if mode == "memory-object-functions":
-                source_observation["memoryObjects"] = _memory_object_observations(left.stdout)
-                target_observation["memoryObjects"] = _memory_object_observations(right.stdout)
+                source_observation["memoryObjects"] = _memory_object_observations(left.stdout, multi_object=any(len(f.get('pointerParameters',[]))>1 for f in functions))
+                target_observation["memoryObjects"] = _memory_object_observations(right.stdout, multi_object=any(len(f.get('pointerParameters',[]))>1 for f in functions))
             effective_contract = observation_contract
             effective_dimensions = dimensions
             effective_limitations = limitations

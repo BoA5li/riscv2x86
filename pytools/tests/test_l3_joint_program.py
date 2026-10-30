@@ -9,7 +9,7 @@ import pytest
 from riscv2x86_py.l3_trace_support import identity,Elf
 
 
-def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None,include_fence=False,width=8,sign_extend=False,signed_object=False):
+def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None,include_fence=False,width=8,sign_extend=False,signed_object=False,multi_object=False,reload_after_store=False,store_offset=16):
     from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts,_source_range
     from riscv2x86_py.compiler_fragment_closure import close_compiler_fragment_candidate
     from riscv2x86_py.compiler_memory_signature import export as signature
@@ -27,15 +27,26 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
         '__asm__ volatile("movq 8(%1),%0":"=r"(loaded):"r"(address):"memory");'
         '__asm__ volatile("'+scalar_template+'":"=&r"(result):"r"(loaded),"r"(input):"cc");'
         '__asm__ volatile("movq %0,16(%1)"::"r"(result),"r"(address):"memory");return result;}').encode()
+    if store_offset!=16:source=source.replace(b'16(%1)',(str(store_offset)+'(%1)').encode())
+    if reload_after_store:
+        source=source.replace(b'unsigned long result;',b'unsigned long result;unsigned long reloaded;').replace(b'return result;',b'__asm__ volatile("movq 8(%1),%0":"=r"(reloaded):"r"(address):"memory");return reloaded;')
+    if multi_object:
+        source=source.replace(b'unsigned long input)',b'unsigned long *destination,unsigned long input)')
+        pos=source.index(('__asm__ volatile("movq %0,'+str(store_offset)+'(%1)').encode())
+        source=source[:pos]+source[pos:].replace(b'(address)',b'(destination)',1)
     if width!=8:
         load={1:'movsbq' if sign_extend else 'movzbq',2:'movswq' if sign_extend else 'movzwq',4:'movslq' if sign_extend else 'movl'}[width]
         dest='%k0' if width==4 and not sign_extend else '%0'
-        source=source.replace(b'movq 8(%1),%0',(load+' 8(%1),'+dest).encode()).replace(b'movq %0,16(%1)',('mov'+{1:'b',2:'w',4:'l'}[width]+' %'+{1:'b',2:'w',4:'k'}[width]+'0,16(%1)').encode())
-    source=source.replace(b'unsigned long *address',(pointee+' *address').encode())
+        source=source.replace(b'movq 8(%1),%0',(load+' 8(%1),'+dest).encode()).replace(('movq %0,'+str(store_offset)+'(%1)').encode(),('mov'+{1:'b',2:'w',4:'l'}[width]+' %'+{1:'b',2:'w',4:'k'}[width]+'0,'+str(store_offset)+'(%1)').encode())
+    source=source.replace(b'unsigned long *address',(pointee+' *address').encode()).replace(b'unsigned long *destination',(pointee+' *destination').encode())
     if include_fence:
         source=source.replace(b'__asm__ volatile("'+scalar_template.encode(),b'__asm__ volatile("mfence"::: "memory");__asm__ volatile("'+scalar_template.encode())
     def extent(a,b):return {'begin':{'offset':a,'line':1,'col':a+1},'end':{'offset':b-1,'tokLen':1}}
     types={'address':pointee+' *','input':'unsigned long','loaded':'unsigned long','result':'unsigned long'}
+    if multi_object:types['destination']=pointee+' *'
+    if reload_after_store:types['reloaded']='unsigned long'
+    parameter_names=list(('address','input') if pointer==0 else ('input','address'))
+    if multi_object:parameter_names.insert(1,'destination')
     pointertype=ctype(canonicalType=pointee+' *',isPointer=True,isInteger=False,pointeeType=pointee,pointeeWidthBits=width*8,pointeeAlignmentBytes=width,pointeeIsInteger=True,expressionRepeatable=True)
     def ref(n,p):return {'kind':'DeclRefExpr','range':extent(p,p+len(n)),'referencedDecl':{'id':'ast:'+n},'type':{'qualType':types[n]},'valueCategory':'lvalue'}
     starts=[];pos=0
@@ -46,36 +57,40 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
     # Compiler token ranges, not source parsing, define statement placement.
     ends=[source.index(b');',a)+1 for a in starts]
     names=[(['loaded'],['address']),(['result'],['loaded','input']),([],['result','address'])]
-    if include_fence:names.insert(1,([],[]))
+    roles=['load','scalar','store']
+    if multi_object:names[-1]=(names[-1][0],['result','destination'])
+    if reload_after_store:names.append((['reloaded'],['address']));roles.append('load')
+    if include_fence:names.insert(1,([],[]));roles.insert(1,'fence')
     asms=[]
     for a,b,(outs,ins) in zip(starts,ends,names):
         asms.append({'kind':'GCCAsmStmt','range':extent(a,b),'numOutputs':len(outs),'outputConstraints':['=&r' if outs==['result'] else '=r'] if outs else [],
             'inner':[ref(n,source.index(('('+n+')').encode(),a)+1) for n in outs+ins]})
     params=[]
-    for name in (('address','input') if pointer==0 else ('input','address')):
+    for name in parameter_names:
         a=source.index(name.encode());params.append({'kind':'ParmVarDecl','id':'ast:'+name,'name':name,'type':{'qualType':types[name]},'range':extent(a,a+len(name))})
     decls=[]
-    for n in ('loaded','result'):
+    for n in (('loaded','result','reloaded') if reload_after_store else ('loaded','result')):
         a=source.index(('long '+n).encode());decls.append({'kind':'DeclStmt','inner':[{'kind':'VarDecl','id':'ast:'+n,'name':n,'type':{'qualType':types[n]},'range':extent(a,a+5+len(n))}]})
-    ret=source.index(b'return result');ast={'kind':'FunctionDecl','name':'unrelated','type':{'qualType':'unsigned long ('+','.join(types[n] for n in (('address','input') if pointer==0 else ('input','address')))+')'},'range':extent(0,len(source)),
-        'inner':params+[{'kind':'CompoundStmt','inner':decls+asms+[{'kind':'ReturnStmt','range':extent(ret,ret+13),'inner':[ref('result',ret+7)]}]}]}
+    returned='reloaded' if reload_after_store else 'result'
+    ret=source.index(('return '+returned).encode());ast={'kind':'FunctionDecl','name':'unrelated','type':{'qualType':'unsigned long ('+','.join(types[n] for n in parameter_names)+')'},'range':extent(0,len(source)),
+        'inner':params+[{'kind':'CompoundStmt','inner':decls+asms+[{'kind':'ReturnStmt','range':extent(ret,ret+13),'inner':[ref(returned,ret+7)]}]}]}
     S=identity(source.decode());F=identity('joint-fixture-function');path=tmp_path/'joint.c'
     boundary=_l2_operand_boundary_facts(ast,source_digest=S,function_identity=F,source_file=str(path),source_bytes=source,type_resolver=lambda t:t)
-    fn={'name':'unrelated','functionId':F,'sourceDigest':S,'sourceFile':str(path),'arity':2,'parameterTypes':[types[p['name']] for p in params],
-        'returnType':'unsigned long','pointerParameters':[pointer],'l2OperandBoundary':boundary}
+    fn={'name':'unrelated','functionId':F,'sourceDigest':S,'sourceFile':str(path),'arity':len(parameter_names),'parameterTypes':[types[p['name']] for p in params],
+        'returnType':'unsigned long','pointerParameters':[i for i,n in enumerate(parameter_names) if n in {'address','destination'}],'l2OperandBoundary':boundary}
     fn['compilerMemoryCallSignature']=signature(fn,fn['parameterTypes'],fn['returnType'],lambda t:t)
     fn['compilerJointScope']=export(ast,source_digest=S,function_identity=F,source_range=_source_range,resolve=lambda t:t)
     findings=[]
     for index,(raw,a,b,(outs,ins)) in enumerate(zip(boundary['fragmentCandidates'],starts,ends,names)):
         fid=str(path)+':1:'+str(a+1)
-        def operand(n,out):return {'constraint':'=&r' if out and n=='result' else '=r' if out else 'r','exprText':n,'compilerType':pointertype if n=='address' else ctype()}
+        def operand(n,out):return {'constraint':'=&r' if out and n=='result' else '=r' if out else 'r','exprText':n,'compilerType':pointertype if n in {'address','destination'} else ctype()}
         frag={'id':fid,'enclosingFunction':'unrelated','file':str(path),'line':1,'column':a+1,'beginOffset':a,'endOffset':b,
-            'outputs':[operand(n,True) for n in outs],'inputs':[operand(n,False) for n in ins],'clobbers':['cc'] if outs==['result'] else ['memory']}
+            'outputs':[operand(n,True) for n in outs],'inputs':[operand(n,False) for n in ins],'clobbers':['cc'] if roles[index]=='scalar' else ['memory']}
         closed=close_compiler_fragment_candidate(raw,frag,source_digest=S,function_identity=F)
         authority={'schemaVersion':'riscv2x86.compiler-fragment-authority.v2','sourceDigest':S,'functionIdentity':F,'fragmentId':fid,'targetTriple':'riscv64-linux-gnu','fragmentBindingKey':raw['fragmentBindingKey'],'candidate':closed,
-            'compilerTypeBindings':{str(v['operandIndex']):{'operandIndex':v['operandIndex'],'valueNodeIdentity':v['valueNodeIdentity'],'compilerType':pointertype if (outs+ins)[v['operandIndex']]=='address' else ctype()} for v in closed['operandBindings']}}
+            'compilerTypeBindings':{str(v['operandIndex']):{'operandIndex':v['operandIndex'],'valueNodeIdentity':v['valueNodeIdentity'],'compilerType':pointertype if (outs+ins)[v['operandIndex']] in {'address','destination'} else ctype()} for v in closed['operandBindings']}}
         authority['authorityIdentity']=identity(authority);frag['compilerFragmentAuthority']=authority
-        role='fence' if include_fence and index==1 else 'load' if index==0 else 'store' if index==len(names)-1 else 'scalar'
+        role=roles[index]
         kind={'load':L2PatternKind.MEMORY_LOAD,'scalar':L2PatternKind.SCALAR,'store':L2PatternKind.MEMORY_STORE,'fence':L2PatternKind.FENCE}[role]
         if role=='scalar' and value_program is not None:kind=L2PatternKind.COMPOSITE
         profile=l2_fragment_semantic_profile_from_dict(profile_dict(fid,kind))
@@ -100,7 +115,7 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
             a=f['approvalArtifact'];a.update(sourceModelId=S,rendererSemanticContractId=_ID)
             a['l2VersionedProgramBoundary']=export_boundary(value_program,a,fid)
         if role in {'load','store'}:
-            facts=_facts(fragment_id=fid,access_kind=role,byte_offset=8 if role=='load' else 16,value_operand_index=0,address_operand_index=1)
+            facts=_facts(fragment_id=fid,access_kind=role,byte_offset=8 if role=='load' else store_offset,value_operand_index=0,address_operand_index=1)
             if width!=8:
                 facts=replace(facts,width_bytes=width,required_alignment=width,carrier_width_bits=64,value_projection=('sign_extend' if sign_extend else 'zero_extend') if role=='load' else 'low_bits',schema_version='riscv2x86.l2-memory-proof-facts.v4' if role=='load' else 'riscv2x86.l2-memory-proof-facts.v3',facts_identity='')
             f['approvalArtifact']['l2MemoryProofFacts']=facts.to_dict()

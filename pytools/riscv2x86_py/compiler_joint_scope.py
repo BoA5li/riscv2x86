@@ -15,12 +15,11 @@ def export(node, *, source_digest, function_identity, source_range, resolve):
     facts=[type_fact(resolve(x.get('type',{}).get('qualType',''))) for x in params]
     if not 1<=len(params)<=4 or any(x is None for x in facts):return None
     pointers=[i for i,x in enumerate(facts) if x['kind']=='pointer']
-    if len(pointers)!=1:return None
+    if not pointers:return None
     def scalar(x):return x and x.get('kind')=='integer' and x.get('widthBits')==64 and x.get('signed') is False
-    p=facts[pointers[0]]
-    pointee=p['pointee']
-    if (pointee.get('kind')!='integer' or pointee.get('widthBits') not in (8,16,32,64)
-            or p.get('pointeeQualifiers') or any(i!=pointers[0] and not scalar(x) for i,x in enumerate(facts))):return None
+    p=facts[pointers[0]];pointee=p['pointee']
+    if (any(facts[i].get('pointeeQualifiers') or facts[i]['pointee']['kind']!='integer' or facts[i]['pointee']['widthBits'] not in (8,16,32,64) for i in pointers)
+            or any(i not in pointers and not scalar(x) for i,x in enumerate(facts))):return None
     result=type_fact(resolve(node.get('type',{}).get('qualType','').split(' (',1)[0]))
     if not scalar(result):return None
     statements=next(x for x in node['inner'] if x.get('kind')=='CompoundStmt')['inner']
@@ -49,4 +48,7 @@ def export(node, *, source_digest, function_identity, source_range, resolve):
     body={'schemaVersion':'riscv2x86.compiler-joint-scope.v1' if legacy else 'riscv2x86.compiler-joint-scope.v2','sourceDigest':source_digest,
         'functionIdentity':function_identity,'sites':scope['sites'],'pointerParameter':pointers[0],
         'parameterTypes':facts,'resultType':result,'scope':'direct-unsigned64-private-object-regions' if legacy else 'direct-integer-object-unsigned64-carrier-regions'}
+    if len(pointers)>1:
+        body.update(schemaVersion='riscv2x86.compiler-joint-scope.v3',scope='direct-typed-private-object-views',pointerParameters=pointers)
+        del body['pointerParameter']
     return dict(body,scopeIdentity=identity(body))

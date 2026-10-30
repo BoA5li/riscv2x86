@@ -708,7 +708,7 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
         ]
         safe_memory_object = (
             len(params) <= 4
-            and len(pointer_parameters) == 1
+            and len(pointer_parameters) >= 1
             and (return_type == "void" or _INTEGER_TYPE.fullmatch(return_type))
             and all(
                 _INTEGER_TYPE.fullmatch(item) or _INTEGER_POINTER_TYPE.fullmatch(item)
@@ -1336,6 +1336,11 @@ def prepare_automatic_inventory(
                 input_domain = "branch-four-argument-boundaries-v1"
                 limitations = sorted(set(limitations) | {
                     "control-flow-event-trace-not-observed-by-l1",
+                })
+            if mode == "memory-object-functions" and any(len(f.get('pointerParameters',[]))>1 for f in functions):
+                input_domain = "typed-object-layout-invocations-v1"
+                limitations = sorted((set(limitations)-{"aliasing-and-overlap-not-observed-by-automatic-l1"}) | {
+                    "listed-valid-alias-layouts-only-not-exhaustive-alias-domain",
                 })
             l1_config = {
                 "schemaVersion": "riscv2x86.auto-l1-runner.v3", "mode": mode,

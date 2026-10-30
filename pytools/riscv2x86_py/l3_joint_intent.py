@@ -31,7 +31,7 @@ def produce(request):
         props=[] if ob is None else ob['requiredProperties']
         body={'schemaVersion':'riscv2x86.l3-intent-profile.v1','fragmentId':f['fragment']['id'],'programId':'' if ob is None else ob['programId'],
             'intentKind':'memory_access' if reason is None else 'unknown','experimentClasses':sorted({{'access_pattern':'memory_access','control_flow':'control_flow','synchronization':'synchronization'}[p['dimension']] for p in props}),
-            'sourceIntent':'all actual read/write, scalar and approved fence regions in one complete private-object program',
+            'sourceIntent':'all actual read/write, scalar and approved fence regions in one complete typed-private-object-layout program',
             'approvedTargetRelationIdentity':artifact['effect_relation_set_identity'],'requiredProperties':props,
             'sourceCapabilities':[CAPABILITY] if reason is None else [],'targetCapabilities':[CAPABILITY] if reason is None else [],
             'observationBoundary':{'kind':'compiler-joint-regions','identity':program['specIdentity']} if reason is None else {'kind':'','identity':''},

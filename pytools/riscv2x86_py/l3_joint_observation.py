@@ -8,6 +8,9 @@ def sample_symbol(program):return '__rv2x86_joint_sample_'+program['specIdentity
 
 
 def harness(program,plan):
+    if 'objectLayout' in program:
+        from .l3_multi_object_observation import harness as multi
+        return multi(program,plan)
     call=program['callSignature'];params=call['parameters'];pointer=program['pointerParameter'];size=program['object']['size']
     cell=params[pointer]['pointee']['widthBits']//8
     if cell not in (1,2,4,8) or size%cell:raise ValueError('L3_JOINT_TYPED_OBJECT_SIZE')
@@ -43,6 +46,9 @@ int main(int argc,char **argv){
 
 
 def parse_samples(text,token,program,plan):
+    if 'objectLayout' in program:
+        from .l3_multi_object_observation import parse_samples as multi
+        return multi(text,token,program,plan)
     rows=[];size=program['object']['size']
     for line in text.splitlines():
         row=json.loads(line);require_json_document(row,'L3_JOINT_SAMPLE_JSON_INVALID')
@@ -60,6 +66,9 @@ def parse_samples(text,token,program,plan):
 
 
 def compare(reports,program,index):
+    if 'objectLayout' in program:
+        from .l3_multi_object_observation import compare as multi
+        return multi(reports,program,index)
     reasons=[];member=program['members'][index];s=member['spec'];streams={}
     from .l3_joint_spec import sample_plan
     plan=sample_plan(program,len(reports['source']['samples']))
@@ -103,6 +112,9 @@ def compare(reports,program,index):
 
 
 def instrument(source,sites,program):
+    if 'objectLayout' in program:
+        from .l3_multi_object_observation import instrument as multi
+        return multi(source,sites,program)
     """L2 test variant only. L3 always executes the exact original function code."""
     size=program['object']['size'];call=program['callSignature'];pointer=program['pointerParameter']
     # The address operand declaration was compiler-bound to this parameter.
@@ -133,6 +145,9 @@ class JointSemanticMismatch(ValueError):
 
 
 def parse_l2(text,token,program,plan):
+    if 'objectLayout' in program:
+        from .l3_multi_object_observation import parse_l2 as multi
+        return multi(text,token,program,plan)
     boundary=[];final=[];members=program['members'];size=program['object']['size']
     for line in text.splitlines():
         if line.startswith('{'):final.append(line);continue
