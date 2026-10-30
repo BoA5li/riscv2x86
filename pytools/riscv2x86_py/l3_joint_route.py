@@ -19,7 +19,7 @@ from .l3_trace_support import require_json_document,require_json_match
 def platform(side,b,deployment,events,rows,evidence):
     return {'schemaVersion':'riscv2x86.joint-region-observation.v1','side':side,
         'backendIdentity':b['backendIdentity'],'deploymentIdentity':deployment['deploymentIdentity'],
-        'events':[dict(e,access={'R':'read','W':'write'}[e['access']]) for e in events],'samples':rows,'evidence':evidence,
+        'events':[dict(e,access={'R':'read','W':'write','fence':'fence'}[e['access']]) for e in events],'samples':rows,'evidence':evidence,
         'environment':{'executor':b[side+'Executor'],'executorDigest':digest(b[side+'Executor']),
             'runnerArguments':b[side+'RunnerArguments'],'physicalMicroarchitectureClaimed':False}}
 
@@ -49,6 +49,7 @@ def project(group,index):
         reports[side]={'schemaVersion':'riscv2x86.joint-member-observation.v1','side':side,
             'programCaptureIdentity':group['groupIdentity'],'regionIndex':index,'programSpec':group['deployment']['spec'],
             'events':[e for e in r['events'] if e['region']==index],'samples':r['samples'],
+            'programEvents':r['events'],
             'environment':r['environment']}
     return reports
 
@@ -60,7 +61,11 @@ def comparison(reports):
 def fragment_result(req,group,reports,artifact,source,target,prior):
     cmp=comparison(reports);items=[]
     for prop in req['requiredProperties']:
-        if prop!={'dimension':'access_pattern','propertyId':'memory.fragment-access','unit':'fragment'}:raise ValueError('L3_JOINT_PROPERTY_SET_UNSUPPORTED')
+        if prop not in ({'dimension':'access_pattern','propertyId':'memory.fragment-access','unit':'fragment'},
+                       {'dimension':'synchronization','propertyId':'synchronization.fragment-events','unit':'fragment'}):
+            raise ValueError('L3_JOINT_PROPERTY_SET_UNSUPPORTED')
+        if prop['dimension']=='synchronization' and reports['source']['programSpec']['members'][reports['source']['regionIndex']].get('fenceBasis') is None:
+            raise ValueError('L3_JOINT_FENCE_BASIS_REQUIRED')
         body={'schemaVersion':'riscv2x86.l3-dimension-result.v1','fragmentId':req['fragmentId'],'programId':req['programId'],**prop,
             'status':cmp['status'],'claimScope':'architectural_intent','requirementIdentity':req['requirementIdentity'],
             'profileIdentity':req['profileIdentity'],'contractIdentity':group['groupIdentity'],

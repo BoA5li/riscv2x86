@@ -13,9 +13,9 @@ TOOLS=('sourceExecutor','targetExecutor','sourceCompiler','targetCompiler','sour
 
 
 def parse_capture(text,token,side,regions,calls):
-    lines=text.splitlines();events=[];active=False;sample=0;index=0;finished=False
+    lines=text.splitlines();events=[];active=False;sample=0;index=0;finished=False;memory_count=0;begin_line=None
     if not lines or lines[0].split()!=['H','3',token,'riscv64' if side=='source' else 'x86_64']:raise ValueError('L3_JOINT_CAPTURE_HEADER')
-    for line in lines[1:]:
+    for line_number,line in enumerate(lines[1:],1):
         p=line.split()
         if finished or not p:raise ValueError('L3_JOINT_CAPTURE_TRAILING')
         try:
@@ -24,16 +24,22 @@ def parse_capture(text,token,side,regions,calls):
                 region=regions[index];begin=p[0]=='B'
                 if active==begin or int(p[3],16)!=region['start' if begin else 'end']:raise ValueError('boundary')
                 active=begin
+                if begin:begin_line=line_number
                 if not begin:
+                    if region.get('fenceMechanism') is not None:
+                        events.append({'sample':sample,'region':index,'pc':region['start'],'access':'fence',
+                            'completed':True,'machineMechanism':region['fenceMechanism'],
+                            'rawBeginLine':begin_line,'rawEndLine':line_number})
                     index+=1
                     if index==len(regions):index=0;sample+=1
             elif p[0]=='M' and len(p)==8:
                 seq,s,i,pc,address,size=int(p[1]),int(p[2]),int(p[3]),int(p[4],16),int(p[5],16),int(p[6])
-                if (not active or seq!=len(events) or (s,i)!=(sample,index) or not regions[index]['start']<=pc<regions[index]['end']
+                if (not active or seq!=memory_count or (s,i)!=(sample,index) or not regions[index]['start']<=pc<regions[index]['end']
                         or address<0 or size not in (1,2,4,8,16,32,64) or p[7] not in ('R','W')):raise ValueError('memory')
                 events.append({'sample':s,'region':i,'pc':pc,'address':address,'size':size,'access':p[7]})
+                memory_count+=1
             elif p[0]=='F' and len(p)==5:
-                if active or sample!=calls or index or list(map(int,p[1:]))!=[calls,0,len(events),0]:raise ValueError('footer')
+                if active or sample!=calls or index or list(map(int,p[1:]))!=[calls,0,memory_count,0]:raise ValueError('footer')
                 finished=True
             else:raise ValueError('unexpected/escape')
         except (ValueError,IndexError) as exc:raise ValueError('L3_JOINT_CAPTURE_INCOMPLETE:'+str(exc)) from exc
@@ -62,6 +68,8 @@ def probe(side,kind):
     prefix+=('j b1\n' if side=='source' else 'jmp b1\n') if kind=='skip' else ''
     op='addi a1,a1,0\n' if side=='source' else 'nop\n'
     access=('ld a1,0(a0)\n' if side=='source' else 'movq (%rdi),%rax\n') if kind=='read' else op
+    if kind=='fence':access='fence rw,rw\n' if side=='source' else 'mfence\n'
+    if kind=='nop-fence':access='addi zero,zero,0\n' if side=='source' else 'nop\n'
     if kind=='write':
         prefix+=('li a1,13\n' if side=='source' else 'movq $13,%rax\n')
         access='sd a1,0(a0)\n' if side=='source' else 'movq %rax,(%rdi)\n'
@@ -89,7 +97,15 @@ def check_calibration(b,r):
         if trace.read_text().splitlines()!=['H 3 '+e['token']+' '+('riscv64' if side=='source' else 'x86_64'),
             'U 0 1 '+format(regions[1]['start'],'x'),'F 0 0 0 1']:raise ValueError('L3_JOINT_SKIPPED_REGION_NOT_DETECTED')
         return
+    if kind in {'fence','nop-fence'}:
+        from .l3_fence_machine import region_mechanism
+        regions[1]['fenceMechanism']=region_mechanism(elf,regions[1])
     events=parse_capture(trace.read_text(),e['token'],side,regions,1)
+    if kind in {'fence','nop-fence'}:
+        if (len(events)!=1 or events[0].get('access')!='fence' or events[0].get('completed') is not True
+                or (events[0]['machineMechanism']['kind']=='ordinary-rw-fence') != (kind=='fence')):
+            raise ValueError('L3_JOINT_FENCE_CALIBRATION_MISMATCH')
+        return
     expected=[] if kind=='empty' else [{'sample':0,'region':1,'pc':regions[1]['start'],'address':elf.symbol('data')[0],'size':8,'access':'W' if kind=='write' else 'R'}]
     if events!=expected:raise ValueError('L3_JOINT_CALIBRATION_MISMATCH')
 
@@ -111,7 +127,7 @@ def validate(value,*,uncalibrated=False,_context=None):
     c=json.loads(build.read_text())
     if c['command']!=[b['targetCompiler'],'-std=gnu11','-shared','-fPIC','-O2','-Wall','-Wextra','-Werror','-I'+str(Path(headers[0]).parents[1]),str(source),'-o',b['plugin']] or c['returnCode']!=0 or c['timedOut'] is not False:raise ValueError('L3_JOINT_PLUGIN_BUILD_CHANGED')
     records=b['calibration']
-    if not isinstance(records,list) or not (uncalibrated and records==[]) and (len(records)!=8 or {(r['side'],r['kind']) for r in records}!={(s,k) for s in ('source','target') for k in ('empty','read','write','skip')}):raise ValueError('L3_JOINT_CALIBRATION_INCOMPLETE')
+    if not isinstance(records,list) or not (uncalibrated and records==[]) and (len(records)!=12 or {(r['side'],r['kind']) for r in records}!={(s,k) for s in ('source','target') for k in ('empty','read','write','skip','fence','nop-fence')}):raise ValueError('L3_JOINT_CALIBRATION_INCOMPLETE')
     for r in records:check_calibration(b,r)
     return b
 
@@ -129,7 +145,7 @@ def prepare(base_path,output):
         b['files'].update({p:digest(p) for p in implementation_paths()})
         b['backendIdentity']=identity(b);status['stage']='calibration';checkpoint();records=[]
         for side in ('source','target'):
-            for kind in ('empty','read','write','skip'):
+            for kind in ('empty','read','write','skip','fence','nop-fence'):
                 status['calibrationCurrent']={'side':side,'kind':kind};checkpoint()
                 work=out/'calibration'/side/kind;work.mkdir(parents=True);asm=work/'probe.S';asm.write_text(probe(side,kind));binary=work/'probe'
                 flags=['-march=rv64gc','-mabi=lp64d','-Wl,--no-relax'] if side=='source' else []

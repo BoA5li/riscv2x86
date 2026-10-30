@@ -13,7 +13,7 @@ def test_typed_call_harness_builds_and_executes_without_unused_tables(tmp_path, 
     if not compiler:
         pytest.skip('real native gcc required')
     parameters = [{'cType':'uint64_t'} for _ in range(arity)]
-    parameters[pointer] = {'cType':'uint64_t *','pointee':{'cType':'uint64_t'}}
+    parameters[pointer] = {'cType':'uint64_t *','pointee':{'cType':'uint64_t','widthBits':64}}
     program = {'functionName':'independent_probe','specIdentity':'sha256:'+'1'*64,
         'pointerParameter':pointer,'object':{'size':32,'alignment':8},
         'callSignature':{'parameters':parameters,'result':{'cType':'uint64_t'}}}

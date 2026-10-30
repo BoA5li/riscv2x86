@@ -421,10 +421,8 @@ def _scalar_authority(
     source_effects, relations, shell_identity = proof_authority
     observation_authority = None
     joint_scope = function.get('compilerJointScope') or {}
-    joint_observer = (joint_scope.get('schemaVersion') == 'riscv2x86.compiler-joint-scope.v1'
-        and joint_scope.get('scopeIdentity') == _identity({k:v for k,v in joint_scope.items() if k!='scopeIdentity'})
-        and joint_scope.get('sourceDigest') == function.get('sourceDigest')
-        and joint_scope.get('functionIdentity') == function.get('functionId'))
+    from .compiler_joint_context import valid as valid_joint_scope
+    joint_observer = valid_joint_scope(function)
     # The explicit joint provider observes every scalar boundary directly,
     # including fanout. Do not manufacture one legacy sink/consumer route.
     # Canonical operands, complete graph, proof and shell gates above remain.
@@ -582,7 +580,8 @@ def _fence_authority(
             or not isinstance(raw_profile, Mapping) or not isinstance(raw_facts, Mapping)):
         return None
     function = matches[0]
-    if function.get("arity") != 0 or function.get("returnType") != "void":
+    from .compiler_joint_context import valid as joint_context
+    if not joint_context(function) and (function.get("arity") != 0 or function.get("returnType") != "void"):
         return None
     try:
         profile = l2_fragment_semantic_profile_from_dict(
@@ -799,7 +798,8 @@ def _fence_authority_failure_reason(
                if item.get("name") == fragment.get("enclosingFunction")]
     if len(matches) != 1:
         return "L2_FENCE_FUNCTION_BINDING_AMBIGUOUS"
-    if matches[0].get("arity") != 0 or matches[0].get("returnType") != "void":
+    from .compiler_joint_context import valid as joint_context
+    if not joint_context(matches[0]) and (matches[0].get("arity") != 0 or matches[0].get("returnType") != "void"):
         return "L2_FENCE_AUTOMATIC_HARNESS_SIGNATURE_UNSUPPORTED"
     raw_profile = finding.get("l2SemanticProfile")
     if not isinstance(raw_profile, Mapping):

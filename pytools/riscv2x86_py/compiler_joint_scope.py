@@ -1,4 +1,4 @@
-"""Compiler AST scope for a direct, unsigned64, private-object region program.
+"""Compiler AST scope for direct uint64 carriers and a typed private object.
 
 This is an executable observation grammar, not approval of asm or of a route.
 It never infers instructions from source text. Each asm is proved separately.
@@ -18,7 +18,9 @@ def export(node, *, source_digest, function_identity, source_range, resolve):
     if len(pointers)!=1:return None
     def scalar(x):return x and x.get('kind')=='integer' and x.get('widthBits')==64 and x.get('signed') is False
     p=facts[pointers[0]]
-    if p.get('pointeeQualifiers') or not scalar(p['pointee']) or any(i!=pointers[0] and not scalar(x) for i,x in enumerate(facts)):return None
+    pointee=p['pointee']
+    if (pointee.get('kind')!='integer' or pointee.get('widthBits') not in (8,16,32,64)
+            or p.get('pointeeQualifiers') or any(i!=pointers[0] and not scalar(x) for i,x in enumerate(facts))):return None
     result=type_fact(resolve(node.get('type',{}).get('qualType','').split(' (',1)[0]))
     if not scalar(result):return None
     statements=next(x for x in node['inner'] if x.get('kind')=='CompoundStmt')['inner']
@@ -43,7 +45,8 @@ def export(node, *, source_digest, function_identity, source_range, resolve):
         elif s.get('kind')=='ReturnStmt':
             if len(s.get('inner',[]))!=1 or reference(s['inner'][0]) not in declared:return None
         else:return None
-    body={'schemaVersion':'riscv2x86.compiler-joint-scope.v1','sourceDigest':source_digest,
+    legacy=scalar(pointee)
+    body={'schemaVersion':'riscv2x86.compiler-joint-scope.v1' if legacy else 'riscv2x86.compiler-joint-scope.v2','sourceDigest':source_digest,
         'functionIdentity':function_identity,'sites':scope['sites'],'pointerParameter':pointers[0],
-        'parameterTypes':facts,'resultType':result,'scope':'direct-unsigned64-private-object-regions'}
+        'parameterTypes':facts,'resultType':result,'scope':'direct-unsigned64-private-object-regions' if legacy else 'direct-integer-object-unsigned64-carrier-regions'}
     return dict(body,scopeIdentity=identity(body))

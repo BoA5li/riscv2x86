@@ -9,7 +9,7 @@ import pytest
 from riscv2x86_py.l3_trace_support import identity,Elf
 
 
-def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None):
+def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None,include_fence=False,width=8,sign_extend=False,signed_object=False):
     from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts,_source_range
     from riscv2x86_py.compiler_fragment_closure import close_compiler_fragment_candidate
     from riscv2x86_py.compiler_memory_signature import export as signature
@@ -21,14 +21,22 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
     from tests.test_l2_memory_object_observation import _facts
     from riscv2x86_py.l2_effect_proof import effect_proof_facts_from_dict
     from riscv2x86_py.l2_semantic_profile import L2PatternKind,L2MemoryShape,l2_fragment_semantic_profile_from_dict
+    pointee={1:'signed char' if signed_object else 'unsigned char',2:'short' if signed_object else 'unsigned short',4:'int' if signed_object else 'unsigned int',8:'long' if signed_object else 'unsigned long'}[width]
     args='unsigned long *address,unsigned long input' if pointer==0 else 'unsigned long input,unsigned long *address'
     source=('unsigned long unrelated('+args+'){unsigned long loaded;unsigned long result;'
         '__asm__ volatile("movq 8(%1),%0":"=r"(loaded):"r"(address):"memory");'
         '__asm__ volatile("'+scalar_template+'":"=&r"(result):"r"(loaded),"r"(input):"cc");'
         '__asm__ volatile("movq %0,16(%1)"::"r"(result),"r"(address):"memory");return result;}').encode()
+    if width!=8:
+        load={1:'movsbq' if sign_extend else 'movzbq',2:'movswq' if sign_extend else 'movzwq',4:'movslq' if sign_extend else 'movl'}[width]
+        dest='%k0' if width==4 and not sign_extend else '%0'
+        source=source.replace(b'movq 8(%1),%0',(load+' 8(%1),'+dest).encode()).replace(b'movq %0,16(%1)',('mov'+{1:'b',2:'w',4:'l'}[width]+' %'+{1:'b',2:'w',4:'k'}[width]+'0,16(%1)').encode())
+    source=source.replace(b'unsigned long *address',(pointee+' *address').encode())
+    if include_fence:
+        source=source.replace(b'__asm__ volatile("'+scalar_template.encode(),b'__asm__ volatile("mfence"::: "memory");__asm__ volatile("'+scalar_template.encode())
     def extent(a,b):return {'begin':{'offset':a,'line':1,'col':a+1},'end':{'offset':b-1,'tokLen':1}}
-    types={'address':'unsigned long *','input':'unsigned long','loaded':'unsigned long','result':'unsigned long'}
-    pointertype=ctype(canonicalType='unsigned long *',isPointer=True,isInteger=False,pointeeType='unsigned long',pointeeWidthBits=64,pointeeAlignmentBytes=8,pointeeIsInteger=True,expressionRepeatable=True)
+    types={'address':pointee+' *','input':'unsigned long','loaded':'unsigned long','result':'unsigned long'}
+    pointertype=ctype(canonicalType=pointee+' *',isPointer=True,isInteger=False,pointeeType=pointee,pointeeWidthBits=width*8,pointeeAlignmentBytes=width,pointeeIsInteger=True,expressionRepeatable=True)
     def ref(n,p):return {'kind':'DeclRefExpr','range':extent(p,p+len(n)),'referencedDecl':{'id':'ast:'+n},'type':{'qualType':types[n]},'valueCategory':'lvalue'}
     starts=[];pos=0
     while True:
@@ -38,6 +46,7 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
     # Compiler token ranges, not source parsing, define statement placement.
     ends=[source.index(b');',a)+1 for a in starts]
     names=[(['loaded'],['address']),(['result'],['loaded','input']),([],['result','address'])]
+    if include_fence:names.insert(1,([],[]))
     asms=[]
     for a,b,(outs,ins) in zip(starts,ends,names):
         asms.append({'kind':'GCCAsmStmt','range':extent(a,b),'numOutputs':len(outs),'outputConstraints':['=&r' if outs==['result'] else '=r'] if outs else [],
@@ -61,34 +70,48 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
         fid=str(path)+':1:'+str(a+1)
         def operand(n,out):return {'constraint':'=&r' if out and n=='result' else '=r' if out else 'r','exprText':n,'compilerType':pointertype if n=='address' else ctype()}
         frag={'id':fid,'enclosingFunction':'unrelated','file':str(path),'line':1,'column':a+1,'beginOffset':a,'endOffset':b,
-            'outputs':[operand(n,True) for n in outs],'inputs':[operand(n,False) for n in ins],'clobbers':['cc'] if index==1 else ['memory']}
+            'outputs':[operand(n,True) for n in outs],'inputs':[operand(n,False) for n in ins],'clobbers':['cc'] if outs==['result'] else ['memory']}
         closed=close_compiler_fragment_candidate(raw,frag,source_digest=S,function_identity=F)
         authority={'schemaVersion':'riscv2x86.compiler-fragment-authority.v2','sourceDigest':S,'functionIdentity':F,'fragmentId':fid,'targetTriple':'riscv64-linux-gnu','fragmentBindingKey':raw['fragmentBindingKey'],'candidate':closed,
             'compilerTypeBindings':{str(v['operandIndex']):{'operandIndex':v['operandIndex'],'valueNodeIdentity':v['valueNodeIdentity'],'compilerType':pointertype if (outs+ins)[v['operandIndex']]=='address' else ctype()} for v in closed['operandBindings']}}
         authority['authorityIdentity']=identity(authority);frag['compilerFragmentAuthority']=authority
-        kind=(L2PatternKind.MEMORY_LOAD,L2PatternKind.SCALAR,L2PatternKind.MEMORY_STORE)[index]
-        if index==1 and value_program is not None:kind=L2PatternKind.COMPOSITE
+        role='fence' if include_fence and index==1 else 'load' if index==0 else 'store' if index==len(names)-1 else 'scalar'
+        kind={'load':L2PatternKind.MEMORY_LOAD,'scalar':L2PatternKind.SCALAR,'store':L2PatternKind.MEMORY_STORE,'fence':L2PatternKind.FENCE}[role]
+        if role=='scalar' and value_program is not None:kind=L2PatternKind.COMPOSITE
         profile=l2_fragment_semantic_profile_from_dict(profile_dict(fid,kind))
-        if index!=1:profile=replace(profile,memory_shape=L2MemoryShape(index==0,index==2,False,False,True),profile_identity='')
+        if role in {'load','store'}:profile=replace(profile,memory_shape=L2MemoryShape(role=='load',role=='store',False,False,True),profile_identity='')
+        if role=='fence':
+            from tests.test_l2_fence_ordering_relations import _profile
+            profile=_profile(fid)
         f={'fragment':frag,'sourceDigest':S,'translationOutcome':'emitted','rewriteBeginOffset':a,'rewriteEndOffset':b+1,'rawSourceText':source[a:b+1].decode(),
             'approvalArtifact':{'proofStatus':'approved','architectureSemanticsPreserved':True,'shellSemanticsPreserved':True,'planId':S,'constraintsId':F},'l2SemanticProfile':profile.to_dict()}
-        attach_effect_proof(f['approvalArtifact'],fid,'scalar' if index==1 else 'memory')
-        if index==1 and value_program is not None:
+        attach_effect_proof(f['approvalArtifact'],fid,'scalar' if role=='scalar' else 'memory')
+        if role=='fence':
+            # Rebuild identity-bearing facts for this compiler-bound member.
+            from tests.test_l2_fence_ordering_relations import _facts as fence_facts,_finding
+            facts=fence_facts(fragment_id=fid,source_hardware_ordering=True,source_ordering='rw_rw',source_scope='system',target_ordering='rw_rw',relation_kind='exact',target_semantic_contract_id='x86.gnu-att.mfence.ordinary-rw.v2')
+            approval=_finding(facts)['approvalArtifact']
+            proof=effect_proof_facts_from_dict(approval['l2EffectProofFacts'])
+            approval['l2EffectProofFacts']=replace(proof,source_effects=tuple(sorted(proof.source_effects,key=lambda e:e.effect_id)),target_effects=tuple(sorted(proof.target_effects,key=lambda e:e.effect_id)),relations=tuple(sorted((replace(r,relation_kind='exact') for r in proof.relations),key=lambda r:r.relation_id))).to_dict()
+            f['approvalArtifact']=approval
+        if role=='scalar' and value_program is not None:
             from .test_versioned_gpr_program import _ID
             from riscv2x86_py.versioned_program_contract import export as export_boundary
             a=f['approvalArtifact'];a.update(sourceModelId=S,rendererSemanticContractId=_ID)
             a['l2VersionedProgramBoundary']=export_boundary(value_program,a,fid)
-        if index!=1:
-            facts=_facts(fragment_id=fid,access_kind='load' if index==0 else 'store',byte_offset=8 if index==0 else 16,value_operand_index=0,address_operand_index=1)
+        if role in {'load','store'}:
+            facts=_facts(fragment_id=fid,access_kind=role,byte_offset=8 if role=='load' else 16,value_operand_index=0,address_operand_index=1)
+            if width!=8:
+                facts=replace(facts,width_bytes=width,required_alignment=width,carrier_width_bits=64,value_projection=('sign_extend' if sign_extend else 'zero_extend') if role=='load' else 'low_bits',schema_version='riscv2x86.l2-memory-proof-facts.v4' if role=='load' else 'riscv2x86.l2-memory-proof-facts.v3',facts_identity='')
             f['approvalArtifact']['l2MemoryProofFacts']=facts.to_dict()
-            if index==2:
+            if role=='store':
                 ef=effect_proof_facts_from_dict(f['approvalArtifact']['l2EffectProofFacts'])
                 f['approvalArtifact']['l2EffectProofFacts']=replace(ef,source_effects=tuple(replace(e,effect_kind='WriteMemory') for e in ef.source_effects),target_effects=tuple(replace(e,effect_kind='WriteMemory') for e in ef.target_effects)).to_dict()
         findings.append(f)
     front=tmp_path/'frontend';front.write_text('fixture')
     assert fn['compilerJointScope'] is not None
     count=materialize_automatic_l2_authority({'findings':findings},[fn],front)
-    assert count==3,[(f['approvalArtifact'].get('l2AuthorityMaterializationReasonCode'),f['approvalArtifact'].get('l2ScalarAuthorityDecision'),f['approvalArtifact']['l2FragmentOperandBoundary'].get('reasonCodes')) for f in findings]
+    assert count==len(names),[(f['approvalArtifact'].get('l2AuthorityMaterializationReasonCode'),f['approvalArtifact'].get('l2ScalarAuthorityDecision'),f['approvalArtifact']['l2FragmentOperandBoundary'].get('reasonCodes')) for f in findings]
     return source,findings,fn
 
 
@@ -211,12 +234,15 @@ def test_actual_program_plugin_callback_handles_joint_memory(tmp_path,access):
 
 def test_native_write_calibration_is_real_executable_code(tmp_path):
     from riscv2x86_py.l3_joint_backend import probe,regions_of
-    for kind in ('empty','read','write','skip'):
+    for kind in ('empty','read','write','skip','fence','nop-fence'):
         asm=tmp_path/(kind+'.S');binary=tmp_path/kind;asm.write_text(probe('target',kind))
         done=subprocess.run([shutil.which('gcc'),'-nostdlib','-nostartfiles','-static','-no-pie','-Wl,--build-id=none',str(asm),'-o',str(binary)],capture_output=True,text=True)
         assert done.returncode==0,done.stderr
         assert subprocess.run([str(binary)],check=False).returncode==0
         elf=Elf(binary);r=regions_of(elf);assert len(r)==2
+        if kind in {'fence','nop-fence'}:
+            from riscv2x86_py.l3_fence_machine import region_mechanism
+            assert (region_mechanism(elf,r[1])['kind']=='ordinary-rw-fence')==(kind=='fence')
         if kind=='write':
             start,_,section,_=elf.symbol('b1');sec=elf.sections[section]
             code=elf.data[sec[4]+start-sec[3]:sec[4]+r[1]['end']-sec[3]]

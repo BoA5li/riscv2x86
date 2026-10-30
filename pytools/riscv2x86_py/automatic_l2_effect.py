@@ -360,6 +360,9 @@ def _effect_dimension_evidence(
         dimension_name = dimension.value
         if observation.get('mode') == 'joint-program-functions' and dimension is L2Dimension.MEMORY_EFFECTS:
             observed_properties[dimension_name] = ('memory_object', 'offset', 'width', 'value', 'object_continuity')
+            if observation.get('jointFence') is True:
+                observed_properties[dimension_name] = ('ordering','scope','compiler_ordering',
+                    'hardware_ordering','before_after_execution_witness')
         if observation.get("mode") == "fence-functions" and dimension is L2Dimension.MEMORY_EFFECTS:
             observed_properties[dimension_name] = (
                 "ordering", "scope", "compiler_ordering", "hardware_ordering",

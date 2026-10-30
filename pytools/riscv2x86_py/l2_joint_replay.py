@@ -23,6 +23,8 @@ def replay(value):
     plan=sample_plan(program,len(value['samplePlan']['inputs']))
     require_json_match(plan,value['samplePlan'],'L2_JOINT_PLAN_REPLAY_MISMATCH')
     finding=next(f for f in json.loads(report.read_text())['findings'] if f['fragment']['id']==value['fragmentId'])
+    if value.get('jointFence') is not (finding['l2SemanticProfile']['patternKind']=='fence'):
+        raise ValueError('L2_JOINT_FENCE_PROJECTION_CHANGED')
     from .l2_authority import l2_authority_sidecar_from_dict
     from .automatic_l2_effect import _approved_relations
     from types import SimpleNamespace

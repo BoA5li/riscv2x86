@@ -9,7 +9,8 @@ def sample_symbol(program):return '__rv2x86_joint_sample_'+program['specIdentity
 
 def harness(program,plan):
     call=program['callSignature'];params=call['parameters'];pointer=program['pointerParameter'];size=program['object']['size']
-    if size%8:raise ValueError('L3_JOINT_TYPED_OBJECT_SIZE')
+    cell=params[pointer]['pointee']['widthBits']//8
+    if cell not in (1,2,4,8) or size%cell:raise ValueError('L3_JOINT_TYPED_OBJECT_SIZE')
     name=program['functionName']
     if not re.fullmatch(r'[A-Za-z_]\w*',name):raise ValueError('L3_JOINT_FUNCTION_NAME')
     arguments=['object' if i==pointer else '('+p['cType']+')args[sample]['+str(i)+']' for i,p in enumerate(params)]
@@ -38,7 +39,7 @@ int main(int argc,char **argv){
 ''' % dict(symbol=sample_symbol(program),result=call['result']['cType'],name=name,
     parameters=','.join(p['cType'] for p in params),count=len(plan['inputs']),arity=len(params),args=args,
     argument_table=('static const uint64_t args['+str(len(plan['inputs']))+']['+str(len(params))+']={'+args+'};' if len(params)>1 else ''),
-    initial=initial,size=size,pointee=params[pointer]['pointee']['cType'],cells=size//8,arguments=','.join(arguments),plan=plan['planIdentity'])
+    initial=initial,size=size,pointee=params[pointer]['pointee']['cType'],cells=size//cell,arguments=','.join(arguments),plan=plan['planIdentity'])
 
 
 def parse_samples(text,token,program,plan):
@@ -70,6 +71,15 @@ def compare(reports,program,index):
             if any(data[i]!=before[i] for i in range(len(before)) if i not in writes):reasons.append('L3_JOINT_UNAPPROVED_OBJECT_WRITE')
         for sample,row in enumerate(rows):
             actual=[e for e in events if e['sample']==sample]
+            if member.get('fenceBasis') is not None:
+                if (len(actual)!=1 or actual[0].get('access')!='fence' or actual[0].get('completed') is not True
+                        or actual[0].get('machineMechanism',{}).get('kind')!='ordinary-rw-fence'):
+                    reasons.append('L3_JOINT_FENCE_EXECUTION_OR_MECHANISM_MISMATCH')
+                expected=[i for i,m in enumerate(program['members']) if m['spec']['access']!='none' or m.get('fenceBasis') is not None]
+                sequence=[e['region'] for e in r.get('programEvents',[]) if e['sample']==sample]
+                if sequence!=expected:reasons.append('L3_JOINT_FENCE_CONTEXT_SEQUENCE_MISMATCH')
+                stream.append({'access':'fence','ordinaryRWContract':True})
+                continue
             if len(actual)!=(0 if s['access']=='none' else 1):reasons.append('L3_JOINT_REGION_EVENT_COUNT_MISMATCH');continue
             for e in actual:
                 relative={'offset':e['address']-int(row['objectBase'],16),'size':e['size'],'access':e['access']}
@@ -81,7 +91,15 @@ def compare(reports,program,index):
     if normalized('source')!=normalized('target'):reasons.append('L3_JOINT_FUNCTION_VALUE_OR_OBJECT_MISMATCH')
     if streams['source']!=streams['target']:reasons.append('L3_JOINT_EVENT_RELATION_MISMATCH')
     reasons=sorted(set(reasons))
-    return {'status':'failed' if reasons else 'verified','reasonCodes':reasons}
+    result={'status':'failed' if reasons else 'verified','reasonCodes':reasons}
+    if member.get('fenceBasis') is not None:
+        result['synchronization']={'status':result['status'],'reasonCodes':reasons,
+            'physicalMemoryOrderMeasured':False,'concurrentAtomicityMeasured':False,
+            'subpropertyResults':{p:{'status':result['status'],'verificationMethod':method} for p,method in (
+                ('sync.compiler-contract','static-approved-contract'),
+                ('sync.fence-mechanism','actual-single-instruction-region-entry-and-completion'),
+                ('sync.ordering-contract','approved-ordering-and-same-invocation-access-sequence'))}}
+    return result
 
 
 def instrument(source,sites,program):
@@ -153,11 +171,13 @@ def parse_l2(text,token,program,plan):
             if s['access'] in {'none','read'} and before!=after:mismatch('L2_JOINT_UNAPPROVED_WRITE')
             if s['access']=='read':
                 output=next(i for i,o in enumerate([o for o in member['operands'] if o['kind']=='integer' and o['access'] in {'output','read_write'}]) if o['index']==member['memoryFacts']['valueOperandIndex'])
-                if int(post['values'][output],16)!=int.from_bytes(before[s['offset']:s['offset']+8],'little'):mismatch('L2_JOINT_LOAD_VALUE_MISMATCH')
+                facts=member['memoryFacts'];raw=int.from_bytes(before[s['offset']:s['offset']+s['width']],'little',signed=facts.get('valueProjection')=='sign_extend')
+                expected=raw & ((1<<64)-1)
+                if int(post['values'][output],16)!=expected:mismatch('L2_JOINT_LOAD_VALUE_MISMATCH')
             if s['access']=='write':
                 input_ops=[o for o in member['operands'] if o['kind']=='integer' and o['access'] in {'input','read_write'}]
                 value=next(int(pre['values'][i],16) for i,o in enumerate(input_ops) if o['index']==member['memoryFacts']['valueOperandIndex'])
-                expected=bytearray(before);expected[s['offset']:s['offset']+8]=value.to_bytes(8,'little')
+                expected=bytearray(before);expected[s['offset']:s['offset']+s['width']]=(value & ((1<<(s['width']*8))-1)).to_bytes(s['width'],'little')
                 if after!=expected:mismatch('L2_JOINT_STORE_VALUE_MISMATCH')
             previous=post['objectHex']
         if previous!=row['objectHex']:mismatch('L2_JOINT_FINAL_OBJECT_MISMATCH')

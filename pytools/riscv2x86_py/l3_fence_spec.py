@@ -12,7 +12,7 @@ LIMITS=['ordinary-coherent-memory-only','single-thread-successful-region-executi
         'outside-fragment-effects-not-compared']
 
 
-def spec(finding,functions):
+def spec(finding,functions,*,joint=False):
     from .l2_authority import l2_authority_sidecar_from_dict
     from .automatic_l2_authority import _fence_authority
     from .l2_materialization import assess_fragment_l2_materializability
@@ -38,7 +38,10 @@ def spec(finding,functions):
     matches=[x for x in functions if x.get('name')==f.get('enclosingFunction')]
     if len(matches)!=1:raise ValueError('L3_FENCE_FUNCTION_AMBIGUOUS')
     function=matches[0];scope=function.get('compilerAtomicFunctionScope') or {}
-    if (function.get('arity')!=0 or function.get('parameterTypes')!=[] or function.get('returnType')!='void'
+    from .compiler_joint_context import valid as joint_context
+    if joint:
+        if not joint_context(function):raise ValueError('L3_FENCE_JOINT_COMPILER_SCOPE_REQUIRED')
+    elif (function.get('arity')!=0 or function.get('parameterTypes')!=[] or function.get('returnType')!='void'
             or scope.get('scope')!='single_asm_no_other_memory_or_control_effects'
             or scope.get('scopeIdentity')!=identity({k:v for k,v in scope.items() if k!='scopeIdentity'})
             or scope.get('functionIdentity')!=function['functionId'] or scope.get('sourceDigest')!=function['sourceDigest']):

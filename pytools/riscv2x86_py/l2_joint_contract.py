@@ -2,7 +2,7 @@
 from copy import deepcopy
 
 CAPABILITIES = ('composite_fragment_observation', 'joint_program_observation', 'logical_operand_observation',
-                'object_relative_memory_observation', 'shell_observation')
+                'object_relative_memory_observation', 'ordering_observation', 'shell_observation')
 EXECUTION_PROFILE = 'rv64gc-user-to-x86_64-user'
 
 
@@ -14,6 +14,7 @@ def providers(config, execution_profiles=(EXECUTION_PROFILE,)):
         ('scalar', ['composite','scalar'], ['logical_operands', 'shell_semantics']),
         ('memory', ['memory_load', 'memory_store'],
          ['logical_operands', 'memory_effects', 'shell_semantics']),
+        ('fence', ['fence'], ['memory_effects','shell_semantics']),
     ):
         result.append({'providerId': 'automatic-l2-joint-' + name + '-v1',
             'supportedDimensions': dimensions, 'supportedPatterns': patterns,
@@ -63,10 +64,8 @@ def operand_contract(finding, function, sidecar):
                 or set(program.output_operand_indexes)!={o.operand_index for o in sidecar.operands if o.access_mode=='output'}
                 or any(o.access_mode not in {'input','output'} for o in sidecar.operands)):
             raise ValueError('L2_JOINT_VERSIONED_OPERAND_CONTRACT_MISMATCH')
-    if (scope.get('schemaVersion')!='riscv2x86.compiler-joint-scope.v1'
-            or scope.get('scope')!='direct-unsigned64-private-object-regions'
-            or scope.get('scopeIdentity')!=identity({k:v for k,v in scope.items() if k!='scopeIdentity'})
-            or scope['sourceDigest']!=function['sourceDigest'] or scope['functionIdentity']!=function['functionId']
+    from .compiler_joint_context import valid as valid_joint_scope
+    if (not valid_joint_scope(function)
             or sidecar.producer.producer_id!='automatic-joint-fragment-authority'):
         raise ValueError('L2_JOINT_OPERAND_SCOPE_REQUIRED')
     boundary=fragment_boundary_from_dict(a['l2FragmentOperandBoundary'],expected_fragment_id=sidecar.fragment_id)

@@ -9,8 +9,8 @@ from .compiler_memory_signature import type_fact,SCHEMA as CALL_SCHEMA
 from .l2_memory_object import memory_proof_facts_from_dict
 
 CAPABILITY='qemu-joint-private-object-regions.v1'
-LIMITS=sorted(['single-thread-private-valid-unsigned64-object-domain',
-    'direct-acyclic-register-asm-regions-only','listed-input-vectors-only',
+LIMITS=sorted(['single-thread-private-valid-integer-object-with-unsigned64-carrier-domain',
+    'direct-acyclic-proved-asm-regions-only','listed-input-vectors-only',
     'intermediate-values-observed-by-instrumented-l2-not-l3-register-callbacks',
     'physical-cache-timing-prediction-speculation-and-concurrency-not-claimed'])
 
@@ -22,11 +22,8 @@ def spec(findings,functions):
     if len(identities)!=1:raise ValueError('L3_JOINT_ONE_ENTRY_REQUIRED')
     from .l3_entry_binding import entry
     fn=entry(functions,identities.pop());scope=fn.get('compilerJointScope')
-    if (not scope or scope.get('schemaVersion')!='riscv2x86.compiler-joint-scope.v1'
-            or scope.get('scope')!='direct-unsigned64-private-object-regions'
-            or scope.get('scopeIdentity')!=compiler_identity({k:v for k,v in scope.items() if k!='scopeIdentity'})
-            or scope['sourceDigest']!=fn['sourceDigest'] or scope['functionIdentity']!=fn['functionId']
-            or len(scope['sites'])!=len(findings)):raise ValueError('L3_JOINT_COMPILER_SCOPE_REQUIRED')
+    from .compiler_joint_context import valid as valid_joint_scope
+    if not valid_joint_scope(fn) or len(scope['sites'])!=len(findings):raise ValueError('L3_JOINT_COMPILER_SCOPE_REQUIRED')
     call=fn.get('compilerMemoryCallSignature');boundary=fn['l2OperandBoundary']
     if not call or call['schemaVersion']!=CALL_SCHEMA or call['factsIdentity']!=compiler_identity({k:v for k,v in call.items() if k!='factsIdentity'}):raise ValueError('L3_JOINT_CALL_REQUIRED')
     if (call['sourceDigest']!=fn['sourceDigest'] or call['functionIdentity']!=fn['functionId']
@@ -50,20 +47,22 @@ def spec(findings,functions):
     for f,site in zip(ordered,scope['sites']):
         a=f['approvalArtifact'];fid=f['fragment']['id'];kind=f['l2SemanticProfile']['patternKind'];kinds.add(kind)
         ob=analyze(f,functions)
-        if any(p['dimension']!='access_pattern' for p in ob['requiredProperties']):raise ValueError('L3_JOINT_REQUIRED_MECHANISM_UNAVAILABLE')
+        fence=kind=='fence'
+        if any(p['dimension'] not in ({'access_pattern','synchronization'} if fence else {'access_pattern'}) for p in ob['requiredProperties']):raise ValueError('L3_JOINT_REQUIRED_MECHANISM_UNAVAILABLE')
         from .versioned_program_contract import load as versioned_boundary
         versioned = versioned_boundary(f) if kind=='composite' else None
         scalar = kind=='scalar' or versioned is not None
-        if not scalar and kind not in {'memory_load','memory_store'}:raise ValueError('L3_JOINT_SEMANTIC_FAMILY_UNSUPPORTED')
+        if not scalar and not fence and kind not in {'memory_load','memory_store'}:raise ValueError('L3_JOINT_SEMANTIC_FAMILY_UNSUPPORTED')
         key=f['fragment']['compilerFragmentAuthority']['fragmentBindingKey']
         if (key['beginOffset'],key['endOffset'])!=(site['begin'],site['end']):raise ValueError('L3_JOINT_SITE_BINDING_MISMATCH')
         if f.get('sourceDigest')!=fn['sourceDigest']:raise ValueError('L3_JOINT_SOURCE_CHANGED')
         side=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar']);producer=side.producer.producer_binary_digest
-        rebuilt=(_scalar_authority if scalar else _memory_authority)(deepcopy(f),functions,producer)
+        from .automatic_l2_authority import _fence_authority
+        rebuilt=(_fence_authority if fence else _scalar_authority if scalar else _memory_authority)(deepcopy(f),functions,producer)
         if rebuilt is None or rebuilt.to_dict()!=side.to_dict():raise ValueError('L3_JOINT_AUTHORITY_REPLAY_MISMATCH')
         require_json_match(boundaries[fid].to_dict(),a['l2FragmentOperandBoundary'],'L3_JOINT_BOUNDARY_CHANGED')
         require_json_match(graph.to_dict(),a['l2FragmentDependencyGraph'],'L3_JOINT_GRAPH_CHANGED')
-        if side.runtime_contracts or side.ignored_state or side.ordering or side.control_flow:raise ValueError('L3_JOINT_UNCOVERED_STATE')
+        if side.runtime_contracts or side.ignored_state or (side.ordering and not fence) or side.control_flow:raise ValueError('L3_JOINT_UNCOVERED_STATE')
         if len(side.operands)!=len(f['fragment']['outputs'])+len(f['fragment']['inputs']):raise ValueError('L3_JOINT_OPERAND_ARITY_MISMATCH')
         operands=[]
         for index,(operand,gnu) in enumerate(zip(side.operands,f['fragment']['outputs']+f['fragment']['inputs'])):
@@ -79,27 +78,34 @@ def spec(findings,functions):
             if operand.access_mode in {'input','address','read_write'} and operand.declaration_id not in defined:raise ValueError('L3_JOINT_UNINITIALIZED_INPUT')
         # All inputs are checked before any output becomes defined.
         defined.update(o['declarationIdentity'] for o in operands if o['access'] in {'output','read_write'})
-        if scalar:
+        if fence:
+            from .l3_fence_spec import spec as fence_spec
+            fence_basis=fence_spec(f,functions,joint=True)
+            access={'access':'none','offset':0,'width':0,'fragmentId':fid,'fence':True}
+        elif scalar:
             from .l2_joint_contract import operand_contract
             require_json_match(operand_contract(f,fn,side),a['l2JointOperandObservationContract'],'L3_JOINT_OPERAND_CONTRACT_CHANGED')
             access=scalar_spec(f,joint_versioned=True)
         else:
             access=memory_spec(f,joint_region=True);facts=memory_proof_facts_from_dict(a['l2MemoryProofFacts'])
-            if facts.width_bytes!=8 or facts.carrier_width_bits not in (0,64) or facts.value_projection not in ('','identity'):raise ValueError('L3_JOINT_MEMORY64_REQUIRED')
+            if not facts.matches_value_width(64):raise ValueError('L3_JOINT_MEMORY_CARRIER_PROOF_REQUIRED')
             address=next(o for o in side.operands if o.operand_index==facts.address_operand_index)
             if address.declaration_id!=pointer_decl:raise ValueError('L3_JOINT_OBJECT_POINTER_MISMATCH')
             objects.append(access)
         members.append({'fragmentId':fid,'kind':kind,'spec':access,'site':site,'operands':operands,
             'proofIdentity':a['proofIdentity'],'relationIdentity':side.effect_relation_set_identity,'authorityIdentity':side.authority_identity,
-            'memoryFacts':a.get('l2MemoryProofFacts') if not scalar else None,
+            'memoryFacts':a.get('l2MemoryProofFacts') if not scalar and not fence else None,
+            **({'fenceBasis':fence_basis} if fence else {}),
             **({'versionedProgramBoundary':a['l2VersionedProgramBoundary']} if versioned is not None else {})})
     if not {'memory_load','memory_store'}<=kinds:raise ValueError('L3_JOINT_READ_WRITE_PROGRAM_REQUIRED')
     if len({(o['objectId'],o['size'],o['alignment']) for o in objects})!=1:raise ValueError('L3_JOINT_SINGLE_PRIVATE_OBJECT_REQUIRED')
     returned=boundary.get('returnDeclarationId')
     if returned not in defined or returned==pointer_decl:raise ValueError('L3_JOINT_RETURN_BINDING_REQUIRED')
+    from .joint_object_access_graph import build as object_graph
+    access_graph=object_graph(members)
     body={'schemaVersion':'riscv2x86.joint-program-spec.v1','programId':program_id,
         'functionName':fn['name'],'functionIdentity':fn['functionId'],'sourceDigest':fn['sourceDigest'],
-        'scope':scope,'callSignature':call,'members':members,'pointerParameter':pointer,'returnDeclarationIdentity':returned,
+        'scope':scope,'callSignature':call,'members':members,'objectAccessGraph':access_graph,'pointerParameter':pointer,'returnDeclarationIdentity':returned,
         'object':{k:objects[0][k] for k in ('objectId','size','alignment')},
         'dependencyGraphIdentity':graph.graph_identity,'executionAuthorityIdentity':identity(execution.to_dict())}
     require_json_document(body,'L3_JOINT_JSON_INVALID')

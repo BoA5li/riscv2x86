@@ -110,6 +110,9 @@ def build_side(path,side,program,function,backend,artifact,work,clang,count):
         a=elf.symbol('__rv2x86_r'+str(i)+'_begin');b=elf.symbol('__rv2x86_r'+str(i)+'_end')
         if a[2]!=section or b[2]!=section or not start<=a[0]<b[0]<start+size or regions and a[0]<regions[-1]['end']:raise ValueError('L3_JOINT_BINARY_REGIONS_INVALID')
         regions.append({'start':a[0],'end':b[0]})
+        if program['members'][i].get('fenceBasis') is not None:
+            from .l3_fence_machine import region_mechanism
+            regions[-1]['fenceMechanism']=region_mechanism(elf,regions[-1])
     return {'semanticArtifact':{'artifactId':artifact.artifact_id,'artifactPath':str(Path(artifact.artifact_path).resolve()),'artifactDigest':artifact.artifact_digest,'buildIdentity':artifact.build_identity},
         'executionArtifact':{'artifactPath':str(binary),'artifactDigest':digest(binary)},'regions':regions,'compilerSites':scope,
         'files':{str(p):digest(p) for p in (c,asm,marked,obj,h,binary,Path(artifact.artifact_path),*work.glob('*.command.json'))}}
@@ -140,7 +143,8 @@ def validate(value,backend,source,target):
             a=value['sides'][side];b=fresh['sides'][side]
             for p,sha in a['files'].items():
                 if digest(p)!=sha:raise ValueError('L3_JOINT_DEPLOYMENT_FILE_CHANGED:'+p)
-            if (a['semanticArtifact']!=b['semanticArtifact'] or a['regions']!=b['regions'] or a['compilerSites']!=b['compilerSites']
-                    or digest(a['executionArtifact']['artifactPath'])!=a['executionArtifact']['artifactDigest']
+            require_json_match({k:a[k] for k in ('semanticArtifact','regions','compilerSites')},
+                {k:b[k] for k in ('semanticArtifact','regions','compilerSites')},'L3_JOINT_INDEPENDENT_REGION_REPLAY_MISMATCH')
+            if (digest(a['executionArtifact']['artifactPath'])!=a['executionArtifact']['artifactDigest']
                     or Elf(a['executionArtifact']['artifactPath']).execution_image()!=Elf(b['executionArtifact']['artifactPath']).execution_image()):raise ValueError('L3_JOINT_INDEPENDENT_REBUILD_MISMATCH')
     return value

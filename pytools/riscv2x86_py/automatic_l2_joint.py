@@ -64,6 +64,7 @@ def build_validator(config):
             reason='' if status is ValidationStatus.VERIFIED else 'L2_JOINT_OPERAND_OR_OBJECT_MISMATCH'
             observation={'schemaVersion':'riscv2x86.l2-joint-observation.v1','mode':'joint-program-functions',
                 'fragmentId':artifact.fragment_id,'programSpec':program,'samplePlan':plan,'approvedRelationAuthority':authority,
+                'jointFence':finding['l2SemanticProfile']['patternKind']=='fence',
                 'harnessDigest':digest(h),'rawOutputs':raw_outputs,
                 'inputs':{'source':str(source.resolve()),'target':str(target.resolve()),'report':str(report.resolve())},
                 'inputDigests':{str(p.resolve()):digest(p) for p in (source,target,report)},
