@@ -1,8 +1,8 @@
 """Successful replay reuse inside one evaluation or independent joint audit.
 
-Every registered computation runs afresh on entry and again, without ANY
-operation reuse, before a successful operation returns. Member checks and file
-checks remain at their original sites. Nothing is persisted as cached trust.
+Every registered computation is checked on first use and before successful
+return. Closing has a fresh dependency epoch and cannot consume initial trust.
+Member and file checks remain at their original sites. No cached trust persists.
 Set RV2X86_JOINT_OPERATION_REUSE=0 for a same-code, same-domain full-work control.
 """
 from contextvars import ContextVar
@@ -15,6 +15,7 @@ from .l3_trace_support import require_json_document,require_json_match
 from .validation_timing import timed
 
 _active=ContextVar('rv2x86_joint_validation_operation',default=None)
+_leaf_epoch=ContextVar('rv2x86_joint_validation_leaf_epoch',default=None)
 
 
 def current():
@@ -26,7 +27,7 @@ def current():
 class JointValidationOperation:
     def __init__(self,name):
         self.name=name;self.pid=os.getpid();self.thread=threading.get_ident()
-        self.entries={};self.closed=False;self.entered=False
+        self.entries={};self.leaves={};self.closed=False;self.entered=False
 
     def __enter__(self):
         if self.entered:raise ValueError('JOINT_OPERATION_ALREADY_ENTERED')
@@ -34,6 +35,10 @@ class JointValidationOperation:
         if mode not in {'0','1'}:raise ValueError('JOINT_OPERATION_REUSE_MODE_INVALID')
         self.entered=True
         self.token=_active.set(self if mode=='1' else None)
+        from .joint_performance import enabled
+        try:self.leaf_token=_leaf_epoch.set((self,{}) if mode=='1' and enabled() else None)
+        except Exception:
+            _active.reset(self.token);raise
         return self
 
     def check(self,computation,value):
@@ -52,18 +57,26 @@ class JointValidationOperation:
         # A closing checker must not consume the initial cache or an outer
         # production operation's entries. Nested independent audits stay fresh.
         token=_active.set(None)
+        from .joint_performance import enabled
+        leaf_token=_leaf_epoch.set((self,{}) if enabled() else None)
         try:
             for computation,value,expected in self.entries.values():
                 actual=computation(deepcopy(value))
                 require_json_match(expected,actual,'JOINT_OPERATION_CLOSING_REPLAY_CHANGED')
-        finally:_active.reset(token)
+            # Each initial leaf is checked in the fresh closing epoch even if
+            # no root happens to request it on that traversal. No initial hit.
+            for computation,value,expected in self.leaves.values():
+                actual=leaf_checked(computation,deepcopy(value))
+                require_json_match(expected,actual,'JOINT_OPERATION_LEAF_REPLAY_CHANGED')
+        finally:
+            _leaf_epoch.reset(leaf_token);_active.reset(token)
 
     def __exit__(self,kind,value,traceback):
         self.closed=True
         try:
             if kind is None:self.close()
         finally:
-            self.entries.clear();_active.reset(self.token)
+            self.entries.clear();self.leaves.clear();_leaf_epoch.reset(self.leaf_token);_active.reset(self.token)
 
 
 def operation(name):
@@ -92,3 +105,28 @@ def watch_files(files):
     # Immediate checks remain at EVERY ingress, including after a cache hit.
     _check_files(files)
     if current() is not None:checked(_check_files,files)
+
+
+def leaf_checked(computation,value):
+    """Validated dependency result shared only within one initial/final epoch.
+
+    Root checks still execute on closing; only identical dependency nodes in
+    THAT fresh traversal share work. Outside an operation no reuse is possible.
+    """
+    epoch=_leaf_epoch.get()
+    if epoch is None:return computation(value)
+    owner,memo=epoch
+    if owner.pid!=os.getpid() or owner.thread!=threading.get_ident():return computation(value)
+    require_json_document(value,'JOINT_OPERATION_LEAF_INPUT_NOT_JSON')
+    key=(computation,json.dumps(value,sort_keys=True,separators=(',',':')))
+    if key not in memo:
+        original=deepcopy(value);result=computation(deepcopy(original))
+        require_json_document(result,'JOINT_OPERATION_LEAF_RESULT_NOT_JSON')
+        memo[key]=(computation,original,deepcopy(result))
+        if not owner.closed:owner.leaves[key]=memo[key]
+    return deepcopy(memo[key][2])
+
+
+def leaf_epoch_active():
+    epoch=_leaf_epoch.get()
+    return epoch is not None and epoch[0].pid==os.getpid() and epoch[0].thread==threading.get_ident()

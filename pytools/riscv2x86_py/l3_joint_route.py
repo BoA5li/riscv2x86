@@ -32,6 +32,14 @@ def replay_group(group,source,target,*,_context=None):
     require_json_document(group,'L3_JOINT_CAPTURE_JSON_INVALID')
     if (group.get('schemaVersion')!='riscv2x86.joint-region-capture.v1' or group['groupIdentity']!=identity({k:v for k,v in group.items() if k!='groupIdentity'})
             or digest(group['backendPath'])!=group['backendDigest']):raise ValueError('L3_JOINT_CAPTURE_GROUP_CHANGED')
+    from .joint_performance import enabled
+    if enabled():
+        # Integrity rejection is not semantic approval. Do not rebuild tools or
+        # deployments when an already-bound raw record is visibly damaged.
+        for side in ('source','target'):
+            e=group['reports'][side]['evidence'];path=Path(e['rawTracePath'])
+            if digest(path)!=e['rawTraceDigest'] or digest(path.with_name('execute.command.json'))!=e['commandRecordDigest']:
+                raise ValueError('L3_JOINT_RAW_EXECUTION_CHANGED')
     b=checked(_context,backend_validate,group['backendPath']);d=replay_deployment(group['deployment'],b,source,target)
     from .l3_intent_requirements import classify_l3_requirements
     expected=classify_l3_requirements(json.loads(Path(d['inputs']['report']).read_text())).requirements

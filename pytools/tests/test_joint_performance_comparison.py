@@ -35,3 +35,15 @@ def test_workload_and_observable_output_changes_remain_visible(mutation):
     if mutation=='missing-event':report['events']=[]
     if mutation=='extra-sample':report['samples'].append(deepcopy(report['samples'][0]))
     with pytest.raises(ValueError):require_json_match(module.workload(first),module.workload(second),'changed')
+
+
+@pytest.mark.parametrize('scope,mode,operation,v2',[
+    ('phase134','0','1','0'),('phase134','1','1','1'),
+    ('phase133','0','0','0'),('phase133','1','1','0')])
+def test_comparison_environment_is_an_incremental_same_code_control(scope,mode,operation,v2):
+    original={'RV2X86_JOINT_OPERATION_REUSE':'unexpected','RV2X86_JOINT_PERFORMANCE_V2':'unexpected'}
+    env=module.comparison_environment(original,scope,mode,'/tmp/timing')
+    assert env['RV2X86_JOINT_OPERATION_REUSE']==operation
+    assert env['RV2X86_JOINT_PERFORMANCE_V2']==v2
+    assert env['RV2X86_VALIDATION_TIMING']=='/tmp/timing'
+    assert original['RV2X86_JOINT_OPERATION_REUSE']=='unexpected'

@@ -8,7 +8,8 @@ from .l3_joint_spec import sample_plan
 from .l3_joint_observation import harness
 from .validation_timing import timed
 
-SCHEMA='riscv2x86.joint-program-deployment.v1'
+SCHEMA='riscv2x86.joint-program-deployment.v2'
+LEGACY_SCHEMA='riscv2x86.joint-program-deployment.v1'
 
 
 from .l3_trace_support import require_json_document,require_json_match
@@ -85,7 +86,7 @@ def flags(side):return ['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=
 
 
 @timed('joint.build-side')
-def build_side(path,side,program,function,backend,artifact,work,clang,count):
+def build_side(path,side,program,function,backend,artifact,work,clang,count,generator=None):
     from .automatic_batch_cli import inspect_entry_points
     work.mkdir(parents=True);data=Path(path).read_bytes()
     if side=='source':scope=program['scope']
@@ -100,7 +101,7 @@ def build_side(path,side,program,function,backend,artifact,work,clang,count):
     run([cc,*flags(side),'-c',marked,'-o',obj],work,'assemble')
     original=Elf(artifact.artifact_path);name=function['name']
     if digest(artifact.artifact_path)!=artifact.artifact_digest or original.machine!=(243 if side=='source' else 62) or Elf(obj).code(name)!=original.code(name):raise ValueError('L3_JOINT_INSTRUMENTATION_CHANGED_FUNCTION:'+side)
-    h.write_text(harness(program,sample_plan(program,count)))
+    h.write_text(harness(program,sample_plan(program,count),generator=generator))
     run([cc,*flags(side),'-no-pie',h,obj,'-Wl,--build-id=none',*(['-Wl,--no-relax'] if side=='source' else []),'-o',binary],work,'link')
     elf=Elf(binary);start,size,section,_=elf.symbol(name);regions=[]
     if elf.type!=2 or elf.machine!=original.machine or elf.code(name)!=original.code(name):raise ValueError('L3_JOINT_LINK_CHANGED_FUNCTION:'+side)
@@ -116,12 +117,14 @@ def build_side(path,side,program,function,backend,artifact,work,clang,count):
         'files':{str(p):digest(p) for p in (c,asm,marked,obj,h,binary,Path(artifact.artifact_path),*work.glob('*.command.json'))}}
 
 
-def prepare(source,target,report,backend,source_artifact,target_artifact,work,clang,count):
+def prepare(source,target,report,backend,source_artifact,target_artifact,work,clang,count,*,_harness_generator=None):
     source,target,report=map(lambda p:Path(p).resolve(),(source,target,report));program,function=bound(source,target,report,clang);work=Path(work).resolve();work.mkdir(parents=True,exist_ok=False)
-    body={'schemaVersion':SCHEMA,'spec':program,'samplePlan':sample_plan(program,count),
+    from .l3_joint_harness_contract import selected,require
+    generator=require(program,selected(program) if _harness_generator is None else _harness_generator)
+    body={'schemaVersion':SCHEMA,'harnessGenerator':generator,'spec':program,'samplePlan':sample_plan(program,count),
         'backendIdentity':backend['backendIdentity'],'clang':clang,'clangDigest':digest(clang),
         'inputs':{'source':str(source),'target':str(target),'report':str(report)},'inputDigests':{str(p):digest(p) for p in (source,target,report)},
-        'sides':{s:build_side(p,s,program,function,backend,a,work/s,clang,count) for s,p,a in (('source',source,source_artifact),('target',target,target_artifact))},
+        'sides':{s:build_side(p,s,program,function,backend,a,work/s,clang,count,generator) for s,p,a in (('source',source,source_artifact),('target',target,target_artifact))},
         'physicalMicroarchitectureClaimed':False,'executionUnit':'whole-function-all-ordered-regions'}
     require_json_document(body,'L3_JOINT_DEPLOYMENT_JSON_INVALID')
     value=dict(body,deploymentIdentity=identity(body));save(work/'deployment.json',value);return value
@@ -130,12 +133,14 @@ def prepare(source,target,report,backend,source_artifact,target_artifact,work,cl
 @timed('joint.deployment-independent-rebuild')
 def validate(value,backend,source,target):
     require_json_document(value,'L3_JOINT_DEPLOYMENT_JSON_INVALID')
-    if value.get('schemaVersion')!=SCHEMA or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['physicalMicroarchitectureClaimed'] is not False or value['executionUnit']!='whole-function-all-ordered-regions':raise ValueError('L3_JOINT_DEPLOYMENT_INVALID')
+    if value.get('schemaVersion') not in {SCHEMA,LEGACY_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['physicalMicroarchitectureClaimed'] is not False or value['executionUnit']!='whole-function-all-ordered-regions':raise ValueError('L3_JOINT_DEPLOYMENT_INVALID')
+    from .l3_joint_harness_contract import require,legacy
+    generator=require(value['spec'],value['harnessGenerator'] if value['schemaVersion']==SCHEMA else legacy(value['spec']))
     for p,sha in value['inputDigests'].items():
         if digest(p)!=sha:raise ValueError('L3_JOINT_INPUT_CHANGED')
     if digest(value['clang'])!=value['clangDigest']:raise ValueError('L3_JOINT_AST_COMPILER_CHANGED')
     with tempfile.TemporaryDirectory(prefix='rv2x86-program-replay-') as temp:
-        fresh=prepare(**{k:value['inputs'][k] for k in ('source','target','report')},backend=backend,source_artifact=source,target_artifact=target,work=Path(temp)/'deployment',clang=value['clang'],count=len(value['samplePlan']['inputs']))
+        fresh=prepare(**{k:value['inputs'][k] for k in ('source','target','report')},backend=backend,source_artifact=source,target_artifact=target,work=Path(temp)/'deployment',clang=value['clang'],count=len(value['samplePlan']['inputs']),_harness_generator=generator)
         require_json_match({'spec':fresh['spec'],'samplePlan':fresh['samplePlan']},
             {'spec':value['spec'],'samplePlan':value['samplePlan']},'L3_JOINT_FACT_REPLAY_MISMATCH')
         for side in ('source','target'):

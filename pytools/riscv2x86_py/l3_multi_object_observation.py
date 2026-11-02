@@ -42,7 +42,7 @@ def sample_plan(program,count):
     return dict(body,planIdentity=identity(body))
 
 
-def harness(program,plan,*,include_addresses=True):
+def _expanded_harness(program,plan,*,include_addresses=True):
     from .l3_joint_observation import sample_symbol
     name=program['functionName'];call=program['callSignature'];views=program['objectLayout']['views']
     if not re.fullmatch(r'[A-Za-z_]\w*',name):raise ValueError('L3_MULTI_FUNCTION_NAME')
@@ -230,3 +230,11 @@ def compare(reports,program,index):
                 ('sync.fence-mechanism','actual-single-instruction-region-entry-and-completion'),
                 ('sync.ordering-contract','approved-ordering-and-same-invocation-access-sequence'))}}
     return result
+
+
+def harness(program,plan,*,include_addresses=True,generator=None):
+    from .l3_joint_harness_contract import selected,require,EXPANDED
+    generator=require(program,selected(program) if generator is None else generator)
+    if generator==EXPANDED:return _expanded_harness(program,plan,include_addresses=include_addresses)
+    from .l3_joint_table_harness import generate
+    return generate(program,plan,include_addresses=include_addresses)

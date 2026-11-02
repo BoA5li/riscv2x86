@@ -124,6 +124,20 @@ def produce_intents(source, report, manifest_path, *, replay=False):
     archive = load_translation_attempt_archive(str(report) + '.attempts.json')
     artifacts = artifacts_from_report(report, archive)
     items = []
+    # Batch only the complete compiler-confirmed joint route. Partial reports
+    # and all other producers keep the existing per-finding ingress behavior.
+    from .joint_performance import enabled
+    bindings=None
+    if enabled() and len(data['findings'])>1 and all(
+            f"finding:{i}:{(f.get('fragment') or {}).get('id','')}" in artifacts for i,f in enumerate(data['findings'])):
+        candidate_path=report.with_name('compiler-candidates.json')
+        snapshot=json.loads(candidate_path.read_text())
+        from .compiler_joint_context import valid
+        functions=snapshot.get('functions') if isinstance(snapshot,dict) else None
+        if isinstance(functions,list) and all(isinstance(fn,dict) for fn in functions) and any(valid(fn) for fn in functions):
+            from .mechanism_route_checks import compiler_bound_findings
+            bound_findings,batch_snapshot=compiler_bound_findings(source,report)
+            bindings={f['fragment']['id']:(f,batch_snapshot) for f in bound_findings}
     prerequisite_refusals = []
     for index, finding in enumerate(data['findings']):
         fragment = finding.get('fragment') or {}
@@ -133,7 +147,7 @@ def produce_intents(source, report, manifest_path, *, replay=False):
         artifact = artifacts.get(f'finding:{index}:{fid}')
         if artifact is None:
             continue  # No translation candidate is not authority to infer intent=none.
-        bound, snapshot = compiler_bound_finding(source, report, fid)
+        bound, snapshot = bindings[fid] if bindings is not None else compiler_bound_finding(source, report, fid)
         bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
         finding.pop('l3IntentProfile', None)
         finding.pop('l3IntentReceipt', None)
@@ -258,8 +272,12 @@ def produce_intents(source, report, manifest_path, *, replay=False):
             'producerManifestPath': str(manifest_path), 'producerManifestDigest': digest(manifest_path),
             'trustPolicy': TRUST}
         finding['l3IntentReceipt'] = dict(receipt, receiptIdentity=_hash(receipt))
+    if bindings is not None:
+        bound_findings,_=compiler_bound_findings(source,report)
+        bindings={f['fragment']['id']:f for f in bound_findings}
     for item in items:
-        bound, _ = compiler_bound_finding(source, report, item['finding']['fragment']['id'])
+        fid=item['finding']['fragment']['id']
+        bound = bindings[fid] if bindings is not None else compiler_bound_finding(source,report,fid)[0]
         consumed = {k: v for k, v in item['finding'].items()
                     if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
         bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}

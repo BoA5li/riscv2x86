@@ -41,7 +41,7 @@ def _rebuild_program(value):
     if len(scopes)!=1:raise ValueError('L2_JOINT_TARGET_SCOPE_REQUIRED')
     images={}
     with tempfile.TemporaryDirectory(prefix='rv2x86-l2-joint-replay-') as temp:
-        work=Path(temp);h=work/'harness.c';h.write_text(harness(program,plan))
+        work=Path(temp);h=work/'harness.c';h.write_text(harness(program,plan,generator=value['harnessGenerator']))
         if digest(h)!=value['harnessDigest']:raise ValueError('L2_JOINT_HARNESS_CHANGED')
         for side,path,scope in (('source',source,program['scope']),('target',target,scopes[0])):
             c=work/(side+'.c');c.write_bytes(instrument(path.read_bytes(),scope['sites'],program));fresh=work/side
@@ -53,10 +53,13 @@ def _rebuild_program(value):
 @timed('joint.l2-independent-replay')
 def replay(value):
     require_json_document(value,'L2_JOINT_JSON_INVALID')
-    if value.get('schemaVersion')!='riscv2x86.l2-joint-observation.v1':raise ValueError('L2_JOINT_OBSERVATION_SCHEMA_REQUIRED')
+    if value.get('schemaVersion') not in {'riscv2x86.l2-joint-observation.v1','riscv2x86.l2-joint-observation.v2'}:raise ValueError('L2_JOINT_OBSERVATION_SCHEMA_REQUIRED')
+    from .l3_joint_harness_contract import require,legacy
+    generator=require(value['programSpec'],value['harnessGenerator'] if value['schemaVersion'].endswith('.v2') else legacy(value['programSpec']))
     _file_checks(value)
     common={k:value[k] for k in ('inputs','inputDigests','toolDigests','tools','clang','clangDigest',
         'programSpec','samplePlan','harnessDigest')}
+    common['harnessGenerator']=generator
     fresh=checked(_rebuild_program,common)
     program,fn=fresh['program'],fresh['function'];plan=value['samplePlan']
     paths=value['inputs'];source,target,report=(Path(paths[k]) for k in ('source','target','report'))
@@ -76,7 +79,7 @@ def replay(value):
     commands={}
     for path in value['files']:
         if path.endswith('.command.json'):commands[Path(path).name]=json.loads(Path(path).read_text())
-    errors=[];observations={};wrapper=harness(program,plan).encode()
+    errors=[];observations={};wrapper=harness(program,plan,generator=generator).encode()
     # Each member retains its own binary, commands, raw output parsing and
     # authority checks. Only the common independent build image is reused.
     for side,path,scope in (('source',source,program['scope']),('target',target,fresh['targetScope'])):

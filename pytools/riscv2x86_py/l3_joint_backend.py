@@ -17,7 +17,8 @@ TOOLS=('sourceExecutor','targetExecutor','sourceCompiler','targetCompiler','sour
 @timed('joint.base-backend-validation')
 def checked_base(value,context):
     # Preserve the original validator/cache key and all provenance checks.
-    return checked(context,validate_backend,value)
+    from .l3_base_validation import validate as full_base
+    return checked(context,full_base,value)
 
 
 def parse_capture(text,token,side,regions,calls):
@@ -130,7 +131,13 @@ def check_calibration(b,r):
 
 @timed('joint.backend-validation')
 def validate(value,*,uncalibrated=False,_context=None):
-    from .joint_validation_operation import checked as operation_checked,current
+    from .joint_validation_operation import checked as operation_checked,current,leaf_checked,leaf_epoch_active
+    if not uncalibrated and leaf_epoch_active():
+        # The enclosing initial/final epoch owns BOTH root and base closure.
+        # No nested session may turn its initial result into lasting approval.
+        request=({'path':str(Path(value).resolve()),'digest':digest(value)}
+            if isinstance(value,(str,Path)) else {'document':value})
+        return leaf_checked(_operation_backend,request)
     if not uncalibrated and _context is None and current() is not None:
         if isinstance(value,(str,Path)):
             # Bind both path and current bytes; replacements get a new check,

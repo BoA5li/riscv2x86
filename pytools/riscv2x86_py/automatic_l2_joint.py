@@ -47,7 +47,9 @@ def build_validator(config):
             work=Path(config['workDirectory']);work.mkdir(parents=True,exist_ok=True)
             tools={n:shutil.which(n) for n in ('riscv64-linux-gnu-gcc','gcc',config['qemuBinary'])}
             if not all(tools.values()):raise ValueError('L2_JOINT_TOOLS_UNAVAILABLE')
-            wrapper=harness(program,plan);h=work/'harness.c';h.write_text(wrapper);observations={};semantic_errors=[];raw_outputs={};stage='execution'
+            from .l3_joint_harness_contract import selected
+            generator=selected(program)
+            wrapper=harness(program,plan,generator=generator);h=work/'harness.c';h.write_text(wrapper);observations={};semantic_errors=[];raw_outputs={};stage='execution'
             for side,path,scope in (('source',source,program['scope']),('target',target,targets[0]['compilerJointScope'])):
                 c=work/(side+'.c');c.write_bytes(instrument(path.read_bytes(),scope['sites'],program));binary=work/side
                 cc=tools['riscv64-linux-gnu-gcc' if side=='source' else 'gcc']
@@ -64,7 +66,7 @@ def build_validator(config):
                     observations[side]=exc.observation;semantic_errors.append(side+':'+str(exc))
             status=ValidationStatus.VERIFIED if not semantic_errors and observations['source']==observations['target'] else ValidationStatus.FAILED
             reason='' if status is ValidationStatus.VERIFIED else 'L2_JOINT_OPERAND_OR_OBJECT_MISMATCH'
-            observation={'schemaVersion':'riscv2x86.l2-joint-observation.v1','mode':'joint-program-functions',
+            observation={'schemaVersion':'riscv2x86.l2-joint-observation.v2','harnessGenerator':generator,'mode':'joint-program-functions',
                 'fragmentId':artifact.fragment_id,'programSpec':program,'samplePlan':plan,'approvedRelationAuthority':authority,
                 'jointFence':finding['l2SemanticProfile']['patternKind']=='fence',
                 'harnessDigest':digest(h),'rawOutputs':raw_outputs,

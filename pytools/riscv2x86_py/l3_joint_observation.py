@@ -7,10 +7,13 @@ from .l3_trace_support import require_json_document
 def sample_symbol(program):return '__rv2x86_joint_sample_'+program['specIdentity'].split(':')[1][:16]
 
 
-def harness(program,plan):
+def harness(program,plan,*,generator=None):
     if 'objectLayout' in program:
         from .l3_multi_object_observation import harness as multi
-        return multi(program,plan)
+        return multi(program,plan,generator=generator)
+    if generator is not None:
+        from .l3_joint_harness_contract import require
+        require(program,generator)
     call=program['callSignature'];params=call['parameters'];pointer=program['pointerParameter'];size=program['object']['size']
     cell=params[pointer]['pointee']['widthBits']//8
     if cell not in (1,2,4,8) or size%cell:raise ValueError('L3_JOINT_TYPED_OBJECT_SIZE')

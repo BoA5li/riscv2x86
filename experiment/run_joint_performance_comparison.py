@@ -73,10 +73,19 @@ def audited_workload(run):
     return reports[0],workload(json.loads(Path(next(iter(groups))).read_text()))
 
 
+
+def comparison_environment(parent,scope,mode,timing):
+    if scope not in {'phase133','phase134'} or mode not in {'0','1'}:raise ValueError('BENCHMARK_COMPARISON_MODE_INVALID')
+    return dict(parent,RV2X86_JOINT_OPERATION_REUSE=('1' if scope=='phase134' else mode),
+        RV2X86_JOINT_PERFORMANCE_V2=(mode if scope=='phase134' else '0'),
+        RV2X86_VALIDATION_TIMING=str(timing))
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for flag in ('input','frontend','backend','output'):p.add_argument('--'+flag)
     p.add_argument('--repeats',type=int,default=1)
+    p.add_argument('--comparison-scope',choices=('phase133','phase134'),default='phase134',
+        help='phase134 compares with Phase133 operation reuse enabled in BOTH modes; phase133 measures the earlier reuse change')
     p.add_argument('--wall-timeout-seconds',type=int,default=7200)
     p.add_argument('--timeout-seconds',type=int,default=240)
     p.add_argument('--l3-producer-timeout-seconds',type=int,default=600)
@@ -92,20 +101,21 @@ def main():
     paths={key:str(Path(getattr(a,key)).resolve()) for key in ('input','frontend','backend')}
     original={path:digest(path) for path in paths.values()};repo=Path(__file__).resolve().parents[1]
     head=subprocess.run(['git','rev-parse','HEAD'],cwd=repo,capture_output=True,text=True,check=False).stdout.strip()
-    summary={'schemaVersion':'riscv2x86.joint-performance-comparison.v1','head':head,'inputDigests':original,
+    summary={'schemaVersion':'riscv2x86.joint-performance-comparison.v2','comparisonScope':a.comparison_scope,'head':head,'inputDigests':original,
         'runs':[],'complete':False,'semanticApproval':False,'note':'Wall times include production/audits. Timing never grants acceptance.'}
     reference=None
     try:
         for repeat in range(a.repeats):
             # Alternate order to reduce fixed cold-cache/order bias.
             for mode in (('0','1') if repeat%2==0 else ('1','0')):
-                root=out/('repeat-'+str(repeat)+'-reuse-'+mode);root.mkdir()
-                env=dict(os.environ,RV2X86_JOINT_OPERATION_REUSE=mode,RV2X86_VALIDATION_TIMING=str(root/'production-timing.jsonl'))
+                root=out/('repeat-'+str(repeat)+'-mode-'+mode);root.mkdir()
+                env=comparison_environment(os.environ,a.comparison_scope,mode,root/'production-timing.jsonl')
                 if any(digest(path)!=sha for path,sha in original.items()):raise ValueError('BENCHMARK_INPUT_CHANGED')
                 command=[sys.executable,str(repo/'experiment/run_l3_joint_trace.py'),'--input',paths['input'],
                     '--frontend',paths['frontend'],'--backend',paths['backend'],'--output',str(root/'production'),
                     '--timeout-seconds',str(a.timeout_seconds),'--l3-producer-timeout-seconds',str(a.l3_producer_timeout_seconds)]
-                row={'repeat':repeat,'reuse':mode,'directory':str(root)};summary['runs'].append(row)
+                row={'repeat':repeat,'mode':mode,'operationReuse':env['RV2X86_JOINT_OPERATION_REUSE'],
+                    'performanceV2':env['RV2X86_JOINT_PERFORMANCE_V2'],'directory':str(root)};summary['runs'].append(row)
                 row['production']=measurement(command,root,env,a.wall_timeout_seconds)
                 if row['production']['returnCode']!=0:raise ValueError('BENCHMARK_PRODUCTION_FAILED:'+str(root))
                 report,actual=audited_workload(root/'production')
@@ -121,8 +131,8 @@ def main():
                 print(json.dumps(row,ensure_ascii=False),flush=True)
         summary['complete']=True;summary['medians']={}
         for key in ('production','standaloneAudit'):
-            times={mode:statistics.median(r[key]['wallSeconds'] for r in summary['runs'] if r['reuse']==mode) for mode in ('0','1')}
-            summary['medians'][key]={'fullWorkSeconds':times['0'],'reuseSeconds':times['1'],'speedup':times['0']/times['1']}
+            times={mode:statistics.median(r[key]['wallSeconds'] for r in summary['runs'] if r['mode']==mode) for mode in ('0','1')}
+            summary['medians'][key]={'baselineSeconds':times['0'],'optimizedSeconds':times['1'],'speedup':times['0']/times['1']}
     except (OSError,ValueError,KeyError,TypeError) as exc:
         summary['error']=type(exc).__name__+': '+str(exc);print(summary['error'],file=sys.stderr)
     finally:(out/'comparison.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2))
