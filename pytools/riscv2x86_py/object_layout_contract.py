@@ -4,7 +4,7 @@ Different parameter identities never imply disjointness. Each invocation states
 its actual allocation layout. Shared views are generated only for identical
 unqualified integer pointee types; no incompatible effective-type alias is made.
 """
-from itertools import combinations
+from itertools import combinations,product
 from .l3_trace_support import identity,require_json_match
 from .compiler_memory_signature import type_fact
 
@@ -35,11 +35,12 @@ def build(function):
             'bindingIdentity':binding['bindingIdentity']})
     if not views or len({v['objectId'] for v in views})!=len(views):raise ValueError('OBJECT_LAYOUT_VIEWS_INVALID')
     layouts=[]
-    def layout(pair=None,offset=0):
+    def layout(pair=None,offset=0,coordinates=None):
         allocations={};bindings=[]
         for i,v in enumerate(views):
             owner=pair[0] if pair is not None and i==pair[1] else i
             delta=offset if pair is not None and i==pair[1] else 0
+            if coordinates is not None:owner,delta=coordinates[i]
             aid='allocation:'+str(owner);size=delta+v['size']
             if aid not in allocations:allocations[aid]={'allocationId':aid,'size':size,'alignment':64,'pointee':v['pointee']}
             else:allocations[aid]['size']=max(allocations[aid]['size'],size)
@@ -53,10 +54,50 @@ def build(function):
         # A real overlapping view, aligned for both compiler-bound objects.
         offset=max(views[i]['alignment'],views[j]['alignment'],views[i]['pointee']['widthBits']//8)
         if offset<views[i]['size']:layouts.append(layout((i,j),offset))
-    body={'schemaVersion':'riscv2x86.object-layout-contract.v1','sourceDigest':function['sourceDigest'],
+    # Enumerate every set partition of the finite pointer list, subject to
+    # identical effective types. For each shared group construct coincident,
+    # aligned staggered in both directions, and boundary-adjacent views.
+    # This covers joint alias classes, not all possible byte offsets.
+    def partitions(index,groups):
+        if index==len(views):yield groups;return
+        for position,group in enumerate(groups):
+            if views[group[0]]['pointee']==views[index]['pointee']:
+                yield from partitions(index+1,groups[:position]+[group+[index]]+groups[position+1:])
+        yield from partitions(index+1,groups+[[index]])
+    if len(views)>4:raise ValueError('OBJECT_LAYOUT_POINTER_BUDGET_EXCEEDED')
+    for groups in partitions(0,[]):
+        patterns=[]
+        for group in groups:
+            step=max(views[i]['alignment'] for i in group)
+            step=max(step,views[group[0]]['pointee']['widthBits']//8)
+            options=[[(i,0) for i in group]]
+            if len(group)>1:
+                options.extend([[(i,rank*step) for rank,i in enumerate(group)],
+                    [(i,(len(group)-1-rank)*step) for rank,i in enumerate(group)]])
+                cursor=0;adjacent=[]
+                for i in group:
+                    cursor=(cursor+step-1)//step*step
+                    adjacent.append((i,cursor));cursor+=views[i]['size']
+                options.append(adjacent)
+            patterns.append(options)
+        for selected in product(*patterns):
+            coordinates={i:(group[0],delta) for group,positions in zip(groups,selected) for i,delta in positions}
+            observable=True
+            for group,positions in zip(groups,selected):
+                end=0
+                for i,start in sorted(positions,key=lambda item:item[1]):
+                    if start>end:observable=False
+                    end=max(end,start+views[i]['size'])
+                if end>131072:observable=False
+            if observable:layouts.append(layout(coordinates=coordinates))
+    layouts=list({case['layoutIdentity']:case for case in layouts}.values())
+    # Invalid/unobservable gaps must not be quietly generated as legal inputs.
+    for case in layouts:materialize(case,views)
+    body={'schemaVersion':'riscv2x86.object-layout-contract.v2','sourceDigest':function['sourceDigest'],
         'functionIdentity':function['functionId'],'views':views,'layouts':layouts,
         'domain':'ordinary-private-valid-object-invocations','semanticApproval':False,
-        'aliasGuarantee':'per-invocation-layout-only'}
+        'aliasGuarantee':'per-invocation-layout-only',
+        'layoutBasis':'all-type-compatible-set-partitions; completely observable bounded coincident, forward/reverse-aligned and adjacent representative offsets'}
     return dict(body,contractIdentity=identity(body))
 
 
@@ -65,7 +106,8 @@ def materialize(layout,views):
     if layout['layoutIdentity']!=identity({k:v for k,v in layout.items() if k!='layoutIdentity'}):raise ValueError('OBJECT_LAYOUT_IDENTITY_INVALID')
     allocations={a['allocationId']:a for a in layout['allocations']}
     mapping={v['objectId']:v for v in layout['views']}
-    if len(allocations)!=len(layout['allocations']) or len(mapping)!=len(views) or set(mapping)!={v['objectId'] for v in views}:raise ValueError('OBJECT_LAYOUT_MEMBERSHIP_INVALID')
+    if (len(allocations)!=len(layout['allocations']) or len(mapping)!=len(layout['views'])
+            or len(mapping)!=len(views) or set(mapping)!={v['objectId'] for v in views}):raise ValueError('OBJECT_LAYOUT_MEMBERSHIP_INVALID')
     if not allocations or set(allocations)!={b['allocationId'] for b in mapping.values()}:raise ValueError('OBJECT_LAYOUT_ALLOCATION_MEMBERSHIP')
     for a in allocations.values():
         if (set(a)!={'allocationId','size','alignment','pointee'} or type(a['size']) is not int or not 0<a['size']<=131072

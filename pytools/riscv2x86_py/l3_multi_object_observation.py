@@ -22,14 +22,23 @@ def strict_decoder():
 
 def sample_plan(program,count):
     contract=program['objectLayout'];params=program['callSignature']['parameters'];pointers=program['pointerParameters']
+    if type(count) is not int or not 4<=count<=256:raise ValueError('L3_MULTI_SAMPLE_BUDGET_INVALID')
+    if (not contract['layouts'] or len({c['layoutIdentity'] for c in contract['layouts']})!=len(contract['layouts'])):
+        raise ValueError('L3_MULTI_LAYOUT_MEMBERSHIP_INVALID')
+    count=max(count,len(contract['layouts']))
+    effects=sum(m['spec']['access'] in {'read','write'} for m in program.get('members',[]))
+    if count>256 or effects*count>4096:raise ValueError('L3_MULTI_COMPLETE_LAYOUT_BUDGET_EXCEEDED')
     values=[0,1,(1<<64)-1,1<<63,(1<<63)-1,0x5a17d3e4c29b806f,0xc4ceb9fe1a85ec53,0xffffffff]
     rows=[]
     for sample in range(count):
         case=contract['layouts'][sample%len(contract['layouts'])]
         rows.append({'sample':sample,'layout':case,'arguments':[None if i in pointers else format(values[(sample+i)%len(values)],'016x') for i in range(len(params))],
             'initialObjects':initial_objects(case,contract['views'],sample)})
-    body={'schemaVersion':'riscv2x86.joint-sample-plan.v2','specIdentity':program['specIdentity'],'inputs':rows,
-        'layoutContractIdentity':contract['contractIdentity'],'layoutSampling':'round-robin-listed-inputs; not exhaustive-value-or-layout-proof'}
+    coverage=[{'layoutIdentity':case['layoutIdentity'],'samples':[r['sample'] for r in rows if r['layout']['layoutIdentity']==case['layoutIdentity']]} for case in contract['layouts']]
+    body={'schemaVersion':'riscv2x86.joint-sample-plan.v3','specIdentity':program['specIdentity'],'inputs':rows,
+        'layoutContractIdentity':contract['contractIdentity'],'layoutCoverage':coverage,
+        'allDeclaredLayoutsScheduled':all(c['samples'] for c in coverage),
+        'layoutSampling':'all-listed-layouts; finite-values-and-representative-offsets-not-exhaustive'}
     return dict(body,planIdentity=identity(body))
 
 

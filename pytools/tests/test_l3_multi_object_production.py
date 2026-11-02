@@ -40,7 +40,7 @@ def test_real_multi_object_alias_state_and_audit(tmp_path,width,signed,fence,rev
     groups={json.loads(a['validation']['layers'][3]['detail'])['jointCapturePath'] for a in report['attempts']}
     assert len(groups)==1 and len(report['attempts'])==4+int(fence)
     group=json.loads(Path(next(iter(groups))).read_text());p=group['deployment']['spec']
-    assert len(p['objectLayout']['views'])==2 and len(p['objectLayout']['layouts'])==3
+    assert len(p['objectLayout']['views'])==2 and len(p['objectLayout']['layouts'])==5
     for side in ('source','target'):
         rows=group['reports'][side]['samples'];assert len(rows)==8
         assert rows[1]['objects'][0]['base']==rows[1]['objects'][1]['base']

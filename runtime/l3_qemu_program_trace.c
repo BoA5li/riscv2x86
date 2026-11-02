@@ -22,7 +22,7 @@ static void instruction(unsigned int cpu, void *data)
         if(++next_region==count) {next_region=0;calls++;}
     }
     for(uint64_t i=0;i<count;i++) if(pc==starts[i]) {
-        if(active || i!=next_region || calls>=32) {
+        if(active || i!=next_region || calls>=256) {
             invalid=1;fprintf(out,"U %"PRIu64" %"PRIu64" %"PRIx64"\n",calls,i,pc);return;
         }
         active=1;fprintf(out,"B %"PRIu64" %"PRIu64" %"PRIx64"\n",calls,i,pc);

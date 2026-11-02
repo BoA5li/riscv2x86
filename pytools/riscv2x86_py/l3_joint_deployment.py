@@ -62,15 +62,10 @@ def label_assembly(text,count):
 
 @timed('joint.compiler-and-proof-binding')
 def bound(source,target,report,clang):
-    from .mechanism_route_checks import compiler_bound_finding
+    from .mechanism_route_checks import compiler_bound_findings
     from .approved_replacement import approved_replacement
     from .automatic_batch_cli import inspect_entry_points
-    findings=json.loads(Path(report).read_text())['findings'];functions=None
-    for f in findings:
-        same,snapshot=compiler_bound_finding(source,report,f['fragment']['id'])
-        if same!=f:raise ValueError('L3_JOINT_FINDING_CHANGED')
-        if functions is not None and functions!=snapshot['functions']:raise ValueError('L3_JOINT_SNAPSHOT_CONFLICT')
-        functions=snapshot['functions']
+    findings,snapshot=compiler_bound_findings(source,report);functions=snapshot['functions']
     program=spec(findings,functions);_,fresh=inspect_entry_points(Path(source),clang=clang)
     if list(fresh)!=functions:raise ValueError('L3_JOINT_COMPILER_SNAPSHOT_REBUILD_MISMATCH')
     original=Path(source).read_bytes();edits=[]

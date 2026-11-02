@@ -110,20 +110,23 @@ def spec(findings,functions):
         by_id={v['objectId']:v for v in layout['views']}
         if any(o['objectId'] not in by_id or (o['size'],o['alignment'])!=(by_id[o['objectId']]['size'],by_id[o['objectId']]['alignment']) for o in objects):raise ValueError('L3_JOINT_OBJECT_LAYOUT_AUTHORITY_MISMATCH')
     access_graph=object_graph(members,layout)
-    body={'schemaVersion':'riscv2x86.joint-program-spec.v1','programId':program_id,
+    from .joint_reaching_definitions import for_findings
+    value_flow=for_findings(fn,ordered)
+    body={'schemaVersion':'riscv2x86.joint-program-spec.v3','programId':program_id,
         'functionName':fn['name'],'functionIdentity':fn['functionId'],'sourceDigest':fn['sourceDigest'],
         'scope':scope,'callSignature':call,'members':members,'objectAccessGraph':access_graph,'pointerParameter':pointer,'returnDeclarationIdentity':returned,
         'object':{k:objects[0][k] for k in ('objectId','size','alignment')},
-        'dependencyGraphIdentity':graph.graph_identity,'executionAuthorityIdentity':identity(execution.to_dict())}
+        'dependencyGraphIdentity':graph.graph_identity,'executionAuthorityIdentity':identity(execution.to_dict()),
+        'valueFlowContract':value_flow}
     if multi:
-        body.update(schemaVersion='riscv2x86.joint-program-spec.v2',objectLayout=layout,pointerParameters=pointers)
+        body.update(objectLayout=layout,pointerParameters=pointers)
         del body['pointerParameter'];del body['object']
     require_json_document(body,'L3_JOINT_JSON_INVALID')
     return dict(body,specIdentity=identity(body))
 
 
 def sample_plan(program,count=8):
-    if type(count) is not int or not 4<=count<=16:raise ValueError('L3_JOINT_SAMPLE_DOMAIN_INVALID')
+    if type(count) is not int or not 4<=count<=256:raise ValueError('L3_JOINT_SAMPLE_DOMAIN_INVALID')
     if 'objectLayout' in program:
         from .l3_multi_object_observation import sample_plan as multi_plan
         return multi_plan(program,count)

@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from .semantic_content import semantic_identity
 from .time_trace_harness import digest
+from .validation_timing import timed
 
 
 class MechanismApprovalError(ValueError):
@@ -100,19 +101,42 @@ def require_suite_preserved(baseline, configured, selected_sources):
 
 def compiler_bound_finding(source, report, fragment_id):
     """Replay compiler provenance before using a snapshot to prepare a contract."""
-    from .compiler_provenance import validate_compiler_snapshot, bind_compiler_provenance
+    from .compiler_provenance import validate_compiler_snapshot
     report = Path(report)
     data = json.loads(report.read_text())
+    snapshot = json.loads(report.with_name('compiler-candidates.json').read_text())
+    candidates = validate_compiler_snapshot(snapshot)
+    return _compiler_bound_from_snapshot(digest(source),data,snapshot,candidates,fragment_id)
+
+
+@timed('joint.compiler-snapshot-batch-consumption')
+def compiler_bound_findings(source,report):
+    """One immutable input read, every member's full provenance consumption.
+
+    Scope is one call, not an inter-run cache. Closing digests reject changed
+    inputs before any caller can use the returned compiler/proof snapshot.
+    """
+    from .compiler_provenance import validate_compiler_snapshot
+    report=Path(report);paths=(Path(source),report,report.with_name('compiler-candidates.json'))
+    before={str(p):digest(p) for p in paths}
+    data=json.loads(report.read_text());snapshot=json.loads(paths[2].read_text())
+    candidates=validate_compiler_snapshot(snapshot)
+    ids=[f['fragment'].get('id') or f['fragment'].get('fragmentId') for f in data.get('findings',[])]
+    if not ids or len(ids)!=len(set(ids)):raise ValueError('MECHANISM_PREPARATION_FRAGMENT_AMBIGUOUS')
+    findings=[_compiler_bound_from_snapshot(before[str(paths[0])],data,snapshot,candidates,fid)[0] for fid in ids]
+    if any(digest(p)!=before[str(p)] for p in paths):raise ValueError('MECHANISM_COMPILER_OPERATION_INPUT_CHANGED')
+    return findings,snapshot
+
+
+def _compiler_bound_from_snapshot(source_digest,data,snapshot,candidates,fragment_id):
+    from .compiler_provenance import bind_compiler_provenance
     matches = [f for f in data.get('findings', [])
                if (f['fragment'].get('id') or f['fragment'].get('fragmentId')) == fragment_id]
     if len(matches) != 1:
         raise ValueError('MECHANISM_PREPARATION_FRAGMENT_AMBIGUOUS')
     finding = matches[0]
-    source_digest = digest(source)
     if finding.get('sourceDigest') != source_digest:
         raise ValueError('MECHANISM_PREPARATION_SOURCE_STALE')
-    snapshot = json.loads(report.with_name('compiler-candidates.json').read_text())
-    candidates = validate_compiler_snapshot(snapshot)
     if snapshot['sourceDigest'] != source_digest:
         raise ValueError('MECHANISM_COMPILER_SNAPSHOT_SOURCE_MISMATCH')
     fragment = finding['fragment']

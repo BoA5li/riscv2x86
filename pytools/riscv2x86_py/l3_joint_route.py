@@ -130,8 +130,9 @@ def build_route(config):
             if group_path.exists():group=replay_group(json.loads(group_path.read_text()),source,target)
             else:
                 group=new_capture(config,report,source,target,requirements,work);save(group_path,group)
+            from .l3_joint_spec import sample_plan
             if (group['backendPath']!=config['backendPath'] or group['backendDigest']!=config['backendDigest']
-                    or len(group['deployment']['samplePlan']['inputs'])!=config['sampleCount']):raise ValueError('L3_JOINT_CAPTURE_REQUEST_CHANGED')
+                    or group['deployment']['samplePlan']!=sample_plan(group['deployment']['spec'],config['sampleCount'])):raise ValueError('L3_JOINT_CAPTURE_REQUEST_CHANGED')
             members=group['deployment']['spec']['members'];ids=[m['fragmentId'] for m in members];reqs={r['fragmentId']:r for r in requirements}
             if group['requirements']!=list(requirements) or len(requirements)!=len(ids) or set(reqs)!=set(ids) or any(r['eligibilityStatus']!='eligible' for r in requirements):raise ValueError('L3_JOINT_FULL_REQUIREMENT_MEMBERSHIP_REQUIRED')
             index=ids.index(artifact.fragment_id);req=reqs[artifact.fragment_id];member=members[index]

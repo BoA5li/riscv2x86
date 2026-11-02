@@ -16,8 +16,13 @@ def inspect(root):
     report=json.loads(reports[0].read_text())
     print(json.dumps({'evaluationStatus':report.get('status'),'reasonCodes':report.get('reasonCodes')},ensure_ascii=False),flush=True)
     for attempt in report.get('attempts',[]):
+        layers=[]
+        for layer in (attempt.get('validation') or {}).get('layers',[]):
+            row={k:layer.get(k) for k in ('level','status','evidenceIdentity')}
+            if layer.get('status')!='verified':row['detail']=layer.get('detail')
+            layers.append(row)
         print(json.dumps({'fragmentId':attempt.get('fragmentId'),'translationOutcome':attempt.get('translationOutcome'),
-            'layers':(attempt.get('validation') or {}).get('layers',[])},ensure_ascii=False),flush=True)
+            'layers':layers},ensure_ascii=False),flush=True)
     if (state.get('currentStage')!='complete' or state.get('blockers')
             or any(state.get(k) is not True for k in flags) or report.get('status')!='verified'):
         raise ValueError('joint production workflow not fully accepted')
@@ -37,6 +42,16 @@ def inspect(root):
         observation=group['reports'][side]
         print(json.dumps({'side':side,'samples':len(observation['samples']),'events':len(observation['events']),
             'fenceEvents':sum(e['access']=='fence' for e in observation['events'])}),flush=True)
+    plan=group['deployment']['samplePlan']
+    if 'objectLayout' in group['deployment']['spec']:
+        layouts=group['deployment']['spec']['objectLayout']['layouts']
+        scheduled={row['layout']['layoutIdentity'] for row in plan['inputs']}
+        if scheduled!={case['layoutIdentity'] for case in layouts}:
+            raise ValueError('declared layout coverage incomplete')
+        print(json.dumps({'declaredLayoutCount':len(layouts),'scheduledLayoutCount':len(scheduled),
+            'actualSourceSampleCount':len(group['reports']['source']['samples']),
+            'actualTargetSampleCount':len(group['reports']['target']['samples']),
+            'finiteLayoutRepresentativesOnly':True}),flush=True)
     return 0
 
 

@@ -1,6 +1,7 @@
 """Joint proof fixtures and real native execution; not dual-ISA acceptance."""
 from copy import deepcopy
 from dataclasses import replace
+from hashlib import sha256
 import json
 from pathlib import Path
 import shutil
@@ -9,7 +10,7 @@ import pytest
 from riscv2x86_py.l3_trace_support import identity,Elf
 
 
-def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None,include_fence=False,width=8,sign_extend=False,signed_object=False,multi_object=False,reload_after_store=False,store_offset=16):
+def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_program=None,include_fence=False,width=8,sign_extend=False,signed_object=False,multi_object=False,reload_after_store=False,store_offset=16,reuse_output=False,extra_pointer=False,duplicate_input=False):
     from riscv2x86_py.automatic_batch_cli import _l2_operand_boundary_facts,_source_range
     from riscv2x86_py.compiler_fragment_closure import close_compiler_fragment_candidate
     from riscv2x86_py.compiler_memory_signature import export as signature
@@ -30,23 +31,30 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
     if store_offset!=16:source=source.replace(b'16(%1)',(str(store_offset)+'(%1)').encode())
     if reload_after_store:
         source=source.replace(b'unsigned long result;',b'unsigned long result;unsigned long reloaded;').replace(b'return result;',b'__asm__ volatile("movq 8(%1),%0":"=r"(reloaded):"r"(address):"memory");return reloaded;')
+        if reuse_output:source=source.replace(b'unsigned long reloaded;',b'').replace(b'reloaded',b'loaded')
+    if duplicate_input:
+        source=source.replace(b'"r"(input)',b'"r"(loaded)').replace(b',unsigned long input',b'').replace(b'unsigned long input,',b'')
     if multi_object:
         source=source.replace(b'unsigned long input)',b'unsigned long *destination,unsigned long input)')
         pos=source.index(('__asm__ volatile("movq %0,'+str(store_offset)+'(%1)').encode())
         source=source[:pos]+source[pos:].replace(b'(address)',b'(destination)',1)
+        if extra_pointer:source=source.replace(b'unsigned long *destination,',b'unsigned long *destination,unsigned long *extra,')
     if width!=8:
         load={1:'movsbq' if sign_extend else 'movzbq',2:'movswq' if sign_extend else 'movzwq',4:'movslq' if sign_extend else 'movl'}[width]
         dest='%k0' if width==4 and not sign_extend else '%0'
         source=source.replace(b'movq 8(%1),%0',(load+' 8(%1),'+dest).encode()).replace(('movq %0,'+str(store_offset)+'(%1)').encode(),('mov'+{1:'b',2:'w',4:'l'}[width]+' %'+{1:'b',2:'w',4:'k'}[width]+'0,'+str(store_offset)+'(%1)').encode())
-    source=source.replace(b'unsigned long *address',(pointee+' *address').encode()).replace(b'unsigned long *destination',(pointee+' *destination').encode())
+    source=source.replace(b'unsigned long *address',(pointee+' *address').encode()).replace(b'unsigned long *destination',(pointee+' *destination').encode()).replace(b'unsigned long *extra',(pointee+' *extra').encode())
     if include_fence:
         source=source.replace(b'__asm__ volatile("'+scalar_template.encode(),b'__asm__ volatile("mfence"::: "memory");__asm__ volatile("'+scalar_template.encode())
     def extent(a,b):return {'begin':{'offset':a,'line':1,'col':a+1},'end':{'offset':b-1,'tokLen':1}}
     types={'address':pointee+' *','input':'unsigned long','loaded':'unsigned long','result':'unsigned long'}
     if multi_object:types['destination']=pointee+' *'
+    if extra_pointer:types['extra']=pointee+' *'
     if reload_after_store:types['reloaded']='unsigned long'
     parameter_names=list(('address','input') if pointer==0 else ('input','address'))
+    if duplicate_input:parameter_names.remove('input')
     if multi_object:parameter_names.insert(1,'destination')
+    if extra_pointer:parameter_names.insert(2,'extra')
     pointertype=ctype(canonicalType=pointee+' *',isPointer=True,isInteger=False,pointeeType=pointee,pointeeWidthBits=width*8,pointeeAlignmentBytes=width,pointeeIsInteger=True,expressionRepeatable=True)
     def ref(n,p):return {'kind':'DeclRefExpr','range':extent(p,p+len(n)),'referencedDecl':{'id':'ast:'+n},'type':{'qualType':types[n]},'valueCategory':'lvalue'}
     starts=[];pos=0
@@ -57,27 +65,32 @@ def fixture(tmp_path,pointer=0,scalar_template='movq %1,%0;addq %2,%0',value_pro
     # Compiler token ranges, not source parsing, define statement placement.
     ends=[source.index(b');',a)+1 for a in starts]
     names=[(['loaded'],['address']),(['result'],['loaded','input']),([],['result','address'])]
+    if duplicate_input:names[1]=(['result'],['loaded','loaded'])
     roles=['load','scalar','store']
     if multi_object:names[-1]=(names[-1][0],['result','destination'])
-    if reload_after_store:names.append((['reloaded'],['address']));roles.append('load')
+    if reload_after_store:names.append((['loaded' if reuse_output else 'reloaded'],['address']));roles.append('load')
     if include_fence:names.insert(1,([],[]));roles.insert(1,'fence')
     asms=[]
     for a,b,(outs,ins) in zip(starts,ends,names):
+        operands=[];position=a
+        for n in outs+ins:
+            position=source.index(('('+n+')').encode(),position)+1
+            operands.append(ref(n,position));position+=len(n)+1
         asms.append({'kind':'GCCAsmStmt','range':extent(a,b),'numOutputs':len(outs),'outputConstraints':['=&r' if outs==['result'] else '=r'] if outs else [],
-            'inner':[ref(n,source.index(('('+n+')').encode(),a)+1) for n in outs+ins]})
+            'inner':operands})
     params=[]
     for name in parameter_names:
         a=source.index(name.encode());params.append({'kind':'ParmVarDecl','id':'ast:'+name,'name':name,'type':{'qualType':types[name]},'range':extent(a,a+len(name))})
     decls=[]
-    for n in (('loaded','result','reloaded') if reload_after_store else ('loaded','result')):
+    for n in (('loaded','result','reloaded') if reload_after_store and not reuse_output else ('loaded','result')):
         a=source.index(('long '+n).encode());decls.append({'kind':'DeclStmt','inner':[{'kind':'VarDecl','id':'ast:'+n,'name':n,'type':{'qualType':types[n]},'range':extent(a,a+5+len(n))}]})
-    returned='reloaded' if reload_after_store else 'result'
+    returned=('loaded' if reuse_output else 'reloaded') if reload_after_store else 'result'
     ret=source.index(('return '+returned).encode());ast={'kind':'FunctionDecl','name':'unrelated','type':{'qualType':'unsigned long ('+','.join(types[n] for n in parameter_names)+')'},'range':extent(0,len(source)),
         'inner':params+[{'kind':'CompoundStmt','inner':decls+asms+[{'kind':'ReturnStmt','range':extent(ret,ret+13),'inner':[ref(returned,ret+7)]}]}]}
-    S=identity(source.decode());F=identity('joint-fixture-function');path=tmp_path/'joint.c'
+    S='sha256:'+sha256(source).hexdigest();F=identity('joint-fixture-function');path=tmp_path/'joint.c'
     boundary=_l2_operand_boundary_facts(ast,source_digest=S,function_identity=F,source_file=str(path),source_bytes=source,type_resolver=lambda t:t)
     fn={'name':'unrelated','functionId':F,'sourceDigest':S,'sourceFile':str(path),'arity':len(parameter_names),'parameterTypes':[types[p['name']] for p in params],
-        'returnType':'unsigned long','pointerParameters':[i for i,n in enumerate(parameter_names) if n in {'address','destination'}],'l2OperandBoundary':boundary}
+        'returnType':'unsigned long','pointerParameters':[i for i,n in enumerate(parameter_names) if n in {'address','destination','extra'}],'l2OperandBoundary':boundary}
     fn['compilerMemoryCallSignature']=signature(fn,fn['parameterTypes'],fn['returnType'],lambda t:t)
     fn['compilerJointScope']=export(ast,source_digest=S,function_identity=F,source_range=_source_range,resolve=lambda t:t)
     findings=[]

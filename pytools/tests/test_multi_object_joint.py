@@ -13,7 +13,7 @@ from riscv2x86_py.l3_joint_observation import harness,instrument,parse_samples,p
 def test_actual_typed_alias_layouts_and_boundary_semantics(tmp_path,fence,width):
     source,findings,fn=fixture(tmp_path,multi_object=True,include_fence=fence,width=width)
     program=spec(findings,[fn]);plan=sample_plan(program)
-    assert len(program['objectLayout']['layouts'])==3
+    assert len(program['objectLayout']['layouts'])==5
     c=tmp_path/'variant.c';c.write_bytes(instrument(source,program['scope']['sites'],program))
     h=tmp_path/'h.c';h.write_text(harness(program,plan));exe=tmp_path/'native'
     run=subprocess.run([shutil.which('gcc'),'-O2','-Wall','-Wextra','-Werror',str(h),str(c),'-o',str(exe)],capture_output=True,text=True)

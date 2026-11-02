@@ -852,9 +852,18 @@ def materialize_fragment_execution_authority(
         str(fragment.get("id") or fragment.get("fragmentId") or ""): finding
         for finding, fragment in scoped
     }
+    from .joint_reaching_definitions import derive,uses_for,derived_use
+    flow=None;flow_failure=''
+    try:flow=derive(function,resolved)
+    except (ValueError,KeyError,TypeError) as exc:flow_failure=str(exc)
+    exact_consumers={}
+    if flow:
+        for edge in flow['uses']:
+            use,node=derived_use(flow,edge);exact_consumers[use['useNodeIdentity']]=node
     for fragment_id, (candidate, candidate_reason, fragment) in resolved.items():
         outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
         reasons: set[str] = set()
+        if flow_failure:reasons.add(flow_failure)
         if candidate is None:
             reasons.add(candidate_reason or "L2_FRAGMENT_BOUNDARY_BINDING_MISSING")
         elif candidate.get("schemaVersion") not in {COMPILER_FRAGMENT_CANDIDATE_SCHEMA,"riscv2x86.closed-compiler-fragment.v2"}:
@@ -881,6 +890,9 @@ def materialize_fragment_execution_authority(
         raw_carriers = candidate.get("operandCarriers") if candidate else None
         raw_nodes = candidate.get("valueNodes") if candidate else None
         raw_uses = candidate.get("downstreamUses") if candidate else None
+        if flow is not None and candidate is not None:
+            try:raw_uses=uses_for(flow,fragment_id,candidate)
+            except (ValueError,KeyError,TypeError) as exc:reasons.add(str(exc))
         operand_authority = (raw_carriers if isinstance(raw_carriers, list)
                              else raw_bindings)
         if (not isinstance(outputs, list) or not isinstance(inputs, list)
@@ -1004,10 +1016,12 @@ def materialize_fragment_execution_authority(
                             try:
                                 if isinstance(raw_consumer_carriers, list):
                                     parsed_consumer = compiler_operand_carrier_from_dict(item)
-                                    is_input = parsed_consumer.operand_index >= len(consumer_outputs)
+                                    consumer_index=parsed_consumer.operand_index
+                                    is_input = (consumer_index >= len(consumer_outputs)
+                                        or flow is not None and str(consumer_outputs[consumer_index].get('constraint','')).startswith('+'))
                                 else:
                                     parsed_consumer = compiler_operand_binding_from_dict(item)
-                                    is_input = parsed_consumer.access == "input"
+                                    is_input = parsed_consumer.access in ({"input","read_write"} if flow is not None else {"input"})
                             except (TypeError, ValueError):
                                 continue
                             if (is_input
@@ -1026,6 +1040,9 @@ def materialize_fragment_execution_authority(
                         } | static_ids if isinstance(consumer_nodes, list) else set()
                     except ValueError:
                         valid_nodes = set()
+                    if use.use_node_identity in exact_consumers:
+                        exact=exact_consumers[use.use_node_identity]
+                        matches=[v for v in matches if v==exact]
                     if (len(matches) != 1 or matches[0] not in valid_nodes
                             or use.relation_kind != "fragment_operand"):
                         reasons.add("L2_FRAGMENT_DOWNSTREAM_USE_AMBIGUOUS"); continue
