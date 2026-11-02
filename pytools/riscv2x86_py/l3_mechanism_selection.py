@@ -7,10 +7,29 @@ from .l3_trace_support import identity,digest
 from .l3_execution_plan import build
 from .l3_intent_requirements import _hash
 
+from .validation_timing import timed
+
 SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
 
 def load(path,*,progress=None):
+    from .joint_validation_operation import checked,current
+    # Only the profiled joint-only route participates. Other mechanisms retain
+    # their existing validation lifecycle and progress callback semantics.
+    if current() is not None and progress is None:
+        p=Path(path).resolve();raw=json.loads(p.read_text())
+        if isinstance(raw,dict) and isinstance(raw.get('backends'),dict) and set(raw['backends'])=={'joint'}:
+            return checked(_load_joint_operation,{'path':str(p),'digest':digest(p)})
+    return _load(path,progress=progress)
+
+
+def _load_joint_operation(value):
+    if digest(value['path'])!=value['digest']:raise ValueError('L3_MECHANISM_SELECTION_CHANGED')
+    return _load(value['path'])
+
+
+@timed('joint.mechanism-selection-full-validation')
+def _load(path,*,progress=None):
     path=Path(path).resolve();selection_digest=digest(path);raw=json.loads(path.read_text())
     if not isinstance(raw,dict) or set(raw)!={'schemaVersion','backends'} or raw['schemaVersion']!=SCHEMA or not isinstance(raw['backends'],dict) or not raw['backends'] or set(raw['backends'])-{'memory','control','scalar-program','fence','atomic','lrsc','joint'}:raise ValueError('L3_MECHANISM_SELECTION_INVALID')
     from .l3_memory_backend import validate_backend

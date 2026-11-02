@@ -12,6 +12,7 @@ from .translation_validation import ValidationLayerResult,ValidationLevel,Valida
 from .validation_status import ValidationStatus
 from .l3_backend_validation import BackendValidationSession,checked
 from .validation_timing import timed
+from .joint_validation_operation import operation as joint_operation
 
 SCHEMA='riscv2x86.joint-program-route.v1'
 
@@ -48,11 +49,12 @@ def replay_group(group,source,target,*,_context=None):
 
 @timed('joint.new-capture-operation')
 def new_capture(config,report,source,target,requirements,work):
-    """Only backend checks are reused; deployment, traces and members are not.
+    """Capture-local backend checks share one bounded session.
 
-    This session cannot escape one new-capture operation. A full uncached
-    backend validation must succeed on exit before the group is returned.
-    Existing captures and standalone audits always replay without this session.
+    Outside an evaluation, session exit performs a full backend validation.
+    Inside an evaluation, the enclosing operation owns the mandatory uncached
+    closing replay before acceptance returns. A staged group is not approval.
+    Standalone audits have their own fresh operation and closing replay.
     """
     backend_path=config['backendPath']
     with BackendValidationSession() as session:
@@ -158,6 +160,7 @@ def audit_prerequisites(evaluation):
 
 
 @timed('joint.standalone-audit')
+@joint_operation('independent-audit')
 def audit_result(evaluation):
     from types import SimpleNamespace
     from .translation_validation import program_artifact_from_dict,translation_artifact_from_dict

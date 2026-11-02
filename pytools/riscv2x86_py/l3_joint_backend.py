@@ -130,6 +130,26 @@ def check_calibration(b,r):
 
 @timed('joint.backend-validation')
 def validate(value,*,uncalibrated=False,_context=None):
+    from .joint_validation_operation import checked as operation_checked,current
+    if not uncalibrated and _context is None and current() is not None:
+        if isinstance(value,(str,Path)):
+            # Bind both path and current bytes; replacements get a new check,
+            # while the old binding still has to survive closing validation.
+            request={'path':str(Path(value).resolve()),'digest':digest(value)}
+        else:request={'document':value}
+        return operation_checked(_operation_backend,request)
+    return _validate_full(value,uncalibrated=uncalibrated,_context=_context)
+
+
+def _operation_backend(request):
+    if 'path' in request:
+        if digest(request['path'])!=request['digest']:raise ValueError('L3_JOINT_BACKEND_CHANGED')
+        return _validate_full(request['path'])
+    return _validate_full(request['document'])
+
+
+@timed('joint.backend-full-validation')
+def _validate_full(value,*,uncalibrated=False,_context=None):
     b=json.loads(Path(value).read_text()) if isinstance(value,(str,Path)) else value
     require_json_document(b,'L3_JOINT_BACKEND_JSON_INVALID')
     fields={'schemaVersion','baseBackendPath','baseBackendDigest','plugin','files','calibration','backendIdentity',*TOOLS}

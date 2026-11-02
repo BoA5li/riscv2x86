@@ -23,6 +23,7 @@ from .translation_attempt import (
 )
 from .l2_dimensions import L2ClaimScope, L2DimensionStatus, parse_l2_dimensions
 from .l2_results import L2FragmentResult
+from .joint_validation_operation import operation as joint_operation
 from .l2_program_results import (
     aggregate_observation_identity,
     ProgramExecutionEvidence, ProgramL2GroupResult, ProgramL2MemberResult,
@@ -590,6 +591,7 @@ def _materialize_l2_resolution_plans(
         write_resolved_execution_plan(path, plan)
 
 
+@joint_operation('evaluation')
 def run_evaluation(
     request: EvaluationRequest, *, work_directory: str | Path,
     command_executor: Callable[[Sequence[str], Path, int, str], CommandRecord] = _execute,
