@@ -21,7 +21,7 @@ def bound_inputs(source,target,report,finding,clang):
     if len(matches)!=1:raise ValueError('L3_LRSC_COMPILER_FINDING_MISMATCH')
     function=matches[0]
     _,fresh=inspect_entry_points(Path(source),clang=clang)
-    used=('functionId','sourceDigest','parameterTypes','returnType','l2OperandBoundary','compilerAtomicFunctionScope')
+    used=('functionId','sourceDigest','parameterTypes','returnType','l2OperandBoundary','compilerAtomicFunctionScope','compilerMemoryCallSignature')
     matches=[fn for fn in fresh if fn.get('functionId')==function['functionId']]
     if len(matches)!=1 or any(matches[0].get(k)!=function.get(k) for k in used):raise ValueError('L3_LRSC_COMPILER_REBUILD_MISMATCH')
     data=Path(source).read_bytes();a=finding['rewriteBeginOffset'];b=finding['rewriteEndOffset']

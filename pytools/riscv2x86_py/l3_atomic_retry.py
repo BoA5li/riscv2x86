@@ -112,7 +112,7 @@ def decode(code, base):
 
 
 def state(pointer, value):
-    regs={7:('parameter',0),6:('parameter',1),4:('stack',0)}
+    regs={r:('parameter',i) for i,r in enumerate((7,6,2,1))};regs[4]=('stack',0)
     return {'registers':regs,'memory':{},'byteRegisters':{},'zero':None,
             'pointer':('parameter',pointer),'input':('parameter',value)}
 

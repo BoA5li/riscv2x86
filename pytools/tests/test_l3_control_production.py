@@ -9,6 +9,10 @@ import pytest
 
 @pytest.mark.parametrize('kind',['equal','not_equal','unsigned_less','signed_less','jump','goto'])
 def test_real_control_production_and_counterexample(tmp_path,kind):
+    exercise_control_production(tmp_path,kind)
+
+
+def exercise_control_production(tmp_path,kind,*,extra_function=False):
     backend=os.environ.get('RV2X86_L3_CONTROL_BACKEND','')
     if not backend:pytest.skip('explicit calibrated control backend not selected')
     frontend=os.environ.get('RISCV2X86_TEST_FRONTEND','')
@@ -22,6 +26,7 @@ def test_real_control_production_and_counterexample(tmp_path,kind):
         instruction={'equal':'beq','not_equal':'bne','unsigned_less':'bltu','signed_less':'blt'}[kind]
         integer='long' if kind=='signed_less' else 'unsigned long'
         text='unsigned long route('+integer+' a,'+integer+' b,unsigned long yes,unsigned long no){unsigned long out;__asm__ volatile("'+instruction+' %1,%2,1f\\n\\taddi %0,%4,0\\n\\tj 2f\\n1: addi %0,%3,0\\n2:":"=&r"(out):"r"(a),"r"(b),"r"(yes),"r"(no):"cc");return out;}'
+    if extra_function:text+='\nunsigned long not_called(unsigned long x){return x+1;}\n'
     source.write_text(text+'\n');output=tmp_path/'production';repo=Path(__file__).resolve().parents[2]
     result=subprocess.run([sys.executable,str(repo/'experiment/run_l3_control_trace.py'),'--input',str(source),'--frontend',frontend,'--backend',backend,'--output',str(output)],capture_output=True,text=True,check=False,timeout=1800)
     log=output/'batch.log'

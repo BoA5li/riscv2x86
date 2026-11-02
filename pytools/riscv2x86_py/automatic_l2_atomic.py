@@ -33,7 +33,11 @@ def atomic_wrapper(function,atom,sidecar):
         parameters=function['l2OperandBoundary']['parameterDeclarationIds']
         if base not in parameters:raise ValueError('L2_ATOMIC_ADDRESS_PARAMETER_UNBOUND')
         address_parameter=parameters.index(base)
-    if (function.get('arity')!=2 or len(types)!=2 or len(pointers)!=1
+    call_contract=None
+    if function.get('arity')!=2:
+        from .atomic_call_contract import bind
+        call_contract=bind(function,atom,sidecar)
+    if (type(function.get('arity')) is not int or not 2<=function['arity']<=4 or len(types)!=function['arity'] or len(pointers)!=1
             or address_parameter!=pointers[0] or value.parameter_index is None
             or value.parameter_index==address_parameter
             or _INTEGER_POINTER_TYPE.fullmatch(types[pointers[0]]) is None
@@ -49,7 +53,11 @@ def atomic_wrapper(function,atom,sidecar):
         raise ValueError('L2_ATOMIC_RETURN_OBSERVATION_CONTRACT_REQUIRED')
     pointee=' '.join(x for x in types[pointers[0]][:-1].split() if x not in {'const','volatile'})
     scalar=types[value.parameter_index];name=function['name'];width=atom['width_bits']
-    args=['',''];args[pointers[0]]='object';args[value.parameter_index]='input'
+    args=['aux'+str(i) for i in range(len(types))];args[pointers[0]]='object';args[value.parameter_index]='input'
+    auxiliary=''.join(t+' aux'+str(i)+'=('+t+')values[(i+'+str(i+3)+')%8];' for i,t in enumerate(types) if i not in (pointers[0],value.parameter_index))
+    traced=[i for i in range(len(types)) if i!=pointers[0]] if call_contract else []
+    extra_format=(';'+','.join('%016llx' for i in traced)) if traced else ''
+    extra_arguments=''.join(',(unsigned long long)'+args[i] for i in traced)
     return '\n'.join([
         '#include <stdint.h>','#include <stdio.h>','#include <string.h>',
         f'{function["returnType"]} {name}({",".join(types)});',
@@ -62,19 +70,26 @@ def atomic_wrapper(function,atom,sidecar):
         'uint64_t initial[4]={UINT64_C(0x1122334455667788),UINT64_C(0x8877665544332211),UINT64_C(0x0123456789abcdef),UINT64_C(0xfedcba9876543210)};',
         ('initial[0]=(UINT64_C(0x1122334400000000)|(uint32_t)values[(i+5)%8]);' if width==32 else 'initial[0]=values[(i+3)%8];'),
         'uint64_t before[4],after[4];memcpy(object,initial,32);memcpy(before,object,32);',
-        f'{scalar} input=({scalar})values[i];',
+        f'{scalar} input=({scalar})values[i];'+auxiliary,
         (f'{name}({",".join(args)});unsigned long long result=0;' if function['returnType']=='void' else
          f'{function["returnType"]} returned={name}({",".join(args)});unsigned long long result=(unsigned long long)returned;'),
         'memcpy(after,object,32);',
-        'printf("atomic_trace;%u;%016llx;%016llx;%016llx,%016llx,%016llx,%016llx;%016llx,%016llx,%016llx,%016llx\\n",i,(unsigned long long)input,result,',
+        'printf("atomic_trace;%u;%016llx;%016llx;%016llx,%016llx,%016llx,%016llx;%016llx,%016llx,%016llx,%016llx'+extra_format+'\\n",i,(unsigned long long)input,result,',
         '(unsigned long long)before[0],(unsigned long long)before[1],(unsigned long long)before[2],(unsigned long long)before[3],',
-        '(unsigned long long)after[0],(unsigned long long)after[1],(unsigned long long)after[2],(unsigned long long)after[3]);',
+        '(unsigned long long)after[0],(unsigned long long)after[1],(unsigned long long)after[2],(unsigned long long)after[3]'+extra_arguments+');',
         '}return 0;}'])+'\n'
 
 
 def atomic_events(stdout,atom):
     records={};width=atom['width_bits'];mask=(1<<width)-1;operation=atom['rmw_operation']
     for line in stdout.splitlines():
+        observed_arguments=None
+        if 'call_contract' in atom:
+            from .atomic_call_contract import argument_values
+            line,tail=line.rsplit(';',1)
+            observed_arguments=tail.split(',')
+            if any(re.fullmatch('[0-9a-f]{16}',v) is None for v in observed_arguments):
+                raise ValueError('L2_ATOMIC_CALL_ARGUMENTS_INVALID')
         match=re.fullmatch(r'atomic_trace;([0-9]+);([0-9a-f]{16});([0-9a-f]{16});([0-9a-f]{16}(?:,[0-9a-f]{16}){3});([0-9a-f]{16}(?:,[0-9a-f]{16}){3})',line)
         if match is None:raise ValueError('L2_ATOMIC_TRACE_RECORD_INVALID')
         sample=int(match[1]);input_value=int(match[2],16)&mask;returned=int(match[3],16)
@@ -92,11 +107,15 @@ def atomic_events(stdout,atom):
         relation_holds=not ((after[0]&mask)!=expected or after[1:]!=before[1:]
                 or (width==32 and (after[0]>>32)!=(before[0]>>32))
                 or (atom['result_semantics']=='old_value' and not returned_matches))
+        if observed_arguments is not None:
+            expected_arguments=[v for v in argument_values(atom['call_contract'],sample,int(match[2],16)) if v is not None]
+            if observed_arguments!=expected_arguments:raise ValueError('L2_ATOMIC_CALL_ARGUMENTS_MISMATCH')
         records[sample]={'sampleId':str(sample),'objectId':atom['memory_object_identity'],
             'offsetBytes':0,'widthBits':width,'inputValue':input_value,'oldValue':old,
             'newValue':after[0]&mask,'returnedValue':returned,'beforeObject':before,'afterObject':after,
             'approvedValueRelationHolds':relation_holds,
             'effectKind':'AtomicReadModifyWrite','relationEvidence':'measured-values-with-approved-rmw-contract'}
+        if observed_arguments is not None:records[sample]['integerArguments']=observed_arguments
     if set(records)!=set(range(len(VALUES))):raise ValueError('L2_ATOMIC_TRACE_SAMPLE_MISSING')
     return [records[i] for i in range(len(VALUES))]
 
@@ -164,6 +183,9 @@ def build_atomic_validator(config):
                 output=by_index[dict(lrsc_source.lrsc_sequence.role_operand_indexes)[return_role] if is_lrsc else atom['result_operand_index']]
                 if function['l2OperandBoundary'].get('returnDeclarationId')!=output.declaration_id:
                     return reject('L2_ATOMIC_OUTPUT_SINK_INSTRUMENTATION_REQUIRED')
+            if function.get('arity')!=2:
+                from .atomic_call_contract import bind
+                atom=dict(atom,call_contract=bind(function,atom,sidecar))
             stage='harness_build';harness=atomic_wrapper(function,atom,sidecar)
             work,replay=Path(config['workDirectory']),Path(config['replayDirectory'])
             work.mkdir(parents=True,exist_ok=True);replay.mkdir(parents=True,exist_ok=True)
@@ -193,6 +215,7 @@ def build_atomic_validator(config):
                 'atomicityEvidenceKind':('approved-phase6d-locked-cas-sequence-contract' if is_lrsc
                     else 'approved-phase6d-compiler-builtin-contract'),
                 'orderingEvidenceKind':'approved-phase6d-contract-not-litmus-inference','reasonCode':reason}
+            if 'call_contract' in atom:observation['callContract']=atom['call_contract']
             if is_lrsc:
                 observation['completionOutputContract'] = {
                     'schemaVersion':'riscv2x86.lrsc-return-observation.v1',

@@ -67,10 +67,17 @@ def spec(finding,functions,*,_sequence=False):
     parameters=fn['l2OperandBoundary']['parameterDeclarationIds'];projection=atom.get('address_projection')
     pointer=parameters.index(projection['baseDeclarationIdentity']) if projection else address.parameter_index
     offset=projection['offsetBytes'] if projection else 0
-    types=fn['parameterTypes'];pointee=types[pointer].strip()[:-1].strip() if pointer in (0,1) and types[pointer].strip().endswith('*') else ''
-    if (fn.get('arity')!=2 or len(types)!=2 or fn.get('pointerParameters')!=[pointer] or value.parameter_index!=1-pointer
-            or value.signedness!='unsigned' or unsigned_width(pointee)!=atom['width_bits']
-            or unsigned_width(types[1-pointer])!=width['inputCarrierWidth'] or offset!=0
+    types=fn['parameterTypes'];call_contract=None
+    if fn.get('arity')!=2:
+        from .atomic_call_contract import bind
+        call_contract=bind(fn,atom,sidecar)
+        pointer=call_contract['pointerParameter'];input_index=call_contract['valueParameter']
+    else:input_index=1-pointer
+    pointee=types[pointer].strip()[:-1].strip() if pointer in range(len(types)) and types[pointer].strip().endswith('*') else ''
+    if (type(fn.get('arity')) is not int or not 2<=fn['arity']<=4 or len(types)!=fn['arity'] or fn.get('pointerParameters')!=[pointer]
+            or value.parameter_index!=input_index or value.signedness!='unsigned'
+            or unsigned_width(pointee)!=atom['width_bits']
+            or unsigned_width(types[input_index])!=width['inputCarrierWidth'] or offset!=0
             or re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',fn.get('name','')) is None):
         raise ValueError('L3_ATOMIC_INVOCATION_DOMAIN_UNSUPPORTED')
     if atom['result_semantics']=='none':
@@ -81,13 +88,16 @@ def spec(finding,functions,*,_sequence=False):
                 or unsigned_width(fn['returnType'])!=width['resultCarrierWidth']):raise ValueError('L3_ATOMIC_RETURN_BINDING_REQUIRED')
     body={'schemaVersion':'riscv2x86.atomic-observation-spec.v1','fragmentId':f['id'],'programId':ob['programId'],
           'functionId':fn['functionId'],'sourceDigest':fn['sourceDigest'],'kind':'atomic-rmw','operation':atom,'widthRoles':width,
-          'pointerParameter':pointer,'valueParameter':1-pointer,'parameterTypes':types,'returnType':fn['returnType'],
+          'pointerParameter':pointer,'valueParameter':input_index,'parameterTypes':types,'returnType':fn['returnType'],
           'objectSizeBytes':sidecar.memory_objects[0].size_bytes,'obligations':ob,'authorityIdentity':sidecar.authority_identity,
           'physicalMicroarchitectureClaimed':False}
+    if call_contract is not None:
+        body.update(schemaVersion='riscv2x86.atomic-observation-spec.v3',callContract=call_contract)
     if _sequence:
         body.update(sourceMechanism='lrsc-sequence',sourceSequence=sequence)
         if returned_role != 'old':
-            body.update(schemaVersion='riscv2x86.atomic-observation-spec.v2', returnRole=returned_role)
+            body.update(returnRole=returned_role)
+            if call_contract is None:body['schemaVersion']='riscv2x86.atomic-observation-spec.v2'
     return dict(body,specIdentity=identity(body))
 
 
@@ -98,10 +108,19 @@ def samples(spec):
     body={'schemaVersion':'riscv2x86.atomic-sample-plan.v1','inputs':[{'old':f'{a:016x}','input':f'{b:016x}'} for a,b in pairs],
           'inputDomain':'cartesian-boundary-values-v1','distinctInputCount':len(pairs),
           'objectCellCount':max(4,spec.get('objectSizeBytes',4*(spec['operation']['width_bits']//8))//(spec['operation']['width_bits']//8))}
+    if 'callContract' in spec:
+        from .atomic_call_contract import argument_values
+        body.update(schemaVersion='riscv2x86.atomic-sample-plan.v2',
+                    inputDomain='cartesian-old-rmw-input-with-rotating-auxiliary-boundaries-v1',
+                    callContractIdentity=spec['callContract']['contractIdentity'])
+        for i,row in enumerate(body['inputs']):row['arguments']=argument_values(spec['callContract'],i,int(row['input'],16))
     return dict(body,planIdentity=identity(body))
 
 
 def harness(name,spec,plan):
+    if 'callContract' in spec:
+        from .atomic_call_harness import generate
+        return generate(name,spec,plan)
     types=spec['parameterTypes'];bits=spec['operation']['width_bits'];args=['input','input'];args[spec['pointerParameter']]='object'
     rows=','.join('{0x'+r['old']+'ULL,0x'+r['input']+'ULL}' for r in plan['inputs'])
     call=name+'('+','.join(args)+')'
@@ -125,7 +144,12 @@ def parse_samples(stdout,token,plan):
     rows=[json.loads(line) for line in stdout.splitlines()]
     if len(rows)!=len(plan['inputs']):raise ValueError('L3_ATOMIC_SAMPLE_COUNT_MISMATCH')
     for i,(row,wanted) in enumerate(zip(rows,plan['inputs'])):
-        if (set(row)!={'sample','token','objectBase','old','input','result','after'} or type(row['sample']) is not int
+        fields={'sample','token','objectBase','old','input','result','after'}
+        if 'arguments' in wanted:
+            fields.add('arguments')
+            expected=[row['objectBase'] if x is None else x for x in wanted['arguments']]
+            if row.get('arguments')!=expected:raise ValueError('L3_ATOMIC_ARGUMENT_BINDING_MISMATCH')
+        if (set(row)!=fields or type(row['sample']) is not int
                 or row['sample']!=i or row['token']!=token or row['old']!=wanted['old'] or row['input']!=wanted['input']
                 or not isinstance(row['after'],list) or len(row['after'])!=plan['objectCellCount']
                 or any(not isinstance(x,str) or re.fullmatch('[0-9a-f]{16}',x) is None for x in [row['objectBase'],row['old'],row['input'],row['result'],*row['after']])):

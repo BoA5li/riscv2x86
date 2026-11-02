@@ -17,6 +17,10 @@ CASES += [(w,op,order,discard) for op in ('fetch_and','fetch_or','fetch_xor')
 
 @pytest.mark.parametrize('width,operation,order,discard',CASES)
 def test_real_direct_atomic_renamed_production(tmp_path,width,operation,order,discard):
+    exercise_atomic_production(tmp_path,width,operation,order,discard)
+
+
+def exercise_atomic_production(tmp_path,width,operation,order,discard,*,arity=2,pointer=0,value=1):
     backend=os.environ.get('RV2X86_L3_ATOMIC_BACKEND','')
     if not backend:pytest.skip('explicit calibrated direct atomic RMW backend not selected')
     frontend=os.environ.get('RISCV2X86_TEST_FRONTEND','')
@@ -27,7 +31,9 @@ def test_real_direct_atomic_renamed_production(tmp_path,width,operation,order,di
         body='__asm__ volatile("'+opcode+' zero,%1,%0": "+A"(*p):"r"(v):"memory");'
     else:
         body='uint64_t out;__asm__ volatile("'+opcode+' %0,%2,%1":"=r"(out),"+A"(*p):"r"(v):"memory");return out;'
-    source.write_text('#include <stdint.h>\n'+('void' if discard else 'uint64_t')+' unrelated(uint'+str(width)+'_t *p,uint64_t v){'+body+'}\n')
+    parameters=[('uint32_t' if i%2 else 'uint64_t')+' aux'+str(i)+' __attribute__((unused))' for i in range(arity)]
+    parameters[pointer]='uint'+str(width)+'_t *p';parameters[value]='uint64_t v'
+    source.write_text('#include <stdint.h>\n'+('void' if discard else 'uint64_t')+' unrelated('+','.join(parameters)+'){'+body+'}\n')
     root=Path(__file__).resolve().parents[2];out=tmp_path/'production'
     r=subprocess.run([sys.executable,str(root/'experiment/run_l3_atomic_trace.py'),'--input',str(source),'--frontend',frontend,'--backend',backend,'--output',str(out),'--l3-producer-timeout-seconds','600'],capture_output=True,text=True,check=False,timeout=7200)
     logs={str(p):p.read_text(errors='replace')[-12000:] for p in out.glob('*.log')}
@@ -41,6 +47,9 @@ def test_real_direct_atomic_renamed_production(tmp_path,width,operation,order,di
     assert audit_evaluation(evaluation)['status']=='verified'
     detail=json.loads(layers[3]['detail'])
     if 'providerDetail' in detail:detail=json.loads(detail['providerDetail'])
+    if arity!=2:
+        call=detail['atomicDeployment']['spec']['callContract']
+        assert (len(call['parameters']),call['pointerParameter'],call['valueParameter'])==(arity,pointer,value)
     assert len(detail['comparison']['synchronization']['subpropertyResults'])==4
     assert detail['comparison']['synchronization']['concurrentAtomicityMeasured'] is False
     for side in ('source','target'):
