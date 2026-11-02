@@ -1,5 +1,7 @@
 """Separately calibrated control plugin over an unchanged reviewed QEMU backend."""
 import argparse
+from .atomic_validation_operation import calibration
+from .validation_timing import timed
 import json
 from pathlib import Path
 import subprocess
@@ -79,6 +81,7 @@ def calibration_region(elf,kind):
             'exits':sorted([elf.symbol('fall')[0]]+([elf.symbol('taken')[0]] if kind in ('true','false','direct') else []))}
 
 
+@calibration
 def check_calibration(raw,record):
     side,kind=record['side'],record['kind'];binary=Path(record['binary']);elf=Elf(binary)
     if elf.machine!=(243 if side=='source' else 62) or digest(binary)!=record['binaryDigest']:raise ValueError('L3_CONTROL_CALIBRATION_BINARY_CHANGED')
@@ -119,6 +122,7 @@ def check_calibration(raw,record):
     if observed['memory']!=expected:raise ValueError('L3_CONTROL_CALIBRATION_MEMORY_MISMATCH')
 
 
+@timed('atomic.l3_control_backend-validation')
 def validate(raw,*,uncalibrated=False,_context=None):
     if isinstance(raw,(str,Path)):raw=json.loads(Path(raw).read_text())
     fields={'schemaVersion','baseBackendPath','baseBackendDigest','plugin','files','calibration','backendIdentity',*TOOLS}
@@ -126,7 +130,8 @@ def validate(raw,*,uncalibrated=False,_context=None):
     from .l3_qemu_backend import validate_backend
     if digest(raw['baseBackendPath'])!=raw['baseBackendDigest']:raise ValueError('L3_CONTROL_BASE_BACKEND_CHANGED')
     from .l3_backend_validation import checked
-    base=checked(_context,validate_backend,raw['baseBackendPath'])
+    from .atomic_validation_operation import validate_base
+    base=checked(_context,validate_base,raw['baseBackendPath'])
     if any(raw[k]!=base[k] for k in TOOLS):raise ValueError('L3_CONTROL_BASE_TOOL_SELECTION_CHANGED')
     implementation=Path(__file__).resolve();plugin_source=implementation.parents[1].parent/'runtime/l3_qemu_control_trace.c'
     headers=[p for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h')]

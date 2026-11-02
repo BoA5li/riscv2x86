@@ -13,6 +13,17 @@ SCHEMA='riscv2x86.l3-mechanism-selections.v1'
 
 
 def load(path,*,progress=None):
+    from .atomic_validation_operation import (current as atomic_current,
+        checked as atomic_checked,AtomicValidationOperation,leaf_epoch_active,enabled)
+    if enabled():
+        p=Path(path).resolve();raw=json.loads(p.read_text())
+        names=set(raw.get('backends',{})) if isinstance(raw,dict) and isinstance(raw.get('backends'),dict) else set()
+        if names and names<={'atomic','lrsc'}:
+            if atomic_current() is not None and progress is None:
+                return atomic_checked(_load_atomic_operation,{'path':str(p),'digest':digest(p)})
+            if not leaf_epoch_active():
+                with AtomicValidationOperation('mechanism-selection'):
+                    return _load(path,progress=progress)
     from .joint_validation_operation import checked,current
     # Only the profiled joint-only route participates. Other mechanisms retain
     # their existing validation lifecycle and progress callback semantics.
@@ -21,6 +32,12 @@ def load(path,*,progress=None):
         if isinstance(raw,dict) and isinstance(raw.get('backends'),dict) and set(raw['backends'])=={'joint'}:
             return checked(_load_joint_operation,{'path':str(p),'digest':digest(p)})
     return _load(path,progress=progress)
+
+
+@timed('atomic.mechanism-selection-full-validation')
+def _load_atomic_operation(value):
+    if digest(value['path'])!=value['digest']:raise ValueError('L3_MECHANISM_SELECTION_CHANGED')
+    return _load(value['path'])
 
 
 def _load_joint_operation(value):

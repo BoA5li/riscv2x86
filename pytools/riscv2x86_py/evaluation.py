@@ -591,6 +591,9 @@ def _materialize_l2_resolution_plans(
         write_resolved_execution_plan(path, plan)
 
 
+from .atomic_validation_operation import operation as atomic_operation
+
+@atomic_operation('evaluation')
 @joint_operation('evaluation')
 def run_evaluation(
     request: EvaluationRequest, *, work_directory: str | Path,

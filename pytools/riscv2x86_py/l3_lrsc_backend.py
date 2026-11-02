@@ -1,5 +1,7 @@
 """Versioned loop observer with replayed LR/SC and CAS success/failure calibration."""
 import argparse
+from .atomic_validation_operation import calibration
+from .validation_timing import timed
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -33,6 +35,7 @@ def _capture(value,side,binary,region,directory,calls,timeout):
         'commandRecordDigest':digest(work/'execute.command.json')}
 
 
+@timed('lrsc.capture')
 def capture(value,side,binary,region,directory,calls,timeout):
     validate(value);result=_capture(value,side,binary,region,directory,calls,timeout);validate(value);return result
 
@@ -112,6 +115,7 @@ def shapes(value,record):
     return result
 
 
+@calibration
 def check(value,r):
     case=r['case'];binary=Path(r['binary']);asm=Path(r['assembly']);e=r['evidence'];work=binary.parent
     if asm.read_text()!=probe(case) or digest(binary)!=r['binaryDigest']:raise ValueError('L3_LRSC_CALIBRATION_PROGRAM_CHANGED')
@@ -131,6 +135,7 @@ def callback_shape(value,side,width,bits,outcome):
     return matches[0]
 
 
+@timed('atomic.l3_lrsc_backend-validation')
 def validate(path,*,_context=None):
     v=json.loads(Path(path).read_text()) if isinstance(path,(str,Path)) else path
     fields={'schemaVersion','controlBackendPath','controlBackendDigest','plugin','files','calibration','backendIdentity',*control.TOOLS}

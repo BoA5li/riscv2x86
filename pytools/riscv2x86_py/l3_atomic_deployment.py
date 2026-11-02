@@ -1,5 +1,6 @@
 """Deploy unchanged source and approved builtin; locate RMW in actual function bytes."""
 import json
+from .validation_timing import timed
 from pathlib import Path
 import tempfile
 from .l3_trace_support import Elf,digest,identity,run,save
@@ -12,6 +13,7 @@ SCHEMA='riscv2x86.atomic-execution-deployment.v1'
 
 from .l3_trace_support import require_json_document,require_json_match
 
+@timed('atomic.compiler-and-proof-binding')
 def bound_inputs(source,target,report,finding,clang):
     from .mechanism_route_checks import compiler_bound_finding
     from .approved_replacement import approved_replacement
@@ -32,6 +34,7 @@ def bound_inputs(source,target,report,finding,clang):
     return atomic,samples(atomic),function
 
 
+@timed('atomic.build-side')
 def build_side(path,side,plan,function,backend,artifact,work,atomic):
     work.mkdir(parents=True);c=work/'input.c';c.write_bytes(Path(path).read_bytes())
     obj=work/'region.o';wrapper=work/'harness.c';binary=work/'program';cc=backend[side+'Compiler']
@@ -65,6 +68,7 @@ def prepare(source,target,report,finding,backend,source_artifact,target_artifact
     value=dict(body,deploymentIdentity=identity(body));save(work/'deployment.json',value);return value
 
 
+@timed('atomic.deployment-independent-rebuild')
 def validate(value,backend,source_artifact,target_artifact):
     require_json_document(value,'L3_ATOMIC_DEPLOYMENT_JSON_INVALID')
     if (value.get('schemaVersion')!=SCHEMA or value.get('deploymentIdentity')!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'})

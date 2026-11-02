@@ -305,6 +305,15 @@ def _replay_joint_intents(request):
     return produce_intents(request['source'],request['report'],request['manifest'],replay=True)
 
 
+@timed('atomic.intent-program-replay')
+def _replay_atomic_intents(request):
+    # Paths and their initial bytes are part of the operation key. The original
+    # producer performs all semantic/request/tool checks on both traversals.
+    for path,sha in request['files'].items():
+        if digest(path)!=sha:raise ValueError('l3.intent.operation-input-changed')
+    return produce_intents(request['source'],request['report'],request['manifest'],replay=True)
+
+
 @timed('joint.receipt-member-validation')
 def validate_receipt(finding, artifact, source, report):
     receipt = finding.get('l3IntentReceipt')
@@ -329,7 +338,9 @@ def validate_receipt(finding, artifact, source, report):
     # Re-run the selected semantic producer against current compiler-bound
     # approval inputs. A rehashed profile/receipt is not semantic authority.
     from .joint_validation_operation import checked,current
-    if current() is not None and profile.observation_boundary_kind=='compiler-joint-regions':
+    from .atomic_validation_operation import current as atomic_current,checked as atomic_checked,watch_files
+    atomic_replay=atomic_current() is not None and profile.observation_boundary_kind in {'compiler-atomic-region','compiler-lrsc-region'}
+    if atomic_replay or (current() is not None and profile.observation_boundary_kind=='compiler-joint-regions'):
         # Include the input report, compiler snapshot and attempt archive as
         # well as the manifest; another invocation cannot reuse these results.
         report_path=Path(report).resolve()
@@ -337,7 +348,10 @@ def validate_receipt(finding, artifact, source, report):
             report_path.with_name('compiler-candidates.json'),Path(str(report_path)+'.attempts.json')]
         request={'source':str(Path(source).resolve()),'report':str(report_path),'manifest':str(path.resolve()),
                  'files':{str(p):digest(p) for p in paths}}
-        replayed=checked(_replay_joint_intents,request)
+        if atomic_replay:
+            watch_files(request['files'])
+            replayed=atomic_checked(_replay_atomic_intents,request)
+        else:replayed=checked(_replay_joint_intents,request)
     else:replayed = produce_intents(source, report, path, replay=True)
     matches = [f for f in replayed['findings']
                if (f.get('fragment') or {}).get('id') == artifact.fragment_id]

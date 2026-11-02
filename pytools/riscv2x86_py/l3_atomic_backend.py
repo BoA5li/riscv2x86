@@ -1,5 +1,7 @@
 """Calibrated AMO/LOCK/CAS callbacks, including failure paths; no invented R/W pairs."""
 import argparse
+from .atomic_validation_operation import calibration
+from .validation_timing import timed
 import json
 from pathlib import Path
 from . import l3_control_backend as control
@@ -53,6 +55,7 @@ def command(value,side,binary,region,trace,token):
     return control.command(base(value),side,binary,region,trace,token)
 
 
+@timed('atomic.capture')
 def capture(value,side,binary,region,directory,calls,timeout):
     validate(value);_,stdout,evidence=control.capture(base(value),side,binary,region,directory,calls,timeout);validate(value)
     observed=parse_capture(Path(evidence['rawTracePath']).read_text(),evidence['token'],'riscv64' if side=='source' else 'x86_64',region,calls)
@@ -116,6 +119,7 @@ def build_command(b,case,asm,binary):
     return [b[case['side']+'Compiler'],*flags,'-nostdlib','-nostartfiles','-static','-no-pie','-Wl,--build-id=none',str(asm),'-o',str(binary)]
 
 
+@calibration
 def check_calibration(value,r,b):
     case=r['case'];side=case['side'];binary=Path(r['binary']);elf=Elf(binary);reg=region(elf);insn=instruction(elf,reg,case)
     e=r['evidence'];trace=Path(e['rawTracePath']);cp=trace.with_name('execute.command.json');bp=Path(r['assembly']).with_name('build.command.json')
@@ -194,6 +198,7 @@ def callback_shape(value,side,insn,outcome="success"):
     return list(shapes.pop())
 
 
+@timed('atomic.l3_atomic_backend-validation')
 def validate(path,*,_context=None):
     value=json.loads(Path(path).read_text()) if isinstance(path,(str,Path)) else path
     if isinstance(value,dict) and value.get('schemaVersion')=='riscv2x86.qemu-direct-atomic-backend.v1':

@@ -221,6 +221,10 @@ def test_contract_file_replay_passes_deployment_gate_before_receipt_audit(tmp_pa
         'deployment':original,'atomicPolicy':'executed-lrsc-cas-outcomes-and-approved-contract.v1','limitations':sorted(LIMITS)}
     contract=tmp_path/'contract.json';save(contract,dict(body,contractIdentity=identity(body)))
     detail={'contractPath':str(contract),'contractDigest':digest(contract)}
+    trace=tmp_path/'trace';trace.write_text('fixture raw trace')
+    command=tmp_path/'execute.command.json';command.write_text('{}')
+    detail['platformReports']={side:{'evidence':{'rawTracePath':str(trace),
+        'rawTraceDigest':digest(trace),'commandRecordDigest':digest(command)}} for side in ('source','target')}
     monkeypatch.setattr(route,'backend_validate',lambda _:backend)
     def receipt(*args):raise ValueError('fixture: receipt audit reached after deployment replay')
     monkeypatch.setattr(l3_intent_ingress,'validate_receipt',receipt)

@@ -1,5 +1,7 @@
 """Normal-production atomic RMW capture, property comparison and independent replay."""
 import json
+from .atomic_validation_operation import operation,enabled,precheck_capture
+from .validation_timing import timed
 from pathlib import Path
 import shutil
 import subprocess
@@ -37,6 +39,7 @@ def dimensions(contract,reports,bindings,artifact,source,target,prior,l2_scope):
     return close_fragment(req,items,claim_scope='architectural_intent'),results
 
 
+@timed('atomic.independent-replay')
 def replay(detail,source,target,artifact):
     require_json_document(detail,'L3_ATOMIC_REPLAY_JSON_INVALID')
     contract_path=Path(detail['contractPath'])
@@ -45,6 +48,7 @@ def replay(detail,source,target,artifact):
     if contract.get('schemaVersion')!=CONTRACT or contract.get('contractIdentity')!=identity({k:v for k,v in contract.items() if k!='contractIdentity'}):raise ValueError('L3_ATOMIC_CONTRACT_IDENTITY_INVALID')
     if contract['atomicPolicy']!='executed-rmw-outcomes-and-approved-contract.v2' or contract['limitations']!=sorted(LIMITS):raise ValueError('L3_ATOMIC_CONTRACT_POLICY_CHANGED')
     if digest(contract['backendPath'])!=contract['backendDigest']:raise ValueError('L3_ATOMIC_BACKEND_SELECTION_CHANGED')
+    if enabled():precheck_capture(detail,'L3_ATOMIC')
     backend=backend_validate(contract['backendPath']);deployment=replay_deployment(contract['deployment'],backend,source,target)
     from .l3_intent_ingress import validate_receipt
     from .l3_intent_requirements import classify_l3_requirements
@@ -126,6 +130,8 @@ def audit_prerequisites(evaluation):
     check(evaluation,'L3_ATOMIC',single_fragment=True)
 
 
+@operation('atomic-standalone-audit')
+@timed('atomic.standalone-audit')
 def audit_result(evaluation):
     """Audit verified AND counterexample results; never promote a failed result."""
     from .translation_validation import program_artifact_from_dict,translation_artifact_from_dict
