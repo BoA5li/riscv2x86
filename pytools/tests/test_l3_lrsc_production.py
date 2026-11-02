@@ -11,12 +11,16 @@ CASES=[(w,op,False) for w in (32,64) for op in ('add','and','or','xor')]+[(32,'a
 
 @pytest.mark.parametrize('width,operation,word',CASES)
 def test_real_lrsc_production_and_independent_audit(tmp_path,width,operation,word):
+    exercise_lrsc_production(tmp_path,width,operation,word)
+
+
+def exercise_lrsc_production(tmp_path,width,operation,word,*,returned_role='old',extra_function=False):
     backend=os.environ.get('RV2X86_L3_LRSC_BACKEND');frontend=os.environ.get('RISCV2X86_TEST_FRONTEND')
     if not backend:pytest.skip('RV2X86_L3_LRSC_BACKEND not selected')
     assert frontend and Path(frontend).is_file() and Path(backend).is_file()
     inputs=tmp_path/'inputs';inputs.mkdir();source=inputs/'unrelated.c'
     template='1: lr.'+('w' if width==32 else 'd')+'.aq %[old],(%[p])\\n\\t'+operation+('w' if word else '')+' %[next],%[old],%[value]\\n\\tsc.'+('w' if width==32 else 'd')+'.rl %[status],%[next],(%[p])\\n\\tbnez %[status],1b'
-    source.write_text('#include <stdint.h>\nuint64_t unrelated(uint'+str(width)+'_t *p,uint64_t value){uint64_t old,next,status;__asm__ volatile("'+template+'": [old]"=&r"(old),[next]"=&r"(next),[status]"=&r"(status),[object]"+A"(*p):[p]"r"(p),[value]"r"(value):"memory");return old;}\n')
+    source.write_text(('#include <stdint.h>\nuint64_t unrelated(uint'+str(width)+'_t *p,uint64_t value){uint64_t old,next,status;__asm__ volatile("'+template+'": [old]"=&r"(old),[next]"=&r"(next),[status]"=&r"(status),[object]"+A"(*p):[p]"r"(p),[value]"r"(value):"memory");return '+returned_role+';}\n')+('uint64_t not_called(uint64_t a){return a+1;}\n' if extra_function else ''))
     root=Path(__file__).resolve().parents[2];out=tmp_path/'production'
     r=subprocess.run([sys.executable,str(root/'experiment/run_l3_lrsc_trace.py'),'--input',str(source),'--frontend',frontend,'--backend',backend,'--output',str(out),'--l3-producer-timeout-seconds','600'],capture_output=True,text=True,check=False,timeout=7200)
     assert r.returncode==0,r.stdout+r.stderr+json.dumps({str(p):p.read_text(errors='replace')[-10000:] for p in out.glob('*.log')})
@@ -29,6 +33,8 @@ def test_real_lrsc_production_and_independent_audit(tmp_path,width,operation,wor
     assert audit_evaluation(evaluation)['status']=='verified'
     detail=json.loads(layers[3]['detail'])
     if 'providerDetail' in detail:detail=json.loads(detail['providerDetail'])
+    observed_role=detail['lrscDeployment']['spec'].get('returnRole','old')
+    assert observed_role==returned_role
     assert set(detail['comparison'])=={'control','memory','synchronization'}
     assert all(v['status']=='verified' for v in detail['comparison'].values())
     for side in ('source','target'):

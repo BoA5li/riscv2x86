@@ -132,12 +132,6 @@ def materialize(finding,functions,producer_digest,*,failure_details=None):
 
 
 def require_observable_scope(finding,function,source):
-    """The current invocation observer measures return/object, not hidden locals."""
-    candidate=finding['fragment']['compilerFragmentAuthority']['candidate']
-    roles=dict(source.lrsc_sequence.role_operand_indexes)
-    for role in ('next','status'):
-        node=candidate['operandBindings'][roles[role]]['valueNodeIdentity']
-        uses=[u for u in candidate['downstreamUses'] if u['valueNodeIdentity']==node]
-        if (candidate.get('downstreamUseEnumerationComplete') is not True
-                or any(u.get('useKind') not in {'discarded','dead'} or not u.get('complete') for u in uses)):
-            raise ValueError('L2_LRSC_ADDITIONAL_OUTPUT_OBSERVATION_REQUIRED:'+role)
+    """Require every live output to have a measured, compiler-bound sink."""
+    from .lrsc_output_observation import return_role
+    return return_role(finding, function, source)

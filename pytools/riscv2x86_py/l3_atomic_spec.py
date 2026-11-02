@@ -53,7 +53,7 @@ def spec(finding,functions,*,_sequence=False):
             or (scope.get('asmBegin'),scope.get('asmEnd'))!=(key['beginOffset'],key['endOffset'])):
         raise ValueError('L3_ATOMIC_FUNCTION_SCOPE_REQUIRED')
     sidecar=l2_authority_sidecar_from_dict(a['l2AuthoritySidecar'])
-    if _sequence:require_observable_scope(finding,fn,source)
+    returned_role = require_observable_scope(finding,fn,source) if _sequence else None
     rebuilt=(sequence_materialize if _sequence else materialize_atomic_authority)(finding,functions,sidecar.producer.producer_binary_digest)
     if rebuilt is None or rebuilt.to_dict()!=sidecar.to_dict():raise ValueError('L3_ATOMIC_AUTHORITY_REPLAY_MISMATCH')
     if (len(sidecar.memory_objects)!=1 or not sidecar.memory_objects[0].complete
@@ -76,7 +76,7 @@ def spec(finding,functions,*,_sequence=False):
     if atom['result_semantics']=='none':
         if fn['returnType']!='void':raise ValueError('L3_ATOMIC_DISCARDED_RESULT_VOID_REQUIRED')
     else:
-        result=by_index[atom['result_operand_index']]
+        result=by_index[dict(source.lrsc_sequence.role_operand_indexes)[returned_role] if _sequence else atom['result_operand_index']]
         if (result.signedness!='unsigned' or fn['l2OperandBoundary'].get('returnDeclarationId')!=result.declaration_id
                 or unsigned_width(fn['returnType'])!=width['resultCarrierWidth']):raise ValueError('L3_ATOMIC_RETURN_BINDING_REQUIRED')
     body={'schemaVersion':'riscv2x86.atomic-observation-spec.v1','fragmentId':f['id'],'programId':ob['programId'],
@@ -84,7 +84,10 @@ def spec(finding,functions,*,_sequence=False):
           'pointerParameter':pointer,'valueParameter':1-pointer,'parameterTypes':types,'returnType':fn['returnType'],
           'objectSizeBytes':sidecar.memory_objects[0].size_bytes,'obligations':ob,'authorityIdentity':sidecar.authority_identity,
           'physicalMicroarchitectureClaimed':False}
-    if _sequence:body.update(sourceMechanism='lrsc-sequence',sourceSequence=sequence)
+    if _sequence:
+        body.update(sourceMechanism='lrsc-sequence',sourceSequence=sequence)
+        if returned_role != 'old':
+            body.update(schemaVersion='riscv2x86.atomic-observation-spec.v2', returnRole=returned_role)
     return dict(body,specIdentity=identity(body))
 
 

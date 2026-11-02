@@ -133,8 +133,8 @@ def step(state, insn, machine):
         # earlier CMP/TEST witness after ADD/SUB (RISC-V has no flag state).
         if machine==62:state['compare']=None
         base=get(insn['rs']);imm=insn['imm']
-        if isinstance(base,tuple):value=('stack',base[1]+imm)
-        elif not imm:value=base
+        if not imm:value=base
+        elif isinstance(base,tuple) and len(base)==2 and base[0]=='stack':value=('stack',base[1]+imm)
         elif isinstance(base,int):value=(base+imm)&((1<<64)-1)
         else:raise ValueError('L3_CONTROL_VALUE_ARITHMETIC_UNSUPPORTED')
     elif op=='load':

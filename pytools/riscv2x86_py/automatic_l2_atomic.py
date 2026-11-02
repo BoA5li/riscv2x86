@@ -41,6 +41,10 @@ def atomic_wrapper(function,atom,sidecar):
             or (function['returnType']!='void' and _INTEGER_TYPE.fullmatch(function['returnType']) is None)
             or re.fullmatch(r'[A-Za-z_]\w*',function['name']) is None):
         raise ValueError('L2_ATOMIC_HARNESS_SIGNATURE_UNSUPPORTED')
+    if 'observed_return_role' in atom:
+        from .automatic_batch_cli import _integer_type
+        if _integer_type(function['returnType']) != (64, 'unsigned'):
+            raise ValueError('L2_LRSC_UNSIGNED_XLEN_RETURN_REQUIRED')
     if atom['result_semantics']=='old_value' and function['returnType']=='void':
         raise ValueError('L2_ATOMIC_RETURN_OBSERVATION_CONTRACT_REQUIRED')
     pointee=' '.join(x for x in types[pointers[0]][:-1].split() if x not in {'const','volatile'})
@@ -79,9 +83,15 @@ def atomic_events(stdout,atom):
         old=before[0]&mask
         expected={'fetch_add':lambda:(old+input_value)&mask,'fetch_and':lambda:old&input_value,
             'fetch_or':lambda:old|input_value,'fetch_xor':lambda:old^input_value,'exchange':lambda:input_value}[operation]()
+        returned_matches = (returned & mask) == old
+        if 'observed_return_role' in atom:
+            from .lrsc_output_observation import completion_values
+            wanted = completion_values(width, atom['sequence_arithmetic_width_bits'],
+                                       operation, old, int(match[2],16))
+            returned_matches = returned == wanted[atom['observed_return_role']]
         relation_holds=not ((after[0]&mask)!=expected or after[1:]!=before[1:]
                 or (width==32 and (after[0]>>32)!=(before[0]>>32))
-                or (atom['result_semantics']=='old_value' and (returned&mask)!=old))
+                or (atom['result_semantics']=='old_value' and not returned_matches))
         records[sample]={'sampleId':str(sample),'objectId':atom['memory_object_identity'],
             'offsetBytes':0,'widthBits':width,'inputValue':input_value,'oldValue':old,
             'newValue':after[0]&mask,'returnedValue':returned,'beforeObject':before,'afterObject':after,
@@ -138,7 +148,10 @@ def build_atomic_validator(config):
                     or scope.get('asmBegin')!=key['beginOffset'] or scope.get('asmEnd')!=key['endOffset']):
                 return reject('L2_ATOMIC_FUNCTION_EFFECT_SCOPE_UNPROVEN')
             sidecar=l2_authority_sidecar_from_dict(approval['l2AuthoritySidecar'])
-            if is_lrsc:require_observable_scope(finding,function,lrsc_source)
+            if is_lrsc:
+                return_role = require_observable_scope(finding,function,lrsc_source)
+                atom = dict(atom, observed_return_role=return_role,
+                            sequence_arithmetic_width_bits=lrsc_source.lrsc_sequence.arithmetic_width_bits)
             rebuilt=(materialize_lrsc if is_lrsc else materialize_atomic_authority)(finding,fresh,sidecar.producer.producer_binary_digest)
             if rebuilt is None or rebuilt.authority_identity!=sidecar.authority_identity:
                 return reject('L2_ATOMIC_COMPILER_PROOF_JOIN_MISMATCH')
@@ -148,7 +161,7 @@ def build_atomic_validator(config):
                 return reject('L2_ATOMIC_EXPLICIT_REFINEMENT_OBSERVATION_REQUIRED')
             by_index={x.operand_index:x for x in sidecar.operands}
             if atom['result_semantics']=='old_value':
-                output=by_index[atom['result_operand_index']]
+                output=by_index[dict(lrsc_source.lrsc_sequence.role_operand_indexes)[return_role] if is_lrsc else atom['result_operand_index']]
                 if function['l2OperandBoundary'].get('returnDeclarationId')!=output.declaration_id:
                     return reject('L2_ATOMIC_OUTPUT_SINK_INSTRUMENTATION_REQUIRED')
             stage='harness_build';harness=atomic_wrapper(function,atom,sidecar)
@@ -180,6 +193,14 @@ def build_atomic_validator(config):
                 'atomicityEvidenceKind':('approved-phase6d-locked-cas-sequence-contract' if is_lrsc
                     else 'approved-phase6d-compiler-builtin-contract'),
                 'orderingEvidenceKind':'approved-phase6d-contract-not-litmus-inference','reasonCode':reason}
+            if is_lrsc:
+                observation['completionOutputContract'] = {
+                    'schemaVersion':'riscv2x86.lrsc-return-observation.v1',
+                    'returnRole':return_role, 'carrierWidthBits':64,
+                    'memoryWidthBits':atom['width_bits'],
+                    'arithmeticWidthBits':lrsc_source.lrsc_sequence.arithmetic_width_bits,
+                    'observationSource':'actual-C-function-return',
+                    'failedAttemptRegistersObserved':False}
             properties={L2Dimension.LOGICAL_OPERANDS:('operand_binding','operand_value','operand_width'),
                 L2Dimension.MEMORY_EFFECTS:('object','offset','width','old_value','new_value'),
                 L2Dimension.ATOMIC_MEMORY_ORDER:('approved_atomicity_contract','approved_ordering_contract','single_thread_execution_witness'),

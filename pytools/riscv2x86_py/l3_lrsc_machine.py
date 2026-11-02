@@ -18,6 +18,17 @@ def expression(op,a,b,w):
     return (op,w,*sorted((low(a,w),low(b,w)),key=repr))
 
 
+def canonical(value):
+    # A 32-bit ALU term already denotes its low 32 bits. Keep the outer
+    # sign extension: removing it would lose next's full-XLEN semantics.
+    if isinstance(value,tuple):
+        if value[0]=='low':return low(canonical(value[2]),value[1])
+        if value[0]=='sign32':return ('sign32',low(canonical(value[1]),32))
+        if value[0] in ('add','and','or','xor'):
+            return expression(value[0],canonical(value[2]),canonical(value[3]),value[1])
+    return value
+
+
 def target_step(s,row,*,region=False,roles=None):
     if region and row['op'] in ('add','and','or','xor') and 'base' in row['source']:
         if x.address(s,row['source'])[0]!='stack' or x.get(s,row['source'],row['width'])!=x.low(s['input'],row['width']):
@@ -28,7 +39,8 @@ def target_step(s,row,*,region=False,roles=None):
         v=expression('add',x.get(s,row['destination'],row['width']),x.get(s,row['source'],row['width']),row['width'])
         x.put(s,row['destination'],v,row['width']);s['zero']=None
     elif row['op'] in ('and','or','xor'):
-        v=expression(row['op'],x.get(s,row['destination'],row['width']),x.get(s,row['source'],row['width']),row['width'])
+        left=x.get(s,row['destination'],row['width']);right=x.get(s,row['source'],row['width'])
+        v=0 if row['op']=='xor' and left==right else expression(row['op'],left,right,row['width'])
         if 'register' not in row['destination']:raise ValueError('L3_LRSC_TARGET_EXTRA_STORE')
         x.put(s,row['destination'],v,row['width']);s['zero']=None
     else:x.step(s,row,region=region,roles=roles)
@@ -64,9 +76,16 @@ def target(code,base,spec):
     tail=rows[bi+1:]
     if not tail or tail[-1]['op']!='return' or any(r['op']=='return' for r in rows[:-1]):raise ValueError('L3_LRSC_TARGET_RETURN')
     for r in tail[:-1]:target_step(success,r)
+    role=spec.get('returnRole','old')
     wanted=('old',1,w)
     if w==32:wanted=('sign32',low(wanted,32))
-    if x.read_register(success,0,64)!=wanted or success['registers'].get(4)!=('stack',0):raise ValueError('L3_LRSC_TARGET_RETURN_VALUE_OR_STACK')
+    if role=='next':
+        arithmetic=spec['sourceSequence']['arithmetic_width_bits']
+        wanted=expression(spec['operation']['rmw_operation'][6:],wanted,success['input'],arithmetic)
+        if arithmetic==32:wanted=('sign32',low(wanted,32))
+    elif role=='status':wanted=0
+    elif role!='old':raise ValueError('L3_LRSC_RETURN_ROLE_UNSUPPORTED')
+    if canonical(x.read_register(success,0,64))!=canonical(wanted) or success['registers'].get(4)!=('stack',0):raise ValueError('L3_LRSC_TARGET_RETURN_VALUE_OR_STACK')
     start=rows[loads[0]]['pc'];end=b['pc']+b['size']
     body={'machine':62,'instruction':{'operation':spec['operation']['rmw_operation'],'width':w,'mechanism':'x86-locked-cas-loop','ordering':'ordinary-memory-full-order'},
           'functionBytes':bytes(code).hex(),'instructions':rows,'region':{'start':start,'end':end,'exits':[end]},
@@ -108,9 +127,12 @@ def source(code,base,spec):
         or s['registers'].get(q['inputRegister'])!='parameter:'+str(spec['valueParameter'])):
         raise ValueError('L3_LRSC_SOURCE_PARAMETER_BINDING')
     old='source-old:'+str(w);s['registers'][q['oldRegister']]=old
-    s['registers'][q['nextRegister']]=('source-next',);s['registers'][q['statusRegister']]=0
+    s['registers'][q['nextRegister']]='source-next';s['registers'][q['statusRegister']]=0
     for r in tail[:-1]:rv.step(s,r,243)
-    if s['registers'].get(10)!=old or s['registers'].get(2)!=('stack',0):raise ValueError('L3_LRSC_SOURCE_RETURN_OR_STACK')
+    role=spec.get('returnRole','old')
+    if role not in {'old','next','status'}:raise ValueError('L3_LRSC_RETURN_ROLE_UNSUPPORTED')
+    wanted={'old':old,'next':'source-next','status':0}[role]
+    if s['registers'].get(10)!=wanted or s['registers'].get(2)!=('stack',0):raise ValueError('L3_LRSC_SOURCE_RETURN_OR_STACK')
     pcs=q['instructionAddresses'];end=base+off+n
     body={'machine':243,'instruction':{'operation':q['operation'],'width':w,'mechanism':'rv-lrsc-loop','ordering':'approved-lrsc-bits'},
           'functionBytes':bytes(code).hex(),'sequence':q,'prefix':prefix,'suffix':tail,

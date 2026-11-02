@@ -15,11 +15,15 @@ def bound_inputs(source,target,report,finding,clang):
     from .approved_replacement import approved_replacement
     from .automatic_batch_cli import inspect_entry_points
     bound,snapshot=compiler_bound_finding(source,report,finding['fragment']['id'])
-    if bound!=finding or len(snapshot['functions'])!=1:raise ValueError('L3_LRSC_COMPILER_FINDING_MISMATCH')
-    function=snapshot['functions'][0];atomic=spec(finding,snapshot['functions'])
+    if bound!=finding:raise ValueError('L3_LRSC_COMPILER_FINDING_MISMATCH')
+    atomic=spec(finding,snapshot['functions'])
+    matches=[fn for fn in snapshot['functions'] if fn.get('functionId')==atomic['functionId']]
+    if len(matches)!=1:raise ValueError('L3_LRSC_COMPILER_FINDING_MISMATCH')
+    function=matches[0]
     _,fresh=inspect_entry_points(Path(source),clang=clang)
     used=('functionId','sourceDigest','parameterTypes','returnType','l2OperandBoundary','compilerAtomicFunctionScope')
-    if len(fresh)!=1 or any(fresh[0].get(k)!=function.get(k) for k in used):raise ValueError('L3_LRSC_COMPILER_REBUILD_MISMATCH')
+    matches=[fn for fn in fresh if fn.get('functionId')==function['functionId']]
+    if len(matches)!=1 or any(matches[0].get(k)!=function.get(k) for k in used):raise ValueError('L3_LRSC_COMPILER_REBUILD_MISMATCH')
     data=Path(source).read_bytes();a=finding['rewriteBeginOffset'];b=finding['rewriteEndOffset']
     if data[a:b].decode()!=finding['rawSourceText'] or data[:a]+approved_replacement(finding).encode()+data[b:]!=Path(target).read_bytes():
         raise ValueError('L3_LRSC_TARGET_MATERIALIZATION_MISMATCH')

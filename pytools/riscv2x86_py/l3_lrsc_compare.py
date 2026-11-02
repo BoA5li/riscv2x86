@@ -25,10 +25,10 @@ def report(side,backend,deployment,observed,rows,evidence):
         step_offset+=len(path['pcs'])
         mask=(1<<atom['width_bits'])-1;old=int(row['old'],16);value=int(row['input'],16)&mask
         wanted=rmw_result(atom['rmw_operation'],old,value,atom['width_bits'])
-        projected=old
-        if spec['widthRoles']['resultExtension']=='sign_extend' and old&(1<<(atom['width_bits']-1)):
-            projected=old-(1<<atom['width_bits'])
-        projected &= (1<<spec['widthRoles']['resultCarrierWidth'])-1 if atom['result_semantics']=='old_value' else 0
+        from .lrsc_output_observation import completion_values
+        outputs = completion_values(atom['width_bits'], spec['sourceSequence']['arithmetic_width_bits'],
+                                    atom['rmw_operation'], old, int(row['input'],16))
+        projected = outputs[spec.get('returnRole', 'old')]
         outcome=(list(map(lambda x:int(x,16),row['after']))==[wanted,0x31,0x72,0x53]+[0]*(deployment['samplePlan']['objectCellCount']-4)
                  and int(row['result'],16)==projected)
         events.append({'sample':i,'objectId':atom['memory_object_identity'],
@@ -40,6 +40,9 @@ def report(side,backend,deployment,observed,rows,evidence):
                        'outcomeMatchesApprovedOperation':outcome,'mechanismSatisfiesApprovedContract':satisfies(insn,atom,side),
                        'mechanismIdentity':machine['mechanismIdentity'],'outcomeObservationSource':'actual-invocation-harness',
                        'atomicityEvidenceKind':'approved-contract-and-executed-machine-attribution'})
+        if 'returnRole' in spec:
+            events[-1]['returnedOutputRole'] = spec['returnRole']
+            events[-1]['returnObservationSource'] = 'actual-C-function-return'
         if retry_detail is not None:events[-1]['retryObservation']=retry_detail
     if 'retry' in machine:
         from .l3_lrsc_backend import memory_by_step
