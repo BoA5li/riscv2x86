@@ -94,14 +94,16 @@ def target(code,base,spec):
     return dict(body,mechanismIdentity=identity(body))
 
 
-def _rv_rows(code,base):
+def _rv_rows(code,base,*,phase="shell"):
     rows=[];offset=0
     while offset<len(code):
         raw=code[offset:];size=2 if raw[0]&3!=3 else 4
         if len(raw)<size:raise ValueError('L3_LRSC_RV_TRUNCATED')
         if raw[:size] in (bytes.fromhex('8280'),bytes.fromhex('67800000')):
             r={'op':'return','pc':base+offset,'size':size,'bytes':raw[:size].hex()}
-        else:r=rv.decode(raw[:size],base+offset,243)[0]
+        else:
+            try:r=rv.decode(raw[:size],base+offset,243)[0]
+            except ValueError as exc:raise ValueError(str(exc)+':lrsc-'+phase) from exc
         rows.append(r);offset+=size
     return rows
 
@@ -119,7 +121,7 @@ def source(code,base,spec):
         or tuple(q['lrOrderingBits'][k] for k in ('aq','rl'))!=tuple(seq['lr_ordering_bits'])
         or tuple(q['scOrderingBits'][k] for k in ('aq','rl'))!=tuple(seq['sc_ordering_bits'])):
         raise ValueError('L3_LRSC_SOURCE_SEQUENCE_CONTRACT_MISMATCH')
-    prefix=_rv_rows(code[:off],base);tail=_rv_rows(code[off+n:],base+off+n)
+    prefix=_rv_rows(code[:off],base,phase='prefix');tail=_rv_rows(code[off+n:],base+off+n,phase='suffix')
     if not tail or tail[-1]['op']!='return' or any(r['op']=='return' for r in prefix+tail[:-1]):raise ValueError('L3_LRSC_SOURCE_RETURN_REQUIRED')
     s=rv.initial(243)
     for r in prefix:rv.step(s,r,243)

@@ -78,10 +78,14 @@ def test_flags_are_invalidated_by_intervening_amd64_arithmetic():
         graph(code,4096,{'start':4096,'end':4106,'exits':[4106]},62)
 
 
-def test_overlapping_stack_write_invalidates_previous_value():
+def test_overlapping_stack_write_cannot_restore_previous_value():
     from riscv2x86_py.l3_control_machine import initial,step
     state=initial(243)
     step(state,{'op':'store','rs':2,'rd':10,'imm':0,'width':64},243)
     step(state,{'op':'store','rs':2,'rd':11,'imm':4,'width':64},243)
+    step(state,{'op':'load','rs':2,'rd':12,'imm':0,'width':64},243)
+    from riscv2x86_py.l3_control_machine import value_of
+    assert state['registers'][12]!='parameter:0'
+    assert value_of(state['registers'][12],[0x0123456789abcdef,0xfedcba9876543210])==0x7654321089abcdef
     with pytest.raises(ValueError,match='STACK_VALUE_UNBOUND'):
-        step(state,{'op':'load','rs':2,'rd':12,'imm':0,'width':64},243)
+        step(state,{'op':'load','rs':2,'rd':12,'imm':8,'width':64},243)

@@ -5,6 +5,7 @@ unbound values reject the route. This is deliberately not a general ISA lifter.
 No mnemonic text, source labels or case names select the semantics.
 """
 from .l3_trace_support import identity
+from . import l3_stack_values as stack
 
 
 def signed(value, bits):
@@ -24,6 +25,9 @@ def decode(code, base, machine):
             if q!=3:
                 rd=(w>>7)&31; small=signed(((w>>12)&1)*32+((w>>2)&31),6)
                 if q==1 and f==0:r={'op':'add','rd':rd,'rs':rd,'imm':small}
+                elif q==1 and f==1:
+                    if not rd:raise ValueError('L3_CONTROL_RESERVED_INSTRUCTION')
+                    r={'op':'add','rd':rd,'rs':rd,'imm':small,'width':32}
                 elif q==1 and f==2:r={'op':'constant','rd':rd,'imm':small}
                 elif q==1 and f==3 and rd==2:
                     imm=((w>>12)&1)<<9|((w>>6)&1)<<4|((w>>5)&1)<<6|((w>>3)&3)<<7|((w>>2)&1)<<5
@@ -35,6 +39,16 @@ def decode(code, base, machine):
                     r={'op':'add','rd':8+((w>>2)&7),'rs':2,'imm':imm}
                 elif q==2 and f==4 and not w&0x1000 and rd and (w>>2)&31:
                     r={'op':'move','rd':rd,'rs':(w>>2)&31}
+                elif q==0 and f in (2,6):
+                    imm=((w>>10)&7)<<3|((w>>6)&1)<<2|((w>>5)&1)<<6
+                    r={'op':'load' if f==2 else 'store','rd':8+((w>>2)&7),'rs':8+((w>>7)&7),'imm':imm,'width':32}
+                elif q==2 and f==2:
+                    if not rd:raise ValueError('L3_CONTROL_RESERVED_INSTRUCTION')
+                    imm=((w>>12)&1)<<5|((w>>4)&7)<<2|((w>>2)&3)<<6
+                    r={'op':'load','rd':rd,'rs':2,'imm':imm,'width':32}
+                elif q==2 and f==6:
+                    imm=((w>>9)&15)<<2|((w>>7)&3)<<6
+                    r={'op':'store','rd':(w>>2)&31,'rs':2,'imm':imm,'width':32}
                 elif q==0 and f in (3,7):
                     imm=((w>>10)&7)<<3|((w>>5)&3)<<6
                     r={'op':'load' if f==3 else 'store','rd':8+((w>>2)&7),'rs':8+((w>>7)&7),'imm':imm,'width':64}
@@ -53,8 +67,11 @@ def decode(code, base, machine):
             else:
                 w|=read(2)<<16;op=w&127;rd=(w>>7)&31;rs=(w>>15)&31;rt=(w>>20)&31;f=(w>>12)&7
                 if op==0x13 and f==0:r={'op':'add','rd':rd,'rs':rs,'imm':signed(w>>20,12)}
-                elif op==3 and f==3:r={'op':'load','rd':rd,'rs':rs,'imm':signed(w>>20,12),'width':64}
-                elif op==0x23 and f==3:r={'op':'store','rd':rt,'rs':rs,'imm':signed(((w>>25)<<5)|((w>>7)&31),12),'width':64}
+                elif op==0x1b and f==0:r={'op':'add','rd':rd,'rs':rs,'imm':signed(w>>20,12),'width':32}
+                elif op==3 and f in (0,1,2,3,4,5,6):
+                    r={'op':'load','rd':rd,'rs':rs,'imm':signed(w>>20,12),'width':8<<(f&3)}
+                    if f>=4:r['unsigned']=True
+                elif op==0x23 and f in (0,1,2,3):r={'op':'store','rd':rt,'rs':rs,'imm':signed(((w>>25)<<5)|((w>>7)&31),12),'width':8<<f}
                 elif op==0x63 and f in (0,1,4,5,6,7):
                     imm=((w>>31)&1)<<12|((w>>7)&1)<<11|((w>>25)&63)<<5|((w>>8)&15)<<1
                     r={'op':'branch','left':rs,'right':rt,'condition':{0:'equal',1:'not_equal',4:'signed_less',5:'signed_greater_equal',6:'unsigned_less',7:'unsigned_greater_equal'}[f],'target':pc+signed(imm,13)}
@@ -106,7 +123,7 @@ def decode(code, base, machine):
                     cond={2:'unsigned_less',3:'unsigned_greater_equal',4:'equal',5:'not_equal',6:'unsigned_less_equal',7:'unsigned_greater',12:'signed_less',13:'signed_greater_equal',14:'signed_less_equal',15:'signed_greater'}.get(cc)
                     if cond is None:raise ValueError('L3_CONTROL_X86_CONDITION_UNSUPPORTED')
                     disp=signed(read(n),8*n);r={'op':'branch','condition':cond,'target':base+i+disp}
-        if not r:raise ValueError('L3_CONTROL_MACHINE_OPCODE_UNSUPPORTED:'+str(machine)+':'+hex(pc))
+        if not r:raise ValueError('L3_CONTROL_MACHINE_OPCODE_UNSUPPORTED:'+str(machine)+':'+hex(pc)+':bytes='+code[begin:i].hex())
         rows.append(dict(r,pc=pc,size=i-begin,bytes=code[begin:i].hex()))
         if len(rows)>1024:raise ValueError('L3_CONTROL_MACHINE_BUDGET_EXCEEDED')
     return rows
@@ -126,31 +143,31 @@ def step(state, insn, machine):
         base=get(insn['rs'])
         if not isinstance(base,tuple) or base[0]!='stack':raise ValueError('L3_CONTROL_STACK_BINDING_UNPROVEN')
         return base[1]+insn['imm']
-    if op=='move':value=get(insn['rs'])
-    elif op=='constant':value=insn['imm']&((1<<64)-1)
+    if op=='move':
+        value=get(insn['rs'])
+        if machine==62 and insn.get('width',64)==32:value=stack.project(value,0,32)
+    elif op=='constant':value=insn['imm']&((1<<(32 if machine==62 and insn.get('width',64)==32 else 64))-1)
     elif op=='add':
         # AMD64 arithmetic overwrites flags. A later Jcc must not reuse an
         # earlier CMP/TEST witness after ADD/SUB (RISC-V has no flag state).
         if machine==62:state['compare']=None
         base=get(insn['rs']);imm=insn['imm']
-        if not imm:value=base
+        if machine==243 and insn.get('width',64)==32:value=stack.word_add(base,imm)
+        elif not imm:value=base
         elif isinstance(base,tuple) and len(base)==2 and base[0]=='stack':value=('stack',base[1]+imm)
         elif isinstance(base,int):value=(base+imm)&((1<<64)-1)
         else:raise ValueError('L3_CONTROL_VALUE_ARITHMETIC_UNSUPPORTED')
     elif op=='load':
-        if insn['width']!=64:raise ValueError('L3_CONTROL_STACK_WIDTH_UNSUPPORTED')
-        if address() not in mem:raise ValueError('L3_CONTROL_STACK_VALUE_UNBOUND')
-        value=mem[address()]
+        value=stack.load(mem,address(),insn['width'])
+        if machine==243 and insn['width']<64 and not insn.get('unsigned',False):
+            value=stack.sign_extend(value,insn['width'])
     elif op=='store':
-        if insn['width']!=64:raise ValueError('L3_CONTROL_STACK_WIDTH_UNSUPPORTED')
-        slot=address()
-        for old in list(mem):
-            if old<slot+8 and slot<old+8:del mem[old]
-        mem[slot]=get(insn['rd']);return
+        stack.store(mem,address(),get(insn['rd']),insn['width']);return
     elif op=='push':
         sp=get(4)
-        if not isinstance(sp,tuple):raise ValueError('L3_CONTROL_STACK_BINDING_UNPROVEN')
-        regs[4]=('stack',sp[1]-8);mem[sp[1]-8]=get(insn['rs']);return
+        if not isinstance(sp,tuple) or len(sp)!=2 or sp[0]!='stack':raise ValueError('L3_CONTROL_STACK_BINDING_UNPROVEN')
+        pushed=get(insn['rs'])
+        regs[4]=('stack',sp[1]-8);stack.store(mem,sp[1]-8,pushed,64);return
     elif op in ('compare','test'):
         left,right=get(insn['left']),get(insn['right'])
         if op=='test':
@@ -159,9 +176,6 @@ def step(state, insn, machine):
         state['compare']=(left,right);return
     elif op=='nop':return
     else:raise ValueError('L3_CONTROL_NONLINEAR_PREFIX')
-    if insn.get('width',64)!=64:
-        if not isinstance(value,int):raise ValueError('L3_CONTROL_NARROW_PARAMETER_UNSUPPORTED')
-        value&=0xffffffff
     if not(machine==243 and insn['rd']==0):regs[insn['rd']]=value
 
 
@@ -195,7 +209,7 @@ def graph(code, function_start, region, machine, result_register=None):
     walk(region['start'],state,[],[],[])
     body={'schemaVersion':'riscv2x86.control-machine-graph.v1','machine':machine,
           'region':region,'instructions':[x for x in instructions if x['pc']>=region['start']],
-          'paths':paths,'resultRegister':result_register}
+          'paths':stack.export(paths),'resultRegister':result_register}
     return dict(body,graphIdentity=identity(body))
 
 
@@ -207,9 +221,7 @@ def condition(kind,left,right):
 
 
 def value_of(value,inputs):
-    if isinstance(value,int):return value
-    if isinstance(value,str) and value.startswith('parameter:'):return inputs[int(value.split(':')[1])]
-    raise ValueError('L3_CONTROL_VALUE_UNBOUND')
+    return stack.evaluate(value,inputs)
 
 
 def selected_path(graph,pcs,exit_pc,inputs):
