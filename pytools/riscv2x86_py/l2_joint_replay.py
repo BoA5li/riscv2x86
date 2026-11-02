@@ -5,8 +5,10 @@ import tempfile
 from .l3_trace_support import digest, require_json_document, require_json_match, Elf, run
 from .l3_joint_observation import harness, instrument, parse_l2, JointSemanticMismatch
 from .l3_joint_spec import sample_plan
+from .validation_timing import timed
 
 
+@timed('joint.l2-independent-replay')
 def replay(value):
     require_json_document(value, 'L2_JOINT_JSON_INVALID')
     if value.get('schemaVersion') != 'riscv2x86.l2-joint-observation.v1':

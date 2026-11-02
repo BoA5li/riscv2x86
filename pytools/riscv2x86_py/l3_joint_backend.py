@@ -7,9 +7,17 @@ from uuid import uuid4
 from .l3_trace_support import Elf,digest,identity,run,save,require_json_document,require_json_match
 from .l3_qemu_backend import validate_backend
 from .l3_status import write_status_atomic, record_failure
+from .validation_timing import timed
+from .l3_backend_validation import checked
 
 SCHEMA='riscv2x86.qemu-joint-regions.v1'
 TOOLS=('sourceExecutor','targetExecutor','sourceCompiler','targetCompiler','sourceRunnerArguments','targetRunnerArguments')
+
+
+@timed('joint.base-backend-validation')
+def checked_base(value,context):
+    # Preserve the original validator/cache key and all provenance checks.
+    return checked(context,validate_backend,value)
 
 
 def parse_capture(text,token,side,regions,calls):
@@ -53,11 +61,20 @@ def command(b,side,binary,regions,path,token):
     return [b[side+'Executor'],*b[side+'RunnerArguments'],'-plugin',b['plugin']+',regions='+ranges+',output='+str(path)+',token='+token,str(binary),token]
 
 
-def capture(b,side,binary,regions,directory,calls,timeout,*,calibration=False,negative=False):
-    validate(b,uncalibrated=calibration);directory=Path(directory).resolve();directory.mkdir(parents=True,exist_ok=True)
+@timed('joint.capture')
+def capture(b,side,binary,regions,directory,calls,timeout,*,calibration=False,negative=False,_context=None,_backend_path=None):
+    def check_backend():
+        if _context is None:
+            return validate(b,uncalibrated=calibration)
+        if calibration or _backend_path is None:
+            raise ValueError('L3_JOINT_CAPTURE_VALIDATION_CONTEXT_INVALID')
+        current=checked(_context,validate,_backend_path)
+        require_json_match(current,b,'L3_JOINT_CAPTURE_BACKEND_CHANGED')
+        return current
+    check_backend();directory=Path(directory).resolve();directory.mkdir(parents=True,exist_ok=True)
     path=directory/'guest-trace.log';token=uuid4().hex+uuid4().hex;before=digest(binary)
     result=run(command(b,side,binary,regions,path,token),directory,'execute',timeout)
-    validate(b,uncalibrated=calibration)
+    check_backend()
     if result.stderr or digest(binary)!=before:raise ValueError('L3_JOINT_EXECUTION_CHANGED_OR_STDERR')
     events=None if negative else parse_capture(path.read_text(),token,side,regions,calls)
     return events,result.stdout,{'token':token,'rawTracePath':str(path),'rawTraceDigest':digest(path),'commandRecordDigest':digest(directory/'execute.command.json')}
@@ -80,6 +97,7 @@ def probe(side,kind):
 def regions_of(elf):return [{'start':elf.symbol('b'+str(i))[0],'end':elf.symbol('e'+str(i))[0]} for i in range(2)]
 
 
+@timed('joint.calibration-check-and-rebuild')
 def check_calibration(b,r):
     side,kind=r['side'],r['kind'];elf=Elf(r['binary']);regions=regions_of(elf);e=r['evidence'];trace=Path(e['rawTracePath']);cp=trace.with_name('execute.command.json')
     build=Path(r['assembly']).with_name('build.command.json');flags=['-march=rv64gc','-mabi=lp64d','-Wl,--no-relax'] if side=='source' else []
@@ -110,13 +128,13 @@ def check_calibration(b,r):
     if events!=expected:raise ValueError('L3_JOINT_CALIBRATION_MISMATCH')
 
 
+@timed('joint.backend-validation')
 def validate(value,*,uncalibrated=False,_context=None):
     b=json.loads(Path(value).read_text()) if isinstance(value,(str,Path)) else value
     require_json_document(b,'L3_JOINT_BACKEND_JSON_INVALID')
     fields={'schemaVersion','baseBackendPath','baseBackendDigest','plugin','files','calibration','backendIdentity',*TOOLS}
     if not isinstance(b,dict) or set(b)!=fields or b['schemaVersion']!=SCHEMA or b['backendIdentity']!=identity({k:v for k,v in b.items() if k!='backendIdentity'}):raise ValueError('L3_JOINT_BACKEND_INVALID')
-    from .l3_backend_validation import checked
-    base=checked(_context,validate_backend,b['baseBackendPath'])
+    base=checked_base(b['baseBackendPath'],_context)
     if digest(b['baseBackendPath'])!=b['baseBackendDigest'] or any(b[k]!=base[k] for k in TOOLS):raise ValueError('L3_JOINT_BASE_CHANGED')
     impl=Path(__file__).resolve();source=impl.parents[2]/'runtime/l3_qemu_program_trace.c';headers=[p for p in base['files'] if p.endswith('/include/qemu/qemu-plugin.h')];build=Path(b['plugin']).with_name('plugin.command.json')
     if len(headers)!=1 or not {str(impl),str(impl.with_name('l3_status.py')),str(impl.with_name('l3_backend_validation.py')),str(source),str(build),b['plugin'],headers[0]}<=set(b['files']):raise ValueError('L3_JOINT_BACKEND_FILES_MISSING')

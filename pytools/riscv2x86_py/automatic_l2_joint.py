@@ -17,9 +17,11 @@ from .translation_validation import ValidationLayerResult,ValidationLevel
 from .validation_status import ValidationStatus,PreservationMode
 from .l2_materialization import required_dimensions_for_finding
 from .l2_evidence_closure import provider_evidence_fields,L2ProviderExecutionDisposition
+from .validation_timing import timed
 
 
 def build_validator(config):
+    @timed('joint.l2-member-validation')
     def validate(**kw):
         stage='prerequisites';executed=False
         try:

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import json
 from hashlib import sha256
+from .validation_timing import timed
 
 from .l2_eligibility import classify_l2_requirements
 from .l3_intent_requirements import classify_l3_requirements
@@ -240,6 +241,7 @@ def _inject_csr_authority(raw_report: Path, source: Path, sidecar: Path) -> None
                           encoding="utf-8")
 
 
+@timed('translation.command')
 def main() -> int:
     parser = argparse.ArgumentParser("riscv2x86-automatic-translation")
     parser.add_argument("--frontend", required=True)

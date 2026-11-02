@@ -10,6 +10,8 @@ from .l3_intent_requirements import parse_l3_requirement_manifest
 from .l3_evidence_closure import close_fragment,validate_fragment_against_requirement
 from .translation_validation import ValidationLayerResult,ValidationLevel,ValidationProfile
 from .validation_status import ValidationStatus
+from .l3_backend_validation import BackendValidationSession,checked
+from .validation_timing import timed
 
 SCHEMA='riscv2x86.joint-program-route.v1'
 
@@ -24,11 +26,12 @@ def platform(side,b,deployment,events,rows,evidence):
             'runnerArguments':b[side+'RunnerArguments'],'physicalMicroarchitectureClaimed':False}}
 
 
-def replay_group(group,source,target):
+@timed('joint.group-independent-replay')
+def replay_group(group,source,target,*,_context=None):
     require_json_document(group,'L3_JOINT_CAPTURE_JSON_INVALID')
     if (group.get('schemaVersion')!='riscv2x86.joint-region-capture.v1' or group['groupIdentity']!=identity({k:v for k,v in group.items() if k!='groupIdentity'})
             or digest(group['backendPath'])!=group['backendDigest']):raise ValueError('L3_JOINT_CAPTURE_GROUP_CHANGED')
-    b=backend_validate(group['backendPath']);d=replay_deployment(group['deployment'],b,source,target)
+    b=checked(_context,backend_validate,group['backendPath']);d=replay_deployment(group['deployment'],b,source,target)
     from .l3_intent_requirements import classify_l3_requirements
     expected=classify_l3_requirements(json.loads(Path(d['inputs']['report']).read_text())).requirements
     if group['requirements']!=list(expected):raise ValueError('L3_JOINT_CAPTURE_REQUIREMENTS_CHANGED')
@@ -40,6 +43,32 @@ def replay_group(group,source,target):
         events=parse_capture(path.read_text(),e['token'],side,item['regions'],len(d['samplePlan']['inputs']))
         rows=parse_samples(c['stdout'],e['token'],d['spec'],d['samplePlan'])
         require_json_match(platform(side,b,d,events,rows,e),r,'L3_JOINT_OBSERVATION_REPLAY_MISMATCH')
+    return group
+
+
+@timed('joint.new-capture-operation')
+def new_capture(config,report,source,target,requirements,work):
+    """Only backend checks are reused; deployment, traces and members are not.
+
+    This session cannot escape one new-capture operation. A full uncached
+    backend validation must succeed on exit before the group is returned.
+    Existing captures and standalone audits always replay without this session.
+    """
+    backend_path=config['backendPath']
+    with BackendValidationSession() as session:
+        b=checked(session,backend_validate,backend_path)
+        d=prepare(config['sourcePath'],config['targetPath'],report,b,source,target,work/'deployment',config['clang'],config['sampleCount'])
+        reports={}
+        for side in ('source','target'):
+            item=d['sides'][side]
+            events,stdout,e=capture(b,side,item['executionArtifact']['artifactPath'],item['regions'],work/side,
+                len(d['samplePlan']['inputs']),config['timeoutSeconds'],_context=session,_backend_path=backend_path)
+            reports[side]=platform(side,b,d,events,parse_samples(stdout,e['token'],d['spec'],d['samplePlan']),e)
+        body={'schemaVersion':'riscv2x86.joint-region-capture.v1','deployment':d,'reports':reports,'requirements':list(requirements),
+              'backendPath':backend_path,'backendDigest':config['backendDigest']}
+        group=dict(body,groupIdentity=identity(body))
+        replay_group(group,source,target,_context=session)
+    # In particular, do not publish a capture if closing validation failed.
     return group
 
 
@@ -83,6 +112,7 @@ def fragment_result(req,group,reports,artifact,source,target,prior):
 def build_route(config):
     fields={'schemaVersion','sourcePath','targetPath','reportPath','backendPath','backendDigest','cacheModel','workDirectory','sampleCount','timeoutSeconds','clang'}
     if not isinstance(config,dict) or set(config)!=fields or config['schemaVersion']!=SCHEMA or config['cacheModel'] is not None:raise ValueError('L3_JOINT_CONFIG_INVALID')
+    @timed('joint.member-validation')
     def validate(**kw):
         stage='prerequisites'
         try:
@@ -91,7 +121,7 @@ def build_route(config):
                     or tuple(x.level.value for x in prior)!=('L0','L1','L2') or any(x.status is not ValidationStatus.VERIFIED for x in prior)
                     or json.loads(prior[2].detail)['claimScope']!='architectural'):raise ValueError('L3_JOINT_PRIOR_ARCHITECTURAL_LAYERS_REQUIRED')
             if digest(config['backendPath'])!=config['backendDigest']:raise ValueError('L3_JOINT_BACKEND_CHANGED')
-            b=backend_validate(config['backendPath']);requirements=parse_l3_requirement_manifest(kw['l3_requirement_manifest']).requirements
+            requirements=parse_l3_requirement_manifest(kw['l3_requirement_manifest']).requirements
             report=Path(config['reportPath']);findings=json.loads(report.read_text())['findings'];selected=[f for f in findings if f['fragment']['id']==artifact.fragment_id]
             if len(selected)!=1:raise ValueError('L3_JOINT_SELECTED_FRAGMENT_AMBIGUOUS')
             from .l3_intent_ingress import validate_receipt
@@ -99,12 +129,7 @@ def build_route(config):
             work=Path(config['workDirectory']).resolve();work.mkdir(parents=True,exist_ok=True);group_path=work/'capture-group.json';stage='capture'
             if group_path.exists():group=replay_group(json.loads(group_path.read_text()),source,target)
             else:
-                d=prepare(config['sourcePath'],config['targetPath'],report,b,source,target,work/'deployment',config['clang'],config['sampleCount']);reports={}
-                for side in ('source','target'):
-                    item=d['sides'][side];events,stdout,e=capture(b,side,item['executionArtifact']['artifactPath'],item['regions'],work/side,len(d['samplePlan']['inputs']),config['timeoutSeconds'])
-                    reports[side]=platform(side,b,d,events,parse_samples(stdout,e['token'],d['spec'],d['samplePlan']),e)
-                body={'schemaVersion':'riscv2x86.joint-region-capture.v1','deployment':d,'reports':reports,'requirements':list(requirements),'backendPath':config['backendPath'],'backendDigest':config['backendDigest']}
-                group=dict(body,groupIdentity=identity(body));replay_group(group,source,target);save(group_path,group)
+                group=new_capture(config,report,source,target,requirements,work);save(group_path,group)
             if (group['backendPath']!=config['backendPath'] or group['backendDigest']!=config['backendDigest']
                     or len(group['deployment']['samplePlan']['inputs'])!=config['sampleCount']):raise ValueError('L3_JOINT_CAPTURE_REQUEST_CHANGED')
             members=group['deployment']['spec']['members'];ids=[m['fragmentId'] for m in members];reqs={r['fragmentId']:r for r in requirements}
@@ -131,6 +156,7 @@ def audit_prerequisites(evaluation):
     check(evaluation,'L3_JOINT',single_fragment=False)
 
 
+@timed('joint.standalone-audit')
 def audit_result(evaluation):
     from types import SimpleNamespace
     from .translation_validation import program_artifact_from_dict,translation_artifact_from_dict

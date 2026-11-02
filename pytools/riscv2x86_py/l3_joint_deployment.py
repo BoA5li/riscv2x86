@@ -6,6 +6,7 @@ from .l3_trace_support import Elf,digest,identity,run,save
 from .l3_joint_spec import spec
 from .l3_joint_spec import sample_plan
 from .l3_joint_observation import harness
+from .validation_timing import timed
 
 SCHEMA='riscv2x86.joint-program-deployment.v1'
 
@@ -59,6 +60,7 @@ def label_assembly(text,count):
     return ''.join(''.join(insert.get(i,[]))+('' if i in metadata else line) for i,line in enumerate(lines))+''.join(insert.get(len(lines),[]))
 
 
+@timed('joint.compiler-and-proof-binding')
 def bound(source,target,report,clang):
     from .mechanism_route_checks import compiler_bound_finding
     from .approved_replacement import approved_replacement
@@ -87,6 +89,7 @@ def bound(source,target,report,clang):
 def flags(side):return ['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC'])
 
 
+@timed('joint.build-side')
 def build_side(path,side,program,function,backend,artifact,work,clang,count):
     from .automatic_batch_cli import inspect_entry_points
     work.mkdir(parents=True);data=Path(path).read_bytes()
@@ -129,6 +132,7 @@ def prepare(source,target,report,backend,source_artifact,target_artifact,work,cl
     value=dict(body,deploymentIdentity=identity(body));save(work/'deployment.json',value);return value
 
 
+@timed('joint.deployment-independent-rebuild')
 def validate(value,backend,source,target):
     require_json_document(value,'L3_JOINT_DEPLOYMENT_JSON_INVALID')
     if value.get('schemaVersion')!=SCHEMA or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['physicalMicroarchitectureClaimed'] is not False or value['executionUnit']!='whole-function-all-ordered-regions':raise ValueError('L3_JOINT_DEPLOYMENT_INVALID')
