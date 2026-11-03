@@ -51,9 +51,28 @@ def summarize(path):
         operations.append({'span':span,'returned':row['returned'],
             'backendValidationCalls':sum(r['stage']=='joint.backend-validation' for r in descendants),
             'calibrationChecks':sum(r['stage']=='joint.calibration-check-and-rebuild' for r in descendants)})
+    atomic_operations=[]
+    for row in sorted(spans.values(),key=lambda r:r['startNs']):
+        if not row['stage'].startswith('atomic.operation-complete.'):
+            continue
+        pending=[row['span']];descendants=[];seen=set()
+        while pending:
+            parent=pending.pop()
+            if parent in seen:raise ValueError('INVALID_TIMING_CYCLE')
+            seen.add(parent)
+            direct=child_ids[parent]
+            descendants.extend(spans[s] for s in direct);pending.extend(direct)
+        atomic_operations.append({'span':row['span'],'pid':row['pid'],
+            'name':row['stage'][len('atomic.operation-complete.'):],
+            'parent':row['parent'],'returned':row['returned'],
+            'inclusiveSeconds':(row['endNs']-row['startNs'])/1e9,
+            'closingReplayCalls':sum(r['stage']=='atomic.operation-closing-replay' for r in descendants),
+            'baseBackendFullValidationCalls':sum(r['stage']=='atomic.base-backend-full-validation' for r in descendants),
+            'intentReplayCalls':sum(r['stage']=='atomic.intent-program-replay' for r in descendants),
+            'scope':'same-process descendants; nested operations overlap; not experiment wall time'})
     return {'schemaVersion':'riscv2x86.validation-timing-summary.v1','spanCount':len(spans),
             'processCount':len({r['pid'] for r in spans.values()}),'incompleteParentSpans':missing,
-            'newCaptureOperations':operations,
+            'newCaptureOperations':operations,'atomicOperations':atomic_operations,
             'stages':dict(sorted(totals.items(),key=lambda p:-p[1]['exclusiveSeconds'])),
             'note':'Instrumented work only. Inclusive spans overlap; sums across processes are not experiment wall time. returned is not semantic acceptance.',
             'semanticApproval':False}

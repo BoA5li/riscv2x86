@@ -56,8 +56,16 @@ def audited_workload(run,kind):
         rows=detail['platformReports'][side]['samples']
         if len(rows)!=len(plan['inputs']):raise ValueError('BENCHMARK_SAMPLE_COUNT_CHANGED')
         for row,wanted in zip(rows,plan['inputs']):
+            if ('arguments' in row)!=('arguments' in wanted):
+                raise ValueError('BENCHMARK_ARGUMENT_COUNT_CHANGED')
             normalized={k:v for k,v in row.items() if k not in {'token','objectBase'}}
             if 'arguments' in normalized:
+                if (not isinstance(row['arguments'],list) or not isinstance(wanted.get('arguments'),list)
+                        or len(row['arguments'])!=len(wanted['arguments'])):
+                    raise ValueError('BENCHMARK_ARGUMENT_COUNT_CHANGED')
+                if any(expected is None and actual!=row['objectBase']
+                       for actual,expected in zip(row['arguments'],wanted['arguments'])):
+                    raise ValueError('BENCHMARK_OBJECT_ARGUMENT_UNBOUND')
                 normalized['arguments']=['objectBase' if expected is None else actual
                     for actual,expected in zip(row['arguments'],wanted['arguments'])]
             samples[side].append(normalized)
@@ -69,11 +77,20 @@ def audited_workload(run,kind):
         'returnRole':deployment['spec'].get('returnRole','old')}
 
 
+def lrsc_entry(policy,mode):
+    # Explicitly record whether A/B compares the entry refactor as well as reuse.
+    return ('selection' if mode=='0' else 'direct') if policy=='comparison' else policy
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for flag in ('input','frontend','backend','output'):p.add_argument('--'+flag)
     p.add_argument('--repeats',type=int,default=1)
     p.add_argument('--kind',choices=('atomic','lrsc'),default='lrsc')
+    p.add_argument('--lrsc-entry',choices=('comparison','direct','selection'),default='comparison',
+        help='comparison: full-work selection vs optimized direct; direct/selection: fixed-entry reuse A/B')
+    p.add_argument('--fixed-performance-mode',choices=('0','1'),
+        help='LR/SC comparison policy only: compare selection/direct at the same reuse setting')
     p.add_argument('--wall-timeout-seconds',type=int,default=7200)
     p.add_argument('--timeout-seconds',type=int,default=240)
     p.add_argument('--l3-producer-timeout-seconds',type=int,default=600)
@@ -85,26 +102,38 @@ def main():
         return 0 if audit.get('status')=='verified' else 1
     if not all((a.input,a.frontend,a.backend,a.output)) or a.repeats<1 or min(a.wall_timeout_seconds,a.timeout_seconds,a.l3_producer_timeout_seconds)<=0:
         p.error('input/frontend/backend/output and positive bounds required')
+    if a.fixed_performance_mode is not None and (a.kind!='lrsc' or a.lrsc_entry!='comparison'):
+        p.error('fixed-performance-mode requires kind=lrsc and lrsc-entry=comparison')
     out=Path(a.output).resolve();out.mkdir(parents=True,exist_ok=False)
     paths={key:str(Path(getattr(a,key)).resolve()) for key in ('input','frontend','backend')}
     original={path:digest(path) for path in paths.values()};repo=Path(__file__).resolve().parents[1]
     head=subprocess.run(['git','rev-parse','HEAD'],cwd=repo,capture_output=True,text=True,check=False).stdout.strip()
-    summary={'schemaVersion':'riscv2x86.atomic-performance-comparison.v1','kind':a.kind,'head':head,'inputDigests':original,
-        'runs':[],'complete':False,'semanticApproval':False,'note':'Wall times include production/audits. Timing never grants acceptance.'}
+    summary={'schemaVersion':'riscv2x86.atomic-performance-comparison.v2','kind':a.kind,'head':head,'inputDigests':original,
+        'lrscEntryPolicy':a.lrsc_entry if a.kind=='lrsc' else None,
+        'fixedPerformanceMode':a.fixed_performance_mode,
+        'comparisonAxis':'entry-only' if a.fixed_performance_mode is not None else 'entry-and-reuse' if a.kind=='lrsc' and a.lrsc_entry=='comparison' else 'reuse-only','runs':[],'complete':False,'semanticApproval':False,'note':'Wall times include production/audits. Timing never grants acceptance.'}
     reference=None
     try:
         for repeat in range(a.repeats):
             # Alternate order to reduce fixed cold-cache/order bias.
             for mode in (('0','1') if repeat%2==0 else ('1','0')):
-                root=out/('repeat-'+str(repeat)+'-mode-'+mode);root.mkdir()
-                env=dict(os.environ,RV2X86_ATOMIC_PERFORMANCE=mode,RV2X86_VALIDATION_TIMING=str(root/'production-timing.jsonl'))
+                entry=lrsc_entry(a.lrsc_entry,mode) if a.kind=='lrsc' else None
+                performance_mode=a.fixed_performance_mode if a.fixed_performance_mode is not None else mode
+                suffix=('entry-'+str(entry)+'-mode-'+performance_mode) if a.fixed_performance_mode is not None else 'mode-'+mode
+                root=out/('repeat-'+str(repeat)+'-'+suffix);root.mkdir()
+                env=dict(os.environ,RV2X86_ATOMIC_PERFORMANCE=performance_mode,RV2X86_VALIDATION_TIMING=str(root/'production-timing.jsonl'))
                 if any(digest(path)!=sha for path,sha in original.items()):raise ValueError('BENCHMARK_INPUT_CHANGED')
                 command=[sys.executable,str(repo/('experiment/run_l3_'+a.kind+'_trace.py')),'--input',paths['input'],
                     '--frontend',paths['frontend'],'--backend',paths['backend'],'--output',str(root/'production'),
                     '--timeout-seconds',str(a.timeout_seconds),'--l3-producer-timeout-seconds',str(a.l3_producer_timeout_seconds)]
-                row={'repeat':repeat,'mode':mode,'directory':str(root)};summary['runs'].append(row)
+                row={'repeat':repeat,'condition':mode,'mode':performance_mode,'entryMode':entry,'directory':str(root)};summary['runs'].append(row)
+                if entry is not None:command.extend(('--entry-mode',entry))
                 row['production']=measurement(command,root,env,a.wall_timeout_seconds)
                 if row['production']['returnCode']!=0:raise ValueError('BENCHMARK_PRODUCTION_FAILED:'+str(root))
+                if entry is not None:
+                    state=json.loads((root/'production/run-status.json').read_text())
+                    if state.get('entryMode')!=entry:
+                        raise ValueError('BENCHMARK_ENTRY_MODE_MISMATCH')
                 report,actual=audited_workload(root/'production',a.kind)
                 if reference is None:reference=actual
                 else:require_json_match(reference,actual,'BENCHMARK_WORKLOAD_OR_OUTPUT_CHANGED')
@@ -117,7 +146,7 @@ def main():
                 print(json.dumps(row,ensure_ascii=False),flush=True)
         summary['complete']=True;summary['medians']={}
         for key in ('production','standaloneAudit'):
-            times={mode:statistics.median(r[key]['wallSeconds'] for r in summary['runs'] if r['mode']==mode) for mode in ('0','1')}
+            times={mode:statistics.median(r[key]['wallSeconds'] for r in summary['runs'] if r['condition']==mode) for mode in ('0','1')}
             summary['medians'][key]={'baselineSeconds':times['0'],'optimizedSeconds':times['1'],'speedup':times['0']/times['1']}
     except (OSError,ValueError,KeyError,TypeError) as exc:
         summary['error']=type(exc).__name__+': '+str(exc);print(summary['error'],file=sys.stderr)

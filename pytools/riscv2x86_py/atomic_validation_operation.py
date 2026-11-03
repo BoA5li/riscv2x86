@@ -81,6 +81,7 @@ class AtomicValidationOperation:
 def operation(name):
     def decorate(function):
         @wraps(function)
+        @timed('atomic.operation-complete.'+name)
         def wrapped(*args,**kwargs):
             with AtomicValidationOperation(name):
                 return function(*args,**kwargs)

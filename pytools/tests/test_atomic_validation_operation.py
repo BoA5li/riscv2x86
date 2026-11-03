@@ -180,3 +180,37 @@ def test_closing_leaf_cannot_inherit_initial_or_nested_audit_trust():
             leaf_checked(compute,{'x':True})
         assert len(calls)==3
     assert len(calls)==4
+
+
+@pytest.mark.parametrize('closing_failure',[False,True])
+def test_complete_operation_timing_covers_closing_and_records_its_failure(tmp_path,monkeypatch,closing_failure):
+    import importlib.util
+    destination=tmp_path/'timing.jsonl'
+    monkeypatch.setenv('RV2X86_VALIDATION_TIMING',str(destination))
+    calls=[]
+    def calculate(value):
+        calls.append(1)
+        if closing_failure and len(calls)==2:raise ValueError('closing rejected')
+        return value
+    @operation('timing-fixture')
+    def execute():
+        checked(calculate,{'input':1})
+        return {'status':'verified'}
+    if closing_failure:
+        with pytest.raises(ValueError,match='closing rejected'):execute()
+    else:assert execute()['status']=='verified'
+    assert len(calls)==2 and current() is None
+    rows=[json.loads(line) for line in destination.read_text().splitlines()]
+    outer,=[r for r in rows if r['stage']=='atomic.operation-complete.timing-fixture']
+    close,=[r for r in rows if r['stage']=='atomic.operation-closing-replay']
+    assert close['parent']==outer['span']
+    assert outer['startNs']<=close['startNs']<=close['endNs']<=outer['endNs']
+    assert outer['returned'] is (not closing_failure)
+    script=Path(__file__).resolve().parents[2]/'experiment/inspect_validation_timing.py'
+    spec=importlib.util.spec_from_file_location('atomic_timing_summary',script)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    summary=module.summarize(destination)
+    item,=summary['atomicOperations']
+    assert item['closingReplayCalls']==1 and item['returned'] is (not closing_failure)
+    assert item['inclusiveSeconds']>=summary['stages']['atomic.operation-closing-replay']['inclusiveSeconds']
+    assert summary['semanticApproval'] is False

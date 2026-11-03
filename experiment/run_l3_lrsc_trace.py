@@ -9,11 +9,11 @@ from riscv2x86_py.l3_status import write_status_atomic, record_failure
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--input',required=True);p.add_argument('--frontend',required=True);p.add_argument('--backend',required=True);p.add_argument('--output',required=True);p.add_argument('--timeout-seconds',type=int,default=240);p.add_argument('--l3-producer-timeout-seconds',type=int,default=120);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--input',required=True);p.add_argument('--frontend',required=True);p.add_argument('--backend',required=True);p.add_argument('--output',required=True);p.add_argument('--timeout-seconds',type=int,default=240);p.add_argument('--l3-producer-timeout-seconds',type=int,default=120);p.add_argument('--entry-mode',choices=('direct','selection'),default='direct',help='direct calibrated LR/SC route or compatibility mechanism selection');a=p.parse_args()
     out=Path(a.output).resolve()
     if out.exists():print(json.dumps({'reasonCode':'L3_LRSC_OUTPUT_EXISTS','output':str(out)}));return 2
     out.mkdir(parents=True)
-    status={'schemaVersion':'riscv2x86.lrsc-production-run.v1','currentStage':'input_validation','steps':[],
+    status={'schemaVersion':'riscv2x86.lrsc-production-run.v1','currentStage':'input_validation','entryMode':a.entry_mode,'steps':[],
         'executionComplete':False,'independentResultAuditComplete':False,'productionAcceptanceComplete':False,
         'physicalMicroarchitectureClaimed':False,'blockers':[]}
     def write(): write_status_atomic(out/'run-status.json',status)
@@ -24,9 +24,13 @@ def main():
         validate(a.backend)
         if a.timeout_seconds<=0:raise ValueError('L3_LRSC_TIMEOUT_INVALID')
         status.update(currentStage='normal_production',backendDigest=digest(a.backend),frontendDigest=digest(a.frontend));write()
-        selection=out/'mechanisms.json'
-        selection.write_text(json.dumps({'schemaVersion':'riscv2x86.l3-mechanism-selections.v1','backends':{'lrsc':str(Path(a.backend).resolve())}},indent=2)+'\n')
-        cmd=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(Path(a.input).resolve()),'--frontend',str(Path(a.frontend).resolve()),'--output-directory',str(out/'batch'),'--jobs','1','--timeout-seconds',str(a.timeout_seconds),'--l3-producer-timeout-seconds',str(a.l3_producer_timeout_seconds),'--l3-mechanism-selections',str(selection),'--require-l3']
+        if a.entry_mode=='selection':
+            selection=out/'mechanisms.json'
+            selection.write_text(json.dumps({'schemaVersion':'riscv2x86.l3-mechanism-selections.v1','backends':{'lrsc':str(Path(a.backend).resolve())}},indent=2)+'\n')
+            entry=['--l3-mechanism-selections',str(selection)]
+        else:
+            entry=['--l3-lrsc-backend',str(Path(a.backend).resolve())]
+        cmd=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(Path(a.input).resolve()),'--frontend',str(Path(a.frontend).resolve()),'--output-directory',str(out/'batch'),'--jobs','1','--timeout-seconds',str(a.timeout_seconds),'--l3-producer-timeout-seconds',str(a.l3_producer_timeout_seconds),*entry,'--require-l3']
         with (out/'batch.log').open('w') as log:r=subprocess.run(cmd,stdout=log,stderr=subprocess.STDOUT,check=False)
         status['steps'].append({'stage':'normal_production','command':cmd,'returnCode':r.returncode});write()
         if not (out/'batch/batch-evaluation.json').is_file():
