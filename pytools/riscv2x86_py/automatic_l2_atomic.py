@@ -34,10 +34,10 @@ def atomic_wrapper(function,atom,sidecar):
         if base not in parameters:raise ValueError('L2_ATOMIC_ADDRESS_PARAMETER_UNBOUND')
         address_parameter=parameters.index(base)
     call_contract=None
-    if function.get('arity')!=2:
-        from .atomic_call_contract import bind
-        call_contract=bind(function,atom,sidecar)
-    if (type(function.get('arity')) is not int or not 2<=function['arity']<=4 or len(types)!=function['arity'] or len(pointers)!=1
+    from .atomic_call_contract import validated_call
+    from .register_call_abi import MAX_ATOMIC_PARAMETERS
+    call_contract=validated_call(function,atom,sidecar)
+    if (type(function.get('arity')) is not int or not 2<=function['arity']<=MAX_ATOMIC_PARAMETERS or len(types)!=function['arity'] or len(pointers)!=1
             or address_parameter!=pointers[0] or value.parameter_index is None
             or value.parameter_index==address_parameter
             or _INTEGER_POINTER_TYPE.fullmatch(types[pointers[0]]) is None
@@ -96,8 +96,12 @@ def atomic_events(stdout,atom):
         before=[int(x,16) for x in match[4].split(',')];after=[int(x,16) for x in match[5].split(',')]
         if sample in records or sample>=len(VALUES):raise ValueError('L2_ATOMIC_TRACE_ARITY_MISMATCH')
         old=before[0]&mask
-        expected={'fetch_add':lambda:(old+input_value)&mask,'fetch_and':lambda:old&input_value,
-            'fetch_or':lambda:old|input_value,'fetch_xor':lambda:old^input_value,'exchange':lambda:input_value}[operation]()
+        if 'observed_return_role' in atom:
+            from .lrsc_semantics import stored_result
+            expected=stored_result(operation,old,input_value,width)
+        else:
+            from .l3_atomic_semantics import result
+            expected=result(operation,old,input_value,width)
         returned_matches = (returned & mask) == old
         if 'observed_return_role' in atom:
             from .lrsc_output_observation import completion_values
@@ -183,9 +187,10 @@ def build_atomic_validator(config):
                 output=by_index[dict(lrsc_source.lrsc_sequence.role_operand_indexes)[return_role] if is_lrsc else atom['result_operand_index']]
                 if function['l2OperandBoundary'].get('returnDeclarationId')!=output.declaration_id:
                     return reject('L2_ATOMIC_OUTPUT_SINK_INSTRUMENTATION_REQUIRED')
-            if function.get('arity')!=2:
-                from .atomic_call_contract import bind
-                atom=dict(atom,call_contract=bind(function,atom,sidecar))
+            from .atomic_call_contract import validated_call
+            call_contract=validated_call(function,atom,sidecar)
+            if call_contract is not None:
+                atom=dict(atom,call_contract=call_contract)
             stage='harness_build';harness=atomic_wrapper(function,atom,sidecar)
             work,replay=Path(config['workDirectory']),Path(config['replayDirectory'])
             work.mkdir(parents=True,exist_ok=True);replay.mkdir(parents=True,exist_ok=True)

@@ -143,9 +143,9 @@ class SourceLrScSequenceModel:
         _require(type(self.source_xlen) is int and self.source_xlen == 64, 'LRSC_SOURCE_XLEN_UNSUPPORTED')
         _require(type(self.memory_width_bits) is int and self.memory_width_bits in (32, 64)
             and type(self.arithmetic_width_bits) is int and self.arithmetic_width_bits in (32, 64)
-            and self.operation in {'fetch_add', 'fetch_and', 'fetch_or', 'fetch_xor'}
+            and self.operation in {'fetch_add', 'fetch_sub', 'fetch_and', 'fetch_or', 'fetch_xor'}
             and (self.arithmetic_width_bits == 64 or
-                 (self.memory_width_bits == 32 and self.operation == 'fetch_add')),
+                 (self.memory_width_bits == 32 and self.operation in ('fetch_add', 'fetch_sub'))),
             'LRSC_SOURCE_WIDTH_OR_OPERATION_INVALID')
         _require(len(self.lr_ordering_bits) == len(self.sc_ordering_bits) == 2
             and all(type(v) is bool for v in self.lr_ordering_bits + self.sc_ordering_bits),
@@ -289,6 +289,7 @@ def reference_attempt(model, *, loaded_value, input_value, sc_status, reservatio
         old -= 1 << model.memory_width_bits
     old &= mask
     value = {'fetch_add': lambda: old + input_value,
+             'fetch_sub': lambda: old - input_value,
              'fetch_and': lambda: old & input_value,
              'fetch_or': lambda: old | input_value,
              'fetch_xor': lambda: old ^ input_value}[model.operation]()

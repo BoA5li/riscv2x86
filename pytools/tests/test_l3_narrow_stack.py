@@ -180,7 +180,8 @@ def test_symbolic_graph_exports_lossless_json_and_replays_low_bits():
 @pytest.mark.parametrize('compressed',[False,True])
 @pytest.mark.parametrize('width,op,word,role,arity,pointer,value',[
     (32,'add',True,'next',3,2,0),(64,'xor',False,'status',4,1,3),
-    (32,'and',False,'old',4,3,2),(64,'or',False,'next',3,0,2)])
+    (32,'and',False,'old',4,3,2),(64,'or',False,'next',3,0,2),
+    (32,'sub',True,'next',6,5,4),(64,'sub',False,'old',6,4,5)])
 def test_real_riscv_compiler_shell_when_toolchain_available(tmp_path,optimization,compressed,width,op,word,role,arity,pointer,value):
     import os,shutil,subprocess
     from riscv2x86_py.l3_trace_support import Elf

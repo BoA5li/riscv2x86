@@ -45,7 +45,7 @@ def proof_for(source,env,plan,derived):
 
 
 @pytest.mark.parametrize('bits',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 def test_sequence_passes_registered_common_proof_and_effect_gate(bits,operation):
     f,r,m,source,env,plan,d=case(bits,operation)
     assert d.success,d
@@ -83,7 +83,7 @@ def translated_case(bits=64,operation='fetch_add',word=False,slot_order=(0,1,2,3
 
 
 @pytest.mark.parametrize('bits',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 def test_actual_selection_and_renderer_produce_registered_target(bits,operation):
     f,r,m,source,result=translated_case(bits,operation)
     assert result.kind=='x86_inline_asm',result
@@ -94,7 +94,7 @@ def test_actual_selection_and_renderer_produce_registered_target(bits,operation)
 
 
 @pytest.mark.parametrize('bits',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 @pytest.mark.parametrize('optimization',['-O0','-O2'])
 def test_native_target_preserves_all_outputs_and_object(bits,operation,optimization,tmp_path):
     from riscv2x86_py.lrsc_source import reference_attempt
@@ -139,7 +139,7 @@ def finding_case(bits=64,operation='fetch_add'):
 
 
 @pytest.mark.parametrize('bits',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 def test_lrsc_l2_authority_replays_independent_source_and_target_contracts(bits,operation):
     from riscv2x86_py.l2_lrsc_authority import materialize,validate,require_observable_scope
     from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict

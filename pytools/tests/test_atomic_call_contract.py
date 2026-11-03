@@ -28,12 +28,12 @@ def extend_call(finding,functions,n,pointer,value):
     return fn
 
 
-def fresh_spec(tmp_path,width,n,pointer,value):
+def fresh_spec(tmp_path,width,n,pointer,value,operation="fetch_xor"):
     from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
     from riscv2x86_py.l2_fragment_execution import materialize_fragment_execution_authority
     from riscv2x86_py.l3_lrsc_spec import spec
     from riscv2x86_py.l3_trace_support import digest
-    f,functions,_=approved_spec(tmp_path,width,'fetch_xor')
+    f,functions,_=approved_spec(tmp_path,width,operation)
     fn=extend_call(f,functions,n,pointer,value)
     frontend=tmp_path/'call-frontend';frontend.write_text('compiler call fixture')
     assert materialize_automatic_l2_authority({'findings':[f]},functions,frontend)==1
@@ -52,7 +52,7 @@ def definition(fn,translation,pointer,value):
 
 
 @pytest.mark.parametrize('width',[32,64])
-@pytest.mark.parametrize('n,pointer,value',[(3,2,0),(3,0,2),(4,1,3),(4,3,2)])
+@pytest.mark.parametrize('n,pointer,value',[(3,2,0),(3,0,2),(4,1,3),(4,3,2),(5,4,3),(6,5,4),(6,4,5)])
 def test_fresh_spec_harness_and_native_machine_bind_all_argument_lanes(width,n,pointer,value,tmp_path):
     from tests.test_lrsc_target import translated_case
     from riscv2x86_py.l3_lrsc_spec import samples,harness,parse_samples
@@ -89,24 +89,25 @@ def test_fresh_spec_harness_and_native_machine_bind_all_argument_lanes(width,n,p
 
 
 @pytest.mark.parametrize('width',[32,64])
-def test_l2_records_auxiliary_inputs_and_rejects_argument_tampering(width,tmp_path):
+@pytest.mark.parametrize('operation',['fetch_xor','fetch_sub'])
+def test_l2_records_auxiliary_inputs_and_rejects_argument_tampering(width,operation,tmp_path):
     from tests.test_lrsc_target import translated_case
     from riscv2x86_py.l2_lrsc_authority import validate
     from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
     from riscv2x86_py.automatic_l2_atomic import atomic_wrapper,atomic_events
-    f,fn,spec=fresh_spec(tmp_path,width,4,3,1)
+    f,fn,spec=fresh_spec(tmp_path,width,6,5,4,operation)
     authority=l2_authority_sidecar_from_dict(f['approvalArtifact']['l2AuthoritySidecar'])
     atom,_,_=validate(f)
     atom.update(call_contract=spec['callContract'],observed_return_role='old',sequence_arithmetic_width_bits=64)
-    _,_,_,_,translation=translated_case(width,'fetch_xor')
-    c=tmp_path/'c.c';c.write_text(definition(fn,translation,3,1))
+    _,_,_,_,translation=translated_case(width,operation)
+    c=tmp_path/'c.c';c.write_text(definition(fn,translation,5,4))
     wrapper=tmp_path/'wrapper.c';wrapper.write_text(atomic_wrapper(fn,atom,authority));binary=tmp_path/'program'
     result=subprocess.run(['gcc','-O2','-Wall','-Wextra','-Werror',str(c),str(wrapper),'-o',str(binary)],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
     result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
     assert result.returncode==0,result.stderr
     events=atomic_events(result.stdout,atom)
-    assert len(events)==8 and all(e['approvedValueRelationHolds'] and len(e['integerArguments'])==3 for e in events)
+    assert len(events)==8 and all(e['approvedValueRelationHolds'] and len(e['integerArguments'])==5 for e in events)
     lines=result.stdout.splitlines();parts=lines[0].rsplit(';',1);parts[1]='ffffffffffffffff,'+','.join(parts[1].split(',')[1:]);lines[0]=';'.join(parts)
     with pytest.raises(ValueError,match='ARGUMENTS_MISMATCH'):atomic_events('\n'.join(lines),atom)
 
@@ -130,7 +131,8 @@ def test_rehashed_but_unbound_call_contract_is_rejected(mutation,tmp_path):
 
 
 @pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor','exchange'])
-def test_direct_atomic_proof_spec_and_native_machine_support_call_contract(operation,tmp_path):
+@pytest.mark.parametrize('n,pointer,value',[(4,3,1),(6,5,4),(6,4,5)])
+def test_direct_atomic_proof_spec_and_native_machine_support_call_contract(operation,n,pointer,value,tmp_path):
     from tests.test_l3_atomic_trace import fixture
     from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
     from riscv2x86_py.l2_fragment_execution import materialize_fragment_execution_authority
@@ -145,18 +147,19 @@ def test_direct_atomic_proof_spec_and_native_machine_support_call_contract(opera
     value_decl=by[atom['value_operand_index']]['declarationId']
     fn['l2OperandBoundary']['parameterDeclarationIds']=[pointer_decl,value_decl]
     fn['parameterTypes']=['unsigned long *','unsigned long']
-    extend_call(f,functions,4,3,1)
+    extend_call(f,functions,n,pointer,value)
     front=tmp_path/'front';front.write_text('direct proof fixture')
     assert materialize_automatic_l2_authority({'findings':[f]},functions,front)==1
     program=identity({'schemaVersion':'riscv2x86.automatic-program.v1','producerDigest':digest(front)})
     boundaries,_,_=materialize_fragment_execution_authority([f],fn,program)
     f['approvalArtifact']['l2FragmentOperandBoundary']=boundaries[f['fragment']['id']].to_dict()
+    input_index=value
     value=spec(f,functions);plan=samples(value)
-    assert value['callContract']['valueParameter']==1 and value['callContract']['pointerParameter']==3
+    assert value['callContract']['valueParameter']==input_index and value['callContract']['pointerParameter']==pointer
     builtin={'exchange':'__atomic_exchange_n'}.get(operation,'__atomic_'+operation)
     decl=[]
     for i,t in enumerate(fn['parameterTypes']):
-        decl.append(t+' '+('p' if i==3 else 'v' if i==1 else 'u'+str(i)+' __attribute__((unused))'))
+        decl.append(t+' '+('p' if i==pointer else 'v' if i==input_index else 'u'+str(i)+' __attribute__((unused))'))
     name=fn['name'];body='#include <stdint.h>\nunsigned long '+name+'('+','.join(decl)+'){return '+builtin+'(p,v,__ATOMIC_RELAXED);}'
     c=tmp_path/'impl.c';c.write_text(body);wrap=tmp_path/'driver.c';wrap.write_text(harness(name,value,plan))
     obj=tmp_path/'impl.o';binary=tmp_path/'program'
@@ -205,3 +208,66 @@ def test_unrelated_native_function_keeps_marked_control_region_bytes(tmp_path):
     region=region_of(b,'route',False)
     value=graph(b.code('route'),b.symbol('route')[0],region,62)
     assert len(value['paths'])==2
+
+
+@pytest.mark.parametrize('mutation',['null','identity','declaration','type'])
+def test_two_argument_present_signature_cannot_fall_back_to_legacy(mutation,tmp_path):
+    from riscv2x86_py.atomic_call_contract import validated_call
+    from riscv2x86_py.l2_lrsc_authority import validate
+    from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
+    f,functions,_=approved_spec(tmp_path,64,'fetch_xor')
+    fn=extend_call(f,functions,2,0,1)
+    atom,_,_=validate(f)
+    sidecar=l2_authority_sidecar_from_dict(f['approvalArtifact']['l2AuthoritySidecar'])
+    assert validated_call(fn,atom,sidecar) is None
+    if mutation=='null':fn['compilerMemoryCallSignature']=None
+    else:
+        raw=fn['compilerMemoryCallSignature']
+        if mutation=='identity':raw['functionIdentity']=identity('other')
+        elif mutation=='declaration':raw['parameters'][1]['declarationIdentity']=identity('other')
+        else:raw['parameters'][1].update(widthBits=32,cType='unsigned int')
+        raw['factsIdentity']=identity({k:v for k,v in raw.items() if k!='factsIdentity'})
+    with pytest.raises(ValueError):validated_call(fn,atom,sidecar)
+
+
+def test_seventh_parameter_requires_a_different_abi_contract(tmp_path):
+    from riscv2x86_py.l2_lrsc_authority import validate
+    from riscv2x86_py.l2_authority import l2_authority_sidecar_from_dict
+    f,functions,_=approved_spec(tmp_path,64,'fetch_xor')
+    fn=extend_call(f,functions,7,6,5)
+    atom,_,_=validate(f)
+    sidecar=l2_authority_sidecar_from_dict(f['approvalArtifact']['l2AuthoritySidecar'])
+    with pytest.raises(ValueError,match='PARAMETER_DOMAIN_UNSUPPORTED'):bind(fn,atom,sidecar)
+
+
+@pytest.mark.parametrize('arity',[5,6])
+def test_entry_inspection_keeps_compiler_owned_single_pointer_calls(arity,tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from riscv2x86_py import automatic_batch_cli as module
+    source=tmp_path/'source.c';source.write_text('compiler AST fixture')
+    def span(offset):return {'begin':{'offset':offset,'line':1},'end':{'offset':offset,'line':1,'tokLen':1}}
+    params=[{'kind':'ParmVarDecl','id':'p'+str(i),'name':'p'+str(i),
+             'type':{'qualType':'unsigned long *' if i==arity-1 else 'unsigned long'},
+             'range':span(i),'loc':{'offset':i,'line':1}} for i in range(arity)]
+    fn={'kind':'FunctionDecl','id':'function','name':'entry','type':{'qualType':'unsigned long ('+','.join(p['type']['qualType'] for p in params)+')'},
+        'range':span(0),'loc':{'offset':0,'line':1},'inner':params+[{'kind':'CompoundStmt','range':span(0),'inner':[]}]}
+    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:SimpleNamespace(returncode=0,stdout=json.dumps({'inner':[fn]}),stderr=''))
+    has_main,functions=module.inspect_entry_points(source)
+    assert not has_main and len(functions)==1
+    actual=functions[0]
+    assert actual['arity']==arity and actual['pointerParameters']==[arity-1]
+    assert len(actual['compilerMemoryCallSignature']['parameters'])==arity
+    # Entry inspection is not effect/region authority.
+    assert 'compilerAtomicFunctionScope' not in actual
+    assert not actual['l2OperandBoundary']['complete']
+
+
+def test_register_fact_extension_is_explicit_and_not_control_readiness():
+    from riscv2x86_py.l3_control_machine import initial
+    assert 14 not in initial(243)['registers']
+    assert 8 not in initial(62)['registers']
+    assert initial(243,parameter_count=6)['registers'][15]=='parameter:5'
+    assert initial(62,parameter_count=6)['registers'][9]=='parameter:5'
+    for count in (True,-1,7):
+        with pytest.raises(ValueError,match='PARAMETER_COUNT_UNSUPPORTED'):
+            initial(243,parameter_count=count)

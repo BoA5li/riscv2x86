@@ -14,6 +14,7 @@ LIMITS=['single-thread-successful-region-execution','bounded-cas-retry-paths-not
         'concurrent-linearizability-and-physical-memory-order-not-measured',
         'outside-fragment-effects-not-compared','physical-cache-timing-prediction-speculation-not-claimed']
 from .l3_atomic_semantics import OPERATIONS
+from .lrsc_semantics import ALU_OPERATIONS as LRSC_OPERATIONS
 UNSIGNED=re.compile(r'(?:uint(32|64)_t|unsigned (int|long|long long)(?: int)?)')
 
 
@@ -39,7 +40,7 @@ def spec(finding,functions,*,_sequence=False):
         atom=dict(atom,success_ordering='acq_rel' if bits[0] and bits[3] else 'acquire' if bits[0] else 'release' if bits[3] else 'relaxed',atomicity_scope='system')
     else:
         atom,width=validate_atomic_proof_facts(a['l2AtomicProofFacts'],a,f['id'])
-    if (width['sourceXlen']!=64 or atom['rmw_operation'] not in OPERATIONS or a.get('rendererSemanticContractId')!=('x86.gnu-att.lrsc.locked-cas.multi-output.v1' if _sequence else OPERATIONS[atom['rmw_operation']])
+    if (width['sourceXlen']!=64 or atom['rmw_operation'] not in (LRSC_OPERATIONS if _sequence else OPERATIONS) or a.get('rendererSemanticContractId')!=('x86.gnu-att.lrsc.locked-cas.multi-output.v1' if _sequence else OPERATIONS[atom['rmw_operation']])
             or atom['success_ordering'] not in {'relaxed','acquire','release','acq_rel'}
             or atom['alignment_bytes']<atom['width_bits']//8 or atom['alignment_bytes']>4096
             or atom['alignment_bytes']&(atom['alignment_bytes']-1) or atom['atomicity_scope']!='system'):
@@ -68,13 +69,14 @@ def spec(finding,functions,*,_sequence=False):
     pointer=parameters.index(projection['baseDeclarationIdentity']) if projection else address.parameter_index
     offset=projection['offsetBytes'] if projection else 0
     types=fn['parameterTypes'];call_contract=None
-    if fn.get('arity')!=2:
-        from .atomic_call_contract import bind
-        call_contract=bind(fn,atom,sidecar)
+    from .atomic_call_contract import validated_call
+    from .register_call_abi import MAX_ATOMIC_PARAMETERS
+    call_contract=validated_call(fn,atom,sidecar)
+    if call_contract is not None:
         pointer=call_contract['pointerParameter'];input_index=call_contract['valueParameter']
     else:input_index=1-pointer
     pointee=types[pointer].strip()[:-1].strip() if pointer in range(len(types)) and types[pointer].strip().endswith('*') else ''
-    if (type(fn.get('arity')) is not int or not 2<=fn['arity']<=4 or len(types)!=fn['arity'] or fn.get('pointerParameters')!=[pointer]
+    if (type(fn.get('arity')) is not int or not 2<=fn['arity']<=MAX_ATOMIC_PARAMETERS or len(types)!=fn['arity'] or fn.get('pointerParameters')!=[pointer]
             or value.parameter_index!=input_index or value.signedness!='unsigned'
             or unsigned_width(pointee)!=atom['width_bits']
             or unsigned_width(types[input_index])!=width['inputCarrierWidth'] or offset!=0

@@ -1,9 +1,10 @@
 """Compiler-owned atomic call roles, independent of GNU operand positions.
 
-This register-argument domain has one unsigned integer object and 2--4
+This register-argument domain has one unsigned integer object and 2--6
 parameters. A type signature is not effect authority: callers must still prove
 and replay the sole-region function scope and all output uses.
 """
+from .register_call_abi import MAX_ATOMIC_PARAMETERS
 from .compiler_memory_signature import type_fact, SCHEMA
 from .l3_trace_support import identity, require_json_document, require_json_match
 
@@ -19,7 +20,7 @@ def bind(function, atom, sidecar):
             or signature['factsIdentity']!=identity({k:v for k,v in signature.items() if k!='factsIdentity'})):
         raise ValueError('ATOMIC_CALL_COMPILER_SIGNATURE_REQUIRED')
     params=signature['parameters'];decls=function['l2OperandBoundary']['parameterDeclarationIds']
-    if (type(function.get('arity')) is not int or not 2<=function['arity']<=4
+    if (type(function.get('arity')) is not int or not 2<=function['arity']<=MAX_ATOMIC_PARAMETERS
             or not isinstance(params,list) or len(params)!=function['arity']
             or len(function['parameterTypes'])!=len(params) or len(decls)!=len(params)
             or len(set(decls))!=len(decls) or any(not d for d in decls)):
@@ -88,3 +89,18 @@ def argument_values(contract, sample, value):
             v=value if i==contract['valueParameter'] else seeds[(sample+i+3)%len(seeds)]
             result.append(f'{v&((1<<p["widthBits"])-1):016x}')
     return result
+
+
+def validated_call(function, atom, sidecar):
+    """Validate current compiler facts without changing old two-argument DTOs.
+
+    Old archived two-argument compiler snapshots lack a typed signature; their
+    original consumer checks remain mandatory. A present but malformed signature
+    must never fall back to that compatibility path. Extra argument calls always
+    require the compiler-owned signature.
+    """
+    if function.get('arity') != 2 or 'compilerMemoryCallSignature' in function:
+        contract = bind(function, atom, sidecar)
+        if function.get('arity') != 2:
+            return contract
+    return None

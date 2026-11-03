@@ -27,7 +27,7 @@ from tests.test_lrsc_sequence_contract import code
 
 
 @pytest.mark.parametrize('width',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 @pytest.mark.parametrize('bits',range(16))
 def test_source_dto_roundtrip_all_ordering_bits(width,operation,bits):
     order=tuple(bool(bits&(1<<i)) for i in range(4))
@@ -74,7 +74,7 @@ def approved_spec(tmp_path,width,operation):
 
 
 @pytest.mark.parametrize('width',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 def test_complete_approved_spec_and_real_native_side_are_json_stable(tmp_path,width,operation):
     from riscv2x86_py.l3_lrsc_deployment import build_side
     from riscv2x86_py.l3_control_deployment import flags
@@ -93,7 +93,7 @@ def test_complete_approved_spec_and_real_native_side_are_json_stable(tmp_path,wi
     result=subprocess.run([side['executionArtifact']['artifactPath'],'a'*64],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
     from riscv2x86_py.l3_lrsc_spec import parse_samples
-    from riscv2x86_py.l3_atomic_semantics import result as outcome
+    from riscv2x86_py.lrsc_semantics import stored_result as outcome
     rows=parse_samples(result.stdout,'a'*64,plan)
     for row in rows:
         assert int(row['after'][0],16)==outcome(operation,int(row['old'],16),int(row['input'],16),width)

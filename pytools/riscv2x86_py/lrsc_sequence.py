@@ -59,16 +59,18 @@ def candidate(machine_bytes, *, base_address=0, xlen_bits=64):
     _require(lr["widthBits"] == sc["widthBits"], "LRSC_ACCESS_WIDTH_MISMATCH")
     _require(lr["rs1"] == sc["rs1"] != 0, "LRSC_ADDRESS_MISMATCH")
     alu = words[1]
-    _require(alu & 127 in (0x33, 0x3b) and alu >> 25 == 0,
+    _require(alu & 127 in (0x33, 0x3b) and alu >> 25 in (0, 0x20),
              "LRSC_ALU_UNSUPPORTED")
-    operation = _ALU.get((alu >> 12) & 7)
+    operation = ('fetch_sub' if (alu >> 12) & 7 == 0 else None) if alu >> 25 == 0x20 else _ALU.get((alu >> 12) & 7)
     _require(operation is not None, "LRSC_ALU_UNSUPPORTED")
     arithmetic_bits = 32 if alu & 127 == 0x3b else 64
-    _require(arithmetic_bits == 64 or (operation == "fetch_add" and lr["widthBits"] == 32),
+    _require(arithmetic_bits == 64 or (operation in ("fetch_add", "fetch_sub") and lr["widthBits"] == 32),
              "LRSC_ALU_WIDTH_UNSUPPORTED")
     next_reg, left, right = _reg(alu, 7), _reg(alu, 15), _reg(alu, 20)
     _require((left == lr["rd"]) != (right == lr["rd"]),
              "LRSC_OLD_VALUE_DEPENDENCY_INVALID")
+    _require(operation != "fetch_sub" or left == lr["rd"],
+             "LRSC_NONCOMMUTATIVE_OPERAND_ORDER_UNSUPPORTED")
     input_reg = right if left == lr["rd"] else left
     _require(sc["rs2"] == next_reg, "LRSC_STORE_VALUE_MISMATCH")
     # Other aliasing forms need their own state/output proof, not a guess.
@@ -140,6 +142,7 @@ def successful_projection(value, *, old, input_value):
     arg = input_value & ((1 << 64) - 1)
     op = spec["operation"]
     next_value = {"fetch_add": lambda: old_reg + arg,
+                  "fetch_sub": lambda: old_reg - arg,
                   "fetch_and": lambda: old_reg & arg,
                   "fetch_or": lambda: old_reg | arg,
                   "fetch_xor": lambda: old_reg ^ arg}[op]() & ((1 << arithmetic) - 1)

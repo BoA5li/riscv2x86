@@ -18,7 +18,8 @@ def code(bits=64, operation="fetch_add", registers=(5, 6, 9, 10, 11),
     la, lr, sa, sr = order
     load = (2 << 27) | (la << 26) | (lr << 25) | (address << 15) | (funct3 << 12) | (old << 7) | 0x2f
     store = (3 << 27) | (sa << 26) | (sr << 25) | (nxt << 20) | (address << 15) | (funct3 << 12) | (status << 7) | 0x2f
-    alu = (value << 20) | (old << 15) | ({"fetch_add": 0, "fetch_and": 7, "fetch_or": 6, "fetch_xor": 4}[operation] << 12) | (nxt << 7) | (0x3b if word_alu else 0x33)
+    alu = (value << 20) | (old << 15) | ({"fetch_add": 0, "fetch_sub": 0, "fetch_and": 7, "fetch_or": 6, "fetch_xor": 4}[operation] << 12) | (nxt << 7) | (0x3b if word_alu else 0x33)
+    if operation=="fetch_sub":alu |= 0x20 << 25
     imm = (-12) & 8191
     branch = ((imm >> 12) << 31) | (((imm >> 5) & 63) << 25) | (status << 15) | (1 << 12) | (((imm >> 1) & 15) << 8) | (((imm >> 11) & 1) << 7) | 0x63
     end = branch.to_bytes(4, "little")
@@ -30,7 +31,7 @@ def code(bits=64, operation="fetch_add", registers=(5, 6, 9, 10, 11),
 
 
 @pytest.mark.parametrize("bits", [32, 64])
-@pytest.mark.parametrize("operation", ["fetch_add", "fetch_and", "fetch_or", "fetch_xor"])
+@pytest.mark.parametrize("operation", ["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor"])
 @pytest.mark.parametrize("compressed", [False, True])
 @pytest.mark.parametrize("order", [(False, False, False, False), (True, False, False, True), (True, True, True, True)])
 def test_decode_and_exact_replay(bits, operation, compressed, order):
@@ -49,7 +50,7 @@ def test_register_roles_not_operand_position(registers):
     assert [value[k] for k in ("oldRegister", "nextRegister", "statusRegister", "addressRegister", "inputRegister")] == list(registers)
 
 
-@pytest.mark.parametrize("operation", ["fetch_add", "fetch_and", "fetch_or", "fetch_xor"])
+@pytest.mark.parametrize("operation", ["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor"])
 @pytest.mark.parametrize("bits", [32, 64])
 def test_reference_all_success_outputs(operation, bits):
     value = candidate(code(bits, operation))
@@ -60,7 +61,7 @@ def test_reference_all_success_outputs(operation, bits):
             if signed & (1 << (bits - 1)):
                 signed -= 1 << bits
             loaded = signed & mask64
-            expected = {"fetch_add": loaded + arg, "fetch_and": loaded & arg,
+            expected = {"fetch_add": loaded + arg, "fetch_sub": loaded - arg, "fetch_and": loaded & arg,
                         "fetch_or": loaded | arg, "fetch_xor": loaded ^ arg}[operation] & mask64
             assert successful_projection(value, old=old, input_value=arg) == {
                 "oldRegisterValue": loaded, "nextRegisterValue": expected,

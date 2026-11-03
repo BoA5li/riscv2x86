@@ -706,8 +706,10 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             index for index, item in enumerate(param_types)
             if _INTEGER_POINTER_TYPE.fullmatch(item)
         ]
+        from .register_call_abi import MAX_ATOMIC_PARAMETERS
         safe_memory_object = (
-            len(params) <= 4
+            len(params) <= MAX_ATOMIC_PARAMETERS
+            and (len(params) <= 4 or len(pointer_parameters) == 1)
             and len(pointer_parameters) >= 1
             and (return_type == "void" or _INTEGER_TYPE.fullmatch(return_type))
             and all(

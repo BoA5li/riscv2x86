@@ -56,10 +56,10 @@ def decode(code, base):
             return reg, {'base': rm, 'offset': disp}
         regop = lambda r: {'register': r}
         row = None
-        if op in (0x89, 0x8b, 0x21, 0x23, 0x09, 0x0b, 0x31, 0x33, 0x01, 0x03):
-            reg, rm = modrm(); reverse = op in (0x8b, 0x23, 0x0b, 0x33, 0x03)
+        if op in (0x89, 0x8b, 0x21, 0x23, 0x09, 0x0b, 0x31, 0x33, 0x01, 0x03, 0x29, 0x2b):
+            reg, rm = modrm(); reverse = op in (0x8b, 0x23, 0x0b, 0x33, 0x03, 0x2b)
             left, right = (regop(reg), rm) if reverse else (rm, regop(reg))
-            name = 'move' if op in (0x89, 0x8b) else {0x21:'and',0x23:'and',0x09:'or',0x0b:'or',0x31:'xor',0x33:'xor',0x01:'add',0x03:'add'}[op]
+            name = 'move' if op in (0x89, 0x8b) else {0x21:'and',0x23:'and',0x09:'or',0x0b:'or',0x31:'xor',0x33:'xor',0x01:'add',0x03:'add',0x29:'sub',0x2b:'sub'}[op]
             row = {'op': name, 'destination': left, 'source': right, 'width': width}
         elif op == 0x0f:
             sub = read(1)
@@ -112,7 +112,8 @@ def decode(code, base):
 
 
 def state(pointer, value):
-    regs={r:('parameter',i) for i,r in enumerate((7,6,2,1))};regs[4]=('stack',0)
+    from .register_call_abi import integer_arguments
+    regs={r:('parameter',i) for i,r in enumerate(integer_arguments(62))};regs[4]=('stack',0)
     return {'registers':regs,'memory':{},'byteRegisters':{},'zero':None,
             'pointer':('parameter',pointer),'input':('parameter',value)}
 

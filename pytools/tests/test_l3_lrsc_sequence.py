@@ -16,7 +16,7 @@ def invocation(width=64,operation='fetch_add',word=False):
 
 
 @pytest.mark.parametrize('width',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 @pytest.mark.parametrize('compressed',[False,True])
 @pytest.mark.parametrize('registers',[(5,6,9,10,11),(12,13,14,10,11)])
 def test_final_rv_loop_proof_and_actual_path_partition(width,operation,compressed,registers):
@@ -31,7 +31,7 @@ def test_final_rv_loop_proof_and_actual_path_partition(width,operation,compresse
 
 
 @pytest.mark.parametrize('width',[32,64])
-@pytest.mark.parametrize('operation',['fetch_add','fetch_and','fetch_or','fetch_xor'])
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub','fetch_and','fetch_or','fetch_xor'])
 @pytest.mark.parametrize('optimization',['-O0','-O2'])
 def test_real_compiled_target_machine_has_proved_cas_invariant(tmp_path,width,operation,optimization):
     _,_,_,_,result=translated_case(width,operation)
@@ -44,9 +44,9 @@ def test_real_compiled_target_machine_has_proved_cas_invariant(tmp_path,width,op
     p=m['retry'];assert attempts(m,{'pcs':p['prefixPCs']+p['loopPCs']*2,'exit':m['region']['end']})==2
 
 
-def finding_spec():
+def finding_spec(operation="fetch_add"):
     from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
-    f,functions,_,_=finding_case();fn=functions[0];f['fragment']['enclosingFunction']='probe'
+    f,functions,_,_=finding_case(operation=operation);fn=functions[0];f['fragment']['enclosingFunction']='probe'
     fn.update(arity=2,parameterTypes=['unsigned long *','unsigned long'],pointerParameters=[0],returnType='unsigned long')
     key=f['fragment']['compilerFragmentAuthority']['fragmentBindingKey']
     scope={'scope':'single_asm_no_other_memory_or_control_effects','functionIdentity':fn['functionId'],
@@ -65,13 +65,14 @@ def test_machine_rejects_wrong_width_operation_and_source_binding():
     with pytest.raises(ValueError):source(raw,0x1000,v)
 
 
-def test_sequence_spec_and_normal_mechanism_planner(tmp_path):
+@pytest.mark.parametrize('operation',['fetch_add','fetch_sub'])
+def test_sequence_spec_and_normal_mechanism_planner(tmp_path,operation):
     from riscv2x86_py.automatic_l2_authority import materialize_automatic_l2_authority
     from riscv2x86_py.l2_fragment_execution import materialize_fragment_execution_authority
     from riscv2x86_py.l3_lrsc_spec import spec
     from riscv2x86_py.l3_execution_plan import build
     from riscv2x86_py.l3_trace_support import digest
-    f,functions=finding_spec();f['translationOutcome']='emitted';f['sourceDigest']=functions[0]['sourceDigest']
+    f,functions=finding_spec(operation);f['translationOutcome']='emitted';f['sourceDigest']=functions[0]['sourceDigest']
     frontend=tmp_path/'frontend';frontend.write_text('identity')
     assert materialize_automatic_l2_authority({'findings':[f]},functions,frontend)==1
     program=identity({'schemaVersion':'riscv2x86.automatic-program.v1','producerDigest':digest(frontend)})

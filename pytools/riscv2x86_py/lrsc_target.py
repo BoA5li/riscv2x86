@@ -6,6 +6,7 @@ this contract and an explicit request for them rejects the route.
 """
 from dataclasses import asdict, dataclass
 from .route_authority import content_identity
+from .lrsc_semantics import ALU_OPERATIONS
 
 CONTRACT='x86.gnu-att.lrsc.locked-cas.multi-output.v1'
 
@@ -28,7 +29,7 @@ class LrScTargetContract:
 
 
 def program(width, arithmetic, operation):
-    alu={'fetch_add':'add','fetch_and':'and','fetch_or':'or','fetch_xor':'xor'}[operation]
+    alu=ALU_OPERATIONS[operation]
     return (('load','old','object',width),('label','retry'),
         ('extend','old',width,64),('copy','next','old'),
         (alu,'next','input',arithmetic),('extend','next',arithmetic,64),
@@ -140,14 +141,14 @@ def symbolic_proof(contract):
     if contract.program!=program(contract.width,contract.arithmetic_width,contract.operation):
         raise ValueError('LRSC_TARGET_PROGRAM_NOT_REGISTERED')
     old=_extend(('word',contract.width),contract.width)
-    opcode={'fetch_add':'add','fetch_and':'and','fetch_or':'or','fetch_xor':'xor'}[contract.operation]
+    opcode=ALU_OPERATIONS[contract.operation]
     next_value=_extend((opcode,contract.arithmetic_width,old,('input',64)),contract.arithmetic_width)
     regs={};cas=None
     for ins in contract.program:
         if ins[0]=='load':regs[ins[1]]=('word',ins[3])
         elif ins[0]=='extend':regs[ins[1]]=_extend(regs[ins[1]],ins[2],ins[3])
         elif ins[0]=='copy':regs[ins[1]]=regs[ins[2]]
-        elif ins[0] in {'add','and','or','xor'}:regs[ins[1]]=(ins[0],ins[3],regs[ins[1]],('input',64))
+        elif ins[0] in {'add','sub','and','or','xor'}:regs[ins[1]]=(ins[0],ins[3],regs[ins[1]],('input',64))
         elif ins[0]=='locked_cmpxchg':cas=(_low(regs[ins[2]],ins[4]),_low(regs[ins[3]],ins[4]))
         elif ins[0]=='constant':regs[ins[1]]=ins[2]
     if (regs!={'old':old,'next':next_value,'status':0}
@@ -188,7 +189,7 @@ def recipe(approved):
     lines=[f'mov{size} %{mem}, %{ "k" if c.width==32 else "q"}{old}', '.Lrv2x86_lrsc_%=:']
     if c.width==32:lines.append(f'movslq %k{old}, %q{old}')
     lines.append(f'movq %q{old}, %q{nxt}')
-    alu={'fetch_add':'add','fetch_and':'and','fetch_or':'or','fetch_xor':'xor'}[c.operation]
+    alu=ALU_OPERATIONS[c.operation]
     a_size='l' if c.arithmetic_width==32 else 'q';mod='k' if a_size=='l' else 'q'
     lines.append(f'{alu}{a_size} %{mod}{arg}, %{mod}{nxt}')
     if c.arithmetic_width==32:lines.append(f'movslq %k{nxt}, %q{nxt}')

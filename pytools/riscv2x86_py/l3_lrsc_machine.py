@@ -10,12 +10,13 @@ def low(v,w):
     if isinstance(v,tuple):
         if v[0]=='low':return low(v[2],min(w,v[1]))
         if v[0]=='sign32' and w<=32:return low(v[1],w)
-        if v[0] in ('add','and','or','xor'):return expression(v[0],v[2],v[3],min(w,v[1]))
+        if v[0] in ('add','sub','and','or','xor'):return expression(v[0],v[2],v[3],min(w,v[1]))
     return x.low(v,w)
 
 
 def expression(op,a,b,w):
-    return (op,w,*sorted((low(a,w),low(b,w)),key=repr))
+    pair=(low(a,w),low(b,w))
+    return (op,w,*(pair if op=='sub' else sorted(pair,key=repr)))
 
 
 def canonical(value):
@@ -24,19 +25,19 @@ def canonical(value):
     if isinstance(value,tuple):
         if value[0]=='low':return low(canonical(value[2]),value[1])
         if value[0]=='sign32':return ('sign32',low(canonical(value[1]),32))
-        if value[0] in ('add','and','or','xor'):
+        if value[0] in ('add','sub','and','or','xor'):
             return expression(value[0],canonical(value[2]),canonical(value[3]),value[1])
     return value
 
 
 def target_step(s,row,*,region=False,roles=None):
-    if region and row['op'] in ('add','and','or','xor') and 'base' in row['source']:
+    if region and row['op'] in ('add','sub','and','or','xor') and 'base' in row['source']:
         if x.address(s,row['source'])[0]!='stack' or x.get(s,row['source'],row['width'])!=x.low(s['input'],row['width']):
             raise ValueError('L3_LRSC_LOOP_INPUT_MEMORY_UNBOUND')
         if roles is not None:roles.append({'pc':row['pc'],'stackOffset':x.address(s,row['source'])[1],'widthBytes':row['width']//8})
-    if row['op']=='add':
+    if row['op'] in ('add','sub'):
         if 'register' not in row['destination']:raise ValueError('L3_LRSC_TARGET_EXTRA_STORE')
-        v=expression('add',x.get(s,row['destination'],row['width']),x.get(s,row['source'],row['width']),row['width'])
+        v=expression(row['op'],x.get(s,row['destination'],row['width']),x.get(s,row['source'],row['width']),row['width'])
         x.put(s,row['destination'],v,row['width']);s['zero']=None
     elif row['op'] in ('and','or','xor'):
         left=x.get(s,row['destination'],row['width']);right=x.get(s,row['source'],row['width'])
@@ -123,7 +124,8 @@ def source(code,base,spec):
         raise ValueError('L3_LRSC_SOURCE_SEQUENCE_CONTRACT_MISMATCH')
     prefix=_rv_rows(code[:off],base,phase='prefix');tail=_rv_rows(code[off+n:],base+off+n,phase='suffix')
     if not tail or tail[-1]['op']!='return' or any(r['op']=='return' for r in prefix+tail[:-1]):raise ValueError('L3_LRSC_SOURCE_RETURN_REQUIRED')
-    s=rv.initial(243)
+    count=len(spec.get('parameterTypes',[])) or max(4,spec['pointerParameter']+1,spec['valueParameter']+1)
+    s=rv.initial(243,parameter_count=count)
     for r in prefix:rv.step(s,r,243)
     if (s['registers'].get(q['addressRegister'])!='parameter:'+str(spec['pointerParameter'])
         or s['registers'].get(q['inputRegister'])!='parameter:'+str(spec['valueParameter'])):

@@ -129,8 +129,12 @@ def decode(code, base, machine):
     return rows
 
 
-def initial(machine):
-    regs={r:'parameter:'+str(i) for i,r in enumerate((10,11,12,13) if machine==243 else (7,6,2,1))}
+def initial(machine, *, parameter_count=4):
+    from .register_call_abi import integer_arguments
+    lanes=integer_arguments(machine)
+    if type(parameter_count) is not int or not 0<=parameter_count<=len(lanes):
+        raise ValueError('REGISTER_CALL_ABI_PARAMETER_COUNT_UNSUPPORTED')
+    regs={r:'parameter:'+str(i) for i,r in enumerate(lanes[:parameter_count])}
     regs[2 if machine==243 else 4]=('stack',0)
     if machine==243:regs[0]=0
     return {'registers':regs,'memory':{},'compare':None}

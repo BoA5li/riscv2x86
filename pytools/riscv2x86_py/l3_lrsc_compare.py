@@ -4,7 +4,7 @@ from .l3_lrsc_backend import callback_shape
 def satisfies(instruction,operation,side):
     return (instruction['operation']==operation['rmw_operation'] and instruction['width']==operation['width_bits']
         and instruction['mechanism']==('rv-lrsc-loop' if side=='source' else 'x86-locked-cas-loop'))
-from .l3_atomic_semantics import result as rmw_result
+from .lrsc_semantics import stored_result as rmw_result
 
 
 def report(side,backend,deployment,observed,rows,evidence):

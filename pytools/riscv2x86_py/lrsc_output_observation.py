@@ -35,7 +35,7 @@ def completion_values(width, arithmetic, operation, old, value):
     """
     if (type(width) is not int or width not in (32, 64)
             or type(arithmetic) is not int or arithmetic not in (32, 64)
-            or (arithmetic == 32 and (width != 32 or operation != 'fetch_add'))):
+            or (arithmetic == 32 and (width != 32 or operation not in ('fetch_add','fetch_sub')))):
         raise ValueError('L2_LRSC_OUTPUT_WIDTH_DOMAIN_UNSUPPORTED')
     mask = (1 << 64) - 1
     old &= (1 << width) - 1
@@ -43,7 +43,7 @@ def completion_values(width, arithmetic, operation, old, value):
         old -= 1 << width
     old &= mask
     value &= mask
-    result = {'fetch_add': lambda: old + value, 'fetch_and': lambda: old & value,
+    result = {'fetch_add': lambda: old + value, 'fetch_sub': lambda: old - value, 'fetch_and': lambda: old & value,
               'fetch_or': lambda: old | value, 'fetch_xor': lambda: old ^ value}[operation]()
     result &= (1 << arithmetic) - 1
     if arithmetic == 32 and result & (1 << 31):
