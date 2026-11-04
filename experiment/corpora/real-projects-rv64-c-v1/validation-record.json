@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "riscv2x86.candidate-view-validation.v1",
+  "viewIdentity": "sha256:04b64f5a8e4f62216613bd1b7c05652fff0f66dd94b22b540633d27d0a79d181",
+  "sourceCatalogIdentity": "sha256:a3e21d8a848479e715ed89f799e1a30a6e995ae44d69fd4bdae345bad6f07c94",
+  "regressionTests": {
+    "passed": 90,
+    "failed": 0,
+    "files": [
+      "pytools/tests/test_filter_rv64_c_corpus.py",
+      "pytools/tests/test_whole_project_corpus.py",
+      "pytools/tests/test_real_project_corpus.py"
+    ]
+  },
+  "materializationAndDerivationReplayComplete": true,
+  "hostCppExpressionCrossCheckComplete": true,
+  "python310GrammarParsed": true,
+  "readmeBashSyntaxChecked": true,
+  "compilerActivationComplete": false,
+  "semanticApproval": false,
+  "productionAcceptanceComplete": false
+}
