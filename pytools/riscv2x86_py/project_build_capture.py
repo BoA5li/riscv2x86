@@ -153,8 +153,12 @@ def invoke(config,tool,args):
     argv=[selected['path'],*args];cwd=os.getcwd();token=uuid.uuid4().hex
     run_id=os.environ.get('RV2X86_PROJECT_CAPTURE_RUN','')
     if run_id:
+        if re.fullmatch('[0-9a-f]{32}',run_id) is None:
+            raise ValueError('PROJECT_CAPTURE_RUN_ID_INVALID')
         start=read(Path(value['directory'])/'runs'/(run_id+'.start.json'))
-        if start['captureIdentity']!=value['recordIdentity']:raise ValueError('PROJECT_CAPTURE_RUN_MISMATCH')
+        if (start.get('captureIdentity')!=value['recordIdentity'] or start.get('runId')!=run_id
+                or start.get('schemaVersion')!=SCHEMA+'.run-start'):
+            raise ValueError('PROJECT_CAPTURE_RUN_MISMATCH')
         if snapshot([r['path'] for r in start['inputs']])!=start['inputs']:
             raise ValueError('PROJECT_CAPTURE_RUN_CONFIGURATION_CHANGED')
     action=record(argv,cwd,{'kind':'capture-start'})
@@ -272,6 +276,8 @@ def inventory(config,*,stage=None):
                     action['actionIdentity']=identity(action)
                     rid=a['runId']
                     if rid and rid not in runs:raise ValueError('PROJECT_CAPTURE_PARENT_RUN_UNRESOLVED')
+                    if stage is not None and not rid:
+                        raise ValueError('PROJECT_CAPTURE_STAGE_UNATTRIBUTED')
                     if stage is None or rid and runs[rid]['stage']==stage:rows.append(action)
                     else:unselected.append(action)
             except (OSError,ValueError,KeyError,TypeError) as exc:

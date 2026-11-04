@@ -88,3 +88,13 @@ def test_real_clang_header_and_space_paths(tmp_path):
     assert validate(result['dependencyManifest'])
     assert str(header) in {r['resolvedPath'] for r in result['dependencyManifest']['dependencies']}
     assert not result['dependencyClosureVerified']  # Header function proof remains separate.
+
+
+def test_paired_isysroot_is_consumed_consistently_and_replayed(tmp_path,monkeypatch):
+    source,_=prepare(tmp_path,monkeypatch)
+    result=acquire(source,clang=sys.executable,target='riscv64',compile_args=['-isysroot',str(tmp_path)])
+    command=result['compilerCommand']
+    assert command[command.index('-isysroot')+1]==str(tmp_path)
+    assert validate(result['dependencyManifest'])['acquisitionConsistent']
+    with pytest.raises(ValueError,match='INCOMPLETE'):
+        acquire(source,clang=sys.executable,target='riscv64',compile_args=['-isysroot'])

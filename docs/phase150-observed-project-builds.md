@@ -20,6 +20,7 @@ unchanged. Outstanding implementation is listed at the end.
   generators, compilation, assembly, archive and link actions are retained.
   Stage selection retains unselected actions rather than deleting failures.
   A failed parent command is recorded without erasing successful child actions.
+  Unattributed stages remain unresolved under an explicit stage selection.
   Receipt completeness does not prove that every process was intercepted.
 - `project_tool_resolution`: tools and relative PATH entries resolve in the
   action working directory, not the caller's directory.
@@ -30,7 +31,9 @@ unchanged. Outstanding implementation is listed at the end.
 - `project_compile_arguments`: a shared finite grammar handles separated and
   joined action/dependency options. Native replay redirects all recognized
   dependency outputs to fresh files, including `-MFpath` and `-Wp,-MMD,path`.
-  Other `-Wp` forms remain blocked. Compiler profiles cannot inject these action
+  Other `-Wp` forms remain blocked. Paired `-isysroot` is also consumed by
+  dependency/AST acquisition instead of being accepted by the context parser
+  and then incorrectly rejected by its downstream consumer. Compiler profiles cannot inject these action
   outputs into body recipes.
 - `project_source_release`: stream a digest-checked official archive once and
   compare all regular-file bytes, entry types, symlink spellings and executable
@@ -52,7 +55,7 @@ unchanged. Outstanding implementation is listed at the end.
 
 ## Local verification
 
-- Context, source, capture and existing route regressions: 499 passed, 10
+- Context, source, capture and existing route regressions: 501 passed, 10
   skipped. Skips require real Clang or the rebuilt frontend, which are absent
   locally. No RV64/QEMU production execution is claimed.
 - Actual native GCC and nested parallel make are exercised; tests cover failed

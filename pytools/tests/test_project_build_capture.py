@@ -217,3 +217,17 @@ def test_explicit_linker_actions_are_retained_with_their_actual_elf(tmp_path):
     link=next(a for a in doc['actions'] if a['kind']=='link')
     assert link['observedOutput']['elfHeader']['type']==1
     assert not doc['buildSuccessVerified']
+
+
+def test_parent_run_identifier_cannot_name_an_external_record(tmp_path,monkeypatch):
+    from riscv2x86_py.project_build_capture import invoke
+    value,source,config=prepare(tmp_path)
+    monkeypatch.setenv('RV2X86_PROJECT_CAPTURE_RUN','../../outside')
+    with pytest.raises(ValueError,match='RUN_ID_INVALID'):
+        invoke(config,'cc',['--version'])
+    assert not list((tmp_path/'capture/invocations').iterdir())
+    monkeypatch.delenv('RV2X86_PROJECT_CAPTURE_RUN');monkeypatch.chdir(source)
+    assert invoke(config,'cc',['-c','x.c','-o','unattributed.o'])==0
+    result=inventory(config,stage='build')
+    assert any('STAGE_UNATTRIBUTED' in r['reasonCode'] for r in result['unresolved'])
+    assert len(inventory(config)['actions'])==1

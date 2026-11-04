@@ -72,8 +72,8 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
     # the selected acquisition recipe without an explicit future contract.
     args = list(compile_args)
     prefixes = ('-march=', '-mabi=', '-mcpu=', '-mtune=', '-std=', '-D', '-U', '-I',
-                '--sysroot=', '-isystem', '-iquote', '-include', '-imacros', '-fexcess-precision=')
-    separated = {'-D','-U','-I','-isystem','-iquote','-include','-imacros'}
+                '--sysroot=', '-isystem', '-iquote', '-include', '-imacros', '-isysroot', '-fexcess-precision=')
+    separated = {'-D','-U','-I','-isystem','-iquote','-include','-imacros','-isysroot'}
     from .project_compile_context import EXACT
     import re
     waiting = False
