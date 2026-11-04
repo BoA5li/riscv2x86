@@ -1,0 +1,27 @@
+{
+  "status": "all-v1-source-positions-retained",
+  "projects": [
+    {
+      "id": "gmp",
+      "priorSyntaxSiteCount": 178,
+      "priorSelectedCandidateCount": 1,
+      "missingCount": 0
+    },
+    {
+      "id": "musl",
+      "priorSyntaxSiteCount": 36,
+      "priorSelectedCandidateCount": 36,
+      "missingCount": 0
+    },
+    {
+      "id": "linux",
+      "priorSyntaxSiteCount": 102,
+      "priorSelectedCandidateCount": 102,
+      "missingCount": 0
+    }
+  ],
+  "missingCount": 0,
+  "compilerActivationComplete": false,
+  "semanticApproval": false,
+  "productionAcceptanceComplete": false
+}
