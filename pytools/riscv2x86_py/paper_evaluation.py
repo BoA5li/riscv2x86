@@ -313,6 +313,12 @@ def _validation_maps(
                 and (not selected_fragment_ids or item.get("fragmentId") in selected_fragment_ids)]
     if not attempts:
         return {}, {}, {}, {}
+    from .l3_policy_evidence import consume_system, system_candidate
+    bounded_candidate = system_candidate(evaluation)
+    try:
+        bounded = consume_system(evaluation)
+    except (OSError, ValueError, TypeError, KeyError):
+        bounded = None
     maps = []
     dimension_maps = []
     scope_maps = []
@@ -335,6 +341,9 @@ def _validation_maps(
             layer_map[str(item.get("level"))] = item_status
             detail = item.get("detail")
             typed_l2 = False
+            if item.get("level") == "L3" and bounded_candidate:
+                layer_map["L3"] = "bounded_verified" if bounded else "inconclusive"
+                continue
             if isinstance(detail, str) and detail.startswith("{"):
                 payload = json.loads(detail)
                 if item.get("level") == "L3" and item_status == "verified":
@@ -421,7 +430,8 @@ def _validation_maps(
         statuses = [item.get(level, "inconclusive") for item in maps]
         if level == "L3":
             from .l3_evidence_closure import aggregate_statuses
-            result[level] = aggregate_statuses(statuses)
+            result[level] = ("bounded_verified" if set(statuses) == {"bounded_verified"} else
+                             "inconclusive" if "bounded_verified" in statuses else aggregate_statuses(statuses))
         else:
             result[level] = ("failed" if "failed" in statuses else
                              "inconclusive" if "inconclusive" in statuses else
@@ -507,6 +517,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
     eligibility_classification: dict[str, str] = {}
     l3_requirements: dict[str, Mapping[str, object]] = {}
     l3_fragment_evidence: dict[str, Mapping[str, object]] = {}
+    bounded_system_evidence: dict[str, Mapping[str, object]] = {}
     l3_invoked: set[str] = set()
     l3_contract_versions: set[str] = set()
     seen_oracles: set[str] = set()
@@ -595,6 +606,8 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                         if fid in l3_requirements and l3_requirements[fid] != requirement:
                             raise ValueError("conflicting L3 fragment requirements")
                         l3_requirements[fid] = requirement
+                from .l3_policy_evidence import consume_system
+                bounded = consume_system(evaluation)
                 for attempt_result in evaluation.get("attempts", []):
                     if not isinstance(attempt_result, Mapping):
                         continue
@@ -630,6 +643,8 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                             for dimension in closed["dimensionResults"].values():
                                 parse_dimension(dimension, source_report=reports["source"],
                                                 target_report=reports["target"])
+                            if fid in bounded_system_evidence:
+                                raise ValueError("mixed bounded and architectural evidence")
                             if fid in l3_fragment_evidence and l3_fragment_evidence[fid] != closed:
                                 raise ValueError("conflicting L3 fragment results")
                             l3_fragment_evidence[fid] = closed
@@ -665,6 +680,16 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
                 status = str(evaluation.get("status")); reason_codes = evaluation.get("reasonCodes", [])
                 if not isinstance(reason_codes, list):
                     raise ValueError("evaluation reason codes are malformed")
+                if bounded:
+                    l3_contract_versions.add(bounded["policyId"])
+                    for row in bounded["fragments"]:
+                        fid = row["fragmentId"]
+                        if fid in bounded_system_evidence and bounded_system_evidence[fid] != row:
+                            raise ValueError("conflicting bounded SYSTEM evidence")
+                        if fid in l3_fragment_evidence:
+                            raise ValueError("mixed bounded and architectural evidence")
+                        bounded_system_evidence[fid] = row
+                        l3_invoked.add(fid)
             except Exception as exc:
                 errors.append({"programId": program.program_id, "evaluationId": declaration.evaluation_id,
                                "reasonCode": "paper.evaluation-invalid",
@@ -769,10 +794,16 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         l3_complete = bool(valid_evidence and all(
             value["status"] in {"verified", "failed"} and value["comparisonEvidenceIdentity"]
             for value in l3_evidence["dimensionResults"].values()))
+        bounded_row = bounded_system_evidence.get(fid)
+        bounded_complete = bool(bounded_row and l3_requirement and
+            bounded_row["requirementIdentity"] == l3_requirement["requirementIdentity"])
         fragment.update({"l3EligibilityStatus": l3_status,
                          "l3Eligible": l3_status == "eligible",
                          "l3Attempted": fid in l3_invoked or bool(valid_evidence),
-                         "l3CompleteExecution": l3_complete,
+                         "l3CompleteExecution": l3_complete or bounded_complete,
+                         "l3BoundedSystemIntentVerified": bounded_complete,
+                         "l3ClaimScope": (bounded_row["claimScope"] if bounded_complete else
+                                          l3_evidence["claimScope"] if valid_evidence else ""),
                          "l3ArchitecturalIntentVerified": bool(l3_complete and
                             l3_evidence["status"] == "verified" and
                             l3_evidence["claimScope"] == "architectural_intent"),
@@ -811,6 +842,9 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         lambda row: "L3" in row["layers"], manifest.bootstrap,
         "L3:target-experiment-diagnostic",
     )
+    metrics["l3BoundedSystemVerifiedRate"] = _cluster_metric(
+        units, lambda row: row["layers"].get("L3") == "bounded_verified",
+        lambda row: "L3" in row["layers"], manifest.bootstrap, "L3:bounded-controlled-system")
     l3_specs = {
         "l3IntentClassificationCoverage": (lambda row: row["l3EligibilityStatus"] not in {"unclassified", "inconclusive"}, lambda row: True),
         "l3EligibleRate": (lambda row: row["l3Eligible"], lambda row: True),
@@ -820,6 +854,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         "l3CompleteExecutionCoverage": (lambda row: row["l3CompleteExecution"], lambda row: row["l3Eligible"]),
         "l3UnconditionalArchitecturalIntentVerifiedRate": (lambda row: row["l3ArchitecturalIntentVerified"], lambda row: True),
         "l3ArchitecturalIntentVerifiedAmongRequired": (lambda row: row["l3ArchitecturalIntentVerified"], lambda row: row["l3Eligible"]),
+        "l3BoundedSystemIntentVerifiedAmongRequired": (lambda row: row["l3BoundedSystemIntentVerified"], lambda row: row["l3Eligible"]),
         "l3TargetDiagnosticVerifiedAmongRequired": (lambda row: row["l3TargetDiagnosticVerified"], lambda row: row["l3Eligible"]),
         "l3InconclusiveRate": (lambda row: row["l3Attempted"] and not row["l3CompleteExecution"], lambda row: row["l3Eligible"]),
         "l3NotRunRate": (lambda row: not row["l3Attempted"], lambda row: row["l3Eligible"]),
@@ -1020,6 +1055,7 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         "l3CompleteExecutionCoverage": "completeExecution",
         "l3UnconditionalArchitecturalIntentVerifiedRate": "architecturalIntentVerified",
         "l3TargetDiagnosticVerifiedAmongRequired": "diagnosticVerified",
+        "l3BoundedSystemIntentVerifiedAmongRequired": "boundedSystemIntentVerified",
         "l3InconclusiveRate": "inconclusive",
         "l3NotRunRate": "notRun",
     }
@@ -1031,6 +1067,10 @@ def aggregate_paper_corpus(manifest: PaperCorpusManifest, *, manifest_directory:
         metric_definitions[metric_name] = {"unit": "fragment", "denominator": "all corpus oracle fragments",
             "numerator": "fragments authoritatively classified " + status,
             "bootstrapCluster": "program/entry"}
+    metric_definitions["l3BoundedSystemVerifiedRate"] = {
+        "unit": "program/group", "denominator": "declared validation units containing L3",
+        "numerator": "independently audited bounded controlled-environment units; not unconditional architectural intent",
+        "bootstrapCluster": "program/entry"}
     metric_definitions["l3ArchitecturalIntentVerifiedAmongRequired"] = {
         "unit": "fragment", "denominator": "L3 eligible corpus fragments",
         "numerator": "closed architectural-intent L3 verified fragments", "bootstrapCluster": "program/entry"}

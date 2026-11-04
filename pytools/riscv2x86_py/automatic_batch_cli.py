@@ -1916,12 +1916,19 @@ def main() -> int:
             except (OSError, ValueError, TypeError, KeyError) as exc:
                 record = {"status": "inconclusive", "reason": str(exc)}
             records.append(dict(record, caseId=case["caseId"]))
-        complete = bool(records) and all(r["status"] == "verified" for r in records)
+        audited = bool(records) and all(r["status"] == "verified" for r in records)
+        summarized = (bool(result["cases"]) and result["caseCount"] == len(result["cases"])
+                      and result["statusCounts"] == {"verified": len(result["cases"])})
+        complete = audited and summarized
         _write_json(output / "l3-production-acceptance.json", {
             "schemaVersion": "riscv2x86.l3-production-acceptance.v1",
-            "productionAcceptanceComplete": complete, "evaluations": records})
-        if not complete:
+            "productionAcceptanceComplete": complete,
+            "independentResultAuditComplete": audited, "batchSummaryComplete": summarized,
+            "evaluations": records})
+        if not audited:
             return 2
+        if not summarized:
+            return 1
     return 0 if set(result["statusCounts"]).issubset({"verified"}) else 1
 
 

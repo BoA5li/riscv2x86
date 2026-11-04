@@ -24,8 +24,8 @@ def _detail(layer):
 def audit_evaluation(evaluation):
     if evaluation.get('status') != 'verified':
         raise ValueError('l3.acceptance.evaluation-not-verified')
-    if any(_detail(layer).get('systemL3') is True for attempt in evaluation.get('attempts', [])
-            for layer in (attempt.get('validation') or {}).get('layers', []) if layer.get('level') == 'L3'):
+    from .l3_policy_evidence import system_candidate
+    if system_candidate(evaluation):
         from .l3_system_route import audit_result
         return audit_result(evaluation)
     if any(_detail(layer).get('jointCapturePath') for attempt in evaluation.get('attempts',[])

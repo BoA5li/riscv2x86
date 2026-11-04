@@ -326,54 +326,75 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
             if (isinstance(specialized_item, Mapping) and
                     specialized_item.get("schemaVersion") == "riscv2x86.l3-specialized-result.v1"):
                 l3_specialized.append(dict(specialized_item))
-    l3_programs = []
-    sidecars = list((case_root / "work").rglob("*.l3-requirements.json"))
-    if program_levels["L3"] == "verified" and not l3_fragments:
-        program_levels["L3"] = "inconclusive"
-    if l3_fragments and len(sidecars) != 1:
-        program_levels["L3"] = "inconclusive"
-    if len(sidecars) == 1:
-        from .l3_intent_requirements import parse_l3_requirement_manifest
-        from .l3_evidence_closure import close_program, validate_fragment_against_requirement, aggregate_statuses
-        manifest = parse_l3_requirement_manifest(json.loads(sidecars[0].read_text(encoding="utf-8")))
-        authority = {x["fragmentId"]: x for x in manifest.requirements}
-        checked = []
-        l3_group_statuses = []
-        for member in l3_fragments:
-            try:
-                checked.append(dict(validate_fragment_against_requirement(
-                    member, authority[member["fragmentId"]])))
-            except (ValueError, TypeError, KeyError):
-                l3_group_statuses.append("inconclusive")
-        l3_fragments = checked
-        grouped = {}
-        for item in manifest.requirements:
-            if item["eligibilityStatus"] == "eligible":
-                grouped.setdefault(item["programId"], []).append(item)
-        for program_id, required in sorted(grouped.items()):
-            members = [x for x in l3_fragments if x["programId"] == program_id]
-            scopes = {x["claimScope"] for x in members}
-            scope = ("target_experiment_diagnostic" if any(x["translationOutcome"] == "functional_fallback"
-                     for x in required) else "architectural_intent")
-            if scopes - {scope}:
-                l3_group_statuses.append("inconclusive")
-                continue
-            group = close_program(program_id, sorted({x["fragmentId"] for x in required}), members,
-                                  claim_scope=scope)
-            l3_programs.append(group)
-            l3_group_statuses.append("diagnostic_verified" if group["status"] == "verified" and
-                                     scope == "target_experiment_diagnostic" else group["status"])
-        if l3_group_statuses:
-            # Earlier invalid report evidence must not be overwritten by a later group.
-            if program_levels["L3"] in {"failed", "inconclusive"}:
-                l3_group_statuses.append(program_levels["L3"])
-            program_levels["L3"] = aggregate_statuses(l3_group_statuses)
+    from .l3_policy_evidence import system_candidate
     from .l3_coverage import summarize_l3_case
-    try:
-        l3_coverage = summarize_l3_case(result, l3_fragments)
-    except (ValueError, TypeError, KeyError) as exc:
-        l3_coverage = {"error": "l3.coverage.evidence-invalid: " + str(exc)}
-        program_levels["L3"] = "inconclusive"
+    l3_programs = []
+    l3_bounded_programs = []
+    if system_candidate(result):
+        try:
+            l3_coverage = summarize_l3_case(result, l3_fragments)
+            bounded = l3_coverage["boundedSystemEvidence"]
+            sidecars = list((case_root / "work").rglob("*.l3-requirements.json"))
+            if len(sidecars) != 1:
+                raise ValueError("SYSTEM_L3_SUMMARY_SINGLE_SIDECAR_REQUIRED")
+            from .l3_trace_support import require_json_match
+            from .l3_system_route import _json as strict_json
+            require_json_match(strict_json(sidecars[0].read_text(encoding="utf-8")),
+                result["translationEvaluationLink"]["l3Requirements"],
+                "SYSTEM_L3_SUMMARY_REQUIREMENT_MISMATCH")
+            l3_bounded_programs = [bounded]
+            program_levels["L3"] = "verified"
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            l3_coverage = {"error": "l3.coverage.evidence-invalid: " + str(exc)}
+            if program_levels["L3"] != "failed":
+                program_levels["L3"] = "inconclusive"
+    else:
+        sidecars = list((case_root / "work").rglob("*.l3-requirements.json"))
+        if program_levels["L3"] == "verified" and not l3_fragments:
+            program_levels["L3"] = "inconclusive"
+        if l3_fragments and len(sidecars) != 1:
+            program_levels["L3"] = "inconclusive"
+        if len(sidecars) == 1:
+            from .l3_intent_requirements import parse_l3_requirement_manifest
+            from .l3_evidence_closure import close_program, validate_fragment_against_requirement, aggregate_statuses
+            manifest = parse_l3_requirement_manifest(json.loads(sidecars[0].read_text(encoding="utf-8")))
+            authority = {x["fragmentId"]: x for x in manifest.requirements}
+            checked = []
+            l3_group_statuses = []
+            for member in l3_fragments:
+                try:
+                    checked.append(dict(validate_fragment_against_requirement(
+                        member, authority[member["fragmentId"]])))
+                except (ValueError, TypeError, KeyError):
+                    l3_group_statuses.append("inconclusive")
+            l3_fragments = checked
+            grouped = {}
+            for item in manifest.requirements:
+                if item["eligibilityStatus"] == "eligible":
+                    grouped.setdefault(item["programId"], []).append(item)
+            for program_id, required in sorted(grouped.items()):
+                members = [x for x in l3_fragments if x["programId"] == program_id]
+                scopes = {x["claimScope"] for x in members}
+                scope = ("target_experiment_diagnostic" if any(x["translationOutcome"] == "functional_fallback"
+                         for x in required) else "architectural_intent")
+                if scopes - {scope}:
+                    l3_group_statuses.append("inconclusive")
+                    continue
+                group = close_program(program_id, sorted({x["fragmentId"] for x in required}), members,
+                                      claim_scope=scope)
+                l3_programs.append(group)
+                l3_group_statuses.append("diagnostic_verified" if group["status"] == "verified" and
+                                         scope == "target_experiment_diagnostic" else group["status"])
+            if l3_group_statuses:
+                # Earlier invalid report evidence must not be overwritten by a later group.
+                if program_levels["L3"] in {"failed", "inconclusive"}:
+                    l3_group_statuses.append(program_levels["L3"])
+                program_levels["L3"] = aggregate_statuses(l3_group_statuses)
+        try:
+            l3_coverage = summarize_l3_case(result, l3_fragments)
+        except (ValueError, TypeError, KeyError) as exc:
+            l3_coverage = {"error": "l3.coverage.evidence-invalid: " + str(exc)}
+            program_levels["L3"] = "inconclusive"
     case_status = result["status"]
     case_reasons = list(result.get("reasonCodes", []))
     if ("L3" in level_statuses and case_status == "verified" and
@@ -407,6 +428,7 @@ def _run_case(case: Mapping[str, object], output: Path) -> dict[str, object]:
         "l3SpecializedExperimentResults": l3_specialized,
         "l3FragmentResults": l3_fragments,
         "l3ProgramResults": l3_programs,
+        "l3BoundedSystemResults": l3_bounded_programs,
         "l3Coverage": l3_coverage,
         "l2PrivilegedFragmentClaimCounts": _privileged_claim_counts(result.get("attempts", [])),
         "l2RequirementDispositionCounts": l2_dispositions,
@@ -866,6 +888,9 @@ def run_batch_evaluation(
             "l3ConcurrencyCampaignSampleCount": 0,
             "l3StatisticalExperimentSampleCount": 0,
             "l3SpecializedExperimentSampleCount": 0,
+            "l3BoundedSystemVerifiedProgramCount": sum(
+                1 for item in completed for bounded in item.get("l3BoundedSystemResults", [])
+                if bounded["status"] == "verified"),
             "l3ArchitecturalIntentVerifiedProgramCount": sum(
                 1 for item in completed for result in item.get("l3ProgramResults", [])
                 if result["claimScope"] == "architectural_intent" and result["status"] == "verified"),

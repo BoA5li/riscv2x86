@@ -19,6 +19,8 @@ DEFINITIONS = {
                           "numerator": "fragments with all required properties compared with complete verified or failed evidence"},
     "architecturalIntentVerified": {"unit": "fragment", "denominator": "all independently recognized corpus fragments",
                                       "numerator": "closed L3 architectural-intent verified fragments"},
+    "boundedSystemIntentVerified": {"unit": "eligible fragment", "denominator": "L3 eligible fragments",
+                                    "numerator": "independently audited bounded controlled-environment intent fragments"},
     "diagnosticVerified": {"unit": "eligible fragment", "denominator": "L3 eligible fragments",
                            "numerator": "closed target-experiment diagnostic verified fragments"},
     "inconclusive": {"unit": "eligible fragment", "denominator": "L3 eligible fragments",
@@ -29,6 +31,11 @@ DEFINITIONS = {
 
 
 def summarize_l3_case(evaluation: Mapping[str, object], fragments: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    from .l3_policy_evidence import consume_system
+    bounded = consume_system(evaluation)
+    bounded_results = {r["fragmentId"]: r for r in bounded["fragments"]} if bounded else {}
+    if bounded and fragments:
+        raise ValueError("SYSTEM L3 cannot mix bounded and generic fragment evidence")
     linkage = evaluation.get("translationEvaluationLink")
     raw = linkage.get("l3Requirements") if isinstance(linkage, Mapping) else None
     requirements = parse_l3_requirement_manifest(raw).requirements if isinstance(raw, Mapping) else ()
@@ -84,6 +91,14 @@ def summarize_l3_case(evaluation: Mapping[str, object], fragments: Sequence[Mapp
             continue
         fid = requirement["fragmentId"]
         result = results.get(fid)
+        if fid in bounded_results:
+            bounded_row = bounded_results[fid]
+            if bounded_row["requirementIdentity"] != requirement["requirementIdentity"]:
+                raise ValueError("SYSTEM L3 coverage requirement mismatch")
+            counts["attempted"] += 1
+            counts["completeExecution"] += 1
+            counts["boundedSystemIntentVerified"] += 1
+            continue
         # A validated closed source/target report also proves a direct legacy
         # experiment runner was invoked, even without the registry marker.
         attempted = fid in invocations or bool(result is not None and
@@ -115,7 +130,8 @@ def summarize_l3_case(evaluation: Mapping[str, object], fragments: Sequence[Mapp
                 counts["diagnosticVerified"] += 1
     counts["intentClassification"] = sum(x["eligibilityStatus"] != "inconclusive" for x in requirements)
     counts["eligibility"] = eligibility["eligible"]
-    return {"recognizedFragmentCount": len(identified),
+    return {**({"boundedSystemEvidence": bounded} if bounded else {}),
+            "recognizedFragmentCount": len(identified),
             "requirementManifestIdentity": (raw.get("manifestIdentity", "") if isinstance(raw, Mapping) else ""),
             "eligibilityCounts": dict(sorted(eligibility.items())),
             "counts": {key: counts[key] for key in DEFINITIONS},

@@ -118,6 +118,9 @@ def main():
             if result.get('statusCounts')!={'verified':1}:
                 status['failureDiagnostics']={'batchPath':str(configured/'batch-evaluation.json'),
                     'statusCounts':result.get('statusCounts'),
+                    'caseSummaries':[{key:c.get(key) for key in
+                        ('caseId','status','reasonCodes','programValidationLevels','l3Coverage')}
+                        for c in result.get('cases',[])],
                     'buildFailures':[{'path':str(p),'diagnostic':json.loads(p.read_text())}
                         for p in sorted(configured.rglob('*.build.log.failure.json'))],
                     'rebuildMismatches':[{'path':str(p),'diagnostic':json.loads(p.read_text())}

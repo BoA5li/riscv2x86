@@ -33,6 +33,19 @@ def test_real_bounded_system_l3_and_fresh_audit(tmp_path, operation):
     assert state['originalLinuxUserEquivalent'] is False
     report_path, = (output/'system-0-configured').glob('cases/*/evaluation-result.json')
     report = json.loads(report_path.read_text())
+    configured = report_path.parents[2]
+    batch = json.loads((configured/'batch-evaluation.json').read_text())
+    assert batch['statusCounts'] == {'verified': 1}
+    assert batch['l3BoundedSystemVerifiedProgramCount'] == 1
+    assert batch['l3ArchitecturalIntentVerifiedProgramCount'] == 0
+    case, = batch['cases']
+    assert case['programValidationLevels']['L3'] == 'verified'
+    counts = case['l3Coverage']['counts']
+    assert counts['boundedSystemIntentVerified'] == counts['completeExecution'] == 1
+    assert counts['architecturalIntentVerified'] == counts['notRun'] == 0
+    acceptance = json.loads((configured/'l3-production-acceptance.json').read_text())
+    assert all(acceptance[k] is True for k in ('productionAcceptanceComplete',
+        'independentResultAuditComplete','batchSummaryComplete'))
     assert len(report['attempts'])==1
     assert [r['status'] for r in report['attempts'][0]['validation']['layers']]==['verified']*4
     from riscv2x86_py.l3_production_acceptance import audit_evaluation
