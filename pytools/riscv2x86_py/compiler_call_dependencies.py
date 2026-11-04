@@ -63,7 +63,7 @@ def _snapshot(paths, cwd):
 
 
 @timed('compiler.call-dependency-acquisition')
-def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None):
+def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None, include_type_facts=False):
     from .compiler_call_inventory import derive
     import shutil
     if target not in {'riscv64', 'x86_64'}:
@@ -73,8 +73,10 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
     # the selected acquisition recipe without an explicit future contract.
     args = list(compile_args)
     prefixes = ('-march=', '-mabi=', '-mcpu=', '-mtune=', '-std=', '-D', '-U', '-I',
-                '--sysroot=', '-isystem', '-iquote', '-include')
-    separated = {'-D','-U','-I','-isystem','-iquote','-include'}
+                '--sysroot=', '-isystem', '-iquote', '-include', '-imacros', '-fexcess-precision=')
+    separated = {'-D','-U','-I','-isystem','-iquote','-include','-imacros'}
+    from .project_compile_context import EXACT
+    import re
     waiting = False
     for arg in args:
         if not isinstance(arg, str) or not arg:
@@ -83,6 +85,8 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
             if arg.startswith(('@','-')):
                 raise ValueError('CALL_DEPENDENCY_COMPILE_ARGUMENT_INVALID')
             waiting = False
+        elif arg in EXACT or re.fullmatch(r'-O(?:[0-3sgz]|fast)', arg):
+            pass
         elif not arg.startswith(prefixes):
             raise ValueError('CALL_DEPENDENCY_COMPILE_ARGUMENT_UNSUPPORTED:'+arg)
         else:
@@ -127,9 +131,14 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
         'linkClosureVerified':False, 'immutableSnapshot':False,
         'semanticApproval':False, 'productionAcceptanceComplete':False}
     manifest = dict(body, dependencyIdentity=identity(body))
-    return {'inventory':inventory, 'compilerCommand':command, 'compilerDigest':compiler_digest,
+    result = {'inventory':inventory, 'compilerCommand':command, 'compilerDigest':compiler_digest,
         'astDigest':identity(ast), 'dependencyClosureVerified':False,
         'dependencyManifest':manifest, 'semanticApproval':False}
+    if include_type_facts:
+        from .compiler_function_types import derive as derive_types
+        result['functionTypeInventory'] = derive_types(ast, source_path=source,
+            dependency_identity=manifest['dependencyIdentity'], target=target)
+    return result
 
 
 @timed('compiler.call-dependency-replay')
