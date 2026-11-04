@@ -13,6 +13,7 @@ import subprocess
 from .compiler_call_dependencies import parse_dependencies, _snapshot
 from .project_compile_context import validate, digest
 from .project_build_records import identity
+from .project_compile_arguments import action_option,redirect_output
 
 
 def build(context, output, *, timeout=240):
@@ -33,11 +34,15 @@ def build(context, output, *, timeout=240):
         paths=parse_dependencies(run(depcmd));before=_snapshot(paths,cwd)
         object_path=output/'native.o'; dep_path=output/'native.d'
         argv=[compiler];args=context['nativeArguments'][1:];i=0
+        has_output=False
         while i<len(args):
-            if args[i] in {'-o','-MF'}:
-                flag=args[i];argv.extend([flag,str(object_path if flag=='-o' else dep_path)]);i+=2
-            else:argv.append(args[i]);i+=1
-        if '-o' not in argv:argv.extend(['-o',str(object_path)])
+            option=action_option(args,i)
+            if option is not None and option[0] in {'output','dependency-output'}:
+                kind,_,count=option;has_output=has_output or kind=='output'
+                argv.extend(redirect_output(args[i:i+count],object_path if kind=='output' else dep_path));i+=count
+            else:
+                argv.append(args[i]);i+=1
+        if not has_output:argv.extend(['-o',str(object_path)])
         run(argv)
         if parse_dependencies(run(depcmd))!=paths or _snapshot(paths,cwd)!=before:
             raise ValueError('PROJECT_NATIVE_DEPENDENCIES_CHANGED')

@@ -9,9 +9,10 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import re
-import shutil
 
 from .project_build_records import identity
+from .project_compile_arguments import action_option
+from .project_tool_resolution import resolve_executable
 from .project_compile_context import validate as validate_context, derive, absolute, PAIRS
 
 SCHEMA='riscv2x86.project-build-contract.v1'
@@ -21,10 +22,8 @@ PROFILE='riscv2x86.project-compiler-profile.v1'
 def digest(path):return 'sha256:'+sha256(Path(path).read_bytes()).hexdigest()
 
 
-def resolve_tool(tool):
-    path=Path(shutil.which(tool) or tool).resolve(strict=True)
-    if not path.is_file():raise ValueError('PROJECT_TOOL_FILE_REQUIRED')
-    return str(path)
+def resolve_tool(tool,cwd=None):
+    return str(resolve_executable(tool,cwd))
 
 
 def normalize_paths(args,cwd):
@@ -51,7 +50,8 @@ def source_arguments(context):
     args=context['nativeArguments'][1:];out=[];i=0;cwd=Path(context['workingDirectory'])
     while i<len(args):
         arg=args[i]
-        if arg in {'-o','-MF','-MT','-MQ','-x'}:i+=2;continue
+        option=action_option(args,i)
+        if option is not None:i+=option[2];continue
         if arg in {'-c','-MD','-MMD','-MP'}:i+=1;continue
         if not arg.startswith('-') and str(absolute(arg,cwd))==context['sourcePath']:i+=1;continue
         out.append(arg)
@@ -64,14 +64,15 @@ def source_arguments(context):
 
 def compiler_profile(compiler,arguments,working_directory,*,source):
     from .project_build_records import record
-    compiler=resolve_tool(compiler);cwd=Path(working_directory).resolve(strict=True)
+    cwd=Path(working_directory).resolve(strict=True);compiler=resolve_tool(compiler,cwd)
     a=record([compiler,*arguments,'-c',str(Path(source).resolve()),'-o','project-profile.o'],cwd,{'kind':'explicit-project-profile'})
     context=derive(a)
     if not context['inspectionReady']:raise ValueError('PROJECT_PROFILE_ARGUMENTS_UNSUPPORTED:'+repr(context['blockers']))
     # Arguments must be options only: no action/input/output injection.
     if context['outputPath']!=str(cwd/'project-profile.o') or context['sourcePath']!=str(Path(source).resolve()):
         raise ValueError('PROJECT_PROFILE_ACTION_INJECTION')
-    if any(a in {'-c','-o','-MF','-MT','-MQ','-MD','-MMD','-MP','-x'} for a in arguments):
+    if (any(a in {'-c','-o','-MF','-MT','-MQ','-MD','-MMD','-MP','-x'} for a in arguments)
+            or any(action_option(arguments,i) is not None for i in range(len(arguments)))):
         raise ValueError('PROJECT_PROFILE_ACTION_ARGUMENT_FORBIDDEN')
     body={'schemaVersion':PROFILE,'compiler':compiler,'compilerDigest':digest(compiler),
           'arguments':list(arguments),'inspectionArguments':context['inspectionArguments'],'workingDirectory':str(cwd)}
@@ -82,14 +83,14 @@ def make(context,*,clang,target_compiler,target_arguments,target_directory,
          source_driver_arguments,target_driver_arguments):
     validate_context(context)
     if not context['inspectionReady']:raise ValueError('PROJECT_CONTEXT_NOT_READY')
-    clang=resolve_tool(clang)
+    clang=resolve_tool(clang,context['workingDirectory'])
     target=compiler_profile(target_compiler,target_arguments,target_directory,source=context['sourcePath'])
     if any(a.startswith('-mabi=') or a.startswith('-march=rv') for a in list(target_arguments)+list(target_driver_arguments)):
         raise ValueError('PROJECT_TARGET_ISA_ARGUMENT_MISMATCH')
     def semantic_options(args):
         # Relative order of independent option families is irrelevant; preserve
         # order within interacting FP/overflow families instead of sorting argv.
-        result={'standard':None,'fp':[],'overflow':[],'alias':False,'freestanding':False,'builtin':False}
+        result={'standard':None,'fp':[],'overflow':[],'alias':False,'freestanding':False,'builtin':False,'common':None}
         for arg in args:
             if arg.startswith('-std='):result['standard']=arg
             elif arg in {'-Ofast','-frounding-math'} or arg.startswith('-fexcess-precision='):result['fp'].append(arg)
@@ -97,6 +98,7 @@ def make(context,*,clang,target_compiler,target_arguments,target_directory,
             elif arg=='-fno-strict-aliasing':result['alias']=True
             elif arg=='-ffreestanding':result['freestanding']=True
             elif arg=='-fno-builtin':result['builtin']=True
+            elif arg in {'-fcommon','-fno-common'}:result['common']=arg
         return result
     if semantic_options(context['inspectionArguments'])!=semantic_options(target['inspectionArguments']):
         raise ValueError('PROJECT_PROGRAM_SEMANTIC_ARGUMENTS_MISMATCH')

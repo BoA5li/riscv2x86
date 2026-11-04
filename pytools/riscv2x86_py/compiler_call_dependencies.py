@@ -65,7 +65,6 @@ def _snapshot(paths, cwd):
 @timed('compiler.call-dependency-acquisition')
 def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None, include_type_facts=False, include_ast=False):
     from .compiler_call_inventory import derive
-    import shutil
     if target not in {'riscv64', 'x86_64'}:
         raise ValueError('CALL_INVENTORY_TARGET_UNSUPPORTED')
     # Diagnostic compile flags may describe preprocessing/ISA. Do not allow
@@ -94,7 +93,8 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
     if waiting:
         raise ValueError('CALL_DEPENDENCY_COMPILE_ARGUMENT_INCOMPLETE')
     source = Path(source).resolve(strict=True)
-    compiler = Path(shutil.which(clang) or clang).resolve(strict=True)
+    from .project_tool_resolution import resolve_executable
+    compiler = resolve_executable(clang,working_directory)
     compiler_digest = 'sha256:'+sha256(compiler.read_bytes()).hexdigest()
     cwd = Path(working_directory or Path.cwd()).resolve(strict=True)
     source_bytes = source.read_bytes()

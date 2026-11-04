@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build-log/database import and contextual inspection, not L0--L3 acceptance.
 
-Do not feed context-inspected instances to the legacy automatic runner: it does
-not yet consume these project contexts end-to-end. This tool exposes that gap
-rather than validating a different default-build program under the same name.
+Context acquisition is separate from formal project evaluation. A bound project
+build contract, entry and observation requirements must still be supplied to the
+project-aware automatic runner; legacy defaults never stand in for this context.
 """
 from __future__ import annotations
 
@@ -37,10 +37,17 @@ def inspect(records, *, clang=None, target='riscv64', sources=(), limit=None):
             if limit is not None and len(rows)>=limit: continue
             row={'context':context, 'status':'context_ready' if context['inspectionReady'] else 'blocked',
                  'inspection':None,
-                 'translationEvaluationBlockers':['PROJECT_END_TO_END_CONTEXT_ROUTE_REQUIRED']}
-            if records.get('unresolved'):
+                 'translationEvaluationBlockers':['PROJECT_BUILD_CONTRACT_AND_ROUTE_ASSESSMENT_REQUIRED']}
+            elf=(action.get('observedOutput') or {}).get('elfHeader')
+            if (context['inspectionReady'] and isinstance(elf,dict)
+                    and (elf.get('machine')!={'riscv64':243,'x86_64':62}[target]
+                         or elf.get('classBits')!=64)):
+                row['status']='outside_source_target'
+                row['translationEvaluationBlockers'].append('PROJECT_OBSERVED_SOURCE_TARGET_MISMATCH')
+            captured=action.get('provenance',{}).get('kind')=='compiler-exec-capture'
+            if records.get('unresolved') and not captured:
                 row['translationEvaluationBlockers'].append('PROJECT_BUILD_RECORDS_UNRESOLVED')
-            if clang and context['inspectionReady'] and not records.get('unresolved'):
+            if clang and row['status']=='context_ready' and (captured or not records.get('unresolved')):
                 try:
                     row['inspection']=acquire(context,clang=clang,target=target)
                     row['status']='inspected'
@@ -77,6 +84,9 @@ def replay(report):
     for provenance in {json.dumps(a['provenance'],sort_keys=True):a['provenance'] for a in records['actions']}.values():
         if provenance['kind']=='build-log':
             fresh=import_log(provenance['path'],records['actions'][0]['directory'])
+        elif provenance['kind']=='compiler-exec-capture':
+            from riscv2x86_py.project_build_capture import inventory
+            fresh=inventory(provenance['configPath'],stage=provenance['stageSelection'])
         else: fresh=import_database(provenance['path'])
         if identity(fresh)!=identity(records): raise ValueError('PROJECT_BUILD_RECORD_REPLAY_MISMATCH')
         break
@@ -85,8 +95,14 @@ def replay(report):
                      sources=report['selection']['sources'],limit=report['selection']['limit'])
     if identity([r['context'] for r in expected['records']]) != identity([r['context'] for r in report['records']]):
         raise ValueError('PROJECT_SELECTED_CONTEXT_SET_MISMATCH')
+    expected_rows={r['context']['contextIdentity']:r for r in expected['records']}
     for row in report['records']:
-        if row['status'] not in {'context_ready','blocked','inspected','inspection_failed'}:
+        base_row=expected_rows[row['context']['contextIdentity']]
+        if (row['translationEvaluationBlockers']!=base_row['translationEvaluationBlockers']
+                or (row['status'] in {'inspected','inspection_failed'} and base_row['status']!='context_ready')
+                or (row['status'] not in {'inspected','inspection_failed'} and row['status']!=base_row['status'])):
+            raise ValueError('PROJECT_PREFLIGHT_ASSESSMENT_MISMATCH')
+        if row['status'] not in {'context_ready','blocked','inspected','inspection_failed','outside_source_target'}:
             raise ValueError('PROJECT_INSPECTION_STATUS_INVALID')
         if (row['status']=='inspected') != (row['inspection'] is not None):
             raise ValueError('PROJECT_INSPECTION_STATUS_MISMATCH')
@@ -116,6 +132,9 @@ def replay(report):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__); sub=p.add_subparsers(dest='operation',required=True)
+    release=sub.add_parser('verify-source');release.add_argument('--lock',required=True)
+    release.add_argument('--project',required=True);release.add_argument('--archive',required=True)
+    release.add_argument('--source',required=True);release.add_argument('--output',required=True)
     download=sub.add_parser('download'); download.add_argument('--lock',required=True)
     download.add_argument('--directory',required=True); download.add_argument('--project',action='append',default=[])
     download.add_argument('--attempts',type=int,default=2)
@@ -123,6 +142,8 @@ def main(argv=None):
     recipe.add_argument('--context-identity'); recipe.add_argument('--profile',required=True); recipe.add_argument('--output',required=True)
     log=sub.add_parser('import-log'); log.add_argument('--log',required=True)
     log.add_argument('--working-directory',required=True); log.add_argument('--output',required=True)
+    capture=sub.add_parser('import-capture'); capture.add_argument('--capture',required=True)
+    capture.add_argument('--stage'); capture.add_argument('--output',required=True)
     db=sub.add_parser('import-database'); db.add_argument('--database',required=True); db.add_argument('--output',required=True)
     scan=sub.add_parser('inspect'); scan.add_argument('--records',required=True); scan.add_argument('--output',required=True)
     scan.add_argument('--source',action='append',default=[]); scan.add_argument('--limit',type=int)
@@ -132,6 +153,15 @@ def main(argv=None):
     audit=sub.add_parser('replay'); audit.add_argument('--report',required=True)
     args=p.parse_args(argv)
     try:
+        if args.operation=='verify-source':
+            from riscv2x86_py.project_source_release import verify
+            lock=json.loads(Path(args.lock).read_text())
+            selected=[s for s in lock['sources'] if s['id']==args.project]
+            if len(selected)!=1:raise ValueError('PROJECT_RELEASE_SPEC_REQUIRED')
+            result=verify(selected[0],args.archive,args.source)
+            with Path(args.output).open('x') as stream:json.dump(result,stream,indent=2)
+            print(json.dumps({k:result[k] for k in ('project','version','releaseIdentity','sourceTreeMatchesRelease','semanticApproval','productionAcceptanceComplete')}))
+            return 0
         if args.operation=='make-contract':
             from riscv2x86_py.project_build_contract import make
             value=json.loads(Path(args.context_file).read_text())
@@ -171,6 +201,9 @@ def main(argv=None):
             print(json.dumps({'nativeCompileCount':len(results),'semanticApproval':False,'productionAcceptanceComplete':False}))
             return 0
         if args.operation=='import-log': result=import_log(args.log,args.working_directory)
+        elif args.operation=='import-capture':
+            from riscv2x86_py.project_build_capture import inventory
+            result=inventory(args.capture,stage=args.stage)
         elif args.operation=='import-database': result=import_database(args.database)
         elif args.operation=='inspect':
             if args.limit is not None and args.limit<1: raise ValueError('PROJECT_POSITIVE_LIMIT_REQUIRED')

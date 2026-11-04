@@ -84,6 +84,7 @@ def classify(argv):
         if '-E' in argv: return 'preprocess'
         if '-S' in argv: return 'emit-assembly'
         return 'link'
+    if re.fullmatch(r'(?:.*-)?(?:ld(?:\.bfd|\.gold|\.lld)?|lld)', name): return 'link'
     if re.fullmatch(r'(?:.*-)?ar', name): return 'archive'
     if re.fullmatch(r'(?:.*-)?ranlib', name): return 'ranlib'
     if name in {'cp', 'install', 'mv'}: return 'copy'

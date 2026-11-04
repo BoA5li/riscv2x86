@@ -10,9 +10,10 @@ from hashlib import sha256
 import os
 from pathlib import Path
 import re
-import shutil
 
 from .project_build_records import identity, classify
+from .project_compile_arguments import action_option
+from .project_tool_resolution import resolve_executable
 
 SCHEMA = 'riscv2x86.project-compile-context.v1'
 PAIRS = {'-I', '-isystem', '-iquote', '-include', '-imacros', '-D', '-U', '-isysroot'}
@@ -22,7 +23,8 @@ EXACT = {'-static', '-no-pie', '-nostdinc', '-ffreestanding', '-frounding-math',
          '-fPIC', '-fpic', '-fPIE', '-fpie', '-pthread', '-mno-relax', '-mrelax',
          '-fno-stack-protector', '-fstack-protector', '-fstack-protector-strong',
          '-fomit-frame-pointer', '-fno-omit-frame-pointer', '-fno-lto',
-         '-fno-asynchronous-unwind-tables', '-fno-unwind-tables'}
+         '-fno-asynchronous-unwind-tables', '-fno-unwind-tables',
+         '-ffunction-sections', '-fdata-sections', '-fno-common', '-fcommon'}
 PREFIXES = ('-std=', '-march=', '-mabi=', '-mcpu=', '-mtune=', '--sysroot=',
             '-D', '-U', '-I', '-isystem', '-iquote', '-include', '-imacros',
             '-fexcess-precision=')
@@ -42,6 +44,11 @@ def absolute(path, cwd):
 def derive(action):
     if action.get('actionIdentity') != identity({k:v for k,v in action.items() if k != 'actionIdentity'}):
         raise ValueError('PROJECT_ACTION_IDENTITY_INVALID')
+    if type(action.get('exitStatusObserved')) is not bool:
+        raise ValueError('PROJECT_ACTION_OBSERVATION_FLAG_INVALID')
+    if (action.get('provenance',{}).get('kind')=='compiler-exec-capture'
+            and action['exitStatusObserved'] is not True):
+        raise ValueError('PROJECT_CAPTURE_OBSERVATION_REQUIRED')
     if action.get('kind') != 'compile' or classify(action.get('arguments', [])) != 'compile':
         raise ValueError('PROJECT_C_COMPILE_ACTION_REQUIRED')
     cwd = Path(action['directory']).resolve(strict=True)
@@ -53,13 +60,15 @@ def derive(action):
             if i+1 >= len(args) or args[i+1].startswith('-'):
                 reasons.append('PROJECT_COMPILE_ARGUMENT_INCOMPLETE:'+arg); break
             projected.extend(args[i:i+2]); i += 2; continue
-        if arg in {'-o', '-MF', '-MT', '-MQ', '-x'}:
-            if i+1 >= len(args): reasons.append('PROJECT_COMPILE_ARGUMENT_INCOMPLETE:'+arg); break
-            value = args[i+1]
-            if arg == '-o': outputs.append(value)
-            elif arg == '-x': language = value
-            excluded.append({'arguments': [arg, value], 'reason': 'action-output-or-language'})
-            i += 2; continue
+        try: option=action_option(args,i)
+        except ValueError as exc:
+            reasons.append(str(exc));break
+        if option is not None:
+            kind,value,count=option
+            if kind=='output':outputs.append(value)
+            elif kind=='language':language=value
+            excluded.append({'arguments':args[i:i+count], 'reason':'action-output-or-language'})
+            i+=count;continue
         if arg == '-c' or arg in {'-MMD', '-MD', '-MP', '-pipe'}:
             excluded.append({'arguments':[arg], 'reason':'action-or-transport-only'})
         elif arg in EXACT or arg.startswith(PREFIXES) or re.fullmatch(r'-O(?:[0-3sgz]|fast)', arg):
@@ -84,12 +93,23 @@ def derive(action):
     if action.get('output') and outputs and absolute(action['output'], cwd) != absolute(outputs[0], cwd):
         reasons.append('PROJECT_DATABASE_OUTPUT_MISMATCH')
     if source is None or not source.is_file(): reasons.append('PROJECT_SOURCE_UNAVAILABLE')
-    compiler_name = argv[0]
-    if '/' in compiler_name: compiler = absolute(compiler_name, cwd)
-    else:
-        found = shutil.which(compiler_name)
-        compiler = Path(found).resolve() if found else None
+    try:compiler=resolve_executable(argv[0],cwd)
+    except (OSError,ValueError):compiler=None
     if compiler is None or not compiler.is_file(): reasons.append('PROJECT_COMPILER_UNAVAILABLE')
+    if action.get('exitStatusObserved') is True:
+        if type(action.get('observedReturnCode')) is not int:
+            reasons.append('PROJECT_CAPTURE_RETURN_CODE_INVALID')
+        elif action['observedReturnCode'] != 0:
+            reasons.append('PROJECT_NATIVE_ACTION_FAILED')
+        observed=action.get('observedCompileInputs')
+        current={'sourcePath':str(source) if source else None,
+            'sourceDigest':digest(source) if source and source.is_file() else None,
+            'nativeCompilerDigest':digest(compiler) if compiler and compiler.is_file() else None,
+            'searchEnvironment':{k:os.environ.get(k,'') for k in ENV_KEYS}}
+        if not isinstance(observed,dict) or not observed.get('sourceDigest'):
+            reasons.append('PROJECT_CAPTURE_SOURCE_CONTEXT_UNBOUND')
+        elif identity(observed)!=identity(current):
+            reasons.append('PROJECT_CAPTURE_INPUTS_CHANGED')
     body = {'schemaVersion': SCHEMA, 'actionIdentity':action['actionIdentity'], 'originalAction':action,
         'workingDirectory':str(cwd), 'nativeArguments':argv,
         'nativeCompiler': str(compiler) if compiler else None,
