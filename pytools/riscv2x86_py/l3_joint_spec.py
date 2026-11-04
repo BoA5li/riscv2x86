@@ -16,7 +16,9 @@ LIMITS=sorted(['single-thread-private-valid-integer-object-with-unsigned64-carri
 
 
 def spec(findings,functions):
-    if len(functions)!=1:raise ValueError('L3_JOINT_SINGLE_EXPORTED_ENTRY_REQUIRED')
+    # Select the compiler-bound entry below. Other exported functions are not
+    # call-graph permission: the selected entry still needs the existing direct,
+    # no-call shell and every finding must belong to that same entry.
     if not 2<=len(findings)<=16 or len({f['fragment']['id'] for f in findings})!=len(findings):raise ValueError('L3_JOINT_MEMBER_DOMAIN_REQUIRED')
     identities={f['fragment']['compilerFragmentAuthority']['functionIdentity'] for f in findings}
     if len(identities)!=1:raise ValueError('L3_JOINT_ONE_ENTRY_REQUIRED')

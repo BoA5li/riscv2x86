@@ -1572,7 +1572,7 @@ def prepare_automatic_inventory(
                     binding_kind="runtime_adapter",
                 ))
             if (trace_selections is not None and 'joint' in trace_selections
-                    and len(functions)==1 and functions[0].get('compilerJointScope')):
+                    and any(fn.get('compilerJointScope') for fn in functions)):
                 from .l2_joint_contract import providers as joint_providers, CAPABILITIES
                 l2_environment_capabilities.update(CAPABILITIES)
                 l2_providers=joint_providers(effect_config('joint-program-functions'), execution_profiles)
