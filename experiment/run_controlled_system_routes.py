@@ -29,6 +29,7 @@ def main():
     p.add_argument('--frontend',required=True,type=Path);p.add_argument('--clang',required=True,type=Path)
     p.add_argument('--backend',required=True,type=Path);p.add_argument('--output',required=True,type=Path)
     p.add_argument('--suite',type=Path);p.add_argument('--existing-provider-directory',type=Path)
+    p.add_argument('--require-l3',action='store_true',help='require bounded SYSTEM L3 and a fresh independent result audit')
     for name in ('csr-architecture-directory','csr-environment-contract-directory','instruction-stream-sync-directory'):
         p.add_argument('--'+name,type=Path)
     a=p.parse_args();out=a.output.resolve();owned=False
@@ -37,6 +38,12 @@ def main():
         'sourceEnvironment':'explicit-controlled-m-mode','originalLinuxUserEquivalent':False,
         'claimBoundary':'single-system-instruction-trap-return-or-already-pending-mtip',
         'L3Equivalent':False,'productionAcceptance':[]}
+    if a.require_l3:
+        status.pop('L3Equivalent')  # Legacy unqualified field has no v2 meaning.
+        status.update(schemaVersion='riscv2x86.controlled-system-production-run.v2',
+            requiredLevels=['L0','L1','L2','L3'], executionComplete=False,
+            independentResultAuditComplete=False, boundedSystemL3Complete=False,
+            claimScope='bounded-controlled-environment-intent',physicalMicroarchitectureEquivalenceClaimed=False)
     def save():(out/'run-status.json').write_text(json.dumps(status,indent=2)+'\n')
     try:
         if out.exists():raise ValueError('SYSTEM_RUN_OUTPUT_EXISTS')
@@ -61,6 +68,8 @@ def main():
             command=[sys.executable,'-m','riscv2x86_py.automatic_batch_cli','--input',str(source),
                 '--frontend',frontend,'--output-directory',str(out/name),'--jobs','1','--timeout-seconds','600']
             if configured:command+=['--privileged-config-directory',str(configs),'--l2-provider-directory',str(providers)]
+            if a.require_l3 and configured and source.is_file() and name.endswith('-configured'):
+                command+=['--system-l3','--require-l3']
             if additional:
                 for flag in ('csr_architecture_directory','csr_environment_contract_directory','instruction_stream_sync_directory'):
                     value=getattr(a,flag)
@@ -118,12 +127,21 @@ def main():
                 raise ValueError('SYSTEM_RUN_PRODUCTION_NOT_VERIFIED')
             run(tag+'-provider-audit',[sys.executable,'-m','riscv2x86_py.l2_provider_artifacts','--batch',str(configured/'batch-evaluation.json')])
             case=result['cases'][0]
-            if any(case.get('programValidationLevels',{}).get(level)!='verified' for level in ('L0','L1','L2')):
+            levels=('L0','L1','L2','L3') if a.require_l3 else ('L0','L1','L2')
+            if any(case.get('programValidationLevels',{}).get(level)!='verified' for level in levels):
                 raise ValueError('SYSTEM_RUN_PROGRAM_LEVELS_INCOMPLETE')
+            if a.require_l3:
+                report_path=configured/case['resultPath']
+                run(tag+'-l3-independent-audit',[sys.executable,'-m','riscv2x86_py.l3_production_acceptance',
+                    '--evaluation',str(report_path),'--output',str(out/(tag+'-l3-independent-audit.json'))])
             acceptance={'operation':contract['operation'],'sourceDigest':config['sourceDigest'],'fragmentId':fid,
                 'proofIdentity':approval['proofIdentity'],'backendIdentity':backend['backendIdentity'],
                 'resultPath':str(configured/'batch-evaluation.json'),'programValidationLevels':case['programValidationLevels'],
                 'centralAudit':'complete','environment':'controlled-m-mode','nativeLinuxUserEquivalent':False}
+            if a.require_l3:
+                from riscv2x86_py.l3_system_route import POLICY
+                acceptance.update(policyId=POLICY['policyId'],claimScope='bounded-controlled-environment-intent',
+                    independentAuditPath=str(out/(tag+'-l3-independent-audit.json')))
             status['productionAcceptance'].append(acceptance);status['completedRoutes'].append(contract['operation']);save()
         if a.suite:
             retained_sources=[]
@@ -144,6 +162,8 @@ def main():
             preservation=require_suite_preserved(baseline,configured,sources+retained_sources)
             preservation['retainedProviderSources']=[str(s) for s in retained_sources]
             (out/'suite-preservation.json').write_text(json.dumps(preservation,indent=2)+'\n')
+        if a.require_l3:
+            status.update(executionComplete=True,independentResultAuditComplete=True,boundedSystemL3Complete=True)
         status['currentStage']='complete';status['productionAcceptanceComplete']=True;save();return 0
     except (OSError,ValueError,KeyError,TypeError,AttributeError,subprocess.SubprocessError) as exc:
         if owned:

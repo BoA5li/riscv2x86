@@ -158,6 +158,8 @@ def execution_status(records,programs,operation):
 def run(config,**kwargs):
     level=kwargs['level'];records={}
     try:
+        if level not in (ValidationLevel.L0, ValidationLevel.L1, ValidationLevel.L2):
+            raise ValueError('SYSTEM_LEGACY_RUNNER_L3_POLICY_REQUIRED')
         backend=load_config(config);artifact=kwargs['translation_artifact']
         finding=approved_finding(config,artifact)
         from .controlled_system_scope import target_scope

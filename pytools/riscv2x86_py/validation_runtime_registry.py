@@ -215,6 +215,8 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "l2-explicit-harness": _explicit_l2_harness_factory,
     "controlled-system-validation": lambda config: __import__(
         "riscv2x86_py.controlled_system_runner",fromlist=["build_validator"]).build_validator(config),
+    "controlled-system-l3": lambda config: __import__(
+        "riscv2x86_py.l3_system_route",fromlist=["build_validator"]).build_validator(config),
     "controlled-time-validation": lambda config: __import__(
         "riscv2x86_py.time_trace_runner",fromlist=["build_validator"]).build_validator(config),
     "l2-instruction-visibility-harness": lambda config: __import__(

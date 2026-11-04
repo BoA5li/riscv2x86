@@ -22,7 +22,7 @@ def catalog():
         ('atomic-address-invocation','M4','partial','l3_atomic_spec.py','isolated bounded atomic contract; general address and joint route pending'),
         ('atomic-family-lrsc-live-output','M4','partial','l2_lrsc_authority.py','existing operation families only; active auxiliary output observation pending'),
         ('whole-program-audit','M1','partial','l3_joint_route.py','joint closed members and persisted L2 replay; general mixed CFG audit pending'),
-        ('visibility-environment','M7','pending','l3_sync_obligations.py','environment-specific L3 automatic execution route pending'),
+        ('visibility-environment','M7','partial','l3_system_route.py','explicit sole-ecall/prepending-MTIP-wfi controlled SYSTEM L3 policy, proof-bound intent and independent replay; visibility, general environments and cross-function composition pending'),
     ]
     files={p:digest(Path(__file__).with_name(p)) for p in {row[3] for row in axes}}
     body={'implementationIdentity':identity(files),'implementationFiles':files,'schemaVersion':'riscv2x86.l3-supported-domain.v1','baselineCommit':BASELINE,

@@ -253,6 +253,38 @@ def test_registered_contract_real_pcode_proof_renderer_and_loader(backend,tmp_pa
         environment_execution_profiles=(profile.execution_profile,))
     assert plan is not None
     assert all(b.binding_status.value=='resolved' for b in plan.bindings)
+    # The new L3 intent consumes the actual P-code/proof/authority produced
+    # above. Compiler/backend ingress remains an explicit fixture; no L3
+    # execution or real QEMU acceptance is asserted by this unit test.
+    from riscv2x86_py import controlled_system_runner as system_runner
+    from riscv2x86_py.l3_system_intent import specification, profile as system_l3_profile
+    saved_loader=system_runner.load_config;saved_approval=system_runner.approved_finding
+    monkeypatch.setattr(system_runner,'load_config',lambda config:value)
+    monkeypatch.setattr(system_runner,'approved_finding',lambda config,artifact:finding)
+    artifact=SimpleNamespace(fragment_id=fragment.id,proof_identity=approval['proofIdentity'],
+        effect_relation_set_identity=authority.effect_relation_set_identity,
+        l2_authority_complete=True,l2_authority_identity=authority.authority_identity,
+        source_model_identity=approval['sourceModelId'],translation_plan_id=approval['planId'],
+        constraint_id=approval['constraintsId'],runtime_contract_id=approval['runtimeContractId'],
+        runtime_contract_version=approval['runtimeContractVersion'])
+    config={'operation':operation,'sourceDigest':finding['sourceDigest'],
+            'observerIdentity':semantic_identity('fixture-observer'),
+            'scope':{'functionIdentity':'compiler-function-fixture','scopeIdentity':semantic_identity(shape)}}
+    compiler_function={'functionId':'compiler-function-fixture','sourceDigest':finding['sourceDigest']}
+    spec=specification(finding,artifact,[compiler_function],config)
+    intent=system_l3_profile(spec,semantic_identity('fixture-producer'))
+    assert intent['complete'] is True and len(intent['requiredProperties'])==4
+    assert spec['sourceEffects']==[e.to_dict() for e in authority.source_effects]
+    assert 'programId' not in compiler_function
+    for invalid_functions in ([], [compiler_function,compiler_function],
+                              [dict(compiler_function,sourceDigest=semantic_identity('other-source'))]):
+        with pytest.raises(ValueError,match='COMPILER_PROGRAM_REQUIRED'):
+            specification(finding,artifact,invalid_functions,config)
+    wrong=SimpleNamespace(**{**vars(artifact),'effect_relation_set_identity':semantic_identity('unrelated-relation')})
+    with pytest.raises(ValueError,match='EFFECT_CLOSURE_REQUIRED'):
+        specification(finding,wrong,[compiler_function],config)
+    monkeypatch.setattr(system_runner,'load_config',saved_loader)
+    monkeypatch.setattr(system_runner,'approved_finding',saved_approval)
     assert {b.dimension.value for b in plan.bindings}==set(requirement['requiredDimensions'])
     for providers in ((),(replace(provider,fragment_ids=('another-fragment',)),)):
         refused_plan=resolve_fragment_execution_plan(manifest,providers,fragment.id,

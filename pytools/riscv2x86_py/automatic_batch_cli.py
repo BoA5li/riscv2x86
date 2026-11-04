@@ -985,6 +985,7 @@ def prepare_automatic_inventory(
     csr_environment_contract_directory: str | Path | None = None,
     instruction_stream_sync_directory: str | Path | None = None,
     l3_diagnostic: bool = False,
+    system_l3: bool = False,
     experiment_environment: str | Path | None = None,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
@@ -1725,8 +1726,10 @@ def prepare_automatic_inventory(
             plan['sourceRunner']='custom'
             _write_json(case_dir/'validation-plan.json',plan)
         system_providers=[p for p in explicit_l2_providers if p['validatorType']=='controlled-system-validation']
+        if system_l3 and not system_providers:
+            raise ValueError('SYSTEM_L3_EXPLICIT_SYSTEM_PROVIDER_REQUIRED')
         if system_providers:
-            if len(system_providers)!=1 or time_providers or sync_providers or l3_binding is not None:
+            if len(system_providers)!=1 or time_providers or sync_providers or l3_binding is not None or trace_backend is not None:
                 raise ValueError('SYSTEM_EXECUTION_ENVIRONMENT_AMBIGUOUS')
             from .controlled_system_runner import environment as system_environment, environment_id as system_environment_id, EXECUTION_PROFILE
             config=system_providers[0]['config']
@@ -1751,6 +1754,28 @@ def prepare_automatic_inventory(
                         '--backend',config['backendPath'],'--side',side,'--source',token,
                         '--symbol',config['scope']['functionSymbol'],'--operation',config['operation'],'--output','${OUTPUT}']}
             plan['sourceRunner']='custom';plan['targetRunner']='logical-csr-runtime'
+            if system_l3:
+                from .l3_system_route import POLICY
+                from .l3_intent_ingress import producer_manifest
+                from .l3_implementation_dependencies import implementation_paths
+                if '--l3-intent-producer' in translation:
+                    raise ValueError('SYSTEM_L3_INTENT_SELECTION_CONFLICT')
+                selected_config=case_dir/'system-l3-observer.json'
+                _write_json(selected_config,config)
+                implementation=Path(__file__).with_name('l3_system_intent.py').resolve()
+                command=[sys.executable,'-m','riscv2x86_py.l3_system_intent',
+                         '--implementation',str(implementation),'--config',str(selected_config.resolve())]
+                for dependency in implementation_paths():command+=['--dependency',dependency]
+                producer_path=case_dir/'system-l3-intent-producer.json'
+                _write_json(producer_path,producer_manifest(source,command,
+                    'explicit bounded controlled SYSTEM policy; proof replay, actual state protocol and independent audit required',
+                    timeout=l3_producer_timeout))
+                translation.extend(['--l3-intent-producer',str(producer_path.resolve())])
+                plan.update(profile='microarch', planId=f'auto-{case_id}-controlled-system-l3-v1',
+                            experimentContractId=POLICY['policyId'])
+                validators['L3']={'type':'controlled-system-l3','config':{
+                    'schemaVersion':'riscv2x86.controlled-system-l3-route.v1',
+                    'systemConfig':config,'reportPath':'${TRANSLATED_REPORT}'}}
             _write_json(case_dir/'validation-plan.json',plan)
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,
@@ -1839,6 +1864,8 @@ def main() -> int:
     parser.add_argument("--instruction-stream-sync-directory",
                         help=("directory containing <source>.c.instruction-stream-sync.json "
                               "runtime contract registries"))
+    parser.add_argument("--system-l3", action="store_true",
+                        help="explicit bounded controlled SYSTEM L3; requires its L2 provider and environment")
     parser.add_argument("--require-l3", action="store_true",
                         help="require actual complete L0-L3 production evidence for every selected input")
     parser.add_argument("--l3-diagnostic", action="store_true",
@@ -1871,6 +1898,7 @@ def main() -> int:
                                     csr_environment_contract_directory=args.csr_environment_contract_directory,
                                     instruction_stream_sync_directory=args.instruction_stream_sync_directory,
                                     l3_diagnostic=args.l3_diagnostic,
+                                    system_l3=args.system_l3,
                                     experiment_environment=args.experiment_environment)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:

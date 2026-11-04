@@ -219,11 +219,16 @@ def main():
     parser.add_argument('--target', choices=['riscv64', 'x86_64'], default='riscv64')
     parser.add_argument('--compile-arg', action='append', default=[])
     parser.add_argument('--root-function', required=True)
+    parser.add_argument('--bind-dependencies', action='store_true',
+                        help='bind compiler-emitted header dependencies; not effect, ABI or link approval')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     try:
-        result = inspect_source(args.source, clang=args.clang, target=args.target,
-                                compile_args=args.compile_arg)
+        inspector = inspect_source
+        if args.bind_dependencies:
+            from .compiler_call_dependencies import acquire
+            inspector = acquire
+        result = inspector(args.source, clang=args.clang, target=args.target, compile_args=args.compile_arg)
         matches = [f for f in result['inventory']['functions']
                    if f['symbol']['name'] == args.root_function]
         if len(matches) != 1:

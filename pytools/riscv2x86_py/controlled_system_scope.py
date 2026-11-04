@@ -21,9 +21,15 @@ def scope(source, finding, clang):
         if node.get('kind')=='VarDecl' and not node.get('loc',{}).get('includedFrom'):
             raise ValueError('SYSTEM_SCOPE_GLOBAL_OBJECT_UNSUPPORTED')
     fragment=finding['fragment'];name=fragment.get('enclosingFunction')
-    if len(functions)!=1 or functions[0][0].get('name')!=name:
+    if any(child.get('kind') in {'ConstructorAttr','DestructorAttr'}
+           for fn,_ in functions for child in fn.get('inner',[])):
+        raise ValueError('SYSTEM_SCOPE_STARTUP_EFFECT_CLOSURE_REQUIRED')
+    selected=[pair for pair in functions if pair[0].get('name')==name]
+    if len(selected)!=1:
         raise ValueError('SYSTEM_SCOPE_FUNCTION_UNSUPPORTED')
-    function,body=functions[0]
+    # Selection is not call permission: the chosen entry still has to be a
+    # sole SYSTEM asm. Do not discard any finding or construction dependency.
+    function,body=selected[0]
     if (function.get('type',{}).get('qualType') not in ('void (void)','void ()')
             or any(n.get('kind')=='ParmVarDecl' or n.get('kind','').endswith('Attr') for n in function.get('inner',[]))
             or len(body.get('inner',[]))!=1 or body['inner'][0].get('kind')!='GCCAsmStmt'
@@ -62,9 +68,13 @@ def target_scope(target, symbol, callable_identifier, clang, implementation):
         if node.get('kind')=='FunctionDecl' and body:functions.append((node,body[0]))
         if node.get('kind')=='VarDecl' and not node.get('loc',{}).get('includedFrom'):
             raise ValueError('SYSTEM_TARGET_SCOPE_GLOBAL_OBJECT_UNSUPPORTED')
-    if len(functions)!=1 or functions[0][0].get('name')!=symbol:
+    if any(child.get('kind') in {'ConstructorAttr','DestructorAttr'}
+           for fn,_ in functions for child in fn.get('inner',[])):
+        raise ValueError('SYSTEM_TARGET_SCOPE_STARTUP_EFFECT_CLOSURE_REQUIRED')
+    selected=[pair for pair in functions if pair[0].get('name')==symbol]
+    if len(selected)!=1:
         raise ValueError('SYSTEM_TARGET_SCOPE_FUNCTION_UNSUPPORTED')
-    function,body=functions[0];statements=body.get('inner',[])
+    function,body=selected[0];statements=body.get('inner',[])
     if (function.get('type',{}).get('qualType') not in ('void (void)','void ()')
             or any(n.get('kind')=='ParmVarDecl' or n.get('kind','').endswith('Attr') for n in function.get('inner',[]))
             or len(statements)!=1 or statements[0].get('kind')!='CallExpr'
