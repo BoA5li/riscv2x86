@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "riscv2x86.real-project-sources.v1",
+  "baselineTranslatorCommit": "cde2f6e3f36ff78f86ec99364fc8b53d3cc7cb42",
+  "selectionBasis": "predeclared upstream RV64 GNU C inline-asm source scopes; never translation success",
+  "targetConfiguration": {
+    "isa": "rv64gc",
+    "abi": "lp64d",
+    "configurationStatus": "not_preprocessed_or_compiler_confirmed"
+  },
+  "sources": [
+    {
+      "id": "gmp",
+      "version": "6.3.0",
+      "archive": "gmp-6.3.0.tar.xz",
+      "root": "gmp-6.3.0",
+      "urls": [
+        "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+        "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz"
+      ],
+      "sha256": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898",
+      "scope": {
+        "files": [
+          "longlong.h"
+        ],
+        "prefixes": [],
+        "suffix": ".h",
+        "siteRule": "riscv_preprocessor_branch"
+      },
+      "supportFiles": [],
+      "licenseFiles": [
+        "COPYING",
+        "COPYING.LESSERv3",
+        "COPYINGv2",
+        "COPYINGv3"
+      ],
+      "licensePrefixes": [],
+      "upstream": "https://gmplib.org/",
+      "licenseNote": "Retain original per-file notices and included GNU license texts; this is an unmodified source subset.",
+      "acquiredFrom": "https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz",
+      "signatureVerified": false
+    },
+    {
+      "id": "musl",
+      "version": "1.2.5",
+      "archive": "musl-1.2.5.tar.gz",
+      "root": "musl-1.2.5",
+      "urls": [
+        "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
+        "https://distfiles.alpinelinux.org/distfiles/v3.20/musl-1.2.5.tar.gz",
+        "https://sources.buildroot.net/musl/musl-1.2.5.tar.gz"
+      ],
+      "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+      "scope": {
+        "files": [],
+        "prefixes": [
+          "arch/riscv64/"
+        ],
+        "suffix": ".h",
+        "siteRule": "all_asm_syntax_sites"
+      },
+      "supportFiles": [
+        "src/internal/atomic.h"
+      ],
+      "licenseFiles": [
+        "COPYRIGHT"
+      ],
+      "licensePrefixes": [],
+      "upstream": "https://git.musl-libc.org/cgit/musl/",
+      "licenseNote": "Retain upstream COPYRIGHT and original file contents.",
+      "acquiredFrom": "https://distfiles.alpinelinux.org/distfiles/v3.20/musl-1.2.5.tar.gz",
+      "digestReference": "https://lists.buildroot.org/pipermail/buildroot/2024-March/372259.html",
+      "acquisitionNote": "Official release server returned HTTP 503; identical release archive acquired from Alpine and independently matched against Buildroot's recorded release SHA256 and its mirror.",
+      "signatureVerified": false
+    },
+    {
+      "id": "linux",
+      "version": "6.6",
+      "archive": "linux-6.6.tar.xz",
+      "root": "linux-6.6",
+      "urls": [
+        "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz"
+      ],
+      "sha256": "d926a06c63dd8ac7df3f86ee1ffc2ce2a3b81a2d168484e76b5b389aba8e56d0",
+      "scope": {
+        "files": [],
+        "prefixes": [
+          "arch/riscv/include/asm/"
+        ],
+        "suffix": ".h",
+        "siteRule": "all_asm_syntax_sites"
+      },
+      "supportFiles": [],
+      "licenseFiles": [
+        "COPYING"
+      ],
+      "licensePrefixes": [
+        "LICENSES/"
+      ],
+      "upstream": "https://www.kernel.org/",
+      "licenseNote": "Retain COPYING, SPDX identifiers, all upstream LICENSES texts and per-file notices; GNU GPL source redistribution, not relicensed translator code.",
+      "acquiredFrom": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.tar.xz",
+      "signatureVerified": false,
+      "digestReference": "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+    }
+  ]
+}

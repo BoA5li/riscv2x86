@@ -1,0 +1,56 @@
+{
+  "status": "verified-source-inventory",
+  "catalogIdentity": "sha256:490081321f1877487bb728f28ff26df5d4a57ce88757f1121c3420da0018200c",
+  "projects": [
+    {
+      "id": "gmp",
+      "version": "6.3.0",
+      "manifestIdentity": "sha256:7611802bc488eea4ccb7ea5fdc4caa0e510b395fae7422effbcd13c12db1b089",
+      "counts": {
+        "lexicalSites": 178,
+        "otherArchitectureSites": 177,
+        "scopeFiles": 1,
+        "selectedCandidates": 1,
+        "syntaxKinds": {
+          "extended_asm_candidate": 1
+        }
+      }
+    },
+    {
+      "id": "musl",
+      "version": "1.2.5",
+      "manifestIdentity": "sha256:5dc8075309ae018b805f94b257ce29c44f77a0cf4f7fe717c4ec991f15b0c60c",
+      "counts": {
+        "lexicalSites": 36,
+        "otherArchitectureSites": 0,
+        "scopeFiles": 15,
+        "selectedCandidates": 36,
+        "syntaxKinds": {
+          "basic_or_macro_asm_candidate": 1,
+          "extended_asm_candidate": 6,
+          "register_binding_candidate": 29
+        }
+      }
+    },
+    {
+      "id": "linux",
+      "version": "6.6",
+      "manifestIdentity": "sha256:39547f310159340a2152cf20e0cdba3ee3a672ca3f9c1ea652d54526e672ce00",
+      "counts": {
+        "lexicalSites": 102,
+        "otherArchitectureSites": 0,
+        "scopeFiles": 129,
+        "selectedCandidates": 102,
+        "syntaxKinds": {
+          "basic_or_macro_asm_candidate": 7,
+          "extended_asm_candidate": 81,
+          "register_binding_candidate": 14
+        }
+      }
+    }
+  ],
+  "upstreamArchiveReplayComplete": true,
+  "compilerActivationComplete": false,
+  "semanticApproval": false,
+  "productionAcceptanceComplete": false
+}
