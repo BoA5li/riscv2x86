@@ -56,6 +56,7 @@ def build_l0_reference_manifest(
     *, source_path: Path, target_path: Path, output_directory: Path,
     translation: TranslationArtifact, link_kind: str, timeout: int = 60,
     source_compiler: str = 'riscv64-linux-gnu-gcc',
+    source_flags_override=None, target_flags_override=None, target_link_flags_override=(),
 ) -> tuple[L0BuildMatrix, ProgramArtifact, ProgramArtifact]:
     """Build all declared cells first, then freeze their hashes as the oracle."""
     output_directory.mkdir(parents=True, exist_ok=False)
@@ -63,8 +64,8 @@ def build_l0_reference_manifest(
     includes = tuple("-I" + item for item in dependencies.include_directories)
     libdirs = tuple("-L" + item for item in dependencies.library_directories)
     libs = tuple("-l" + item for item in dependencies.libraries)
-    source_flags = ("-march=rv64gc", "-mabi=lp64d")
-    target_flags = ("-Wall", "-Wextra")
+    source_flags = tuple(source_flags_override) if source_flags_override is not None else ("-march=rv64gc", "-mabi=lp64d")
+    target_flags = tuple(target_flags_override) if target_flags_override is not None else ("-Wall", "-Wextra")
     source_obj = output_directory / "source.rv64.o"
     source_full_flags = (*source_flags, "-Werror")
     _checked((source_compiler, *source_full_flags, "-c", str(source_path), "-o", str(source_obj)),
@@ -95,7 +96,7 @@ def build_l0_reference_manifest(
                 sanitizer_flags = (() if sanitizer == "none" else
                                    ("-fsanitize=" + {"asan": "address", "ubsan": "undefined"}[sanitizer],))
                 mode = ("-shared",) if link_kind == "shared_library" else ()
-                _checked((compiler, *sanitizer_flags, *mode, str(obj), *libdirs, *libs,
+                _checked((compiler, *target_link_flags_override, *sanitizer_flags, *mode, str(obj), *libdirs, *libs,
                           "-o", str(out)), output_directory, timeout)
                 targets[ident] = ExpectedArtifact(
                     _digest(out), _digest(obj), link_kind, compiler, triple, flags,
@@ -126,7 +127,7 @@ def build_l0_reference_manifest(
         include_directories=dependencies.include_directories,
         library_directories=dependencies.library_directories,
         libraries=dependencies.libraries,
-        link_kind=link_kind, runtime_timeout_seconds=timeout,
+        link_kind=link_kind, runtime_timeout_seconds=timeout,target_link_flags=tuple(target_link_flags_override),
     )
     return (matrix,
             ProgramArtifact("source", str(source_obj), "object", _digest(source_obj)),

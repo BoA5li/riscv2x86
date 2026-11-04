@@ -15,7 +15,7 @@ import runpy
 import tarfile
 
 W = runpy.run_path(str(Path(__file__).resolve().with_name('whole_project_corpus.py')))
-DEFAULT = Path(__file__).resolve().parent/'corpora/real-projects-rv64-c-v1'
+DEFAULT = Path(__file__).resolve().parent/'corpora/real-projects-rv64-c-v2'
 SCHEMA = 'riscv2x86.rv64-c-candidate-view.v1'
 CPP_SUFFIXES = ('.cc', '.cpp', '.cxx', '.C', '.c++')
 CPP_HEADER_SUFFIXES = ('.hpp', '.hh', '.hxx', '.H', '.h++', '.ipp', '.tcc')
@@ -27,7 +27,8 @@ FOREIGN_BUILTINS = ('__i386__', '__i386', 'i386', '__x86_64__', '__x86_64', '__a
     '__ppc__', '__PPC__', '__s390__', '__s390x__', '__sparc__', '__sparc', '__alpha__',
     '__alpha', '__ia64__', '__m68k__', '__m88k__', '__hppa__', '__sh__', '__loongarch__')
 PROFILE = {
-    'schemaVersion': 'riscv2x86.candidate-selection-policy.v1',
+    'schemaVersion': 'riscv2x86.candidate-selection-policy.v2',
+    'revision': 'phase148-project-context-entry',
     'language': 'GNU C', 'sourceIsa': 'RV64', 'march': 'rv64gc', 'abi': 'lp64d',
     'purpose': 'candidate filtering only; not proof of compiler activation or execution',
     'definedArchitectureFacts': {'__riscv': 1, '__riscv_xlen': 64},
@@ -310,7 +311,12 @@ def build(source_root, output):
 def verify(source_root, root):
     manifest = json.loads((root/'manifest.json').read_text()); W['V1']['check_seal'](manifest, 'viewIdentity')
     policy = json.loads((root/'selection-policy.json').read_text()); W['V1']['check_seal'](policy, 'policyIdentity')
-    if policy != W['sealed'](PROFILE, 'policyIdentity') or manifest['policyIdentity'] != policy['policyIdentity']:
+    current = policy == W['sealed'](PROFILE, 'policyIdentity')
+    # Historical data is checked against exact immutable pins, never an arbitrary
+    # policy supplied by a dataset. It is not labeled as current-code provenance.
+    archived = (manifest['viewIdentity']=='sha256:04b64f5a8e4f62216613bd1b7c05652fff0f66dd94b22b540633d27d0a79d181'
+        and policy['policyIdentity']=='sha256:b1370e1e7411e4cfcd630f29d40fe28710dace0242d1706573cf9c27b7e8d08e')
+    if (not current and not archived) or manifest['policyIdentity'] != policy['policyIdentity']:
         raise ValueError('selection policy differs')
     if manifest['schemaVersion'] != SCHEMA or any(manifest[k] is not False for k in
             ('compilerActivationComplete','runnableCorpusComplete','semanticApproval','productionAcceptanceComplete')):
@@ -325,6 +331,7 @@ def verify(source_root, root):
             actual = W['read_chunks'](root/project['id'], project['artifacts'][name])
             if gzip.decompress(actual) != gzip.decompress(expected): raise ValueError('derived data differs: '+name)
     return {'status': 'verified-rv64-c-candidate-partition', 'viewIdentity': manifest['viewIdentity'],
+        'implementationProvenance': 'current' if current else 'archived-exact-phase146-pins',
         'sourceCatalogIdentity': identity, 'projects': [{'id': p['id'], 'counts': p['counts']} for p in manifest['projects']],
         'compilerActivationComplete': False, 'compilerConfirmedTestInstances': 0,
         'semanticApproval': False, 'productionAcceptanceComplete': False}

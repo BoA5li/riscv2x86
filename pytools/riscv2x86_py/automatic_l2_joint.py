@@ -46,6 +46,11 @@ def build_validator(config):
             if len(targets)!=1 or not targets[0].get('compilerJointScope'):raise ValueError('L2_JOINT_TARGET_SCOPE_REQUIRED')
             work=Path(config['workDirectory']);work.mkdir(parents=True,exist_ok=True)
             tools={n:shutil.which(n) for n in ('riscv64-linux-gnu-gcc','gcc',config['qemuBinary'])}
+            from .project_validation_operation import active
+            if active() is not None:
+                from .project_build_contract import profile
+                tools['riscv64-linux-gnu-gcc']=profile(active(),'source')[0]
+                tools['gcc']=profile(active(),'target')[0]
             if not all(tools.values()):raise ValueError('L2_JOINT_TOOLS_UNAVAILABLE')
             from .l3_joint_harness_contract import selected
             generator=selected(program)
@@ -55,7 +60,12 @@ def build_validator(config):
                 cc=tools['riscv64-linux-gnu-gcc' if side=='source' else 'gcc']
                 flags=['-march=rv64gc','-mabi=lp64d','-static'] if side=='source' else []
                 stage=side+'-build'
-                run([cc,'-std=gnu11','-O2','-Wall','-Wextra','-Werror','-Wl,--build-id=none',*flags,h,c,'-o',binary],work,side+'-build',config['timeoutSeconds'])
+                if active() is not None:
+                    from .project_artifact_build import build_driver
+                    built=build_driver(active(),side,[h,c],binary,timeout=config['timeoutSeconds'])
+                    if built.returncode:raise ValueError('PROJECT_L2_JOINT_BUILD_FAILED:'+built.stderr)
+                else:
+                    run([cc,'-std=gnu11','-O2','-Wall','-Wextra','-Werror','-Wl,--build-id=none',*flags,h,c,'-o',binary],work,side+'-build',config['timeoutSeconds'])
                 command=[tools[config['qemuBinary']],str(binary),'a'*64] if side=='source' else [str(binary),'a'*64]
                 stage=side+'-execution'
                 executed=True;r=run(command,work,side+'-execute',config['timeoutSeconds'])

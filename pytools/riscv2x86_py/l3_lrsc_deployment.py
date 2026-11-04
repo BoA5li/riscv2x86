@@ -1,4 +1,6 @@
 """Deploy unchanged source and approved builtin; locate RMW in actual function bytes."""
+from .project_validation_operation import report_operation, flags as operation_flags
+
 import json
 from .validation_timing import timed
 from pathlib import Path
@@ -12,6 +14,7 @@ SCHEMA='riscv2x86.lrsc-execution-deployment.v1'
 
 
 @timed('lrsc.compiler-and-proof-binding')
+@report_operation
 def bound_inputs(source,target,report,finding,clang):
     from .mechanism_route_checks import compiler_bound_finding
     from .approved_replacement import approved_replacement
@@ -36,13 +39,15 @@ def bound_inputs(source,target,report,finding,clang):
 def build_side(path,side,plan,function,backend,artifact,work,atomic):
     work.mkdir(parents=True);c=work/'input.c';c.write_bytes(Path(path).read_bytes())
     obj=work/'region.o';wrapper=work/'harness.c';binary=work/'program';cc=backend[side+'Compiler']
+    from .project_validation_operation import require_compiler
+    require_compiler(side,cc)
     run([cc,*flags(side),'-c',c,'-o',obj],work,'compile')
     original=Elf(artifact.artifact_path)
     if digest(artifact.artifact_path)!=artifact.artifact_digest or original.machine!=(243 if side=='source' else 62) or Elf(obj).code(function['name'])!=original.code(function['name']):
         raise ValueError('L3_LRSC_SEMANTIC_FUNCTION_BYTES_CHANGED:'+side)
     wrapper.write_text(harness(function['name'],atomic,plan))
     linker=['-Wl,--build-id=none']+(['-Wl,--no-relax'] if side=='source' else [])
-    run([cc,*flags(side),'-no-pie',wrapper,obj,*linker,'-o',binary],work,'link')
+    run([cc,*operation_flags(side,flags(side),driver=True),'-no-pie',wrapper,obj,*linker,'-o',binary],work,'link')
     final=Elf(binary)
     if final.type!=2 or final.machine!=original.machine or final.code(function['name'])!=original.code(function['name']):
         raise ValueError('L3_LRSC_LINKED_FUNCTION_BYTES_CHANGED:'+side)
@@ -53,6 +58,7 @@ def build_side(path,side,plan,function,backend,artifact,work,atomic):
             'files':{str(p):digest(p) for p in (c,obj,wrapper,binary,Path(artifact.artifact_path),*work.glob('*.command.json'))}}
 
 
+@report_operation
 def prepare(source,target,report,finding,backend,source_artifact,target_artifact,directory,clang):
     source,target,report=map(lambda p:Path(p).resolve(),(source,target,report));work=Path(directory).resolve();work.mkdir(parents=True,exist_ok=False)
     atomic,plan,function=bound_inputs(source,target,report,finding,clang)
@@ -67,6 +73,7 @@ def prepare(source,target,report,finding,backend,source_artifact,target_artifact
 
 
 @timed('lrsc.deployment-independent-rebuild')
+@report_operation
 def validate(value,backend,source_artifact,target_artifact):
     require_json_document(value,'L3_LRSC_DEPLOYMENT_JSON_INVALID')
     fields={'schemaVersion','backendIdentity','spec','samplePlan','functionName','inputs',

@@ -63,7 +63,7 @@ def _snapshot(paths, cwd):
 
 
 @timed('compiler.call-dependency-acquisition')
-def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None, include_type_facts=False):
+def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None, include_type_facts=False, include_ast=False):
     from .compiler_call_inventory import derive
     import shutil
     if target not in {'riscv64', 'x86_64'}:
@@ -138,6 +138,8 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
         from .compiler_function_types import derive as derive_types
         result['functionTypeInventory'] = derive_types(ast, source_path=source,
             dependency_identity=manifest['dependencyIdentity'], target=target)
+    if include_ast:
+        result['ast']=ast
     return result
 
 

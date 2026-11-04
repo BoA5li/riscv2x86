@@ -196,9 +196,15 @@ def build_atomic_validator(config):
             work.mkdir(parents=True,exist_ok=True);replay.mkdir(parents=True,exist_ok=True)
             driver=work/'atomic-harness.c';driver.write_text(harness)
             source_exe,target_exe=work/'atomic.rv64',work/'atomic.x86_64';timeout=int(config['timeoutSeconds'])
-            left_build=_run(('riscv64-linux-gnu-gcc','-std=gnu11','-O2','-Wall','-Wextra','-Werror',
-                '-march=rv64gc','-mabi=lp64d','-static',str(driver),str(source),'-o',str(source_exe)),work,timeout)
-            right_build=_run(('gcc','-std=gnu11','-O2','-Wall','-Wextra','-Werror',str(driver),str(target),'-o',str(target_exe)),work,timeout)
+            from .project_validation_operation import active
+            if active() is not None:
+                from .project_artifact_build import build_driver
+                left_build=build_driver(active(),'source',[driver,source],source_exe,timeout=timeout)
+                right_build=build_driver(active(),'target',[driver,target],target_exe,timeout=timeout)
+            else:
+                left_build=_run(('riscv64-linux-gnu-gcc','-std=gnu11','-O2','-Wall','-Wextra','-Werror',
+                    '-march=rv64gc','-mabi=lp64d','-static',str(driver),str(source),'-o',str(source_exe)),work,timeout)
+                right_build=_run(('gcc','-std=gnu11','-O2','-Wall','-Wextra','-Werror',str(driver),str(target),'-o',str(target_exe)),work,timeout)
             if left_build.returncode or right_build.returncode:
                 return reject('L2_ATOMIC_HARNESS_BUILD_FAILED',commands=_build_failure_detail(left_build,right_build))
             stage='execution';executed=True

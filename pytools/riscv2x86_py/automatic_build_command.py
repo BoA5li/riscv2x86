@@ -12,10 +12,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--kind", choices=("executable", "shared_library"), required=True)
+    parser.add_argument("--kind", choices=("object", "executable", "shared_library"), required=True)
     parser.add_argument("--translated-report")
     parser.add_argument("--repository-root")
+    parser.add_argument("--project-build-contract")
+    parser.add_argument("--project-side",choices=("source","target"),default="target")
     args = parser.parse_args()
+    if args.kind=='object' and not args.project_build_contract:
+        parser.error('object output requires an explicit project build contract')
     output = Path(args.output)
     obj = output.with_name(output.name + ".o")
     report = (Path(args.translated_report) if args.translated_report else
@@ -27,6 +31,18 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         print("runtime dependency resolution failed: " + str(exc), file=__import__("sys").stderr)
         return 2
+    if args.project_build_contract:
+        from .project_build_contract import load
+        from .project_artifact_build import build
+        try:
+            contract=load(args.project_build_contract)
+            build(contract,args.project_side,args.target,output,args.kind,
+                  include_directories=dependencies.include_directories,
+                  libraries=dependencies.library_paths)
+            return 0
+        except (OSError,ValueError,subprocess.SubprocessError) as exc:
+            print('project build failed: '+str(exc),file=__import__('sys').stderr)
+            return 2
     flags = ["-Wall", "-Wextra", "-O0", "-fno-lto"]
     if args.kind == "shared_library":
         flags.append("-fPIC")

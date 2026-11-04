@@ -22,6 +22,20 @@ def _detail(layer):
 
 
 def audit_evaluation(evaluation):
+    binding=evaluation.get('projectBuildBinding')
+    project_selected=any('--project-build-contract' in c.get('command',[]) for c in evaluation.get('commands',[]))
+    if binding is None:
+        if project_selected:raise ValueError('PROJECT_ACCEPTANCE_BUILD_BINDING_REQUIRED')
+        return _audit_evaluation(evaluation)
+    from .project_evaluation_audit import validate_binding
+    from .project_validation_operation import operation
+    contract=validate_binding(evaluation)
+    with operation(contract):
+        result=_audit_evaluation(evaluation)
+    return dict(result,projectBuildContractIdentity=contract['contractIdentity'])
+
+
+def _audit_evaluation(evaluation):
     if evaluation.get('status') != 'verified':
         raise ValueError('l3.acceptance.evaluation-not-verified')
     from .l3_policy_evidence import system_candidate

@@ -679,6 +679,19 @@ def validation_runtime_registry_from_dict(
         if not isinstance(raw_descriptor, Mapping):
             raise ValueError("validation runner descriptor is malformed")
         runner_type = raw_descriptor.get("type")
+        if runner_type=='project-context-validator':
+            if set(raw_descriptor)!={'type','config'}:raise ValueError('PROJECT_VALIDATOR_DESCRIPTOR_INVALID')
+            config=raw_descriptor['config']
+            if (not isinstance(config,dict) or set(config) not in ({'schemaVersion','projectBuildContract','validator'},{'schemaVersion','projectBuildContract','validator','translatedReport'})
+                    or config['schemaVersion']!='riscv2x86.project-validator.v1'
+                    or not isinstance(config['validator'],Mapping)
+                    or config['validator'].get('type')=='project-context-validator'):
+                raise ValueError('PROJECT_VALIDATOR_CONFIG_INVALID')
+            from .project_validation_operation import wrap
+            nested=validation_runtime_registry_from_dict({'schemaVersion':schema_version,'version':version,
+                'validators':{str(raw_level):config['validator']}},validator_factories=validator_factories)
+            validators[level]=wrap(nested.layer_validators[level],config['projectBuildContract'],config.get('translatedReport'))
+            continue
         if runner_type == "l3-capability-provider-registry":
             if level is not ValidationLevel.L3 or schema_version != VALIDATION_RUNTIME_REGISTRY_SCHEMA:
                 raise ValueError("L3 capability registry requires L3 and registry schema v2")

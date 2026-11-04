@@ -983,8 +983,14 @@ def build_auto_l2_operand_validator(config: Mapping[str, object]):
                 source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
                 stage = L2OperandFailureStage.HARNESS_BUILD
                 artifact_path = harness
-                left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
-                right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
+                from .project_validation_operation import active
+                if active() is not None:
+                    from .project_artifact_build import build_driver
+                    left_build=build_driver(active(),'source',[harness,build_source],source_exe,timeout=timeout)
+                    right_build=build_driver(active(),'target',[harness,build_target],target_exe,libraries=dependencies.library_paths,include_directories=dependencies.include_directories,timeout=timeout)
+                else:
+                    left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(build_source),"-o",str(source_exe)),work,timeout)
+                    right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(build_target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
                 if left_build.returncode or right_build.returncode:
                     detail={"schemaVersion":AUTO_L2_FAILURE_SCHEMA,"executionDisposition":L2ProviderExecutionDisposition.NOT_EXECUTED.value,"evidenceProductionDisposition":L2EvidenceProductionDisposition.NOT_PRODUCED.value,"reasonCode":"L2_OPERAND_HARNESS_BUILD_UNAVAILABLE","failureStage":stage.value,"exceptionType":"CompilerExit","detail":"source or target harness compilation failed","artifactPath":str(harness),"source":left_build.stderr,"target":right_build.stderr}
                     return ValidationLayerResult(ValidationLevel.L2,ValidationStatus.INCONCLUSIVE,_identity(detail),json.dumps(detail,sort_keys=True))

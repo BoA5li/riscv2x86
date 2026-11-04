@@ -69,12 +69,38 @@ def build_auto_l0_validator(config: Mapping[str, object]):
                 compiler=config['sourceCompiler']
                 if digest(compiler)!=config['sourceCompilerDigest']:
                     raise ValueError('L0_SOURCE_COMPILER_IDENTITY_MISMATCH')
+            from .project_validation_operation import active
+            project=active()
+            project_cells=[];project_options={}
+            if project is not None:
+                from .project_build_contract import profile
+                from .project_artifact_build import build as build_project
+                cc,left_flags=profile(project,'source');_,right_flags=profile(project,'target')
+                compiler=cc
+                project_options={'source_flags_override':left_flags,'target_flags_override':right_flags,
+                    'target_link_flags_override':profile(project,'target',driver=True)[1]}
+                deps=resolve_runtime_contracts((kwargs['translation_artifact'].runtime_contract_id,))
+                for side,path in (('source',source),('target',target)):
+                    artifact=kwargs[side+'_program_artifact']
+                    destination=Path(str(config['workDirectory'])).with_name(Path(str(config['workDirectory'])).name+'-project')/side/Path(artifact.artifact_path).name
+                    receipt=build_project(project,side,path,destination,artifact.artifact_kind,
+                        include_directories=deps.include_directories,libraries=deps.library_paths,timeout=timeout)
+                    if receipt['artifactDigest']!=artifact.artifact_digest:
+                        raise ValueError('PROJECT_L0_ACTUAL_ARTIFACT_REBUILD_MISMATCH:'+side)
+                    from .l0_build_matrix import _inspect_elf,_source_elf_abi_error,_target_elf_abi_error,_run as matrix_run
+                    elf,detail=_inspect_elf(Path(artifact.artifact_path),destination.parent,matrix_run,timeout)
+                    error=(_source_elf_abi_error(elf,artifact_kind=artifact.artifact_kind) if side=='source'
+                        else _target_elf_abi_error(elf,artifact_kind=artifact.artifact_kind)) if elf is not None else detail
+                    if elf is None or error:raise ValueError('PROJECT_L0_ACTUAL_ELF_INVALID:'+side+':'+error)
+                    project_cells.append({'id':'project-actual-'+side,'status':'verified',
+                        'contractIdentity':project['contractIdentity'],'artifactDigest':artifact.artifact_digest,
+                        'rebuildIdentity':receipt['buildIdentity']})
             matrix, reference_source, reference_target = build_l0_reference_manifest(
                 source_path=source, target_path=target,
                 output_directory=Path(str(config["workDirectory"])),
                 translation=kwargs["translation_artifact"],
                 link_kind=str(config["linkKind"]), timeout=timeout,
-                source_compiler=compiler,
+                source_compiler=compiler, **project_options,
             )
             # Evaluation build artifacts are an independent binding.  Their bytes
             # must equal the oracle build before the matrix is replayed.
@@ -95,14 +121,18 @@ def build_auto_l0_validator(config: Mapping[str, object]):
                 if (digest(supplied_source.artifact_path)!=supplied_source.artifact_digest
                         or digest(compiler)!=config['sourceCompilerDigest']):
                     raise ValueError('L0_SOURCE_SHARED_LIBRARY_OR_COMPILER_CHANGED')
-            if (supplied_source.artifact_digest != source_digest or
+            if project is None and (supplied_source.artifact_digest != source_digest or
                     supplied_target.artifact_digest != reference_target.artifact_digest):
                 return ValidationLayerResult(ValidationLevel.L0, ValidationStatus.FAILED,
                                              detail="evaluation/reference artifact mismatch")
             result=run_l0_build_matrix(
-                matrix, kwargs["translation_artifact"], reference_source if shared_source else supplied_source, supplied_target,
+                matrix, kwargs["translation_artifact"], reference_source if shared_source or project is not None else supplied_source,
+                reference_target if project is not None else supplied_target,
                 target_environment=kwargs.get("target_environment"),
             )
+            if project is not None:
+                from .l0_build_matrix import _finish
+                return _finish(matrix,[*project_cells,*json.loads(result.detail)])
             if shared_source:
                 from .l0_build_matrix import _finish
                 cells=json.loads(result.detail)
@@ -647,14 +677,22 @@ def build_auto_l1_validator(config: Mapping[str, object]):
                         or digest(binding['sourceCompiler'])!=binding['sourceCompilerDigest']):
                     raise ValueError('ISS_L1_EXECUTION_ENVIRONMENT_MISMATCH')
                 source_compiler=binding['sourceCompiler']
-            source_build = _run((source_compiler, "-std=gnu11", "-O2", "-Wall",
-                                 "-Wextra", "-Werror", "-march=rv64gc", "-mabi=lp64d",
-                                 "-static", *(str(item) for item in source_units),
-                                 "-o", str(source_exe)), work, timeout)
-            target_build = _run(("gcc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",
-                                 *runtime_includes, *(str(item) for item in target_units),
-                                 *dependencies.library_paths, "-o", str(target_exe)),
-                                work, timeout)
+            from .project_validation_operation import active
+            project=active()
+            if project is not None:
+                from .project_artifact_build import build_driver
+                source_build=build_driver(project,'source',source_units,source_exe,timeout=timeout)
+                target_build=build_driver(project,'target',target_units,target_exe,
+                    libraries=dependencies.library_paths,include_directories=dependencies.include_directories,timeout=timeout)
+            else:
+                source_build = _run((source_compiler, "-std=gnu11", "-O2", "-Wall",
+                                     "-Wextra", "-Werror", "-march=rv64gc", "-mabi=lp64d",
+                                     "-static", *(str(item) for item in source_units),
+                                     "-o", str(source_exe)), work, timeout)
+                target_build = _run(("gcc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",
+                                     *runtime_includes, *(str(item) for item in target_units),
+                                     *dependencies.library_paths, "-o", str(target_exe)),
+                                    work, timeout)
             if source_build.returncode or target_build.returncode:
                 detail = {"sourceBuild": source_build.stderr, "targetBuild": target_build.stderr}
                 return ValidationLayerResult(ValidationLevel.L1, ValidationStatus.INCONCLUSIVE,

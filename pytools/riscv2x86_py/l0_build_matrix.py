@@ -72,6 +72,7 @@ class L0BuildMatrix:
     link_kind: str = "executable"
     warnings_as_errors: bool = True
     runtime_timeout_seconds: int = 10
+    target_link_flags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not all((self.source_path, self.source_compiler, self.target_path, self.work_directory,
@@ -82,6 +83,8 @@ class L0BuildMatrix:
                                         (self.optimizations, _OPTIMIZATIONS, "optimizations"),
                                         (self.sanitizers, _SANITIZERS, "sanitizers")):
             if tuple(actual) != tuple(required): raise ValueError("L0 matrix requires exact ordered " + label)
+        if any(not isinstance(x,str) or not x for x in self.target_link_flags):
+            raise ValueError('L0 target link arguments are invalid')
         if self.link_kind not in {"executable", "shared_library"}: raise ValueError("unsupported link kind")
         if not isinstance(self.warnings_as_errors, bool) or self.runtime_timeout_seconds <= 0:
             raise ValueError("warning policy/runtime timeout is invalid")
@@ -92,9 +95,9 @@ def load_l0_build_matrix(data: Mapping[str, object]) -> L0BuildMatrix:
                 "targetCompilers", "targetFlags", "optimizations", "sanitizers", "workDirectory",
                 "translationManifestPath", "translationManifestDigest", "runtimeHeaders",
                 "includeDirectories", "libraryDirectories", "libraries", "linkKind", "warningPolicy",
-                "runtimeTimeoutSeconds"}
+                "runtimeTimeoutSeconds", "targetLinkFlags"}
     optional = {"runtimeHeaders", "includeDirectories", "libraryDirectories", "libraries",
-                "linkKind", "warningPolicy", "runtimeTimeoutSeconds"}
+                "linkKind", "warningPolicy", "runtimeTimeoutSeconds", "targetLinkFlags"}
     if not set(data).issubset(expected) or not expected - optional <= set(data):
         raise ValueError("L0 matrix fields are incomplete or unknown")
     if data.get("schemaVersion") != L0_BUILD_MATRIX_SCHEMA: raise ValueError("unsupported L0 matrix schema")
@@ -119,7 +122,7 @@ def load_l0_build_matrix(data: Mapping[str, object]) -> L0BuildMatrix:
                          values("optimizations"), values("sanitizers"), string("workDirectory"),
                          string("translationManifestPath"), string("translationManifestDigest"),
                          values("runtimeHeaders"), values("includeDirectories"), values("libraryDirectories"),
-                         values("libraries"), string("linkKind", "executable"), warnings_as_errors, timeout)
+                         values("libraries"), string("linkKind", "executable"), warnings_as_errors, timeout,values('targetLinkFlags'))
 
 
 def _cell_id(compiler: str, optimization: str, sanitizer: str) -> str:
@@ -448,7 +451,7 @@ def run_l0_build_matrix(
                           cwd / (ident + (".so" if matrix.link_kind == "shared_library" else ".exe")))
                 output.parent.mkdir(parents=True, exist_ok=True)
                 link_mode = ("-shared",) if matrix.link_kind == "shared_library" else ()
-                link_result = command_runner((compiler, *sanitizer_flags, *link_mode, str(obj), "-o", str(output),
+                link_result = command_runner((compiler, *matrix.target_link_flags, *sanitizer_flags, *link_mode, str(obj), "-o", str(output),
                                               *libdirs, *libs), cwd, matrix.runtime_timeout_seconds)
                 text = syntax.stderr + header_result.stderr + object_result.stderr + link_result.stderr
                 if object_result.returncode or link_result.returncode or object_result.timed_out or link_result.timed_out:

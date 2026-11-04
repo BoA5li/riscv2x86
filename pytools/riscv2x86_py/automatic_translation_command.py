@@ -249,6 +249,7 @@ def main() -> int:
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--report", required=True)
     parser.add_argument("--validation-plan")
+    parser.add_argument("--project-build-contract", help="explicit context-bound source/target build recipes")
     parser.add_argument("--allow-functional-fallbacks", action="store_true")
     parser.add_argument("--atomic-authority-sidecar")
     parser.add_argument("--csr-authority-sidecar")
@@ -284,25 +285,56 @@ def main() -> int:
         return preflight_failure("output_freshness", FileExistsError(
             "Compiler input artifacts already exist; use a fresh work directory"))
 
+    project_contract=None; project_acquisition=None
+    if args.project_build_contract:
+        try:
+            from .project_build_contract import load as load_project
+            from .compiler_call_dependencies import acquire
+            project_contract=load_project(args.project_build_contract,source=args.source)
+            context=project_contract['sourceContext']
+            from .project_compiler_compatibility import acquire as acquire_compatibility
+            project_compatibility=acquire_compatibility(project_contract)
+            atomic_json(report.with_name('project-compiler-compatibility.json'),project_compatibility)
+            if project_compatibility['integerDataModelMatched'] is not True:
+                raise ValueError('PROJECT_INTEGER_DATA_MODEL_MISMATCH')
+            if project_compatibility['sourcePreprocessingMatched'] is not True:
+                raise ValueError('PROJECT_COMPILER_PREPROCESSING_MISMATCH')
+            project_acquisition=acquire(args.source,clang=project_contract['inspectionCompiler'],
+                target='riscv64',compile_args=context['inspectionArguments'],
+                working_directory=context['workingDirectory'],include_type_facts=True)
+            front_flags=['--target=riscv64-linux-gnu',*context['inspectionArguments']]
+            front_cwd=context['workingDirectory']
+            from .project_build_contract import resolve_tool
+            args.frontend=resolve_tool(args.frontend)
+            atomic_json(report.with_name('project-source-inventory.json'),project_acquisition)
+        except (OSError,ValueError,KeyError,subprocess.SubprocessError) as exc:
+            return preflight_failure('project_context_acquisition',exc,'evaluation.project-context-invalid')
+    else:
+        try:
+            sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
+                                            text=True, capture_output=True, check=False)
+        except OSError as exc:
+            return preflight_failure("sysroot_inspection", exc)
+        if sysroot_result.returncode:
+            return preflight_failure("sysroot_inspection", PreflightToolFailure(sysroot_result))
+        sysroot = sysroot_result.stdout.strip()
+        if sysroot == "/" and Path("/usr/riscv64-linux-gnu/include").is_dir():
+            sysroot = "/usr/riscv64-linux-gnu"
+        front_flags=['--target=riscv64-linux-gnu','--sysroot='+sysroot,
+                     '-std=gnu11','-march=rv64gc','-mabi=lp64d']
+        front_cwd=None
     try:
-        sysroot_result = subprocess.run(("riscv64-linux-gnu-gcc", "-print-sysroot"),
-                                        text=True, capture_output=True, check=False)
-    except OSError as exc:
-        return preflight_failure("sysroot_inspection", exc)
-    if sysroot_result.returncode:
-        return preflight_failure("sysroot_inspection", PreflightToolFailure(sysroot_result))
-    sysroot = sysroot_result.stdout.strip()
-    if sysroot == "/" and Path("/usr/riscv64-linux-gnu/include").is_dir():
-        sysroot = "/usr/riscv64-linux-gnu"
-    try:
-        front = subprocess.run((args.frontend, "--analysis-only", "-o", str(report.with_name("dummy")),
-                            "--src-root", str(Path(args.source_root).resolve()),
-                            "--report-json", str(raw), str(Path(args.source).resolve()), "--",
-                            "--target=riscv64-linux-gnu", "--sysroot=" + sysroot,
-                            "-std=gnu11", "-march=rv64gc", "-mabi=lp64d"),
-                               text=True, capture_output=True, check=False)
-    except OSError as exc:
-        return preflight_failure("frontend_execution", exc)
+        front_command=(args.frontend,'--analysis-only','-o',str(report.with_name('dummy')),
+            '--src-root',str(Path(args.source_root).resolve()),'--report-json',str(raw),
+            str(Path(args.source).resolve()),'--',*front_flags)
+        front_kwargs={'text':True,'capture_output':True,'check':False}
+        if front_cwd is not None:front_kwargs['cwd']=front_cwd
+        front=subprocess.run(front_command,**front_kwargs)
+        if project_acquisition is not None:
+            from .compiler_call_dependencies import validate as validate_dependencies
+            validate_dependencies(project_acquisition['dependencyManifest'])
+    except (OSError,ValueError,subprocess.SubprocessError) as exc:
+        return preflight_failure('frontend_execution',exc)
     (report.parent / "frontend.stdout").write_text(front.stdout, encoding="utf-8")
     (report.parent / "frontend.stderr").write_text(front.stderr, encoding="utf-8")
     if front.returncode or not raw.is_file():
@@ -316,21 +348,30 @@ def main() -> int:
         # Preserve both independent compiler inputs before any enrichment.
         atomic_json(raw.with_name("frontend-report.json"),
                     json.loads(raw.read_text(encoding="utf-8")))
-        _, compiler_functions = inspect_entry_points(Path(args.source).resolve())
+        _, compiler_functions = (inspect_entry_points(Path(args.source).resolve(),project_contract=project_contract)
+                                 if project_contract is not None else inspect_entry_points(Path(args.source).resolve()))
         snapshot = {
             "schemaVersion": "riscv2x86.compiler-candidates.v1",
             "sourceDigest": "sha256:" + sha256(Path(args.source).read_bytes()).hexdigest(),
             "frontendReportIdentity": _identity(json.loads(raw.read_text(encoding="utf-8"))),
             "functions": list(compiler_functions),
         }
+        if project_contract is not None:
+            snapshot['schemaVersion']='riscv2x86.compiler-candidates.v2'
+            snapshot['projectBuildContract']=project_contract
+            snapshot['dependencyManifest']=project_acquisition['dependencyManifest']
+            snapshot['projectCompilerCompatibility']=project_compatibility
+            snapshot['functionTypeInventory']=project_acquisition['functionTypeInventory']
         snapshot["manifestIdentity"] = _identity(snapshot)
         atomic_json(raw.with_name("compiler-candidates.json"), snapshot)
         preflight_stage = "compiler_fragment_closure"
         _inject_compiler_fragment_authority(raw, Path(args.source).resolve(),
                                             compiler_functions)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return preflight_failure(preflight_stage, exc,
-                                 getattr(exc, "reason_code", "evaluation.translation-compiler-authority-invalid"))
+        reason=getattr(exc, "reason_code", "evaluation.translation-compiler-authority-invalid")
+        if project_contract is not None and preflight_stage=='compiler_inspection' and isinstance(exc,ValueError):
+            reason='evaluation.project-entry-inspection-or-call-contract-required'
+        return preflight_failure(preflight_stage, exc,reason)
     if args.atomic_authority_sidecar:
         try:
             _inject_atomic_authority(raw, Path(args.source).resolve(),
@@ -472,6 +513,11 @@ def main() -> int:
             translated = json.loads(report.read_text(encoding="utf-8"))
             if not isinstance(translated, dict):
                 raise ValueError("translated report root must be an object")
+            if project_contract is not None:
+                from .project_build_contract import validate as validate_project
+                validate_project(project_contract,source=args.source)
+                translated['projectBuildContract']=project_contract
+                translated['projectCompilerCompatibility']=project_compatibility
             materialize_automatic_l2_authority(
                 translated, tuple(item for item in compiler_functions
                                   if isinstance(item, dict)),

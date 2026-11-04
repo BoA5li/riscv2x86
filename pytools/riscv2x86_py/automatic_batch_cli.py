@@ -659,19 +659,39 @@ def _compiler_type_alias_resolver(root):
     return resolve_compiler_type
 
 
-def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str = "riscv64") -> tuple[bool, tuple[dict[str, object], ...]]:
+def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str = "riscv64", project_contract: dict | None = None) -> tuple[bool, tuple[dict[str, object], ...]]:
     """Use the compiler AST, never textual `main`/signature guessing."""
+    if project_contract is None:
+        from .project_validation_operation import active
+        project_contract=active()
     if target_isa not in {'riscv64','x86_64'}:
         raise ValueError('entry-point target ISA is unsupported')
-    target_flags = (("--target=riscv64-linux-gnu", "--sysroot=" + _sysroot(),
-                     "-march=rv64gc", "-mabi=lp64d") if target_isa=='riscv64'
-                    else ('--target=x86_64-linux-gnu',))
-    command = (clang, *target_flags, "-std=gnu11", "-fsyntax-only",
-               "-Xclang", "-ast-dump=json", str(source))
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
-    if result.returncode:
-        raise ValueError("entry-point AST inspection failed: " + result.stderr.strip())
-    root = json.loads(result.stdout)
+    project_dependency_identity = None
+    if project_contract is not None:
+        from .project_build_contract import validate as validate_project, normalize_paths
+        from .compiler_call_dependencies import acquire
+        validate_project(project_contract, source=source if target_isa=='riscv64' else None)
+        clang = project_contract['inspectionCompiler']
+        if target_isa=='riscv64':
+            context=project_contract['sourceContext']
+            compile_args=context['inspectionArguments']; cwd=context['workingDirectory']
+        else:
+            profile=project_contract['targetProfile']
+            compile_args=normalize_paths(profile['inspectionArguments'],profile['workingDirectory']);cwd=profile['workingDirectory']
+        acquisition=acquire(source,clang=clang,target=target_isa,compile_args=compile_args,
+                            working_directory=cwd,include_ast=True)
+        root=acquisition['ast']
+        project_dependency_identity=acquisition['dependencyManifest']['dependencyIdentity']
+    else:
+        target_flags = (("--target=riscv64-linux-gnu", "--sysroot=" + _sysroot(),
+                         "-march=rv64gc", "-mabi=lp64d") if target_isa=='riscv64'
+                        else ('--target=x86_64-linux-gnu',))
+        command = (clang, *target_flags, "-std=gnu11", "-fsyntax-only",
+                   "-Xclang", "-ast-dump=json", str(source))
+        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        if result.returncode:
+            raise ValueError("entry-point AST inspection failed: " + result.stderr.strip())
+        root = json.loads(result.stdout)
     functions = []
     resolve_compiler_type=_compiler_type_alias_resolver(root)
     has_main = False
@@ -725,6 +745,8 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                 "sourceDigest": source_digest, "name": name,
                 "sourceRange": list(_source_range(node) or (-1, -1)),
                 "type": qualified,
+                **({'projectBuildContractIdentity':project_contract['contractIdentity'],
+                    'compilerDependencyIdentity':project_dependency_identity} if project_contract is not None else {}),
             })
             function = {"name": name,
                         "functionId": function_identity,
@@ -733,6 +755,9 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                         "arity": len(params),
                         "returnType": return_type, "parameterTypes": param_types,
                         "pointerParameters": pointer_parameters}
+            if project_contract is not None:
+                function['projectBuildContractIdentity']=project_contract['contractIdentity']
+                function['compilerDependencyIdentity']=project_dependency_identity
             from .compiler_instruction_sync_scope import instruction_sync_scope
             sync_scope=instruction_sync_scope(node,source_digest=source_digest,
                 function_identity=function_identity,source_range=_source_range)
@@ -777,6 +802,11 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             functions.append(function)
     if not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
+    if project_contract is not None:
+        from .project_build_contract import validate as validate_project
+        validate_project(project_contract)
+        from .compiler_call_dependencies import validate as validate_dependencies
+        validate_dependencies(acquisition['dependencyManifest'])
     return has_main, tuple(sorted(functions, key=lambda item: str(item["name"])))
 
 
@@ -987,12 +1017,18 @@ def prepare_automatic_inventory(
     l3_diagnostic: bool = False,
     system_l3: bool = False,
     experiment_environment: str | Path | None = None,
+    project_build_contract: str | Path | None = None,
 ) -> dict[str, object]:
     root, inventory = Path(input_path).resolve(), Path(inventory_directory).resolve()
     sources = ([root] if root.is_file() else
                sorted(item for item in root.rglob("*.c")
                       if not item.name.endswith(".harness.c")))
     source_root = root.parent if root.is_file() else root
+    project_contract=None
+    if project_build_contract is not None:
+        if not root.is_file():raise ValueError('PROJECT_SINGLE_BUILD_VARIANT_INPUT_REQUIRED')
+        from .project_build_contract import load as load_project
+        project_contract=load_project(project_build_contract,source=root)
     if type(l3_producer_timeout) is not int or not 1 <= l3_producer_timeout <= 3600:
         raise ValueError('L3_PRODUCER_TIMEOUT_INVALID')
     trace_backend=None; trace_model=None;trace_selections=None
@@ -1226,11 +1262,13 @@ def prepare_automatic_inventory(
                     raise ValueError("L3 providers must be sorted and unique")
                 l3_binding = raw_binding
         try:
-            has_main, functions = inspect_entry_points(source)
+            has_main, functions = (inspect_entry_points(source,project_contract=project_contract)
+                                   if project_contract is not None else inspect_entry_points(source))
             program_id = _identity({
                 "schemaVersion": "riscv2x86.source-program.v1",
                 "sourceRelativePath": relative,
                 "sourceDigest": _digest(source),
+                **({'projectBuildContractIdentity':project_contract['contractIdentity']} if project_contract is not None else {}),
             })
             for function in functions:
                 function["programId"] = program_id
@@ -1257,6 +1295,8 @@ def prepare_automatic_inventory(
                        "--source-root", "${SOURCE_ROOT}",
                        "--report", "${TRANSLATED_REPORT}",
                        "--validation-plan", str((case_dir / "validation-plan.json").resolve())]
+        if project_contract is not None:
+            translation.extend(['--project-build-contract',str(Path(project_build_contract).resolve())])
         if l3_intent_root is not None:
             intent_manifest = l3_intent_root / (relative + ".l3-intent-producer.json")
             if intent_manifest.is_file():
@@ -1777,6 +1817,21 @@ def prepare_automatic_inventory(
                     'schemaVersion':'riscv2x86.controlled-system-l3-route.v1',
                     'systemConfig':config,'reportPath':'${TRANSLATED_REPORT}'}}
             _write_json(case_dir/'validation-plan.json',plan)
+        if project_contract is not None:
+            if any(p['validatorType'] in {'controlled-time-validation','l2-instruction-visibility-harness','controlled-system-validation'} for p in explicit_l2_providers):
+                raise ValueError('PROJECT_SPECIAL_ENVIRONMENT_BUILD_ADAPTER_REQUIRED')
+            for side in ('source','target'):
+                spec=request[side+'Build']
+                spec['command']=[sys.executable,'-m','riscv2x86_py.automatic_build_command',
+                    '--target','${SOURCE_PATH}' if side=='source' else '${TARGET_PATH}',
+                    '--output','${OUTPUT}','--kind',spec['artifactKind'],
+                    '--translated-report','${TRANSLATED_REPORT}',
+                    '--project-build-contract',str(Path(project_build_contract).resolve()),'--project-side',side]
+            for level,descriptor in list(validators.items()):
+                validators[level]={'type':'project-context-validator','config':{
+                    'schemaVersion':'riscv2x86.project-validator.v1','projectBuildContract':project_contract,
+                    'translatedReport':'${TRANSLATED_REPORT}',
+                    'validator':descriptor}}
         _write_json(case_dir / BATCH_DESCRIPTOR_NAME,
                     {"schemaVersion": BATCH_CASE_SCHEMA, "caseId": case_id,
                      "category": "automatic", "request": request})
@@ -1871,6 +1926,7 @@ def main() -> int:
     parser.add_argument("--l3-diagnostic", action="store_true",
                         help="run explicitly bound target-only experiment diagnostics")
     parser.add_argument("--experiment-environment",help="sealed experiment manifest; grants no semantic approval")
+    parser.add_argument('--project-build-contract',help='bound project source/target/driver recipes; single build variant')
     args = parser.parse_args()
     output = Path(args.output_directory).resolve()
     inventory = output.with_name(output.name + "-inventory")
@@ -1899,7 +1955,8 @@ def main() -> int:
                                     instruction_stream_sync_directory=args.instruction_stream_sync_directory,
                                     l3_diagnostic=args.l3_diagnostic,
                                     system_l3=args.system_l3,
-                                    experiment_environment=args.experiment_environment)
+                                    experiment_environment=args.experiment_environment,
+                                    project_build_contract=args.project_build_contract)
         result = run_batch_evaluation(inventory / "cases", output, jobs=args.jobs)
     except Exception as exc:
         print(json.dumps({"status": "inconclusive", "reasonCode": "automatic.configuration-error",

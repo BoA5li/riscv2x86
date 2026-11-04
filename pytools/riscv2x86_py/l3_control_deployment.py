@@ -1,4 +1,6 @@
 """Byte-identical local-control deployment, including compiler-bound asm-goto exits."""
+from .project_validation_operation import report_operation, flags as operation_flags
+
 import json
 from pathlib import Path
 import subprocess
@@ -56,6 +58,7 @@ def label_assembly(text,goto):
     return ''.join(lines[:a+1])+marker(BEGIN)+''.join(lines[a+1:end])+marker(END)+''.join(lines[end:])
 
 
+@report_operation
 def bound_inputs(source,target,report,finding,clang):
     from .mechanism_route_checks import compiler_bound_finding
     from .approved_replacement import approved_replacement
@@ -102,12 +105,16 @@ def region_of(elf,name,goto):
     return {'start':first[0],'end':last[0],'exits':sorted(roles.values()),'exitRoles':roles}
 
 
-def flags(side):return ['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC'])
+def flags(side):
+    from .project_validation_operation import flags as selected
+    return selected(side,['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC']))
 
 
 def build_side(path,side,control,call,plan,function,backend,artifact,work,clang):
     work.mkdir(parents=True);data,sites=side_source(path,side,control,function,clang)
     c=work/'input.c';c.write_bytes(data);assembly=work/'compiler.s';marked=work/'region.s';obj=work/'region.o';wrapper=work/'harness.c';binary=work/'program';cc=backend[side+'Compiler']
+    from .project_validation_operation import require_compiler
+    require_compiler(side,cc)
     run([cc,*flags(side),'-S',c,'-o',assembly],work,'compile')
     marked.write_text(label_assembly(assembly.read_text(),control['kind']=='asm_goto'))
     run([cc,*flags(side),'-c',marked,'-o',obj],work,'assemble')
@@ -115,7 +122,7 @@ def build_side(path,side,control,call,plan,function,backend,artifact,work,clang)
     if digest(artifact.artifact_path)!=artifact.artifact_digest or original.machine!=(243 if side=='source' else 62) or Elf(obj).code(function['name'])!=original.code(function['name']):raise ValueError('L3_CONTROL_SEMANTIC_FUNCTION_BYTES_CHANGED:'+side)
     wrapper.write_text(harness(function['name'],call,plan))
     linker=['-Wl,--build-id=none']+(['-Wl,--no-relax'] if side=='source' else [])
-    run([cc,*flags(side),'-no-pie',wrapper,obj,*linker,'-o',binary],work,'link')
+    run([cc,*operation_flags(side,flags(side),driver=True),'-no-pie',wrapper,obj,*linker,'-o',binary],work,'link')
     final=Elf(binary)
     if final.type!=2 or final.machine!=original.machine or final.code(function['name'])!=original.code(function['name']):raise ValueError('L3_CONTROL_LINKED_FUNCTION_BYTES_CHANGED:'+side)
     region=region_of(final,function['name'],control['kind']=='asm_goto')
@@ -126,6 +133,7 @@ def build_side(path,side,control,call,plan,function,backend,artifact,work,clang)
         'region':region,'machineGraph':machine,'compilerContinuationSites':sites,'files':files}
 
 
+@report_operation
 def prepare(source,target,report,finding,backend,source_artifact,target_artifact,directory,clang):
     source,target,report=map(lambda p:Path(p).resolve(),(source,target,report));directory=Path(directory).resolve();directory.mkdir(parents=True,exist_ok=False)
     control,call,plan,function=bound_inputs(source,target,report,finding,clang)
@@ -140,6 +148,7 @@ def prepare(source,target,report,finding,backend,source_artifact,target_artifact
     value=dict(body,deploymentIdentity=identity(body));save(directory/'deployment.json',value);return value
 
 
+@report_operation
 def validate(value,backend,source_artifact,target_artifact):
     require_json_document(value,'L3_CONTROL_DEPLOYMENT_JSON_INVALID')
     if value.get('schemaVersion')!=SCHEMA or value.get('deploymentIdentity')!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['outsideFragmentEffectsClaimed'] is not False or value['physicalMicroarchitectureClaimed'] is not False:raise ValueError('L3_CONTROL_DEPLOYMENT_IDENTITY_INVALID')

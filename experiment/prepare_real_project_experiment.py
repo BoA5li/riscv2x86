@@ -119,6 +119,8 @@ def main(argv=None):
     download=sub.add_parser('download'); download.add_argument('--lock',required=True)
     download.add_argument('--directory',required=True); download.add_argument('--project',action='append',default=[])
     download.add_argument('--attempts',type=int,default=2)
+    recipe=sub.add_parser('make-contract'); recipe.add_argument('--context-file',required=True)
+    recipe.add_argument('--context-identity'); recipe.add_argument('--profile',required=True); recipe.add_argument('--output',required=True)
     log=sub.add_parser('import-log'); log.add_argument('--log',required=True)
     log.add_argument('--working-directory',required=True); log.add_argument('--output',required=True)
     db=sub.add_parser('import-database'); db.add_argument('--database',required=True); db.add_argument('--output',required=True)
@@ -130,6 +132,21 @@ def main(argv=None):
     audit=sub.add_parser('replay'); audit.add_argument('--report',required=True)
     args=p.parse_args(argv)
     try:
+        if args.operation=='make-contract':
+            from riscv2x86_py.project_build_contract import make
+            value=json.loads(Path(args.context_file).read_text())
+            contexts=([r['context'] for r in value['records']] if value.get('schemaVersion')=='riscv2x86.real-project-context-preflight.v1' else [value])
+            selected=[c for c in contexts if args.context_identity is None or c['contextIdentity']==args.context_identity]
+            if len(selected)!=1:raise ValueError('PROJECT_UNIQUE_CONTEXT_IDENTITY_REQUIRED')
+            profile=json.loads(Path(args.profile).read_text())
+            fields={'clang','targetCompiler','targetArguments','targetDirectory','sourceDriverArguments','targetDriverArguments'}
+            if set(profile)!=fields:raise ValueError('PROJECT_EXPLICIT_BUILD_PROFILE_FIELDS_INVALID')
+            result=make(selected[0],clang=profile['clang'],target_compiler=profile['targetCompiler'],
+                target_arguments=profile['targetArguments'],target_directory=profile['targetDirectory'],
+                source_driver_arguments=profile['sourceDriverArguments'],target_driver_arguments=profile['targetDriverArguments'])
+            with Path(args.output).open('x') as stream:json.dump(result,stream,ensure_ascii=False,indent=2)
+            print(json.dumps({'contractIdentity':result['contractIdentity'],'semanticApproval':False,'productionAcceptanceComplete':False}))
+            return 0
         if args.operation=='download':
             from riscv2x86_py.project_archive_acquisition import fetch
             lock=json.loads(Path(args.lock).read_text()); failures=[]; found=set()

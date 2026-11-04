@@ -1034,6 +1034,24 @@ def _result(request: EvaluationRequest, work: Path, commands: Sequence[CommandRe
         "environmentProvenance": _environment_provenance(request, commands, environment),
         "translationEvaluationLink": linkage,
     }
+    if '--project-build-contract' in request.translation_command:
+        try:
+            from .project_build_contract import load as load_project
+            command=list(request.translation_command)
+            if command.count('--project-build-contract')!=1:raise ValueError('PROJECT_CONTRACT_ARGUMENT_AMBIGUOUS')
+            contract_path=command[command.index('--project-build-contract')+1]
+            contract=load_project(contract_path)
+            binding={'schemaVersion':'riscv2x86.project-evaluation-binding.v1',
+                'contractPath':str(Path(contract_path).resolve()),'contractIdentity':contract['contractIdentity'],
+                'translatedReportPath':str(_path(request.translated_report,work)),
+                'sourceProgramArtifact':payload['sourceProgramArtifact'],
+                'targetProgramArtifact':payload['targetProgramArtifact']}
+            binding['bindingIdentity']=_digest_bytes(_canonical(binding))
+            payload['projectBuildBinding']=binding
+        except (OSError,ValueError,KeyError,IndexError) as exc:
+            payload['projectBuildBindingFailure']=str(exc)
+            payload['status']=ValidationStatus.INCONCLUSIVE.value
+            payload['reasonCodes']=sorted(set(payload['reasonCodes'])|{'evaluation.project-build-binding-invalid'})
     if requirement_failure is not None:
         payload["requirementStagingFailure"] = dict(requirement_failure)
     identity_payload = dict(payload); identity_payload.pop("replayArtifact")

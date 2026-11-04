@@ -1,4 +1,5 @@
 """Validate compiler closure against the canonical operands actually emitted."""
+from pathlib import Path
 from .compiler_fragment_closure import validate_closed_compiler_fragment_candidate
 from .l2_evidence_reader import _identity
 from .compiler_operand_type import compiler_operand_type_from_dict
@@ -129,11 +130,38 @@ def bind_compiler_provenance(fragment, sidecar):
 
 def validate_compiler_snapshot(snapshot):
     expected = {'schemaVersion', 'sourceDigest', 'frontendReportIdentity', 'functions', 'manifestIdentity'}
-    if (set(snapshot) != expected or snapshot['schemaVersion'] != 'riscv2x86.compiler-candidates.v1'
+    project=snapshot.get('schemaVersion')=='riscv2x86.compiler-candidates.v2'
+    if project:expected|={'projectBuildContract','dependencyManifest','functionTypeInventory','projectCompilerCompatibility'}
+    if (set(snapshot) != expected or snapshot['schemaVersion'] not in {'riscv2x86.compiler-candidates.v1','riscv2x86.compiler-candidates.v2'}
             or snapshot['manifestIdentity'] != _identity({k:v for k,v in snapshot.items() if k != 'manifestIdentity'})):
         raise ValueError('COMPILER_SNAPSHOT_IDENTITY_INVALID')
+    if project:
+        from .project_build_contract import validate as validate_project
+        from .compiler_call_dependencies import validate as validate_dependencies
+        contract=validate_project(snapshot['projectBuildContract'])
+        context=contract['sourceContext'];manifest=snapshot['dependencyManifest']
+        expected_command=[contract['inspectionCompiler'],'--target=riscv64-linux-gnu','-std=gnu11',
+            *context['inspectionArguments'],'-fsyntax-only','-Xclang','-ast-dump=json',context['sourcePath']]
+        if (manifest.get('compilerCommand')!=expected_command
+                or manifest.get('workingDirectory')!=context['workingDirectory']
+                or manifest.get('compilerDigest')!=contract['inspectionCompilerDigest']):
+            raise ValueError('COMPILER_SNAPSHOT_PROJECT_ACQUISITION_MISMATCH')
+        dependencies=validate_dependencies(manifest)
+        from .project_compiler_compatibility import require
+        require(contract,snapshot['projectCompilerCompatibility'])
+        if (contract['sourceContext']['sourceDigest']!=snapshot['sourceDigest']
+                or snapshot['functionTypeInventory']['dependencyIdentity']!=dependencies['dependencyIdentity']):
+            raise ValueError('COMPILER_SNAPSHOT_PROJECT_BINDING_INVALID')
+    if project:
+        from .automatic_batch_cli import inspect_entry_points
+        from .l3_trace_support import require_json_match
+        _,fresh=inspect_entry_points(Path(context['sourcePath']),project_contract=contract)
+        require_json_match(list(fresh),snapshot['functions'],'COMPILER_SNAPSHOT_PROJECT_AST_FACTS_CHANGED')
     candidates = {}
     for function in snapshot['functions']:
+        if project and (function.get('projectBuildContractIdentity')!=contract['contractIdentity']
+                or function.get('compilerDependencyIdentity')!=dependencies['dependencyIdentity']):
+            raise ValueError('COMPILER_SNAPSHOT_PROJECT_FUNCTION_MISMATCH')
         if function['sourceDigest'] != snapshot['sourceDigest']:
             raise ValueError('COMPILER_SNAPSHOT_SOURCE_MISMATCH')
         for candidate in function.get('l2OperandBoundary', {}).get('fragmentCandidates', []):

@@ -854,8 +854,14 @@ def build_auto_l2_effect_validator(config: Mapping[str, object]):
             harness = work / "effect-harness.c"; harness.write_text(wrapper, encoding="utf-8")
             dependencies = resolve_runtime_contracts((getattr(artifact, "runtime_contract_id"),))
             source_exe, target_exe = work / "source.rv64", work / "target.x86_64"
-            left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(source),"-o",str(source_exe)),work,timeout)
-            right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
+            from .project_validation_operation import active
+            if active() is not None:
+                from .project_artifact_build import build_driver
+                left_build=build_driver(active(),'source',[harness,source],source_exe,timeout=timeout)
+                right_build=build_driver(active(),'target',[harness,target],target_exe,libraries=dependencies.library_paths,include_directories=dependencies.include_directories,timeout=timeout)
+            else:
+                left_build = _run(("riscv64-linux-gnu-gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror","-march=rv64gc","-mabi=lp64d","-static",str(harness),str(source),"-o",str(source_exe)),work,timeout)
+                right_build = _run(("gcc","-std=gnu11","-O2","-Wall","-Wextra","-Werror",*("-I"+item for item in dependencies.include_directories),str(harness),str(target),*dependencies.library_paths,"-o",str(target_exe)),work,timeout)
             if left_build.returncode or right_build.returncode:
                 detail = _build_failure_detail(left_build, right_build)
                 detail["executionDisposition"] = \

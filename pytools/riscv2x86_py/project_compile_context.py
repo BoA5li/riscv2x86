@@ -16,7 +16,7 @@ from .project_build_records import identity, classify
 
 SCHEMA = 'riscv2x86.project-compile-context.v1'
 PAIRS = {'-I', '-isystem', '-iquote', '-include', '-imacros', '-D', '-U', '-isysroot'}
-EXACT = {'-nostdinc', '-ffreestanding', '-frounding-math', '-fno-strict-aliasing',
+EXACT = {'-static', '-no-pie', '-nostdinc', '-ffreestanding', '-frounding-math', '-fno-strict-aliasing',
          '-fno-builtin', '-fsigned-char', '-funsigned-char', '-fshort-enums',
          '-fshort-wchar', '-fwrapv', '-fno-wrapv', '-fno-strict-overflow',
          '-fPIC', '-fpic', '-fPIE', '-fpie', '-pthread', '-mno-relax', '-mrelax',

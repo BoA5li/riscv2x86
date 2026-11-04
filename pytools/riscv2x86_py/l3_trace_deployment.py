@@ -5,6 +5,8 @@ Both object and final executable function bytes must equal the actual approved
 code artifact. Any compiler/linker change rejects this route rather than being
 normalized away. Existing native L0-L2 executions remain separately identified.
 """
+from .project_validation_operation import report_operation, flags as operation_flags
+
 import json
 from pathlib import Path
 import re
@@ -31,6 +33,7 @@ def label_assembly(text):
     return ''.join(lines[:starts[0]+1])+begin+''.join(lines[starts[0]+1:ends[0]])+end+''.join(lines[ends[0]:])
 
 
+@report_operation
 def function_scope(source, report, finding, *, legacy_scalar=False):
     from .mechanism_route_checks import compiler_bound_finding
     fid=finding['fragment']['id']; bound,snapshot=compiler_bound_finding(source,report,fid)
@@ -141,6 +144,7 @@ int main(int argc,char **argv){
 ''' % (scope['returnType'],scope['name'],scope['parameterType'],(spec['size']+7)//8,samples,scope['name'],scope['parameterType'])
 
 
+@report_operation
 def prepare(source, target, report, finding, backend, source_artifact, target_artifact, directory, samples):
     from .l3_memory_backend import validate_backend
     backend=validate_backend(backend)
@@ -166,12 +170,16 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
             ('source',source,source_artifact,243),('target',target,target_artifact,62)):
         work=directory/side; work.mkdir()
         compiler=backend[side+'Compiler']
+        from .project_validation_operation import require_compiler
+        require_compiler(side,compiler)
         original_elf=Elf(original.artifact_path)
         if original_elf.machine!=expected_machine or digest(original.artifact_path)!=original.artifact_digest:
             raise ValueError('L3_TRACE_SEMANTIC_ARTIFACT_INVALID:'+side)
         flags=['-O0','-std=gnu11','-fno-lto']
         if side=='source': flags+=['-march=rv64gc','-mabi=lp64d']
         else: flags+=['-fPIC']
+        from .project_validation_operation import flags as selected
+        flags=selected(side,flags)
         assembly=work/'compiler.s'
         run([compiler,*flags,'-S',path,'-o',assembly],work,'compiler-assembly')
         marked=work/'region.s'; marked.write_text(label_assembly(assembly.read_text()))
@@ -182,7 +190,7 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
         wrapper=work/'harness.c'; wrapper.write_text(harness(scope,spec,samples))
         executable=work/'program'
         linker_flags=['-Wl,--build-id=none']+(['-Wl,--no-relax'] if side=='source' else [])
-        run([compiler,*flags,'-no-pie',wrapper,obj,*linker_flags,'-o',executable],work,'link-harness')
+        run([compiler,*operation_flags(side,flags,driver=True),'-no-pie',wrapper,obj,*linker_flags,'-o',executable],work,'link-harness')
         final=Elf(executable)
         if final.type!=2 or final.machine!=expected_machine or final.code(scope['name'])!=original_elf.code(scope['name']):
             raise ValueError('L3_TRACE_LINKED_FUNCTION_BYTES_CHANGED:'+side)
@@ -208,6 +216,7 @@ def prepare(source, target, report, finding, backend, source_artifact, target_ar
     return value
 
 
+@report_operation
 def validate(value, backend, source_artifact, target_artifact):
     require_json_document(value,'L3_TRACE_DEPLOYMENT_JSON_INVALID')
     from .l3_memory_backend import require_access
@@ -237,6 +246,8 @@ def validate(value, backend, source_artifact, target_artifact):
     if original[:begin]+approved_replacement(finding).encode()+original[end:]!=Path(inputs['target']).read_bytes():
         raise ValueError('L3_TRACE_DEPLOYMENT_TARGET_REPLAY_MISMATCH')
     for side,artifact in (('source',source_artifact),('target',target_artifact)):
+        from .project_validation_operation import require_compiler
+        require_compiler(side,backend[side+'Compiler'])
         item=value['sides'][side]; semantic=item['semanticArtifact']
         if semantic!={'artifactId':artifact.artifact_id,'artifactPath':str(Path(artifact.artifact_path).resolve()),
                       'artifactDigest':artifact.artifact_digest,'buildIdentity':artifact.build_identity}:
@@ -252,7 +263,8 @@ def validate(value, backend, source_artifact, target_artifact):
                 item['runnerArguments']!=backend[side+'RunnerArguments']):
             raise ValueError('L3_TRACE_DEPLOYMENT_REGION_OR_EXECUTION_MISMATCH')
         work=Path(item['executionArtifact']['artifactPath']).parent
-        flags=['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC'])
+        from .project_validation_operation import flags as selected
+        flags=selected(side,['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC']))
         assembly=work/'compiler.s'; marked=work/'region.s'
         if (work/'harness.c').read_text()!=harness(value['functionScope'],value['spec'],value['sampleCount']):
             raise ValueError('L3_TRACE_REGISTERED_HARNESS_CHANGED')
@@ -276,7 +288,7 @@ def validate(value, backend, source_artifact, target_artifact):
             fresh_wrapper=Path(tmp)/'harness.c'; fresh_binary=Path(tmp)/'program'
             fresh_wrapper.write_text(harness(value['functionScope'],value['spec'],value['sampleCount']))
             linker_flags=['-Wl,--build-id=none']+(['-Wl,--no-relax'] if side=='source' else [])
-            result=subprocess.run([backend[side+'Compiler'],*flags,'-no-pie',str(fresh_wrapper),str(fresh_obj),
+            result=subprocess.run([backend[side+'Compiler'],*operation_flags(side,flags,driver=True),'-no-pie',str(fresh_wrapper),str(fresh_obj),
                 *linker_flags,'-o',str(fresh_binary)],capture_output=True,text=True,timeout=120,check=False)
             if result.returncode or Elf(fresh_binary).execution_image()!=binary.execution_image():
                 raise ValueError('L3_TRACE_EXECUTION_IMAGE_REBUILD_MISMATCH')

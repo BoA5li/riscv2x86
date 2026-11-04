@@ -160,3 +160,19 @@ def test_published_partition_is_exhaustive_and_replayable():
     for project in manifest['projects']:
         candidates=M['read_rows'](M['DEFAULT']/project['id'],project['artifacts'],'candidate-sites.jsonl.gz')
         assert all(r['architectureHint']!='other-architecture-path-retained' for r in candidates)
+
+
+def test_frozen_phase146_view_is_verified_as_archived_not_current():
+    old=Path(__file__).resolve().parents[2]/'experiment/corpora/real-projects-rv64-c-v1'
+    result=M['verify'](W['DEFAULT'],old)
+    assert result['implementationProvenance']=='archived-exact-phase146-pins'
+    assert result['viewIdentity']=='sha256:04b64f5a8e4f62216613bd1b7c05652fff0f66dd94b22b540633d27d0a79d181'
+
+
+def test_phase148_view_does_not_change_source_or_selection_data():
+    old=Path(__file__).resolve().parents[2]/'experiment/corpora/real-projects-rv64-c-v1'
+    before=json.loads((old/'manifest.json').read_text())
+    after=json.loads((M['DEFAULT']/'manifest.json').read_text())
+    assert before['projects']==after['projects']
+    assert before['sourceCatalogIdentity']==after['sourceCatalogIdentity']
+    assert before['policyIdentity']!=after['policyIdentity']

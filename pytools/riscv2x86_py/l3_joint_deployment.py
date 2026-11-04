@@ -1,4 +1,6 @@
 """All region labels are zero-byte compiler metadata; C dataflow is unchanged."""
+from .project_validation_operation import report_operation, flags as operation_flags
+
 import json
 from pathlib import Path
 import tempfile
@@ -62,6 +64,7 @@ def label_assembly(text,count):
 
 
 @timed('joint.compiler-and-proof-binding')
+@report_operation
 def bound(source,target,report,clang):
     from .mechanism_route_checks import compiler_bound_findings
     from .approved_replacement import approved_replacement
@@ -82,7 +85,9 @@ def bound(source,target,report,clang):
     return program,entry(functions,program['functionIdentity'])
 
 
-def flags(side):return ['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC'])
+def flags(side):
+    from .project_validation_operation import flags as selected
+    return selected(side,['-O0','-std=gnu11','-fno-lto']+(['-march=rv64gc','-mabi=lp64d'] if side=='source' else ['-fPIC']))
 
 
 @timed('joint.build-side')
@@ -97,12 +102,14 @@ def build_side(path,side,program,function,backend,artifact,work,clang,count,gene
         scope=matches[0].get('compilerJointScope')
     if not scope or len(scope['sites'])!=len(program['members']) or scope['sourceDigest']!=digest(path):raise ValueError('L3_JOINT_TARGET_REGIONS_MISSING')
     c=work/'input.c';c.write_bytes(instrument(data,scope['sites']));asm=work/'compiler.s';marked=work/'regions.s';obj=work/'regions.o';h=work/'harness.c';binary=work/'program';cc=backend[side+'Compiler']
+    from .project_validation_operation import require_compiler
+    require_compiler(side,cc)
     run([cc,*flags(side),'-S',c,'-o',asm],work,'compile');marked.write_text(label_assembly(asm.read_text(),len(program['members'])))
     run([cc,*flags(side),'-c',marked,'-o',obj],work,'assemble')
     original=Elf(artifact.artifact_path);name=function['name']
     if digest(artifact.artifact_path)!=artifact.artifact_digest or original.machine!=(243 if side=='source' else 62) or Elf(obj).code(name)!=original.code(name):raise ValueError('L3_JOINT_INSTRUMENTATION_CHANGED_FUNCTION:'+side)
     h.write_text(harness(program,sample_plan(program,count),generator=generator))
-    run([cc,*flags(side),'-no-pie',h,obj,'-Wl,--build-id=none',*(['-Wl,--no-relax'] if side=='source' else []),'-o',binary],work,'link')
+    run([cc,*operation_flags(side,flags(side),driver=True),'-no-pie',h,obj,'-Wl,--build-id=none',*(['-Wl,--no-relax'] if side=='source' else []),'-o',binary],work,'link')
     elf=Elf(binary);start,size,section,_=elf.symbol(name);regions=[]
     if elf.type!=2 or elf.machine!=original.machine or elf.code(name)!=original.code(name):raise ValueError('L3_JOINT_LINK_CHANGED_FUNCTION:'+side)
     for i in range(len(program['members'])):
@@ -117,6 +124,7 @@ def build_side(path,side,program,function,backend,artifact,work,clang,count,gene
         'files':{str(p):digest(p) for p in (c,asm,marked,obj,h,binary,Path(artifact.artifact_path),*work.glob('*.command.json'))}}
 
 
+@report_operation
 def prepare(source,target,report,backend,source_artifact,target_artifact,work,clang,count,*,_harness_generator=None):
     source,target,report=map(lambda p:Path(p).resolve(),(source,target,report));program,function=bound(source,target,report,clang);work=Path(work).resolve();work.mkdir(parents=True,exist_ok=False)
     from .l3_joint_harness_contract import selected,require
@@ -131,6 +139,7 @@ def prepare(source,target,report,backend,source_artifact,target_artifact,work,cl
 
 
 @timed('joint.deployment-independent-rebuild')
+@report_operation
 def validate(value,backend,source,target):
     require_json_document(value,'L3_JOINT_DEPLOYMENT_JSON_INVALID')
     if value.get('schemaVersion') not in {SCHEMA,LEGACY_SCHEMA} or value['deploymentIdentity']!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'}) or value['backendIdentity']!=backend['backendIdentity'] or value['physicalMicroarchitectureClaimed'] is not False or value['executionUnit']!='whole-function-all-ordered-regions':raise ValueError('L3_JOINT_DEPLOYMENT_INVALID')

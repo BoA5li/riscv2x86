@@ -1,4 +1,6 @@
 """Deploy the real approved fence translation with byte-identical region labels."""
+from .project_validation_operation import report_operation, flags as operation_flags
+
 import json
 from pathlib import Path
 import tempfile
@@ -12,6 +14,7 @@ SCHEMA='riscv2x86.fence-execution-deployment.v1'
 
 from .l3_trace_support import require_json_document,require_json_match
 
+@report_operation
 def bound_inputs(source,target,report,finding,clang):
     from .mechanism_route_checks import compiler_bound_finding
     from .approved_replacement import approved_replacement
@@ -31,6 +34,8 @@ def bound_inputs(source,target,report,finding,clang):
 def build_side(path,side,plan,function,backend,artifact,work):
     work.mkdir(parents=True);c=work/'input.c';c.write_bytes(Path(path).read_bytes())
     asm=work/'compiler.s';marked=work/'region.s';obj=work/'region.o';wrapper=work/'harness.c';binary=work/'program';cc=backend[side+'Compiler']
+    from .project_validation_operation import require_compiler
+    require_compiler(side,cc)
     run([cc,*flags(side),'-S',c,'-o',asm],work,'compile')
     # These metadata labels add no instructions; original APP bytes alone are observed.
     marked.write_text(label_assembly(asm.read_text(),False))
@@ -40,7 +45,7 @@ def build_side(path,side,plan,function,backend,artifact,work):
         raise ValueError('L3_FENCE_SEMANTIC_FUNCTION_BYTES_CHANGED:'+side)
     wrapper.write_text(harness(function['name'],None,plan))
     linker=['-Wl,--build-id=none']+(['-Wl,--no-relax'] if side=='source' else [])
-    run([cc,*flags(side),'-no-pie',wrapper,obj,*linker,'-o',binary],work,'link')
+    run([cc,*operation_flags(side,flags(side),driver=True),'-no-pie',wrapper,obj,*linker,'-o',binary],work,'link')
     final=Elf(binary)
     if final.type!=2 or final.machine!=original.machine or final.code(function['name'])!=original.code(function['name']):
         raise ValueError('L3_FENCE_LINKED_FUNCTION_BYTES_CHANGED:'+side)
@@ -51,6 +56,7 @@ def build_side(path,side,plan,function,backend,artifact,work):
             'files':{str(p):digest(p) for p in (c,asm,marked,obj,wrapper,binary,Path(artifact.artifact_path),*work.glob('*.command.json'))}}
 
 
+@report_operation
 def prepare(source,target,report,finding,backend,source_artifact,target_artifact,directory,clang):
     source,target,report=map(lambda p:Path(p).resolve(),(source,target,report));work=Path(directory).resolve();work.mkdir(parents=True,exist_ok=False)
     fence,plan,function=bound_inputs(source,target,report,finding,clang)
@@ -64,6 +70,7 @@ def prepare(source,target,report,finding,backend,source_artifact,target_artifact
     value=dict(body,deploymentIdentity=identity(body));save(work/'deployment.json',value);return value
 
 
+@report_operation
 def validate(value,backend,source_artifact,target_artifact):
     require_json_document(value,'L3_FENCE_DEPLOYMENT_JSON_INVALID')
     if (value.get('schemaVersion')!=SCHEMA or value.get('deploymentIdentity')!=identity({k:v for k,v in value.items() if k!='deploymentIdentity'})
