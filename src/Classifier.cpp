@@ -1,5 +1,6 @@
 #include "riscv2x86/Classifier.h"
 #include <clang/AST/ASTContext.h>
+#include <llvm/ADT/APFloat.h>
 #include <clang/AST/Stmt.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/Expr.h>
@@ -22,7 +23,7 @@ namespace {
 AsmOperand::CompilerType operandCompilerType(const Expr *expr, ASTContext &ctx) {
     AsmOperand::CompilerType out;
     const auto type = expr->getType().getCanonicalType();
-    if (type->isIncompleteType() || (!type->isIntegerType() && !type->isPointerType()))
+    if (type->isIncompleteType() || (!type->isIntegerType() && !type->isPointerType() && !type->isRealFloatingType()))
         return out;
     out.canonicalType = type.getUnqualifiedType().getAsString();
     out.qualifiers = type.getQualifiers().getAsString();
@@ -31,6 +32,16 @@ AsmOperand::CompilerType operandCompilerType(const Expr *expr, ASTContext &ctx) 
     out.isInteger = type->isIntegerType();
     out.isPointer = type->isPointerType();
     out.isSigned = type->isSignedIntegerType();
+    out.isFloating = type->isRealFloatingType();
+    if (out.isFloating) {
+        const auto &semantics = ctx.getFloatTypeSemantics(type);
+        if (&semantics == &llvm::APFloat::IEEEsingle())
+            out.floatingFormat = "ieee754-binary32";
+        else if (&semantics == &llvm::APFloat::IEEEdouble())
+            out.floatingFormat = "ieee754-binary64";
+        else
+            out.floatingFormat = "unmodelled";
+    }
     out.sideEffectFree = !expr->HasSideEffects(ctx);
     out.expressionRepeatable = out.sideEffectFree && isa<DeclRefExpr>(expr->IgnoreParenImpCasts());
     out.modifiableLvalue = expr->isModifiableLvalue(ctx) == Expr::MLV_Valid;

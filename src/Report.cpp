@@ -230,7 +230,9 @@ void ClassificationReport::dumpJSON(const std::string &path) const {
                        << "\",\"isOutput\":" << (o.isOutput ? "true" : "false")
                        << ",\"isTied\":" << (o.isTied ? "true" : "false")
                        << ",\"isEarlyClobber\":" << (o.isEarlyClobber ? "true" : "false")
-                       << ",\"compilerType\":{\"schemaVersion\":\"riscv2x86.clang-operand-type.v1\""
+                       << ",\"compilerType\":{\"schemaVersion\":\""
+                       << (o.compilerType.isFloating ? "riscv2x86.clang-operand-type.v2" : "riscv2x86.clang-operand-type.v1") << "\""
+                       << (o.compilerType.isFloating ? ",\"isFloating\":true,\"floatingFormat\":\"" + escape(o.compilerType.floatingFormat) + "\"" : "")
                        << ",\"canonicalType\":\"" << escape(o.compilerType.canonicalType) << "\""
                        << ",\"qualifiers\":\"" << escape(o.compilerType.qualifiers) << "\""
                        << ",\"pointeeQualifiers\":\"" << escape(o.compilerType.pointeeQualifiers) << "\""

@@ -248,3 +248,31 @@ def test_program_semantic_options_cannot_silently_change_on_migration(tmp_path):
         make(c['sourceContext'],clang=c['inspectionCompiler'],target_compiler=c['targetProfile']['compiler'],
             target_arguments=[*c['targetProfile']['arguments'],'-fwrapv'],target_directory=tmp_path,
             source_driver_arguments=c['sourceDriverProfile']['arguments'],target_driver_arguments=c['targetDriverProfile']['arguments'])
+
+
+@pytest.mark.parametrize('native,inspection', [
+    ('int x = a++ + b;','int x = a + + +b;'),
+    ('#pragma pack(1)\nstruct S {int x;};','#pragma pack(1) struct S {int x;};'),
+])
+def test_cpp_compatibility_cannot_merge_operators_or_pragma_lines(tmp_path,monkeypatch,native,inspection):
+    from types import SimpleNamespace
+    from riscv2x86_py.project_compiler_compatibility import acquire,require
+    c=contract(tmp_path);source=c['sourceContext']['sourcePath']
+    def run(command,**kwargs):
+        if '-dM' in command:
+            facts={'__CHAR_BIT__':'8','__SIZEOF_SHORT__':'2','__SIZEOF_INT__':'4','__SIZEOF_LONG__':'8',
+                '__SIZEOF_LONG_LONG__':'8','__SIZEOF_POINTER__':'8','__BYTE_ORDER__':'1234',
+                '__WCHAR_TYPE__':'int','__SIZEOF_WCHAR_T__':'4','__STDC_VERSION__':'199901L'}
+            text='\n'.join('#define '+k+' '+v for k,v in facts.items())
+        elif '-M' in command:text='rv2x86_call_inventory: '+source+'\n'
+        else:text=native if command[0]==c['sourceContext']['nativeCompiler'] else inspection
+        return SimpleNamespace(returncode=0,stderr='',stdout=text)
+    monkeypatch.setattr('riscv2x86_py.project_compiler_compatibility.subprocess.run',run)
+    receipt=acquire(c)
+    assert receipt['schemaVersion']=='riscv2x86.project-preprocessing-compatibility.v2'
+    assert receipt['tokenizationVersion']=='riscv2x86.c11-gnu-pp-token-spellings.v1'
+    assert not receipt['sourcePreprocessingMatched']
+    with pytest.raises(ValueError,match='PREPROCESSING_MISMATCH'):require(c,receipt)
+    old=deepcopy(receipt);old['schemaVersion']='riscv2x86.project-preprocessing-compatibility.v1'
+    old['compatibilityIdentity']=identity({k:v for k,v in old.items() if k!='compatibilityIdentity'})
+    with pytest.raises(ValueError,match='REPLAY_MISMATCH'):require(c,old)

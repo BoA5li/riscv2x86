@@ -2,6 +2,7 @@
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <string>
+#include <limits>
 
 namespace riscv2x86 {
 
@@ -19,6 +20,36 @@ static Category catFromStr(llvm::StringRef s) {
     if (s == "NeedsRoute")        return Category::NeedsRoute;
     if (s == "Unsupported")       return Category::Unsupported;
     return Category::NeedsAsmTranslation;
+}
+
+// V2 is deliberately floating-only. Do not coerce malformed type facts into
+// a default integer contract when reloading a persisted report.
+static bool validFloatingType(const llvm::json::Object &t) {
+    if (t.size() != 18) return false;
+    for (const char *key : {"isInteger", "isPointer", "isSigned", "pointeeIsInteger"}) {
+        auto b = t.getBoolean(key);
+        if (!b || *b) return false;
+    }
+    for (const char *key : {"sideEffectFree", "expressionRepeatable", "modifiableLvalue"})
+        if (!t.getBoolean(key)) return false;
+    auto f = t.getBoolean("isFloating");
+    if (!f || !*f) return false;
+    for (const char *key : {"canonicalType", "qualifiers", "pointeeType", "pointeeQualifiers", "floatingFormat"})
+        if (!t.getString(key)) return false;
+    if (t.getString("canonicalType")->empty() ||
+        !t.getString("pointeeType")->empty() || !t.getString("pointeeQualifiers")->empty()) return false;
+    for (const char *key : {"widthBits", "alignmentBytes"}) {
+        auto n = t.getInteger(key);
+        if (!n || *n <= 0 || static_cast<uint64_t>(*n) > std::numeric_limits<unsigned>::max()) return false;
+    }
+    for (const char *key : {"pointeeWidthBits", "pointeeAlignmentBytes"}) {
+        auto n = t.getInteger(key);
+        if (!n || *n != 0) return false;
+    }
+    auto format = *t.getString("floatingFormat");
+    return format == "unmodelled" ||
+        (format == "ieee754-binary32" && *t.getInteger("widthBits") == 32) ||
+        (format == "ieee754-binary64" && *t.getInteger("widthBits") == 64);
 }
 
 static void loadOperands(const llvm::json::Object *obj,
@@ -40,7 +71,9 @@ static void loadOperands(const llvm::json::Object *obj,
         if (auto b = o->getBoolean("isEarlyClobber")) op.isEarlyClobber = *b;
         if (auto *t = o->getObject("compilerType")) {
             auto schema = t->getString("schemaVersion");
-            if (!schema || *schema != "riscv2x86.clang-operand-type.v1") {
+            const bool floating = schema && *schema == "riscv2x86.clang-operand-type.v2";
+            if (!schema || (*schema != "riscv2x86.clang-operand-type.v1" && !floating) ||
+                    (floating && !validFloatingType(*t))) {
                 out.push_back(std::move(op));
                 continue;
             }
@@ -59,6 +92,10 @@ static void loadOperands(const llvm::json::Object *obj,
             if (auto b = t->getBoolean("sideEffectFree")) op.compilerType.sideEffectFree = *b;
             if (auto b = t->getBoolean("expressionRepeatable")) op.compilerType.expressionRepeatable = *b;
             if (auto b = t->getBoolean("modifiableLvalue")) op.compilerType.modifiableLvalue = *b;
+            if (floating) {
+                op.compilerType.isFloating = true;
+                op.compilerType.floatingFormat = t->getString("floatingFormat")->str();
+            }
         }
         if (auto *t = o->getObject("compilerAddressType")) {
             auto schema = t->getString("schemaVersion");

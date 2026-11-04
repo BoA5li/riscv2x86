@@ -11,19 +11,7 @@ from .project_build_contract import validate, source_arguments, digest
 from .project_build_records import identity
 from .compiler_call_dependencies import parse_dependencies, _snapshot
 
-# String/character tokens stay indivisible. Keep whitespace so token adjacency
-# ('a b' versus 'ab') cannot be changed by deleting whitespace wholesale.
-TOKEN=re.compile(r"""(?:u8|u|U|L)?"(?:\\.|[^"\\])*"|(?:u|U|L)?'(?:\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9]*|(?:[0-9]|\.[0-9])(?:[eEpP][+-]|[A-Za-z_0-9.])*|%:%:|>>=|<<=|\.\.\.|->|\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||\*=|/=|%=|\+=|-=|&=|\^=|\|=|\#\#|<:|:>|<%|%>|%:|[{}\[\]().&*+~!/%<>^|?:;=,\#-]""",re.S)
-
-
-def tokens(text):
-    result=[];position=0
-    while position<len(text):
-        if text[position].isspace():position+=1;continue
-        match=TOKEN.match(text,position)
-        if match is None:raise ValueError('PROJECT_PREPROCESSING_TOKEN_UNSUPPORTED:'+repr(text[position:position+16]))
-        result.append(match[0]);position=match.end()
-    return result
+from .c_preprocessing_tokens import tokens, VERSION as LEXER_VERSION
 
 
 def acquire(contract,*,timeout=120):
@@ -84,7 +72,7 @@ def acquire(contract,*,timeout=120):
     model_equal=model_equal and len(set(enum_flags))==1
     a,b=streams['native'],streams['inspection'];count=min(len(a),len(b));first=next((i for i in range(count) if a[i]!=b[i]),count)
     equal=a==b
-    body={'schemaVersion':'riscv2x86.project-preprocessing-compatibility.v1','contractIdentity':contract['contractIdentity'],
+    body={'schemaVersion':'riscv2x86.project-preprocessing-compatibility.v2','contractIdentity':contract['contractIdentity'],'tokenizationVersion':LEXER_VERSION,
           'commands':commands,'dependencies':all_rows,'tokenDigests':{k:identity(v) for k,v in streams.items()},
           'tokenCounts':{k:len(v) for k,v in streams.items()},'sourcePreprocessingMatched':equal,
           'integerDataModels':models,'integerDataModelMatched':model_equal,
@@ -128,7 +116,7 @@ def target_acquire(contract,target,*,timeout=120,include_directories=()):
             raise ValueError('PROJECT_TARGET_CPP_DEPENDENCIES_CHANGED')
         dependencies[side]=before
     a,b=streams['source'],streams['target'];n=min(len(a),len(b));first=next((i for i in range(n) if a[i]!=b[i]),n)
-    body={'schemaVersion':'riscv2x86.project-target-preprocessing.v1','contractIdentity':contract['contractIdentity'],
+    body={'schemaVersion':'riscv2x86.project-target-preprocessing.v2','contractIdentity':contract['contractIdentity'],'tokenizationVersion':LEXER_VERSION,
           'targetPath':target,'targetDigest':digest(target),'commands':commands,'dependencies':dependencies,
           'tokenDigests':{k:identity(v) for k,v in streams.items()},'targetPreprocessingMatched':a==b,
           'firstDifference':None if a==b else {'index':first,'source':a[max(0,first-4):first+5],'target':b[max(0,first-4):first+5]},

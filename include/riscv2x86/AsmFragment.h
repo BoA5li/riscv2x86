@@ -16,6 +16,8 @@ struct AsmOperand {
         bool isInteger = false, isPointer = false, isSigned = false;
         bool pointeeIsInteger = false, sideEffectFree = false, modifiableLvalue = false;
         bool expressionRepeatable = false;
+        bool isFloating = false;
+        std::string floatingFormat;
     };
     std::string constraint;       // 例如 "r", "=r", "+m", "I"
     std::string exprText;         // 对应的 C 表达式原始文本
