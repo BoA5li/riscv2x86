@@ -17,7 +17,10 @@ from .project_instance_eligibility import validate as validate_eligibility
 from .project_acquisition import Runner, StageFailure
 
 
-def acquire(eligibility,context_identity,output,timeout=120):
+def acquire(eligibility,context_identity,output,timeout=120,*,mode='exact'):
+    if mode == 'native-input':
+        return acquire_native_input(eligibility,context_identity,output,timeout)
+    if mode != 'exact':raise ValueError('MACRO_PREFLIGHT_MODE_INVALID')
     if type(timeout) is not int or timeout<1:raise ValueError('MACRO_PREFLIGHT_TIMEOUT_INVALID')
     runner=Runner(output,'native-macro-preflight')
     runner.state.update(nativePreprocessingComplete=False,sourcePreprocessingMatched=False,
@@ -76,6 +79,7 @@ def acquire(eligibility,context_identity,output,timeout=120):
         validate_context(context);validate_dependencies(manifest)
         if digest(report_path)!=report_digest or any(digest(p)!=h for p,h in before_tools.items()):
             raise ValueError('MACRO_PREFLIGHT_INPUT_CHANGED')
+        runner.state['currentStage']='preprocessing-comparison';runner.save()
         a=tokens(native_text);b=tokens(inspection_text)
         count=min(len(a),len(b));first=next((i for i in range(count) if a[i]!=b[i]),count)
         body={'schemaVersion':'riscv2x86.native-macro-preflight.v1',
@@ -112,6 +116,8 @@ def acquire(eligibility,context_identity,output,timeout=120):
 
 
 def replay(value,eligibility,output,timeout=120):
+    if isinstance(value,dict) and value.get('schemaVersion')=='riscv2x86.native-macro-analysis.v1':
+        return replay_native_input(value,eligibility,output,timeout)
     if (not isinstance(value,dict) or value.get('schemaVersion')!='riscv2x86.native-macro-preflight.v1'
             or value.get('preflightIdentity')!=identity({k:v for k,v in value.items() if k!='preflightIdentity'})):
         raise ValueError('MACRO_PREFLIGHT_IDENTITY_INVALID')
@@ -135,3 +141,97 @@ def replay(value,eligibility,output,timeout=120):
         'sourceInstanceBindingComplete':False,'editAuthorizationComplete':False,
         'semanticApproval':False,'productionAcceptanceComplete':False}
     return dict(body,replayIdentity=identity(body))
+
+
+def acquire_native_input(eligibility,context_identity,output,timeout=120):
+    """New input route; discovery locations never become native edit authority."""
+    from .project_native_input import acquire as acquire_input
+    runner=Runner(output,'native-macro-analysis')
+    try:
+        runner.state['currentStage']='eligibility-replay';runner.save()
+        validate_eligibility(eligibility)
+        selected=[r for r in eligibility['records'] if r['contextIdentity']==context_identity]
+        reports={r['inspectionReportPath']:r['inspectionReportDigest'] for r in selected}
+        if not selected or len(reports)!=1:
+            raise ValueError('MACRO_PREFLIGHT_CONTEXT_REPORT_AMBIGUOUS')
+        path,expected=next(iter(reports.items()))
+        if digest(path)!=expected:raise ValueError('MACRO_PREFLIGHT_REPORT_CHANGED')
+        report=json.loads(Path(path).read_text())
+        rows=[r for r in report['records'] if r['context']['contextIdentity']==context_identity]
+        if len(rows)!=1:raise ValueError('MACRO_PREFLIGHT_CONTEXT_AMBIGUOUS')
+        row=rows[0];context=row['context']
+        manifest=row['inspection']['snapshot']['dependencyManifest']
+        validate_context(context);validate_dependencies(manifest)
+        runner.state['currentStage']='native-input-acquisition';runner.save()
+        result=acquire_input(context,manifest['compilerCommand'][0],runner.output/'native-analysis',timeout=timeout)
+        runner.state['currentStage']='discovery-binding';runner.save()
+        if digest(path)!=expected:raise ValueError('MACRO_PREFLIGHT_REPORT_CHANGED')
+        body={'schemaVersion':'riscv2x86.native-macro-analysis.v1',
+            'mode':'native-input','contextIdentity':context_identity,
+            'eligibilityInventoryIdentity':eligibility['eligibilityInventoryIdentity'],
+            'inspectionReportPath':path,'inspectionReportDigest':expected,
+            'nativeInputReceiptPath':str(runner.output/'native-analysis/native-input.json'),
+            'nativeInputReceiptDigest':digest(runner.output/'native-analysis/native-input.json'),
+            'nativeInputIdentity':result['nativeInputIdentity'],
+            'analysisInputIdentity':result['analysisInputIdentity'],
+            'nativeInputConsumed':True,'inspectionParsingComplete':True,
+            'independentNativeInputReplayComplete':False,
+            'originalDiscoveryRebound':False,'sourceInstanceBindingComplete':False,
+            'editAuthorizationComplete':False,'endToEndEligibilityAssessed':False,
+            'compilerEquivalenceVerified':False,'semanticApproval':False,
+            'productionAcceptanceComplete':False}
+        value=dict(body,preflightIdentity=identity(body))
+        receipt=runner.output/'preflight.json';receipt.write_text(json.dumps(value,indent=2))
+        runner.state.update(status='complete',currentStage='complete',acquisitionComplete=True,
+            nativeInputConsumed=True,inspectionParsingComplete=True,
+            preflightPath=str(receipt),preflightDigest=digest(receipt))
+        runner.save();return value
+    except StageFailure as exc:
+        runner.state.update(status='failed',primaryFailure={'stage':exc.stage,'returnCode':exc.code})
+        runner.save();raise
+    except (OSError,ValueError,KeyError,TypeError,UnicodeError,subprocess.SubprocessError) as exc:
+        runner.failure(runner.state['currentStage'],exc);raise
+
+
+def replay_native_input(value,eligibility,output,timeout=120):
+    from .project_native_input import replay as replay_input
+    if value.get('preflightIdentity')!=identity({k:v for k,v in value.items() if k!='preflightIdentity'}):
+        raise ValueError('MACRO_PREFLIGHT_IDENTITY_INVALID')
+    validate_eligibility(eligibility)
+    if eligibility['eligibilityInventoryIdentity']!=value['eligibilityInventoryIdentity']:
+        raise ValueError('MACRO_PREFLIGHT_ELIGIBILITY_CHANGED')
+    matches=[r for r in eligibility['records'] if r['contextIdentity']==value['contextIdentity']]
+    if not matches or any(r['inspectionReportPath']!=value['inspectionReportPath'] or
+            r['inspectionReportDigest']!=value['inspectionReportDigest'] for r in matches):
+        raise ValueError('MACRO_PREFLIGHT_DISCOVERY_BINDING_INVALID')
+    if digest(value['inspectionReportPath'])!=value['inspectionReportDigest']:
+        raise ValueError('MACRO_PREFLIGHT_REPORT_CHANGED')
+    path=value['nativeInputReceiptPath']
+    if digest(path)!=value['nativeInputReceiptDigest']:
+        raise ValueError('MACRO_PREFLIGHT_ARTIFACT_CHANGED')
+    receipt=json.loads(Path(path).read_text())
+    report=json.loads(Path(value['inspectionReportPath']).read_text())
+    rows=[r for r in report['records'] if r['context']['contextIdentity']==value['contextIdentity']]
+    if len(rows)!=1 or identity(receipt['context'])!=identity(rows[0]['context']):
+        raise ValueError('MACRO_PREFLIGHT_NATIVE_CONTEXT_MISMATCH')
+    validate_context(rows[0]['context'])
+    manifest=rows[0]['inspection']['snapshot']['dependencyManifest']
+    validate_dependencies(manifest)
+    from .project_tool_resolution import resolve_executable
+    compiler=str(resolve_executable(manifest['compilerCommand'][0],rows[0]['context']['workingDirectory']))
+    if receipt['inspectionCompiler']!=compiler or receipt['target']!='riscv64':
+        raise ValueError('MACRO_PREFLIGHT_NATIVE_INSPECTOR_MISMATCH')
+    expected={'schemaVersion':'riscv2x86.native-macro-analysis.v1',
+        'mode':'native-input','contextIdentity':receipt['context']['contextIdentity'],
+        'eligibilityInventoryIdentity':eligibility['eligibilityInventoryIdentity'],
+        'inspectionReportPath':value['inspectionReportPath'],'inspectionReportDigest':value['inspectionReportDigest'],
+        'nativeInputReceiptPath':path,'nativeInputReceiptDigest':digest(path),
+        'nativeInputIdentity':receipt['nativeInputIdentity'],'analysisInputIdentity':receipt['analysisInputIdentity'],
+        'nativeInputConsumed':True,'inspectionParsingComplete':True,
+        'independentNativeInputReplayComplete':False,'originalDiscoveryRebound':False,
+        'sourceInstanceBindingComplete':False,'editAuthorizationComplete':False,
+        'endToEndEligibilityAssessed':False,'compilerEquivalenceVerified':False,
+        'semanticApproval':False,'productionAcceptanceComplete':False}
+    if identity(expected)!=identity({k:v for k,v in value.items() if k!='preflightIdentity'}):
+        raise ValueError('MACRO_PREFLIGHT_NATIVE_RECEIPT_MISMATCH')
+    return replay_input(receipt,output,timeout=timeout)

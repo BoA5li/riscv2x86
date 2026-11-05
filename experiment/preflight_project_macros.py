@@ -22,6 +22,7 @@ def main(argv=None):
     capture=sub.add_parser('capture')
     for name in ('eligibility','context-identity','output'):capture.add_argument('--'+name,required=True)
     capture.add_argument('--timeout-seconds',type=int,default=120)
+    capture.add_argument('--mode',choices=('exact','native-input'),default='exact')
     audit=sub.add_parser('replay')
     for name in ('eligibility','receipt','output'):audit.add_argument('--'+name,required=True)
     audit.add_argument('--timeout-seconds',type=int,default=120)
@@ -38,9 +39,11 @@ def main(argv=None):
             value=validate(read(args.input));print(json.dumps({'eligibilityReplayComplete':True,
                 'occurrenceCount':value['occurrenceCount'],'semanticApproval':False,'productionAcceptanceComplete':False}))
         elif args.operation=='capture':
-            result=acquire(read(args.eligibility),args.context_identity,args.output,args.timeout_seconds)
-            print(json.dumps({k:result[k] for k in ('contextIdentity','sourcePreprocessingMatched',
-                'nativePreprocessingComplete','firstDifference','semanticApproval','productionAcceptanceComplete')}))
+            result=acquire(read(args.eligibility),args.context_identity,args.output,args.timeout_seconds,mode=args.mode)
+            keys=('contextIdentity','sourcePreprocessingMatched','nativePreprocessingComplete','firstDifference',
+                'nativeInputConsumed','inspectionParsingComplete','originalDiscoveryRebound',
+                'semanticApproval','productionAcceptanceComplete')
+            print(json.dumps({k:result[k] for k in keys if k in result}))
         elif args.operation=='replay':
             print(json.dumps(replay(read(args.receipt),read(args.eligibility),args.output,args.timeout_seconds)))
         else:
