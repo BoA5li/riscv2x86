@@ -171,13 +171,17 @@ export BUILD_TRIPLE="$("$GMP_SRC/config.guess")"
 
 After successful recorder creation and a nonempty build triple:
 
+GMP 6.3.0 riscv64 uses the default `standard` configure ABI selector; do not
+confuse it with GCC `-mabi=lp64d` or inject `ABI=64`. The command below clears
+an inherited selector. Prefer the Phase152 stage-recorded acquisition driver.
+
 ```bash
 python3 "$TOOLING/experiment/capture_project_build.py" run \
   --capture "$GMP_CAPTURE" --stage configure --cwd "$GMP_BUILD" \
   --source-proof "$BUILD_BASIS/gmp-source.json" -- \
-  /usr/bin/env CC="$GMP_BIN/cc" CC_FOR_BUILD="$GMP_BIN/hostcc" \
+  /usr/bin/env -u ABI CC="$GMP_BIN/cc" CC_FOR_BUILD="$GMP_BIN/hostcc" \
   AR="$GMP_BIN/ar" RANLIB="$GMP_BIN/ranlib" LD="$GMP_BIN/ld" \
-  CFLAGS="-O2 -march=rv64gc -mabi=lp64d" ABI=64 \
+  CFLAGS="-O2 -march=rv64gc -mabi=lp64d" \
   /bin/sh "$GMP_SRC/configure" \
   --build="$BUILD_TRIPLE" --host=riscv64-linux-gnu \
   --enable-assembly --enable-static --enable-shared \
