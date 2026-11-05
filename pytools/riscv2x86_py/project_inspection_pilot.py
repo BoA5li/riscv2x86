@@ -44,15 +44,28 @@ def verify_members(report,plan):
     if any(r['status']!='inspected' or not r.get('inspection')
            or r['inspection'].get('contextAcquisitionConsistent') is not True for r in rows):
         raise ValueError('PROJECT_INSPECTION_PILOT_ACQUISITION_REQUIRED')
-    return {'contextCount':len(rows),'statusCounts':dict(Counter(r['status'] for r in rows)),
+    summary={'contextCount':len(rows),'statusCounts':dict(Counter(r['status'] for r in rows)),
         'primaryFunctionCount':sum(len(r['inspection']['functions']) for r in rows),
         'primaryFunctionsWithAsmSyntax':sum('GCCAsmStmt' in f.get('effectSyntax',[])
             for r in rows for f in r['inspection']['functions']),
         'asmInstanceInventoryComplete':False,'endToEndEligibilityAssessed':False,
         'semanticApproval':False,'productionAcceptanceComplete':False}
+    if report.get('selection',{}).get('asmInventory') is True:
+        from .compiler_asm_activation import validate as validate_asm
+        inventories=[r['inspection']['snapshot']['asmActivationInventory'] for r in rows]
+        for r,v in zip(rows,inventories):
+            snapshot=r['inspection']['snapshot']
+            validate_asm(v,r['context'],snapshot['dependencyManifest']['dependencyIdentity'],
+                         snapshot['compilerDigest'],report['selection']['target'])
+        instances=[i for v in inventories for i in v['instances']]
+        summary.update(inspectionAstTraversalComplete=True,inspectionAstAsmOccurrenceCount=len(instances),
+            contextsWithInspectionAsm=sum(bool(v['instances']) for v in inventories),
+            macroLocatedOccurrenceCount=sum(i['macroLocationPresent'] for i in instances),
+            nativeCompilerActivationConfirmed=False,sourceInstanceBindingComplete=False)
+    return summary
 
 
-def execute(tooling,records,plan,clang,output):
+def execute(tooling,records,plan,clang,output,asm_inventory=False):
     runner=Runner(output,'compiler-inspection-pilot')
     runner.state.update(schemaVersion='riscv2x86.project-inspection-pilot-run.v1',
         compilerInspectionComplete=False,independentContextReplayComplete=False,
@@ -69,11 +82,16 @@ def execute(tooling,records,plan,clang,output):
         program=[sys.executable,str(tooling/'experiment/prepare_real_project_experiment.py')]
         command=[*program,'inspect','--records',str(records),'--clang',clang,'--target','riscv64',
                  '--output',str(runner.output/'contexts.json')]
+        if asm_inventory:command.append('--asm-inventory')
         for source in value['sourcePaths']:command+=['--source',source]
         runner.step('inspect',command)
         runner.state['currentStage']='member-closure';runner.save()
         report_path=runner.output/'contexts.json';report_digest=digest(report_path)
-        summary=verify_members(json.loads(report_path.read_text()),value)
+        report=json.loads(report_path.read_text())
+        if report.get('selection',{}).get('asmInventory',False) is not asm_inventory:
+            raise ValueError('PROJECT_INSPECTION_ASM_MODE_MISMATCH')
+        runner.state['inspectionReportDigest']=report_digest
+        summary=verify_members(report,value)
         runner.state['compilerInspectionComplete']=True;runner.save()
         log=runner.step('replay',[*program,'replay','--report',str(report_path)])
         replay=json.loads(log.read_text())
@@ -84,6 +102,8 @@ def execute(tooling,records,plan,clang,output):
         if any(digest(p)!=h for p,h in inputs.items()) or digest(report_path)!=report_digest:
             raise ValueError('PROJECT_INSPECTION_PILOT_INPUT_CHANGED')
         (runner.output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+        runner.state['inspectionSummaryDigest']=digest(runner.output/'summary.json')
+        runner.state['replayLogDigest']=digest(log)
         runner.state.update(currentStage='complete',status='complete',acquisitionComplete=True,
                             independentContextReplayComplete=True)
         runner.save();print(json.dumps(summary));return 0
@@ -96,6 +116,7 @@ def execute(tooling,records,plan,clang,output):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('tooling','records','plan','clang','output'):parser.add_argument('--'+name,required=True)
+    parser.add_argument('--asm-inventory',action='store_true')
     args=parser.parse_args(argv)
     try:return execute(**vars(args))
     except OSError as exc:

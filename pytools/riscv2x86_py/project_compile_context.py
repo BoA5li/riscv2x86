@@ -143,13 +143,19 @@ def validate(context):
     return context
 
 
-def acquire(context, *, clang, target='riscv64', timeout=60):
+def acquire(context, *, clang, target='riscv64', timeout=60, include_asm_inventory=False):
+    if type(include_asm_inventory) is not bool:raise ValueError('PROJECT_INSPECTION_ASM_MODE_INVALID')
     from .compiler_call_dependencies import acquire as acquire_ast
     validate(context)
     if not context['inspectionReady']: raise ValueError('PROJECT_CONTEXT_NOT_INSPECTABLE')
     snapshot = acquire_ast(context['sourcePath'], clang=clang, target=target,
         compile_args=context['inspectionArguments'], working_directory=context['workingDirectory'],
-        timeout=timeout, include_type_facts=True, native_context=context)
+        timeout=timeout, include_type_facts=True, native_context=context, include_ast=include_asm_inventory)
+    if include_asm_inventory:
+        from .compiler_asm_activation import derive as derive_asm
+        snapshot['asmActivationInventory']=derive_asm(snapshot.pop('ast'),context=context,
+            dependency_identity=snapshot['dependencyManifest']['dependencyIdentity'],
+            compiler_digest=snapshot['compilerDigest'],target=target)
     validate(context)
     functions = []
     for fn in snapshot['inventory']['functions']:
@@ -159,7 +165,8 @@ def acquire(context, *, clang, target='riscv64', timeout=60):
             'contextIdentity':context['contextIdentity'],
             'dependencyIdentity':snapshot['dependencyManifest']['dependencyIdentity'],
             'functionIdentity':fn['functionIdentity']})))
-    body = {'schemaVersion':'riscv2x86.project-context-inspection.v1',
+    body = {'schemaVersion':('riscv2x86.project-context-inspection.v2' if include_asm_inventory
+                           else 'riscv2x86.project-context-inspection.v1'),
         'contextIdentity':context['contextIdentity'], 'snapshot':snapshot,
         'functions':functions, 'contextAcquisitionConsistent':True,
         'compilerEquivalenceVerified':False,

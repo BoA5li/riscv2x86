@@ -23,7 +23,7 @@ from riscv2x86_py.compiler_function_types import validate_inventory
 from riscv2x86_py.project_inspection_replay import require_match
 
 
-def inspect(records, *, clang=None, target='riscv64', sources=(), limit=None):
+def inspect(records, *, clang=None, target='riscv64', sources=(), limit=None, asm_inventory=False):
     if (records.get('schemaVersion')!='riscv2x86.project-build-records.v1'
             or records.get('inventoryIdentity') != identity({k:v for k,v in records.items() if k!='inventoryIdentity'})
             or records.get('semanticApproval') is not False
@@ -51,7 +51,8 @@ def inspect(records, *, clang=None, target='riscv64', sources=(), limit=None):
                 row['translationEvaluationBlockers'].append('PROJECT_BUILD_RECORDS_UNRESOLVED')
             if clang and row['status']=='context_ready' and (captured or not records.get('unresolved')):
                 try:
-                    row['inspection']=acquire(context,clang=clang,target=target)
+                    options={'include_asm_inventory':True} if asm_inventory else {}
+                    row['inspection']=acquire(context,clang=clang,target=target,**options)
                     row['status']='inspected'
                 except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
                     row['status']='inspection_failed'
@@ -68,6 +69,7 @@ def inspect(records, *, clang=None, target='riscv64', sources=(), limit=None):
           'sourceCount':len({r['context']['sourcePath'] for r in rows}),
           'buildVariantCount':len(rows), 'buildRecordUnresolvedCount':len(records.get('unresolved', [])),
           'semanticApproval':False,'productionAcceptanceComplete':False}
+    if asm_inventory:body['selection']['asmInventory']=True
     return dict(body, preflightIdentity=identity(body))
 
 
@@ -113,13 +115,19 @@ def replay(report):
             raise ValueError('PROJECT_CONTEXT_ACTION_BINDING_MISMATCH')
         observation=row['inspection']
         if observation is not None:
+            asm_inventory=report['selection'].get('asmInventory',False)
+            if (type(asm_inventory) is not bool
+                    or observation.get('schemaVersion')!=('riscv2x86.project-context-inspection.v2'
+                        if asm_inventory else 'riscv2x86.project-context-inspection.v1')):
+                raise ValueError('PROJECT_INSPECTION_ASM_MODE_MISMATCH')
             if (observation['inspectionIdentity']!=identity({k:v for k,v in observation.items() if k!='inspectionIdentity'})
                     or observation['contextIdentity']!=context['contextIdentity']):
                 raise ValueError('PROJECT_INSPECTION_BINDING_MISMATCH')
             validate_inventory(observation['snapshot']['functionTypeInventory'])
             validate_dependencies(observation['snapshot']['dependencyManifest'])
             manifest=observation['snapshot']['dependencyManifest']
-            fresh=acquire(context,clang=manifest['compilerCommand'][0],target=report['selection']['target'])
+            options={'include_asm_inventory':True} if asm_inventory else {}
+            fresh=acquire(context,clang=manifest['compilerCommand'][0],target=report['selection']['target'],**options)
             # Clang's raw AST embeds ephemeral allocation IDs; compare the
             # derived inventories and manifests, not its raw JSON byte digest.
             for key in ('functions','contextIdentity','compilerEquivalenceVerified','semanticApproval',
@@ -128,6 +136,9 @@ def replay(report):
             for key in ('inventory','functionTypeInventory','dependencyManifest','compilerCommand',
                         'compilerDigest','dependencyClosureVerified','semanticApproval'):
                 require_match(key,context,observation['snapshot'][key],fresh['snapshot'][key])
+            if asm_inventory:
+                require_match('asmActivationInventory',context,
+                    observation['snapshot']['asmActivationInventory'],fresh['snapshot']['asmActivationInventory'])
     return {'contextReplayComplete':True,'buildVariantCount':len(report['records']),
             'semanticApproval':False,'productionAcceptanceComplete':False}
 
@@ -150,6 +161,7 @@ def main(argv=None):
     scan=sub.add_parser('inspect'); scan.add_argument('--records',required=True); scan.add_argument('--output',required=True)
     scan.add_argument('--source',action='append',default=[]); scan.add_argument('--limit',type=int)
     scan.add_argument('--clang'); scan.add_argument('--target',choices=['riscv64','x86_64'],default='riscv64')
+    scan.add_argument('--asm-inventory',action='store_true')
     native=sub.add_parser('native-build'); native.add_argument('--report',required=True)
     native.add_argument('--output',required=True); native.add_argument('--timeout-seconds',type=int,default=240)
     audit=sub.add_parser('replay'); audit.add_argument('--report',required=True)
@@ -210,7 +222,7 @@ def main(argv=None):
         elif args.operation=='inspect':
             if args.limit is not None and args.limit<1: raise ValueError('PROJECT_POSITIVE_LIMIT_REQUIRED')
             result=inspect(json.loads(Path(args.records).read_text()),clang=args.clang,
-                           target=args.target,sources=args.source,limit=args.limit)
+                           target=args.target,sources=args.source,limit=args.limit,asm_inventory=args.asm_inventory)
         else:
             print(json.dumps(replay(json.loads(Path(args.report).read_text())),ensure_ascii=False)); return 0
         # Exclusive create: do not overwrite earlier experimental evidence.

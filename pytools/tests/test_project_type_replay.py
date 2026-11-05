@@ -132,7 +132,8 @@ def fixture(tmp_path,monkeypatch):
             'dependencyManifest':{'compilerCommand':[sys.executable]},
             'compilerCommand':[sys.executable],'compilerDigest':'digest',
             'dependencyClosureVerified':False,'semanticApproval':False}
-        result={'functions':[],'contextIdentity':context['contextIdentity'],
+        result={'schemaVersion':'riscv2x86.project-context-inspection.v1',
+            'functions':[],'contextIdentity':context['contextIdentity'],
             'compilerEquivalenceVerified':False,'semanticApproval':False,
             'productionAcceptanceComplete':False,'contextAcquisitionConsistent':True,'snapshot':snapshot}
         return dict(result,inspectionIdentity=identity(result))
