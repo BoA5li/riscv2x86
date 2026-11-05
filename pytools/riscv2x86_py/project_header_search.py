@@ -59,8 +59,10 @@ def query(compiler, arguments, cwd, *, timeout=60):
 
 def projection(receipt):
     # Explicit original -I/-iquote/-isystem options are retained, preserving
-    # their spelling/category and priority. Add only compiler-reported paths
-    # not already supplied explicitly or via include environment variables.
+    # their spelling/category and priority. CPATH remains a non-system search
+    # path from the unchanged environment. C_INCLUDE_PATH must be mirrored
+    # explicitly before builtin paths: its automatic position would otherwise
+    # follow the newly supplied -isystem directories.
     args=receipt['inspectionArguments']; cwd=Path(receipt['probe']['workingDirectory'])
     explicit=set(); i=0
     while i<len(args):
@@ -75,7 +77,7 @@ def projection(receipt):
         if value is not None:
             p=Path(value);explicit.add(('quote' if arg.startswith('-iquote') else 'angle',str((p if p.is_absolute() else cwd/p).resolve())))
         i+=1
-    for key in ('CPATH','C_INCLUDE_PATH'):
+    for key in ('CPATH',):
         value=receipt['probe']['searchEnvironment'].get(key,'')
         if value:
             for part in value.split(os.pathsep):

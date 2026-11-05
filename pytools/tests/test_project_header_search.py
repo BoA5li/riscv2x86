@@ -158,3 +158,33 @@ def test_project_operation_supplies_context_without_process_global_profile(tmp_p
             compile_args=ctx['inspectionArguments'],working_directory=ctx['workingDirectory'])
     assert result['dependencyManifest']['nativeHeaderSearch']['contextIdentity']==ctx['contextIdentity']
     assert validate(result['dependencyManifest'])
+
+
+@pytest.mark.parametrize('layout',['system-env','mixed'])
+def test_real_gcc_projection_preserves_environment_search_order(tmp_path,monkeypatch,layout):
+    # Compare the native compiler with its projected recipe. This catches order
+    # changes without pretending GCC is a Clang/RISC-V execution backend.
+    cc=shutil.which('gcc')
+    if not cc:pytest.skip('native GCC required')
+    directories={k:tmp_path/k for k in ('project','quote','cpath','system','env-system')}
+    for path in directories.values():path.mkdir()
+    source=tmp_path/'x.c';source.write_text('int x;\n')
+    monkeypatch.setenv('C_INCLUDE_PATH',str(directories['env-system']))
+    args=[]
+    if layout=='mixed':
+        monkeypatch.setenv('CPATH',str(directories['cpath']))
+        args=['-I',str(directories['project']),'-iquote',str(directories['quote']),'-isystem',str(directories['system'])]
+    else:monkeypatch.delenv('CPATH',raising=False)
+    ctx=derive(record([cc,*args,'-c',str(source),'-o',str(tmp_path/'x.o')],tmp_path,{'kind':'test'}))
+    receipt=h.acquire(ctx)
+    projected=h.query(ctx['nativeCompiler'],[*receipt['nativeArguments'],*h.projection(receipt)],tmp_path)
+    keys=lambda probe:[(r['kind'],r['resolvedPath']) for r in probe['directories']]
+    assert keys(projected)==keys(receipt['probe'])
+    assert keys(projected).index(('angle',str(directories['env-system'])))<len(keys(projected))-1
+
+
+def test_explicit_c_include_environment_path_precedes_builtin_projection(tmp_path):
+    envdir=tmp_path/'env';builtin=tmp_path/'builtin';envdir.mkdir();builtin.mkdir()
+    receipt={'inspectionArguments':[],'probe':{'workingDirectory':str(tmp_path),
+        'searchEnvironment':{'C_INCLUDE_PATH':str(envdir)},'directories':h.parse_search(protocol([envdir,builtin]),tmp_path)}}
+    assert h.projection(receipt)==['-nostdinc','-isystem',str(envdir),'-isystem',str(builtin)]
