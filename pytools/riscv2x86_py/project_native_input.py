@@ -249,7 +249,8 @@ def bytes_identity(raw):
     return 'sha256:' + sha256(raw).hexdigest()
 
 
-def replay(receipt, output, *, timeout=120):
+def validate_artifacts(receipt):
+    """Rebuild derived evidence from stored bytes; not independent acquisition."""
     if (not isinstance(receipt, dict) or receipt.get('schemaVersion') != SCHEMA
             or receipt.get('nativeInputIdentity') != identity({
                 k: v for k, v in receipt.items() if k != 'nativeInputIdentity'})):
@@ -277,20 +278,15 @@ def replay(receipt, output, *, timeout=120):
     if (inventory['inventoryIdentity'] != receipt['inventoryIdentity']
             or identity(json.loads(Path(receipt['inventoryPath']).read_text())) != identity(inventory)):
         raise ValueError('NATIVE_INPUT_INVENTORY_BINDING_INVALID')
+    return {'canonicalAst': canonical, 'inputBytes': raw_input,
+            'inventory': inventory, 'stages': stages}
+
+
+def replay(receipt, output, *, timeout=120):
+    validate_artifacts(receipt)
     fresh = acquire(receipt['context'], receipt['inspectionCompiler'], output,
         target=receipt['target'], timeout=timeout)
-    def projection(value):
-        result = {k: v for k, v in value.items() if k not in {
-            'nativeInputIdentity', 'canonicalAstPath', 'inventoryPath', 'commands'}}
-        result['commands'] = [{k: v for k, v in row.items() if k not in {
-            'stdoutPath', 'stderrPath', 'stdoutDigest'}} for row in value['commands']]
-        # Raw AST addresses change by process. All other stdout bytes remain
-        # exact; AST fields and reference edges are compared by canonical graph.
-        for old, row in zip(value['commands'], result['commands']):
-            if old['stage'] != 'inspection-native-input':
-                row['stdoutDigest'] = old['stdoutDigest']
-        return result
-    if identity(projection(receipt)) != identity(projection(fresh)):
+    if identity(replay_projection(receipt)) != identity(replay_projection(fresh)):
         raise ValueError('NATIVE_INPUT_INDEPENDENT_REPLAY_MISMATCH')
     body = {'schemaVersion': 'riscv2x86.native-analysis-input-replay.v1',
         'originalNativeInputIdentity': receipt['nativeInputIdentity'],
@@ -300,3 +296,17 @@ def replay(receipt, output, *, timeout=120):
         'sourceInstanceBindingComplete': False, 'semanticApproval': False,
         'productionAcceptanceComplete': False}
     return dict(body, replayIdentity=identity(body))
+
+
+def replay_projection(value):
+    """The same stored-evidence comparison used by independent acquisition."""
+    result = {k: v for k, v in value.items() if k not in {
+        'nativeInputIdentity', 'canonicalAstPath', 'inventoryPath', 'commands'}}
+    result['commands'] = [{k: v for k, v in row.items() if k not in {
+        'stdoutPath', 'stderrPath', 'stdoutDigest'}} for row in value['commands']]
+    # Raw AST addresses change by process. All other stdout bytes remain
+    # exact; AST fields and reference edges are compared by canonical graph.
+    for old, row in zip(value['commands'], result['commands']):
+        if old['stage'] != 'inspection-native-input':
+            row['stdoutDigest'] = old['stdoutDigest']
+    return result
