@@ -196,7 +196,10 @@ def run(config,stage,command,*,cwd,source_proof=None,inputs=()):
     release_identity=None
     if source_proof is not None:
         from .project_source_release import replay
-        source_proof=str(Path(source_proof).resolve(strict=True));release_identity=replay(source_proof)
+        proof_path=Path(source_proof)
+        if not proof_path.is_file():
+            raise ValueError('PROJECT_CAPTURE_SOURCE_PROOF_REQUIRED:'+str(proof_path))
+        source_proof=str(proof_path.resolve(strict=True));release_identity=replay(source_proof)
     cwd=str(Path(cwd).resolve(strict=True));token=uuid.uuid4().hex
     executable=resolve_executable(command[0],cwd)
     argv=[str(executable),*command[1:]]
@@ -284,7 +287,14 @@ def inventory(config,*,stage=None):
                 unresolved.append({'path':str(starts.get(token,finishes.get(token))),'reasonCode':str(exc)})
     selected_failures=[summary for summary in summaries
         if (stage is None or summary['stage']==stage) and summary['returnCode']!=0]
-    if not rows:unresolved.append({'reasonCode':'PROJECT_CAPTURE_EMPTY_SELECTION'})
+    if not rows:
+        if not summaries:
+            reason='PROJECT_CAPTURE_NO_COMPLETED_RUN'
+        elif stage is not None and not any(r['stage']==stage for r in summaries):
+            reason='PROJECT_CAPTURE_STAGE_NOT_RUN'
+        else:
+            reason='PROJECT_CAPTURE_NO_SELECTED_TOOL_INVOCATIONS'
+        unresolved.append({'reasonCode':'PROJECT_CAPTURE_EMPTY_SELECTION','detailReasonCode':reason})
     body=document(rows,unresolved,[],identity(snapshots));body.pop('inventoryIdentity')
     body.update(captureConfig=str(Path(config).resolve()),captureIdentity=value['recordIdentity'],
         captureFiles=sorted(snapshots,key=lambda x:x['path']),stageSelection=stage,

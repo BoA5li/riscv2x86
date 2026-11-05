@@ -215,7 +215,7 @@ def main(argv=None):
         with Path(args.output).open('x',encoding='utf-8') as stream:
             json.dump(result,stream,ensure_ascii=False,indent=2); stream.write('\n')
         print(json.dumps({k:result[k] for k in ('actionCounts','statusCounts','sourceCount','buildVariantCount',
-            'importComplete','semanticApproval','productionAcceptanceComplete') if k in result},ensure_ascii=False))
+            'importComplete','unresolved','semanticApproval','productionAcceptanceComplete') if k in result},ensure_ascii=False))
         return 2 if (result.get('unresolved') or result.get('errors') or result.get('buildRecordUnresolvedCount') or not result.get('actions',result.get('records'))
                      or any(r['status'] in {'blocked','inspection_failed'} for r in result.get('records',[]))) else 0
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:

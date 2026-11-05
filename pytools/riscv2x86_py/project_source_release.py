@@ -10,6 +10,7 @@ from pathlib import Path,PurePosixPath
 import stat
 import tarfile
 
+from .project_archive_stream import open_archive
 from .project_build_records import identity
 from .project_compile_context import digest
 
@@ -30,7 +31,7 @@ def verify(spec,archive,source):
     if not source.is_dir():raise ValueError('PROJECT_RELEASE_DIRECTORY_REQUIRED')
     entries={};file_digests={};records=[]
     try:
-        with tarfile.open(archive,'r|*') as tar:
+        with open_archive(archive) as tar:
             for member in tar:
                 name=relative(member.name,spec['root'])
                 if not name:
@@ -76,7 +77,7 @@ def verify(spec,archive,source):
                     row.update(kind='file',digest=actual,executableMask=mode&0o111)
                     if member.islnk():row['archiveHardlink']=member.linkname
                 records.append(row)
-    except (tarfile.TarError,KeyError,RecursionError) as exc:
+    except (tarfile.TarError,EOFError,KeyError,RecursionError) as exc:
         raise ValueError('PROJECT_RELEASE_ARCHIVE_INVALID:'+str(exc)) from exc
     # Include implicit archive directories but no unrelated/generated files.
     allowed=set(entries)

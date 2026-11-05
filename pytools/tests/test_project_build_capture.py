@@ -231,3 +231,18 @@ def test_parent_run_identifier_cannot_name_an_external_record(tmp_path,monkeypat
     result=inventory(config,stage='build')
     assert any('STAGE_UNATTRIBUTED' in r['reasonCode'] for r in result['unresolved'])
     assert len(inventory(config)['actions'])==1
+
+
+def test_missing_source_proof_blocks_command_and_explains_empty_inventory(tmp_path):
+    import sys
+    from riscv2x86_py.project_build_capture import create,run,inventory
+    config=tmp_path/'capture/capture.json'
+    create(config.parent,{'python':sys.executable})
+    marker=tmp_path/'must-not-exist'
+    with pytest.raises(ValueError,match='SOURCE_PROOF_REQUIRED'):
+        run(config,'build',[sys.executable,'-c','from pathlib import Path; Path('+repr(str(marker))+').touch()'],
+            cwd=tmp_path,source_proof=tmp_path/'missing.json')
+    assert not marker.exists()
+    doc=inventory(config,stage='build')
+    assert not doc['importComplete']
+    assert any(r.get('detailReasonCode')=='PROJECT_CAPTURE_NO_COMPLETED_RUN' for r in doc['unresolved'])
