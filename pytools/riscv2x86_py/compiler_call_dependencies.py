@@ -63,7 +63,7 @@ def _snapshot(paths, cwd):
 
 
 @timed('compiler.call-dependency-acquisition')
-def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None, include_type_facts=False, include_ast=False):
+def acquire(source, *, clang, target, compile_args=(), timeout=60, working_directory=None, include_type_facts=False, include_ast=False, native_context=None, header_search=None, use_configured_headers=True):
     from .compiler_call_inventory import derive
     if target not in {'riscv64', 'x86_64'}:
         raise ValueError('CALL_INVENTORY_TARGET_UNSUPPORTED')
@@ -101,7 +101,22 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
     env_keys = ('CPATH','C_INCLUDE_PATH','CPLUS_INCLUDE_PATH','SDKROOT',
                 'GCC_EXEC_PREFIX','COMPILER_PATH','LIBRARY_PATH','LD_LIBRARY_PATH','LD_PRELOAD')
     environment = {key:os.environ.get(key, '') for key in env_keys}
-    base = [str(compiler),'--target='+target+'-linux-gnu','-std=gnu11',*args]
+    from .project_header_search import acquire as acquire_headers, validate as validate_headers, projection, configured_context, inspect_search
+    if header_search is None and native_context is None and use_configured_headers and target=='riscv64':
+        native_context=configured_context(source,args,cwd)
+    if native_context is not None:
+        if (native_context['sourcePath']!=str(source) or native_context['inspectionArguments']!=args
+                or native_context['workingDirectory']!=str(cwd)):
+            raise ValueError('PROJECT_HEADER_ACQUISITION_CONTEXT_MISMATCH')
+        header_search=acquire_headers(native_context,timeout=timeout)
+    if header_search is not None:
+        validate_headers(header_search,timeout=timeout)
+        if (header_search['sourcePath']!=str(source) or header_search['inspectionArguments']!=args
+                or header_search['probe']['workingDirectory']!=str(cwd)):
+            raise ValueError('PROJECT_HEADER_ACQUISITION_CONTEXT_MISMATCH')
+    inspection_search=inspect_search(header_search,compiler,target,timeout=timeout) if header_search is not None else None
+    header_args=projection(header_search) if header_search is not None else []
+    base = [str(compiler),'--target='+target+'-linux-gnu','-std=gnu11',*args,*header_args]
     dependency_command = [*base,'-M','-MT','rv2x86_call_inventory',str(source)]
     def run(command):
         result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
@@ -130,6 +145,10 @@ def acquire(source, *, clang, target, compile_args=(), timeout=60, working_direc
         'dependencies':before, 'acquisitionConsistent':True,
         'linkClosureVerified':False, 'immutableSnapshot':False,
         'semanticApproval':False, 'productionAcceptanceComplete':False}
+    if header_search is not None:
+        validate_headers(header_search,timeout=timeout)
+        body.update(schemaVersion='riscv2x86.compiler-call-dependencies.v2',
+                    nativeHeaderSearch=header_search,inspectionHeaderSearch=inspection_search,originalInspectionArguments=args)
     manifest = dict(body, dependencyIdentity=identity(body))
     result = {'inventory':inventory, 'compilerCommand':command, 'compilerDigest':compiler_digest,
         'astDigest':identity(ast), 'dependencyClosureVerified':False,
@@ -149,7 +168,9 @@ def validate(manifest):
     fields = {'schemaVersion','inventoryIdentity','compilerCommand','dependencyCommand','compilerDigest',
         'workingDirectory','searchEnvironment','dependencies','acquisitionConsistent','linkClosureVerified',
         'immutableSnapshot','semanticApproval','productionAcceptanceComplete','dependencyIdentity'}
-    if (not isinstance(manifest, dict) or set(manifest) != fields or manifest['schemaVersion'] != SCHEMA
+    projected=isinstance(manifest,dict) and manifest.get('schemaVersion')=='riscv2x86.compiler-call-dependencies.v2'
+    if projected:fields|={'nativeHeaderSearch','inspectionHeaderSearch','originalInspectionArguments'}
+    if (not isinstance(manifest, dict) or set(manifest) != fields or manifest['schemaVersion'] not in {SCHEMA,'riscv2x86.compiler-call-dependencies.v2'}
             or manifest['acquisitionConsistent'] is not True
             or any(manifest[k] is not False for k in ('linkClosureVerified','immutableSnapshot',
                                                      'semanticApproval','productionAcceptanceComplete'))
@@ -171,8 +192,14 @@ def validate(manifest):
             or command[1] not in {'--target=riscv64-linux-gnu','--target=x86_64-linux-gnu'}):
         raise ValueError('CALL_DEPENDENCY_COMMAND_INVALID')
     target = command[1].removeprefix('--target=').removesuffix('-linux-gnu')
+    args=command[3:-4];headers=None
+    if projected:
+        from .project_header_search import validate as validate_headers,projection
+        headers=validate_headers(manifest['nativeHeaderSearch'])
+        args=manifest['originalInspectionArguments']
+        if command[3:-4]!=[*args,*projection(headers)]:raise ValueError('PROJECT_HEADER_COMMAND_MISMATCH')
     replayed = acquire(command[-1], clang=command[0], target=target,
-        compile_args=command[3:-4], working_directory=cwd)
+        compile_args=args, working_directory=cwd, header_search=headers,use_configured_headers=False)
     require_json_match(manifest, replayed['dependencyManifest'], 'CALL_DEPENDENCY_REPLAY_MISMATCH')
     return manifest
 

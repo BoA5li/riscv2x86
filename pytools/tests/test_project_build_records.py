@@ -151,6 +151,8 @@ def test_acquisition_preserves_original_context_flags_and_header_binding(tmp_pat
     observed=[]
     def run(command,**kwargs):
         observed.append((command,kwargs))
+        if '-v' in command:
+            return SimpleNamespace(returncode=0,stdout='',stderr='#include \"...\" search starts here:\n#include <...> search starts here:\nEnd of search list.\n')
         return SimpleNamespace(returncode=0,stderr='',stdout=(
             f'rv2x86_call_inventory: {source} {header}\n' if '-M' in command else json.dumps(ast)))
     monkeypatch.setattr('riscv2x86_py.compiler_call_dependencies.subprocess.run',run)

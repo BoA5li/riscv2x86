@@ -17,7 +17,10 @@ from .c_preprocessing_tokens import tokens, VERSION as LEXER_VERSION
 def acquire(contract,*,timeout=120):
     validate(contract);ctx=contract['sourceContext'];source=ctx['sourcePath'];cwd=Path(ctx['workingDirectory'])
     native=[ctx['nativeCompiler'],*source_arguments(ctx)]
-    clang=[contract['inspectionCompiler'],'--target=riscv64-linux-gnu',*ctx['inspectionArguments']]
+    from .project_header_search import acquire as acquire_headers,validate as validate_headers,projection,inspect_search
+    headers=acquire_headers(ctx,timeout=timeout)
+    inspected_headers=inspect_search(headers,contract['inspectionCompiler'],'riscv64',timeout=timeout)
+    clang=[contract['inspectionCompiler'],'--target=riscv64-linux-gnu',*ctx['inspectionArguments'],*projection(headers)]
     all_rows={};streams={};commands={}
     for name,base in (('native',native),('inspection',clang)):
         def run(options):
@@ -51,7 +54,7 @@ def acquire(contract,*,timeout=120):
             else:name=''
             if name in protected:raise ValueError('PROJECT_DATA_MODEL_BUILTIN_OVERRIDE_UNSUPPORTED:'+name)
             i+=1
-    for name,base in (('source',native),('target',[target_cc,*target_args]),
+    for name,base in (('source',native),('inspection',clang),('target',[target_cc,*target_args]),
             ('sourceDriver',[source_driver_cc,*source_driver_args]),('targetDriver',[target_driver_cc,*target_driver_args])):
         command=[*base,'-dM','-E','-x','c','-']
         result=subprocess.run(command,cwd=cwd,capture_output=True,text=True,input='',timeout=timeout,check=False)
@@ -67,12 +70,13 @@ def acquire(contract,*,timeout=120):
         models[name]['__BYTE_ORDER__']=macros.get(order,order)
         commands[name+'DataModel']=command
     abi=lambda row:{k:v for k,v in row.items() if k!='__STDC_VERSION__'}
-    model_equal=(models['source']==models['target'] and all(abi(row)==abi(models['source']) for row in models.values()))
+    model_equal=(models['source']==models['target']==models['inspection'] and all(abi(row)==abi(models['source']) for row in models.values()))
     enum_flags=[('-fshort-enums' in args) for args in (native[1:],target_args,source_driver_args,target_driver_args)]
     model_equal=model_equal and len(set(enum_flags))==1
     a,b=streams['native'],streams['inspection'];count=min(len(a),len(b));first=next((i for i in range(count) if a[i]!=b[i]),count)
     equal=a==b
-    body={'schemaVersion':'riscv2x86.project-preprocessing-compatibility.v2','contractIdentity':contract['contractIdentity'],'tokenizationVersion':LEXER_VERSION,
+    validate_headers(headers,context=ctx,timeout=timeout)
+    body={'schemaVersion':'riscv2x86.project-preprocessing-compatibility.v3','nativeHeaderSearch':headers,'inspectionHeaderSearch':inspected_headers,'contractIdentity':contract['contractIdentity'],'tokenizationVersion':LEXER_VERSION,
           'commands':commands,'dependencies':all_rows,'tokenDigests':{k:identity(v) for k,v in streams.items()},
           'tokenCounts':{k:len(v) for k,v in streams.items()},'sourcePreprocessingMatched':equal,
           'integerDataModels':models,'integerDataModelMatched':model_equal,

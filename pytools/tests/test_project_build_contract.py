@@ -147,6 +147,8 @@ def test_compatibility_distinguishes_macro_branch_difference(tmp_path,monkeypatc
     from riscv2x86_py.project_compiler_compatibility import acquire,require
     c=contract(tmp_path);source=c['sourceContext']['sourcePath']
     def run(command,**kwargs):
+        if '-v' in command:
+            return SimpleNamespace(returncode=0,stdout='',stderr='#include \"...\" search starts here:\n#include <...> search starts here:\nEnd of search list.\n')
         if '-dM' in command:
             text='\n'.join('#define '+k+' '+v for k,v in {'__CHAR_BIT__':'8','__SIZEOF_SHORT__':'2','__SIZEOF_INT__':'4','__SIZEOF_LONG__':'8','__SIZEOF_LONG_LONG__':'8','__SIZEOF_POINTER__':'8','__BYTE_ORDER__':'1234','__WCHAR_TYPE__':'int','__SIZEOF_WCHAR_T__':'4','__STDC_VERSION__':'199901L'}.items())
         elif '-M' in command:text='rv2x86_call_inventory: '+source+'\n'
@@ -208,6 +210,8 @@ def test_matching_cpp_tokens_do_not_hide_target_integer_abi_mismatch(tmp_path,mo
     from riscv2x86_py.project_compiler_compatibility import acquire,require
     c=contract(tmp_path);source=c['sourceContext']['sourcePath']
     def run(command,**kwargs):
+        if '-v' in command:
+            return SimpleNamespace(returncode=0,stdout='',stderr='#include \"...\" search starts here:\n#include <...> search starts here:\nEnd of search list.\n')
         if '-dM' in command:
             facts={'__CHAR_BIT__':'8','__SIZEOF_SHORT__':'2','__SIZEOF_INT__':'4','__SIZEOF_LONG__':'8',
                 '__SIZEOF_LONG_LONG__':'8','__SIZEOF_POINTER__':'8','__BYTE_ORDER__':'1234','__WCHAR_TYPE__':'int',
@@ -259,6 +263,8 @@ def test_cpp_compatibility_cannot_merge_operators_or_pragma_lines(tmp_path,monke
     from riscv2x86_py.project_compiler_compatibility import acquire,require
     c=contract(tmp_path);source=c['sourceContext']['sourcePath']
     def run(command,**kwargs):
+        if '-v' in command:
+            return SimpleNamespace(returncode=0,stdout='',stderr='#include \"...\" search starts here:\n#include <...> search starts here:\nEnd of search list.\n')
         if '-dM' in command:
             facts={'__CHAR_BIT__':'8','__SIZEOF_SHORT__':'2','__SIZEOF_INT__':'4','__SIZEOF_LONG__':'8',
                 '__SIZEOF_LONG_LONG__':'8','__SIZEOF_POINTER__':'8','__BYTE_ORDER__':'1234',
@@ -269,10 +275,32 @@ def test_cpp_compatibility_cannot_merge_operators_or_pragma_lines(tmp_path,monke
         return SimpleNamespace(returncode=0,stderr='',stdout=text)
     monkeypatch.setattr('riscv2x86_py.project_compiler_compatibility.subprocess.run',run)
     receipt=acquire(c)
-    assert receipt['schemaVersion']=='riscv2x86.project-preprocessing-compatibility.v2'
+    assert receipt['schemaVersion']=='riscv2x86.project-preprocessing-compatibility.v3'
     assert receipt['tokenizationVersion']=='riscv2x86.c11-gnu-pp-token-spellings.v1'
     assert not receipt['sourcePreprocessingMatched']
     with pytest.raises(ValueError,match='PREPROCESSING_MISMATCH'):require(c,receipt)
     old=deepcopy(receipt);old['schemaVersion']='riscv2x86.project-preprocessing-compatibility.v1'
     old['compatibilityIdentity']=identity({k:v for k,v in old.items() if k!='compatibilityIdentity'})
     with pytest.raises(ValueError,match='REPLAY_MISMATCH'):require(c,old)
+
+
+def test_matching_cpp_does_not_hide_inspector_integer_model_difference(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from riscv2x86_py.project_compiler_compatibility import acquire,require
+    c=contract(tmp_path);source=c['sourceContext']['sourcePath']
+    def run(command,**kwargs):
+        if '-v' in command:
+            return SimpleNamespace(returncode=0,stdout='',stderr='#include "..." search starts here:\n#include <...> search starts here:\nEnd of search list.\n')
+        if '-dM' in command:
+            facts={'__CHAR_BIT__':'8','__SIZEOF_SHORT__':'2','__SIZEOF_INT__':'4','__SIZEOF_LONG__':'8',
+                '__SIZEOF_LONG_LONG__':'8','__SIZEOF_POINTER__':'8','__BYTE_ORDER__':'1234',
+                '__WCHAR_TYPE__':'int','__SIZEOF_WCHAR_T__':'4','__STDC_VERSION__':'199901L'}
+            if command[0]==c['inspectionCompiler']:facts['__CHAR_UNSIGNED__']='1'
+            text='\n'.join('#define '+k+' '+v for k,v in facts.items())
+        elif '-M' in command:text='rv2x86_call_inventory: '+source+'\n'
+        else:text='int x;'
+        return SimpleNamespace(returncode=0,stderr='',stdout=text)
+    monkeypatch.setattr('riscv2x86_py.project_compiler_compatibility.subprocess.run',run)
+    receipt=acquire(c)
+    assert receipt['sourcePreprocessingMatched'] and not receipt['integerDataModelMatched']
+    with pytest.raises(ValueError,match='INTEGER_DATA_MODEL_MISMATCH'):require(c,receipt)

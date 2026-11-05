@@ -149,7 +149,7 @@ def acquire(context, *, clang, target='riscv64', timeout=60):
     if not context['inspectionReady']: raise ValueError('PROJECT_CONTEXT_NOT_INSPECTABLE')
     snapshot = acquire_ast(context['sourcePath'], clang=clang, target=target,
         compile_args=context['inspectionArguments'], working_directory=context['workingDirectory'],
-        timeout=timeout, include_type_facts=True)
+        timeout=timeout, include_type_facts=True, native_context=context)
     validate(context)
     functions = []
     for fn in snapshot['inventory']['functions']:

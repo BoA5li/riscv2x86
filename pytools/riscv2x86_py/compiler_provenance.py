@@ -140,8 +140,15 @@ def validate_compiler_snapshot(snapshot):
         from .compiler_call_dependencies import validate as validate_dependencies
         contract=validate_project(snapshot['projectBuildContract'])
         context=contract['sourceContext'];manifest=snapshot['dependencyManifest']
+        header_args=[]
+        if manifest.get('schemaVersion')=='riscv2x86.compiler-call-dependencies.v2':
+            from .project_header_search import validate as validate_headers, projection
+            headers=validate_headers(manifest['nativeHeaderSearch'],context=context)
+            if manifest['originalInspectionArguments']!=context['inspectionArguments']:
+                raise ValueError('COMPILER_SNAPSHOT_PROJECT_HEADER_ARGUMENT_MISMATCH')
+            header_args=projection(headers)
         expected_command=[contract['inspectionCompiler'],'--target=riscv64-linux-gnu','-std=gnu11',
-            *context['inspectionArguments'],'-fsyntax-only','-Xclang','-ast-dump=json',context['sourcePath']]
+            *context['inspectionArguments'],*header_args,'-fsyntax-only','-Xclang','-ast-dump=json',context['sourcePath']]
         if (manifest.get('compilerCommand')!=expected_command
                 or manifest.get('workingDirectory')!=context['workingDirectory']
                 or manifest.get('compilerDigest')!=contract['inspectionCompilerDigest']):
@@ -155,7 +162,9 @@ def validate_compiler_snapshot(snapshot):
     if project:
         from .automatic_batch_cli import inspect_entry_points
         from .l3_trace_support import require_json_match
-        _,fresh=inspect_entry_points(Path(context['sourcePath']),project_contract=contract)
+        from .project_validation_operation import operation
+        with operation(contract):
+            _,fresh=inspect_entry_points(Path(context['sourcePath']),project_contract=contract)
         require_json_match(list(fresh),snapshot['functions'],'COMPILER_SNAPSHOT_PROJECT_AST_FACTS_CHANGED')
     candidates = {}
     for function in snapshot['functions']:
