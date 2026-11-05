@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'pytools'))
 from riscv2x86_py.project_build_records import import_log, import_database, identity
 from riscv2x86_py.project_compile_context import derive, acquire, validate
 from riscv2x86_py.compiler_call_dependencies import validate as validate_dependencies
+from riscv2x86_py.compiler_function_types import validate_inventory
+from riscv2x86_py.project_inspection_replay import require_match
 
 
 def inspect(records, *, clang=None, target='riscv64', sources=(), limit=None):
@@ -114,6 +116,7 @@ def replay(report):
             if (observation['inspectionIdentity']!=identity({k:v for k,v in observation.items() if k!='inspectionIdentity'})
                     or observation['contextIdentity']!=context['contextIdentity']):
                 raise ValueError('PROJECT_INSPECTION_BINDING_MISMATCH')
+            validate_inventory(observation['snapshot']['functionTypeInventory'])
             validate_dependencies(observation['snapshot']['dependencyManifest'])
             manifest=observation['snapshot']['dependencyManifest']
             fresh=acquire(context,clang=manifest['compilerCommand'][0],target=report['selection']['target'])
@@ -121,11 +124,10 @@ def replay(report):
             # derived inventories and manifests, not its raw JSON byte digest.
             for key in ('functions','contextIdentity','compilerEquivalenceVerified','semanticApproval',
                         'productionAcceptanceComplete','contextAcquisitionConsistent'):
-                if identity(fresh[key])!=identity(observation[key]): raise ValueError('PROJECT_INSPECTION_REPLAY_MISMATCH:'+key)
+                require_match(key,context,observation[key],fresh[key])
             for key in ('inventory','functionTypeInventory','dependencyManifest','compilerCommand',
                         'compilerDigest','dependencyClosureVerified','semanticApproval'):
-                if identity(fresh['snapshot'][key])!=identity(observation['snapshot'][key]):
-                    raise ValueError('PROJECT_INSPECTION_REPLAY_MISMATCH:'+key)
+                require_match(key,context,observation['snapshot'][key],fresh['snapshot'][key])
     return {'contextReplayComplete':True,'buildVariantCount':len(report['records']),
             'semanticApproval':False,'productionAcceptanceComplete':False}
 
@@ -219,7 +221,9 @@ def main(argv=None):
         return 2 if (result.get('unresolved') or result.get('errors') or result.get('buildRecordUnresolvedCount') or not result.get('actions',result.get('records'))
                      or any(r['status'] in {'blocked','inspection_failed'} for r in result.get('records',[]))) else 0
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
-        print(json.dumps({'error':type(exc).__name__,'detail':str(exc),'semanticApproval':False}),file=sys.stderr)
+        error={'error':type(exc).__name__,'detail':str(exc),'semanticApproval':False}
+        if hasattr(exc,'replay_difference'):error['replayDifference']=exc.replay_difference
+        print(json.dumps(error,ensure_ascii=False),file=sys.stderr)
         return 2
 
 
