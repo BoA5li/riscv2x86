@@ -197,8 +197,12 @@ def derive(ast, frontend_report, raw, analysis_input_identity):
     return dict(body, bindingInventoryIdentity=identity(body))
 
 
-def call_contexts(ast, bindings, analysis_input_identity):
+def call_contexts(ast, bindings, analysis_input_identity, *, schema=None):
     """Export reachable AST declarations/effects, never infer pointer domains."""
+    from .compiler_native_calls import resolve, CONTEXT_V1, CONTEXT_V2
+    schema = CONTEXT_V2 if schema is None else schema
+    if schema not in (CONTEXT_V1, CONTEXT_V2):
+        raise ValueError("NATIVE_CONTEXT_SCHEMA_UNSUPPORTED")
     nodes = _nodes(ast); declarations = {}; definitions = {}; asm_owners = {}
     for node, path, function in nodes:
         if node.get('kind') == 'FunctionDecl' and node.get('id'):
@@ -228,21 +232,21 @@ def call_contexts(ast, bindings, analysis_input_identity):
         for call, call_path in related:
             if call.get('kind') != 'CallExpr':
                 continue
-            children = call.get('inner', []); callee = children[0] if children else {}
-            while callee.get('kind') in {'ImplicitCastExpr', 'ParenExpr'}:
-                inner = callee.get('inner', [])
-                if (len(inner) != 1 or (callee['kind'] == 'ImplicitCastExpr'
-                        and callee.get('castKind') not in {'FunctionToPointerDecay', 'NoOp'})):
-                    callee = {}; break
-                callee = inner[0]
-            ref = callee.get('referencedDecl', {}) if callee.get('kind') == 'DeclRefExpr' else {}
-            direct = ref.get('kind') == 'FunctionDecl' and isinstance(ref.get('id'), str)
-            target = by_family.get(family(ref['id'])) if direct else None
-            calls.append({'astPath': call_path, 'targetDeclaration': deepcopy(ref) if direct else None,
+            children = call.get('inner', [])
+            evidence = resolve(call, schema=schema)
+            ref = evidence['declaration']
+            direct = ref is not None
+            builtin = evidence['classification'] == 'compiler-builtin'
+            target = by_family.get(family(ref['id'])) if direct and not builtin else None
+            row = {'astPath': call_path, 'targetDeclaration': deepcopy(ref) if direct else None,
                 'targetFunctionAstPath': list(target) if target is not None else None,
                 'argumentCount': max(0, len(children)-1),
-                'resolution': 'emitted-definition' if target is not None else
-                    'external-summary-required' if direct else 'indirect-target-proof-required'})
+                'resolution': 'builtin-contract-required' if builtin else
+                    'emitted-definition' if target is not None else
+                    'external-summary-required' if direct else 'indirect-target-proof-required'}
+            if schema == CONTEXT_V2:
+                row['compilerCallEvidence'] = evidence
+            calls.append(row)
         rows = [r['instanceBindingIdentity'] for r in bindings['records'] if r['functionAstPath'] == path]
         body = {'astPath': path, 'declarationId': node['id'], 'name': node.get('name'),
             'compilerType': deepcopy(node.get('type', {})),
@@ -280,7 +284,7 @@ def call_contexts(ast, bindings, analysis_input_identity):
     globals_needed = [p for n, p, owner in nodes if
         (owner is None and n.get('kind') in {'CallExpr', 'GCCAsmStmt', 'FileScopeAsmDecl'}) or
         n.get('kind') in {'ConstructorAttr', 'DestructorAttr', 'IFuncAttr', 'AliasAttr'}]
-    body = {'schemaVersion': 'riscv2x86.native-call-contexts.v1',
+    body = {'schemaVersion': schema,
         'analysisInputIdentity': analysis_input_identity, 'functions': functions,
         'asmOwningFunctionContexts': roots, 'globalEffectCandidatePaths': globals_needed,
         'callEffectClosureVerified': False, 'buildLinkClosureVerified': False,

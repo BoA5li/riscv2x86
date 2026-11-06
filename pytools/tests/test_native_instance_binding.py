@@ -304,7 +304,8 @@ def test_real_riscv_compiler_api_binding_and_replay(tmp_path):
         '(l)=u*v; __asm__("mulhu %0, %1, %2":"=r"(h):"%r"(u),"r"(v)); } while(0)\n')
     source = tmp_path/'program.c'
     source.write_text('#include "renamed.h"\nunsigned long calculate(unsigned long a,unsigned long b)'
-        '{unsigned long hi,lo;PRODUCT(hi,lo,a,b);return hi^lo;}\n')
+        '{unsigned long hi,lo;PRODUCT(hi,lo,a,b);'
+        'return __builtin_expect(hi^lo,0)+__builtin_constant_p(a);}\n')
     action = record([gcc, '-std=gnu11', '-O2', '-march=rv64gc', '-mabi=lp64d',
         '-c', str(source), '-o', str(tmp_path/'program.o')], tmp_path, {'kind': 'explicit-test-profile'})
     context = derive(action)
@@ -316,4 +317,10 @@ def test_real_riscv_compiler_api_binding_and_replay(tmp_path):
     assert bindings['records'][0]['constraintRelation']['commutativePairs'] == [[1, 2]]
     assert bindings['records'][0]['enclosingCompound']['physicalRange'] is not None
     assert len(contexts['asmOwningFunctionContexts']) == 1
+    from collections import Counter
+    calls = [c for f in contexts['functions'] for c in f['calls']]
+    assert Counter(c['resolution'] for c in calls) == {'builtin-contract-required': 2}
+    assert {c['targetDeclaration']['name'] for c in calls} == {
+        '__builtin_constant_p', '__builtin_expect'}
+    assert all(not c['compilerCallEvidence']['semanticContractVerified'] for c in calls)
     assert acquisition.replay(bundle, tmp_path/'replay')['nativeBindingReplayComplete']

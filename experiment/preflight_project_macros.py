@@ -37,6 +37,10 @@ def main(argv=None):
     inspect.add_argument('--include-context',action='store_true')
     basis=sub.add_parser('build-basis')
     for name in ('bundle','records','output'):basis.add_argument('--'+name,required=True)
+    development=sub.add_parser('development-basis')
+    for name in ('bundle','records','output'):development.add_argument('--'+name,required=True)
+    check_development=sub.add_parser('replay-development-basis')
+    check_development.add_argument('--input',required=True)
     relation=sub.add_parser('relations')
     relation.add_argument('--constraints',required=True);relation.add_argument('--output',required=True)
     args=parser.parse_args(argv)
@@ -91,6 +95,20 @@ def main(argv=None):
             print(json.dumps({'printedInstances':min(args.limit,len(bindings['records'])),
                 'printedAsmOwningFunctions':min(args.limit,len(selected)),
                 'fullEvidenceRetained':True}))
+        elif args.operation=='development-basis':
+            from riscv2x86_py.project_native_requirements import acquire as acquire_requirements
+            if Path(args.output).absolute().parent==Path('/'):
+                raise ValueError('NATIVE_BINDING_RESULT_PARENT_REQUIRED')
+            result=acquire_requirements(args.bundle,args.records);write_new(args.output,result)
+            print(json.dumps({k:result[k] for k in ('occurrenceCount','callResolutionCounts',
+                'syntaxCounts','selectedNativeCompileActionPresent','requiredWork',
+                'formalEvaluationEntrySelected','semanticApproval','productionAcceptanceComplete')}))
+            for link in result['linkActions']:
+                print(json.dumps({k:link[k] for k in ('actionIdentity','explicitOutputPath',
+                    'sharedFlagPresent','currentArtifact','blockers','testEntryVerified')}))
+        elif args.operation=='replay-development-basis':
+            from riscv2x86_py.project_native_requirements import replay as replay_requirements
+            print(json.dumps(replay_requirements(read(args.input))))
         elif args.operation=='build-basis':
             from riscv2x86_py.project_native_binding import build_basis
             if Path(args.output).absolute().parent==Path('/'):

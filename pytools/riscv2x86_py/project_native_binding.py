@@ -31,7 +31,7 @@ def export_command(receipt, binary, input_path, report_path, output):
         '-Werror=unknown-warning-option', '-x', 'cpp-output']
 
 
-def acquire(receipt_path, frontend, output, *, timeout=300):
+def acquire(receipt_path, frontend, output, *, timeout=300, context_schema=None):
     if type(timeout) is not int or timeout < 1:
         raise ValueError('NATIVE_BINDING_TIMEOUT_INVALID')
     if Path(output).absolute().parent == Path('/'):
@@ -64,7 +64,7 @@ def acquire(receipt_path, frontend, output, *, timeout=300):
         report = read(frontend_report)
         runner.state['currentStage'] = 'physical-instance-binding'; runner.save()
         bindings = derive(ast, report, raw, receipt['analysisInputIdentity'])
-        contexts = call_contexts(ast, bindings, receipt['analysisInputIdentity'])
+        contexts = call_contexts(ast, bindings, receipt['analysisInputIdentity'], schema=context_schema)
         binding_path = runner.output/'instance-bindings.json'
         context_path = runner.output/'call-contexts.json'
         binding_path.write_text(json.dumps(bindings, indent=2))
@@ -147,7 +147,9 @@ def validate_artifacts(bundle):
         raise ValueError('NATIVE_BINDING_INPUT_REPLAY_RECEIPT_INVALID')
     report = read(bundle['frontendReportPath'])
     bindings = derive(artifacts['canonicalAst'], report, artifacts['inputBytes'], receipt['analysisInputIdentity'])
-    contexts = call_contexts(artifacts['canonicalAst'], bindings, receipt['analysisInputIdentity'])
+    stored_contexts = read(bundle['contextsPath'])
+    contexts = call_contexts(artifacts['canonicalAst'], bindings, receipt['analysisInputIdentity'],
+        schema=stored_contexts.get('schemaVersion'))
     if (bundle['nativeInputIdentity'] != receipt['nativeInputIdentity']
             or bundle['analysisInputIdentity'] != receipt['analysisInputIdentity']
             or bundle['frontendReportIdentity'] != identity(report)
@@ -170,7 +172,8 @@ def replay(bundle, output, *, timeout=300):
     validate_artifacts(bundle)
     if digest(bundle['frontend']) != bundle['frontendDigest']:
         raise ValueError('NATIVE_BINDING_FRONTEND_CHANGED')
-    fresh = acquire(bundle['nativeInputReceiptPath'], bundle['frontend'], output, timeout=timeout)
+    fresh = acquire(bundle['nativeInputReceiptPath'], bundle['frontend'], output, timeout=timeout,
+        context_schema=read(bundle['contextsPath'])['schemaVersion'])
     def meaning(value):
         return {k: value[k] for k in ('schemaVersion', 'nativeInputReceiptDigest',
             'nativeInputIdentity', 'analysisInputIdentity', 'frontend', 'frontendDigest',
