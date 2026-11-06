@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 
-from .project_build_records import identity, record, document
+from .project_build_records import identity, record, document, classify
 from .project_compile_context import digest, ENV_KEYS, derive
 from .project_compile_arguments import action_option
 from .project_tool_resolution import resolve_executable
@@ -118,7 +118,31 @@ def load(path,*,inputs=True):
     return value
 
 
+def _archive_output(argv, cwd):
+    """Observe a narrow regular-ar write grammar; unsupported forms stay unknown."""
+    args = argv[1:]
+    if len(args) < 2:
+        return None
+    operation = args[0].removeprefix('-')
+    if (not operation or any(ch not in 'rqcDsUvl' for ch in operation)
+            or sum(operation.count(ch) for ch in 'rq') != 1
+            or not args[1] or args[1].startswith('-')
+            or any(arg.startswith(('-', '@')) for arg in args[2:])):
+        return None
+    path = Path(args[1]); path = path if path.is_absolute() else Path(cwd)/path
+    try:
+        with path.open('rb') as stream:
+            if stream.read(8) != b'!<arch>\n': return None
+        result = snapshot([path])[0]
+        result['elfHeader'] = None
+        return result
+    except (OSError, ValueError):
+        return None
+
+
 def _output(argv,cwd):
+    if classify(argv) == 'archive':
+        return _archive_output(argv, cwd)
     # Only an explicit, unambiguous -o is observed here. Do not guess default
     # outputs, archive members or linker-script semantics from basenames.
     values=[];args=argv[1:];i=0
