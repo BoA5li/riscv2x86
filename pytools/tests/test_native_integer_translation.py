@@ -252,17 +252,20 @@ def orchestration_fixture(tmp_path, monkeypatch, *, wrong_target=False):
             'nativeBindingReplayComplete': True, 'semanticApproval': False, 'productionAcceptanceComplete': False}
         return dict(result, replayIdentity=identity(result))
     monkeypatch.setattr(route.binding, 'replay', replay)
+    ast_round = 0
     def as_raw(node):
         if isinstance(node, dict):
-            return {k: ('0x'+format(int(v[5:]), 'x') if k in {'id', 'previousDecl'} and isinstance(v,str) and v.startswith('node:')
+            return {k: ('0x'+format(int(v[5:])+0x1000*ast_round, 'x') if k in route.native.REFERENCE_KEYS and isinstance(v,str) and v.startswith('node:')
                 else as_raw(v)) for k,v in node.items()}
         if isinstance(node, list): return [as_raw(x) for x in node]
         return node
     def run(argv, **kwargs):
+        nonlocal ast_round
         argv = list(argv)
         if '-dM' in argv:
             return SimpleNamespace(returncode=0, stdout='\n'.join('#define '+k+' '+v for k,v in model.items() if v is not None).encode(), stderr=b'')
         if '-ast-dump=json' in argv:
+            ast_round += 1
             key = route.declaration_key(ast)
             edit = route.plan_operand(bindings['records'][0], model, key)
             start = edit['sourceRange'][0]; stop = start+len(edit['replacement'])
@@ -298,9 +301,20 @@ def test_candidate_orchestration_rebuilds_and_audits_all_artifacts(tmp_path, mon
     assert value['derivedTargetMaterializationComplete'] and value['localIntegerProofComplete']
     assert not value['wholeFunctionCompositionVerified'] and not value['productionAcceptanceComplete']
     assert route.audit(value, tmp_path/'audit')['nativeCandidateIndependentAuditComplete']
+    fresh = json.loads((tmp_path/'audit/rebuild/candidate.json').read_text())
+    old_ast = next(c for c in value['commands'] if c['stage'] == 'target-ast')
+    new_ast = next(c for c in fresh['commands'] if c['stage'] == 'target-ast')
+    assert old_ast['stdoutDigest'] != new_ast['stdoutDigest']
+    assert value['targetAstIdentity'] == fresh['targetAstIdentity']
+    state = json.loads((tmp_path/'audit/run-status.json').read_text())
+    assert state['status'] == 'complete' and state['nativeCandidateIndependentAuditComplete']
+    assert (tmp_path/'audit/audit.json').is_file()
     Path(value['candidatePath']).with_name('target.o').write_bytes(b'changed')
     with pytest.raises(ValueError, match='PROOF_ARTIFACT_CHANGED'):
         route.audit(value, tmp_path/'negative-audit')
+    state = json.loads((tmp_path/'negative-audit/run-status.json').read_text())
+    assert state['status'] == 'failed' and not state['nativeCandidateIndependentAuditComplete']
+    assert not (tmp_path/'negative-audit/audit.json').exists()
 
 
 def test_changed_target_ast_cannot_authorize_generation(tmp_path, monkeypatch):
@@ -319,3 +333,24 @@ def test_rehashed_program_acceptance_claim_fails_independent_rebuild(tmp_path, m
     value['candidateIdentity'] = identity({k:v for k,v in value.items() if k != 'candidateIdentity'})
     with pytest.raises(ValueError, match='INDEPENDENT_AUDIT_MISMATCH'):
         route.audit(value, tmp_path/'audit')
+    state = json.loads((tmp_path/'audit/run-status.json').read_text())
+    rebuild = json.loads((tmp_path/'audit/rebuild/run-status.json').read_text())
+    assert rebuild['status'] == 'complete'
+    assert state['status'] == 'failed' and not state['nativeCandidateIndependentAuditComplete']
+    assert not (tmp_path/'audit/audit.json').exists()
+
+
+def test_audit_records_nested_build_failure_without_success_receipt(tmp_path, monkeypatch):
+    from riscv2x86_py.project_acquisition import StageFailure
+    path, gcc = orchestration_fixture(tmp_path, monkeypatch)
+    value = route.acquire(path, gcc, tmp_path/'candidate')
+    def failed_rebuild(*args, **kwargs):
+        raise StageFailure('source-object-build', 7)
+    monkeypatch.setattr(route, 'acquire', failed_rebuild)
+    with pytest.raises(StageFailure):
+        route.audit(value, tmp_path/'failed-audit')
+    state = json.loads((tmp_path/'failed-audit/run-status.json').read_text())
+    assert state['status'] == 'failed' and not state['nativeCandidateIndependentAuditComplete']
+    assert state['primaryFailure']['failedStage'] == 'source-object-build'
+    assert state['primaryFailure']['returnCode'] == 7
+    assert not (tmp_path/'failed-audit/audit.json').exists()

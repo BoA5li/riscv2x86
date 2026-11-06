@@ -20,6 +20,7 @@ from .project_build_records import identity
 from .project_compile_context import digest
 from .project_tool_resolution import resolve_executable
 from .l3_trace_support import Elf, require_json_match
+from .native_audit_evidence import parse_target_ast, command_projection, POLICY as AUDIT_POLICY
 
 SCHEMA = 'riscv2x86.native-integer-candidate.v1'
 
@@ -283,7 +284,7 @@ def acquire(bundle_path, target_compiler, output, *, timeout=300):
             '-Werror', '-Werror=unknown-attributes', '-Werror=ignored-attributes',
             '-Werror=unknown-warning-option', '-x', 'cpp-output', '-fsyntax-only',
             '-Xclang', '-ast-dump=json', '-'], data=candidate)
-        target_ast = native.canonical_ast(json.loads(raw_ast))
+        target_ast = parse_target_ast(raw_ast)
         if any(node.get('kind') in {'GCCAsmStmt', 'MSAsmStmt', 'FileScopeAsmDecl'}
                 for node, _, _ in _nodes(target_ast)):
             raise ValueError('NATIVE_TRANSLATION_TARGET_ASM_REMAINS')
@@ -379,8 +380,9 @@ def acquire(bundle_path, target_compiler, output, *, timeout=300):
         runner.failure(runner.state['currentStage'], exc); raise
 
 
-def audit(value, output, *, timeout=300):
-    if (value.get('schemaVersion') != SCHEMA or value.get('candidateIdentity') != identity({
+def _audit(value, output, *, timeout=300, stage=lambda name: None):
+    stage("validate-original-candidate")
+    if (not isinstance(value, dict) or value.get('schemaVersion') != SCHEMA or value.get('candidateIdentity') != identity({
             k: v for k, v in value.items() if k != 'candidateIdentity'})):
         raise ValueError('NATIVE_TRANSLATION_CANDIDATE_IDENTITY_INVALID')
     if digest(value['candidatePath']) != value['candidateDigest']:
@@ -397,25 +399,20 @@ def audit(value, output, *, timeout=300):
         raise ValueError('NATIVE_TRANSLATION_BINDING_REPLAY_ARTIFACT_CHANGED')
     stored_replay_bundle = read(value['bindingReplayBundlePath'])
     binding.validate_artifacts(stored_replay_bundle)
+    stage('independent-candidate-rebuild')
     fresh = acquire(value['bindingBundlePath'], value['targetCompiler'], output, timeout=timeout)
+    stage('compare-proofs-and-artifacts')
     def projection(receipt):
         return {k: v for k, v in receipt.items() if k not in (
             'candidatePath', 'candidateIdentity', 'commands', 'bindingReplay',
             'bindingReplayBundlePath', 'bindingReplayBundleDigest')}
     require_json_match(projection(fresh), projection(value), 'NATIVE_TRANSLATION_INDEPENDENT_AUDIT_MISMATCH')
-    def command_projection(receipt):
-        root = str(Path(receipt['candidatePath']).parent)
-        rows = []
-        for command in receipt['commands']:
-            argv = [('$OUTPUT/'+arg[len(root)+1:]) if arg.startswith(root+'/') else arg
-                    for arg in command['command']]
-            rows.append({**{k: command[k] for k in ('stage', 'returnCode', 'stdinIdentity',
-                'stdoutDigest', 'stderrDigest')}, 'command': argv})
-        return rows
+    stage('compare-command-evidence')
     require_json_match(command_projection(fresh), command_projection(value),
         'NATIVE_TRANSLATION_COMMAND_RECIPE_MISMATCH')
     # This receipt has output-dependent bundle IDs, but its content identity,
     # original input and completed replay claim still must be bound exactly.
+    stage('validate-binding-replay')
     old_replay = value['bindingReplay']
     if (old_replay.get('replayIdentity') != identity({k: v for k, v in old_replay.items() if k != 'replayIdentity'})
             or old_replay.get('originalBindingBundleIdentity') != value['bindingBundleIdentity']
@@ -426,6 +423,48 @@ def audit(value, output, *, timeout=300):
             or old_replay.get('semanticApproval') is not False
             or old_replay.get('productionAcceptanceComplete') is not False):
         raise ValueError('NATIVE_TRANSLATION_BINDING_REPLAY_RECEIPT_INVALID')
+    stage('closing-original-artifact-check')
+    for name, expected in value['artifactDigests'].items():
+        if digest(directory/name) != expected:
+            raise ValueError('NATIVE_TRANSLATION_PROOF_ARTIFACT_CHANGED')
+    command_projection(value)
+    for path, expected in value['tools'].items():
+        if digest(path) != expected:
+            raise ValueError('NATIVE_TRANSLATION_CLOSING_TOOL_CHANGED')
+    if (digest(value['bindingBundlePath']) != value['bindingBundleDigest']
+            or digest(value['bindingReplayBundlePath']) != value['bindingReplayBundleDigest']):
+        raise ValueError('NATIVE_TRANSLATION_CLOSING_INPUT_CHANGED')
+    binding.validate_artifacts(read(value['bindingBundlePath']))
+    binding.validate_artifacts(stored_replay_bundle)
     return {'nativeCandidateIndependentAuditComplete': True, 'candidateIdentity': value['candidateIdentity'],
+        'comparisonPolicy': AUDIT_POLICY, 'targetAstProjectionPolicy': native.AST_POLICY,
+        'targetAstIdentity': value['targetAstIdentity'],
         'proofScope': 'local-integer-statements-and-preserved-supported-builtins',
         'productionAcceptanceComplete': False, 'semanticApproval': False}
+
+
+def audit(value, output, *, timeout=300):
+    """Own audit status separately from successful candidate reconstruction."""
+    if type(timeout) is not int or timeout < 1:
+        raise ValueError('NATIVE_TRANSLATION_TIMEOUT_INVALID')
+    if Path(output).absolute().parent == Path('/'):
+        raise ValueError('NATIVE_TRANSLATION_RESULT_PARENT_REQUIRED')
+    runner = Runner(output, 'native-candidate-independent-audit')
+    runner.state.update(nativeCandidateIndependentAuditComplete=False, comparisonPolicy=AUDIT_POLICY)
+    runner.save()
+    def stage(name):
+        runner.state['currentStage'] = name; runner.save()
+    try:
+        result = _audit(value, runner.output/'rebuild', timeout=timeout, stage=stage)
+        path = runner.output/'audit.json'
+        with path.open('x') as stream:
+            json.dump(result, stream, indent=2)
+        runner.state.update(currentStage='complete', status='complete', acquisitionComplete=True,
+            nativeCandidateIndependentAuditComplete=True, auditPath=str(path), auditDigest=digest(path))
+        runner.save(); return result
+    except StageFailure as exc:
+        runner.state.update(status='failed', primaryFailure={'stage': runner.state['currentStage'],
+            'failedStage': exc.stage, 'returnCode': exc.code})
+        runner.save(); raise
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        runner.failure(runner.state['currentStage'], exc); raise
