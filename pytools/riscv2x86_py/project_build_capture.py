@@ -70,7 +70,7 @@ def snapshot(paths):
     return sorted(rows,key=lambda r:r['path'])
 
 
-def create(directory,tools,*,inputs=()):
+def create(directory,tools,*,inputs=(),archive_tools=None):
     directory=Path(directory).resolve()
     if not tools or any(not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}',k) for k in tools):
         raise ValueError('PROJECT_CAPTURE_TOOL_NAMES_INVALID')
@@ -89,6 +89,9 @@ def create(directory,tools,*,inputs=()):
         'moduleDigest':digest(__file__),'python':str(Path(sys.executable).resolve()),
         'pythonDigest':digest(sys.executable),'inputs':input_rows,
         'semanticApproval':False,'productionAcceptanceComplete':False}
+    if archive_tools:
+        from .project_archive_provenance import configure
+        manifest['archiveCapture'] = configure(resolved, archive_tools)
     config=directory/'capture.json'
     # Wrapper bytes are bound by the manifest as well as being auditable text.
     wrappers={}
@@ -105,10 +108,16 @@ def load(path,*,inputs=True):
     config=Path(path).resolve(strict=True);value=read(config)
     fields={'schemaVersion','directory','tools','driverPath','driverDigest','modulePath','moduleDigest',
         'python','pythonDigest','inputs','wrappers','semanticApproval','productionAcceptanceComplete','recordIdentity'}
-    if (set(value)!=fields or value['schemaVersion']!=SCHEMA
+    if (set(value)-{'archiveCapture'}!=fields or value['schemaVersion']!=SCHEMA
             or Path(value['directory'])!=config.parent or config.name!='capture.json'
             or value['semanticApproval'] is not False or value['productionAcceptanceComplete'] is not False):
         raise ValueError('PROJECT_CAPTURE_CONFIG_INVALID')
+    if 'archiveCapture' in value:
+        from .project_archive_provenance import POLICY
+        policy = value['archiveCapture']
+        if (policy['policy'] != POLICY or digest(policy['modulePath']) != policy['moduleDigest']
+                or digest(policy['parserPath']) != policy['parserDigest']):
+            raise ValueError('ARCHIVE_CAPTURE_IMPLEMENTATION_CHANGED')
     for p,h in [('driverPath','driverDigest'),('modulePath','moduleDigest'),('python','pythonDigest')]:
         if digest(value[p])!=value[h]:raise ValueError('PROJECT_CAPTURE_IMPLEMENTATION_CHANGED:'+p)
     for item in [*value['tools'].values(),*value['wrappers'].values()]:
@@ -172,7 +181,14 @@ def _output(argv,cwd):
 
 
 def invoke(config,tool,args):
-    value=load(config);selected=value['tools'].get(tool)
+    value=load(config)
+    from .project_archive_provenance import Session
+    with Session(value,tool,args) as archive_session:
+        return _invoke(value,tool,args,archive_session)
+
+
+def _invoke(value,tool,args,archive_session):
+    selected=value['tools'].get(tool)
     if selected is None:raise ValueError('PROJECT_CAPTURE_TOOL_UNREGISTERED')
     argv=[selected['path'],*args];cwd=os.getcwd();token=uuid.uuid4().hex
     run_id=os.environ.get('RV2X86_PROJECT_CAPTURE_RUN','')
@@ -195,6 +211,8 @@ def invoke(config,tool,args):
         'environment':environment(),'contextAtStart':context,'contextError':context_error,
         'startedMonotonicNs':time.monotonic_ns()}
     path=Path(value['directory'])/'invocations'/token
+    if archive_session.before is not None:
+        started['archiveBefore'] = archive_session.before
     first=write(str(path)+'.start.json',started)
     error=None
     try:
@@ -206,6 +224,8 @@ def invoke(config,tool,args):
         'invocationId':token,'startIdentity':first['recordIdentity'],'returnCode':code,
         'launchError':error,'output':_output(argv,cwd),'finishedMonotonicNs':time.monotonic_ns(),
         'toolDigestAfter':digest(selected['path'])}
+    if archive_session.before is not None:
+        finished['archiveAfter'] = archive_session.finish(code)
     write(str(path)+'.finish.json',finished)
     if code<0:
         if -code not in {signal.SIGKILL,signal.SIGSTOP}:signal.signal(-code,signal.SIG_DFL)
@@ -300,6 +320,22 @@ def inventory(config,*,stage=None):
                     action.pop('actionIdentity')
                     action.update(exitStatusObserved=True,observedReturnCode=b['returnCode'],
                         observedCompileInputs=observed,observedOutput=b['output'],captureRunId=a['runId'])
+                    if 'archiveCapture' in value:
+                        action['observedInvocationInterval'] = {
+                            'start':a['startedMonotonicNs'],'finish':b['finishedMonotonicNs']}
+                    if 'archiveBefore' in a or 'archiveAfter' in b:
+                        from .project_archive_provenance import verify
+                        profile = value.get('archiveCapture', {}).get('tools', {}).get(a['tool'])
+                        if profile is None or profile['profile'] != a['archiveBefore']['profile']:
+                            raise ValueError('ARCHIVE_CAPTURE_PROFILE_MISMATCH')
+                        verify(value['directory'],a['archiveBefore'],b['archiveAfter'],
+                               a['arguments'],a['directory'],b['returnCode'])
+                        action['archiveOperationEvidence'] = {
+                            'before':a['archiveBefore'], 'after':b['archiveAfter'],
+                            'startedMonotonicNs':a['startedMonotonicNs'],
+                            'finishedMonotonicNs':b['finishedMonotonicNs']}
+                    elif a['tool'] in value.get('archiveCapture', {}).get('tools', {}):
+                        raise ValueError('ARCHIVE_CAPTURE_OBSERVATION_REQUIRED')
                     action['actionIdentity']=identity(action)
                     rid=a['runId']
                     if rid and rid not in runs:raise ValueError('PROJECT_CAPTURE_PARENT_RUN_UNRESOLVED')
@@ -332,6 +368,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='operation',required=True)
     c=sub.add_parser('create');c.add_argument('--output',required=True);c.add_argument('--tool',action='append',required=True)
     c.add_argument('--input',action='append',default=[])
+    c.add_argument('--archive-tool',action='append',default=[],metavar='NAME=gnu-ar|gnu-ranlib')
     for name in ('run','driver'):
         p=sub.add_parser(name);p.add_argument('--capture',required=True)
         if name=='run':
@@ -348,7 +385,12 @@ def main(argv=None):
                 key,sep,path=spec.partition('=')
                 if not sep or key in tools:raise ValueError('PROJECT_CAPTURE_TOOL_SPEC_INVALID')
                 tools[key]=path
-            result=create(args.output,tools,inputs=args.input)
+            profiles={}
+            for spec in args.archive_tool:
+                key,sep,profile=spec.partition('=')
+                if not sep or key in profiles:raise ValueError('ARCHIVE_TOOL_PROFILE_INVALID')
+                profiles[key]=profile
+            result=create(args.output,tools,inputs=args.input,archive_tools=profiles)
             print(json.dumps({'capture':str(Path(args.output).resolve()/'capture.json'),'wrappers':result['wrappers']}));return 0
         if args.operation=='import':
             result=inventory(args.capture,stage=args.stage)

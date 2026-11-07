@@ -8,6 +8,7 @@ from .project_compile_context import digest
 from .l3_trace_support import require_json_match
 
 SCHEMA = 'riscv2x86.native-dependency-inventory.v1'
+ARCHIVE_SCHEMA = 'riscv2x86.native-dependency-inventory.v2'
 
 
 def read(path):
@@ -30,7 +31,7 @@ def checked_records(path):
     return value
 
 
-def analyze(root_raw, archive_raw, actions):
+def analyze(root_raw, archive_raw, actions, *, archive_selection=None):
     root = elf_symbols(root_raw)
     rows = []; blockers = []; inspected = {}
     for member in archive_members(archive_raw):
@@ -60,18 +61,34 @@ def analyze(root_raw, archive_raw, actions):
                 'actionIdentity': action['actionIdentity'], 'kind':action['kind'],
                 'path':str(path), 'resolvedPath':actual, 'digest':expected,
                 'directory':action['directory'], 'arguments':action['arguments']})
+            if 'observedInvocationInterval' in action:
+                row['contentMatchingActions'][-1]['observedInvocationInterval'] = action['observedInvocationInterval']
         if not row['contentMatchingActions']:
             row['provenanceStatus'] = 'unbound'
         else:
             row['provenanceStatus'] = 'content-matches-captured-output'
         rows.append(row)
+    if archive_selection is not None and archive_selection.get('complete'):
+        relations = archive_selection['members']
+        if len(relations) != len(rows):raise ValueError('DEPENDENCY_ARCHIVE_MEMBER_COUNT_MISMATCH')
+        for row, relation in zip(rows, relations):
+            if row['digest'] != relation['digest']:
+                raise ValueError('DEPENDENCY_ARCHIVE_MEMBER_DIGEST_MISMATCH')
+            row['archiveInput'] = relation
+            row['selectedBuildActions'] = [a for a in row['contentMatchingActions']
+                if all(a[k] == relation[k] for k in ('path','resolvedPath','digest'))
+                and type(a.get('observedInvocationInterval', {}).get('start')) is int
+                and type(a.get('observedInvocationInterval', {}).get('finish')) is int
+                and a['observedInvocationInterval']['start'] <= a['observedInvocationInterval']['finish']
+                < relation['archiveStartedMonotonicNs']]
     graph = closure(root, rows)
     selected = set(graph['selectedObjects'])
     for row in rows:
         if row['memberId'] not in selected: continue
-        if row['provenanceStatus'] == 'unbound':
+        candidates = row.get('selectedBuildActions', row['contentMatchingActions'])
+        if not candidates:
             blockers.append({'reason':'SELECTED_MEMBER_SOURCE_UNBOUND', 'memberId':row['memberId']})
-        elif len(row['contentMatchingActions']) > 1:
+        elif len(candidates) > 1:
             blockers.append({'reason':'SELECTED_MEMBER_MULTIPLE_BUILD_IDENTITIES', 'memberId':row['memberId']})
     blockers.extend(graph['blockers'])
     for path, expected in inspected.items():
@@ -102,7 +119,15 @@ def acquire(candidate_path, records_path, archive_path):
     if bytes_digest(source_raw) != candidate['sourceObjectDigest'] or bytes_digest(target_raw) != candidate['targetObjectDigest']:
         raise ValueError('DEPENDENCY_CANDIDATE_OBJECT_CHANGED')
     records = checked_records(records_path)
-    detail = analyze(source_raw, archive_path.read_bytes(), records['actions'])
+    archive_raw = archive_path.read_bytes()
+    capture = read(records['captureConfig'])
+    selection = None
+    if 'archiveCapture' in capture:
+        from .project_archive_provenance import select
+        selection = select(records['actions'],capture['directory'],str(archive_path),bytes_digest(archive_raw))
+    detail = analyze(source_raw, archive_raw, records['actions'], archive_selection=selection)
+    if selection is not None and not selection['complete']:
+        detail['blockers'].append({'reason':selection['reason']})
     target = elf_symbols(target_raw)
     if detail['rootElf']['machine'] != 243 or target['machine'] != 62:
         raise ValueError('DEPENDENCY_RV64_TO_X86_OBJECTS_REQUIRED')
@@ -119,24 +144,31 @@ def acquire(candidate_path, records_path, archive_path):
             'actionIdentity','directory','arguments','observedReturnCode','observedOutput')})
     for path, expected in inputs.items():
         if digest(path) != expected: raise ValueError('DEPENDENCY_CLOSING_INPUT_CHANGED:' + path)
-    body = {'schemaVersion':SCHEMA,
+    body = {'schemaVersion':ARCHIVE_SCHEMA if selection is not None else SCHEMA,
             'candidatePath':str(candidate_path), 'recordsPath':str(records_path), 'archivePath':str(archive_path),
             'inputDigests':inputs, 'candidateIdentity':candidate['candidateIdentity'],
             'captureActionsReplayComplete':True, 'candidateArtifactIntegrityComplete':True,
             **detail, 'targetElf':target, 'exportedSymbolSignaturesMatch':definitions_match,
             'archiveActions':archive_actions, 'inventoryComplete':True,
             'status':'blocked' if blockers else 'inventory-only',
-            'archiveActionSelectionVerified':False, 'targetDependencyCompatibilityVerified':False,
+            'archiveActionSelectionVerified':bool(selection is not None and selection['complete']),
+            'targetDependencyCompatibilityVerified':False,
             'typedCallContractVerified':False, 'programObservationVerified':False,
             'semanticApproval':False, 'productionAcceptanceComplete':False,
             'requiredWork':['ARCHIVE_ACTION_AND_VARIANT_SELECTION', 'TARGET_DEPENDENCY_BUILD_CONTRACT',
                 'TYPED_CALL_OBJECT_AND_EFFECT_CONTRACT', 'AUTHORIZED_TARGET_LINK',
                 'CALIBRATED_PROGRAM_OBSERVATION', 'L1_L3_AND_INDEPENDENT_PROGRAM_AUDIT']}
+    if selection is not None:
+        body['archiveSelection'] = selection
+        selected = set(detail['graph']['selectedObjects'])
+        body['archiveMemberBuildSelectionVerified'] = selection['complete'] and all(
+            len(row.get('selectedBuildActions', [])) == 1
+            for row in detail['members'] if row['memberId'] in selected)
     return dict(body, inventoryIdentity=identity(body))
 
 
 def replay(value):
-    if value.get('schemaVersion') != SCHEMA or value.get('inventoryIdentity') != identity(
+    if value.get('schemaVersion') not in (SCHEMA, ARCHIVE_SCHEMA) or value.get('inventoryIdentity') != identity(
             {k:v for k,v in value.items() if k != 'inventoryIdentity'}):
         raise ValueError('DEPENDENCY_INVENTORY_IDENTITY_INVALID')
     fresh = acquire(value['candidatePath'], value['recordsPath'], value['archivePath'])

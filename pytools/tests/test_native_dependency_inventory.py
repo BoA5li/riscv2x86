@@ -210,7 +210,8 @@ def test_dependency_acquire_and_replay_protocol_no_semantic_approval(objects,mon
     subprocess.run([ar,'rcs',str(archive),'leaf.o','last.o'],cwd=directory,check=True)
     captured=actions(directory,['leaf','last'])
     records=directory/'records.json';records.write_text('{}')
-    monkeypatch.setattr(module,'checked_records',lambda p:{'actions':captured})
+    config=directory/'legacy-capture.json';config.write_text('{}')
+    monkeypatch.setattr(module,'checked_records',lambda p:{'actions':captured,'captureConfig':str(config)})
     body={'schemaVersion':'riscv2x86.native-integer-candidate.v1',
           'candidatePath':str(directory/'candidate.i'),
           'sourceObjectDigest':digest(directory/'source.o'),

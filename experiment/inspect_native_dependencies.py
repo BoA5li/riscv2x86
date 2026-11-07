@@ -7,12 +7,14 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'pytools'))
 from riscv2x86_py import native_dependency_inventory as dependencies
 from riscv2x86_py import native_backend_inventory as backends
+from riscv2x86_py import project_archive_provenance as archives
 from riscv2x86_py.project_acquisition import Runner
 
 
 def summarize(result):
     replay = (result.get('staticBackendInventoryReplayComplete') is True
-              or result.get('dependencyInventoryReplayComplete') is True)
+              or result.get('dependencyInventoryReplayComplete') is True
+              or result.get('archiveChainReplayComplete') is True)
     if replay:
         count = result.get('replayedBlockerCount')
         if type(count) is not int or count < 0:
@@ -40,7 +42,9 @@ def main(argv=None):
         inventory.add_argument('--'+name,required=True)
     backend = sub.add_parser('backends')
     backend.add_argument('--paths-file',required=True); backend.add_argument('--output',required=True)
-    for operation in ('replay','replay-backends'):
+    chain = sub.add_parser('archive-chain')
+    for name in ('records','archive','output'):chain.add_argument('--'+name,required=True)
+    for operation in ('replay','replay-backends','replay-archive'):
         p = sub.add_parser(operation); p.add_argument('--input',required=True); p.add_argument('--output',required=True)
     args = parser.parse_args(argv)
     if Path(args.output).absolute().parent == Path('/'):
@@ -51,6 +55,8 @@ def main(argv=None):
             result = dependencies.acquire(args.candidate,args.records,args.archive)
         elif args.operation == 'backends':
             result = backends.inspect([p for p in Path(args.paths_file).read_text().splitlines() if p.strip()])
+        elif args.operation == 'archive-chain':result = archives.acquire_chain(args.records,args.archive)
+        elif args.operation == 'replay-archive':result = archives.replay_chain(dependencies.read(args.input))
         elif args.operation == 'replay':result = dependencies.replay(dependencies.read(args.input))
         else:result = backends.replay(dependencies.read(args.input))
         summary = summarize(result)

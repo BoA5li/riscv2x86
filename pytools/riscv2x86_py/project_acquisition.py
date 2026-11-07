@@ -136,7 +136,7 @@ class Runner:
         self.save()
 
 
-def acquire(tooling, prep, archives, output, project):
+def acquire(tooling, prep, archives, output, project, archive_provenance=False):
     runner = Runner(output, project)
     capture = runner.output/'capture/capture.json'
     native_stage = None
@@ -160,6 +160,8 @@ def acquire(tooling, prep, archives, output, project):
         tools = {row['role']: row['path'] for row in check['tools'] if row['role'] in TOOLS}
         argv = [*capture_command, 'create', '--output', str(capture.parent)]
         for name, path in tools.items(): argv += ['--tool', name+'='+path]
+        if archive_provenance:
+            argv += ['--archive-tool','ar=gnu-ar','--archive-tool','ranlib=gnu-ranlib']
         runner.step('create', [*argv, '--input', str(lock)])
 
         def run(stage, command, inputs=()):
@@ -218,6 +220,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('tooling', 'prep', 'archives', 'output'): parser.add_argument(name)
     parser.add_argument('project', choices=tuple(RELEASES))
+    parser.add_argument('--archive-provenance',action='store_true',
+                        help='Observe GNU regular-ar append/index input and output provenance')
     args = parser.parse_args(argv)
     try:
         return acquire(**vars(args))
