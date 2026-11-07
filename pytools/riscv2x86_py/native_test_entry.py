@@ -12,10 +12,13 @@ from .project_native_binding import read
 from .l3_trace_support import Elf, require_json_match
 
 
-def metadata(path):
+def metadata(path, expected_machine=243):
     elf = Elf(path)
-    if elf.machine != 243 or elf.type not in (2, 3):
-        raise ValueError('NATIVE_TEST_RV64_EXECUTABLE_REQUIRED')
+    if expected_machine not in (243, 62) or type(expected_machine) is not int:
+        raise ValueError('NATIVE_TEST_EXPECTED_MACHINE_INVALID')
+    if elf.machine != expected_machine or elf.type not in (2, 3):
+        raise ValueError('NATIVE_TEST_RV64_EXECUTABLE_REQUIRED' if expected_machine == 243
+                         else 'NATIVE_TEST_X86_64_EXECUTABLE_REQUIRED')
     header = elf.data
     phoff = struct.unpack_from('<Q', header, 32)[0]
     size, count = struct.unpack_from('<HH', header, 54)
@@ -58,7 +61,7 @@ def metadata(path):
     return result
 
 
-def acquire(records_path, action_identity):
+def acquire(records_path, action_identity, *, expected_machine=None):
     path = Path(records_path).resolve(strict=True); before = digest(path); records = read(path)
     if (records.get('schemaVersion') != 'riscv2x86.project-build-records.v1'
             or records.get('inventoryIdentity') != identity({k: v for k, v in records.items() if k != 'inventoryIdentity'})):
@@ -81,7 +84,7 @@ def acquire(records_path, action_identity):
     executable = Path(observed['path']); artifact_digest = digest(executable)
     if artifact_digest != observed['digest'] or str(executable.resolve(strict=True)) != observed['resolvedPath']:
         raise ValueError('NATIVE_TEST_EXECUTABLE_CHANGED')
-    detail = metadata(executable)
+    detail = metadata(executable, 243 if expected_machine is None else expected_machine)
     expected_header = {'byteOrder': 'little', 'classBits': 64,
         'machine': detail['elfMachine'], 'type': detail['elfType']}
     require_json_match(expected_header, observed['elfHeader'], 'NATIVE_TEST_CAPTURED_ELF_HEADER_MISMATCH')
@@ -94,13 +97,20 @@ def acquire(records_path, action_identity):
         'runtimeLibrarySelectionVerified': False, 'testExecutionPerformed': False,
         'targetAsmExecutionCoverageVerified': False, 'legalObjectDomainVerified': False,
         'semanticApproval': False, 'productionAcceptanceComplete': False}
+    if expected_machine is not None:
+        body.update(schemaVersion='riscv2x86.native-test-entry-metadata.v2',
+                    expectedMachine=expected_machine)
     return dict(body, entryMetadataIdentity=identity(body))
 
 
 def replay(value):
     if value.get('entryMetadataIdentity') != identity({k:v for k,v in value.items() if k != 'entryMetadataIdentity'}):
         raise ValueError('NATIVE_TEST_ENTRY_METADATA_IDENTITY_INVALID')
-    require_json_match(acquire(value['recordsPath'], value['actionIdentity']), value,
+    schema = value.get('schemaVersion')
+    if schema not in ('riscv2x86.native-test-entry-metadata.v1', 'riscv2x86.native-test-entry-metadata.v2'):
+        raise ValueError('NATIVE_TEST_ENTRY_SCHEMA_INVALID')
+    options = {} if schema.endswith('.v1') else {'expected_machine': value['expectedMachine']}
+    require_json_match(acquire(value['recordsPath'], value['actionIdentity'], **options), value,
         'NATIVE_TEST_ENTRY_METADATA_REPLAY_MISMATCH')
     return {'entryMetadataReplayComplete': True, 'entryMetadataIdentity': value['entryMetadataIdentity'],
         'semanticApproval': False, 'productionAcceptanceComplete': False}

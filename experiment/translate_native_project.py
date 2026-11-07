@@ -23,6 +23,7 @@ def main(argv=None):
     entry = sub.add_parser('entry-metadata')
     for name in ('records', 'action-identity', 'output'):
         entry.add_argument('--'+name, required=True)
+    entry.add_argument('--expected-machine', type=int, choices=(243, 62))
     entry_replay = sub.add_parser('replay-entry-metadata')
     entry_replay.add_argument('--input', required=True)
     for item in (create, replay):
@@ -43,7 +44,7 @@ def main(argv=None):
             from riscv2x86_py.native_test_entry import acquire as inspect_entry
             if Path(args.output).absolute().parent == Path('/'):
                 raise ValueError('NATIVE_TRANSLATION_RESULT_PARENT_REQUIRED')
-            result = inspect_entry(args.records, args.action_identity)
+            result = inspect_entry(args.records, args.action_identity, expected_machine=args.expected_machine)
             with Path(args.output).open('x') as stream:
                 json.dump(result, stream, indent=2)
             print(json.dumps(result))

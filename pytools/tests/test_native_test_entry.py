@@ -76,3 +76,24 @@ def test_host_architecture_is_not_accepted_as_rv64(tmp_path, monkeypatch):
     raw = bytearray(exe.read_bytes()); raw[18:20] = (62).to_bytes(2, 'little'); exe.write_bytes(raw)
     with pytest.raises(ValueError, match='RV64_EXECUTABLE_REQUIRED'):
         entry.metadata(exe)
+
+
+def test_v2_explicit_machine_and_legacy_replay(tmp_path, monkeypatch):
+    path, action, exe, records = fixture(tmp_path, monkeypatch)
+    value = entry.acquire(path, action['actionIdentity'], expected_machine=243)
+    assert value['schemaVersion'].endswith('.v2')
+    assert entry.replay(value)['entryMetadataReplayComplete']
+    raw = bytearray(exe.read_bytes()); raw[18:20] = (62).to_bytes(2, 'little'); exe.write_bytes(raw)
+    action['observedOutput']['digest'] = digest(exe)
+    action['observedOutput']['elfHeader']['machine'] = 62
+    action['actionIdentity'] = identity({k:v for k,v in action.items() if k!='actionIdentity'})
+    records['actions'] = [action]
+    records['inventoryIdentity'] = identity({k:v for k,v in records.items() if k!='inventoryIdentity'})
+    path.write_text(json.dumps(records))
+    value = entry.acquire(path, action['actionIdentity'], expected_machine=62)
+    assert value['metadata']['elfMachine'] == 62
+    assert entry.replay(value)['entryMetadataReplayComplete']
+    with pytest.raises(ValueError, match='RV64_EXECUTABLE_REQUIRED'):
+        entry.acquire(path, action['actionIdentity'])
+    with pytest.raises(ValueError, match='EXPECTED_MACHINE_INVALID'):
+        entry.metadata(exe, True)

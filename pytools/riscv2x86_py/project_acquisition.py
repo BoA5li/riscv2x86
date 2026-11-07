@@ -43,9 +43,10 @@ def publish(path, value):
     os.replace(temporary, path)
 
 
-def preflight(project):
+def preflight(project, tools=None):
     rows = []; missing = []
-    selected = {name: os.environ.get(variable, default) for name, (variable, default) in TOOLS.items()}
+    selected = ({name: os.environ.get(variable, default) for name, (variable, default) in TOOLS.items()}
+                if tools is None else tools)
     for role, name in [(name, name) for name in DEPENDENCIES[project]] + list(selected.items()):
         try:
             executable = resolve_executable(name)
@@ -136,7 +137,8 @@ class Runner:
         self.save()
 
 
-def acquire(tooling, prep, archives, output, project, archive_provenance=False):
+def acquire(tooling, prep, archives, output, project, archive_provenance=False,
+            build_profile=None, test_target=()):
     runner = Runner(output, project)
     capture = runner.output/'capture/capture.json'
     native_stage = None
@@ -146,7 +148,16 @@ def acquire(tooling, prep, archives, output, project, archive_provenance=False):
         release = RELEASES[project]; source = prep/'upstream'/release
         archive = archives/(release+'.tar.xz'); lock = tooling/'experiment/corpora/real-projects-v2/sources.lock.json'
         runner.state['currentStage'] = 'prerequisites'; runner.save()
-        check = preflight(project)
+        from .project_build_profile import validate, targets
+        profile = None
+        goals = targets(test_target)
+        if build_profile is not None:
+            if project != 'gmp':
+                raise ValueError('PROJECT_BUILD_PROFILE_GMP_ONLY')
+            profile = validate(json.loads(Path(build_profile).read_text()))
+            publish(runner.output/'build-profile.json', profile)
+        check = (preflight(project) if profile is None else
+                 preflight(project, {k: v['path'] for k, v in profile['tools'].items()}))
         publish(runner.output/'prerequisites.json', check)
         if not check['prerequisitesAvailable']:
             raise ValueError('PROJECT_BUILD_DEPENDENCIES_MISSING:' + json.dumps(check['missing']))
@@ -162,6 +173,8 @@ def acquire(tooling, prep, archives, output, project, archive_provenance=False):
         for name, path in tools.items(): argv += ['--tool', name+'='+path]
         if archive_provenance:
             argv += ['--archive-tool','ar=gnu-ar','--archive-tool','ranlib=gnu-ranlib']
+        if build_profile is not None:
+            argv += ['--input', str(Path(build_profile).resolve(strict=True))]
         runner.step('create', [*argv, '--input', str(lock)])
 
         def run(stage, command, inputs=()):
@@ -183,8 +196,9 @@ def acquire(tooling, prep, archives, output, project, archive_provenance=False):
             envtool = str(resolve_executable('env'))
             run('configure', [envtool, '-u', 'ABI', 'CC='+str(binpath/'cc'), 'CC_FOR_BUILD='+str(binpath/'hostcc'),
                 'AR='+str(binpath/'ar'), 'RANLIB='+str(binpath/'ranlib'), 'LD='+str(binpath/'ld'),
-                'CFLAGS=-O2 -march=rv64gc -mabi=lp64d', str(resolve_executable('sh')), str(source/'configure'),
-                '--build='+triple, '--host=riscv64-linux-gnu', '--enable-assembly', '--enable-static',
+                'CFLAGS='+('-O2 -march=rv64gc -mabi=lp64d' if profile is None else profile['cflags']),
+                str(resolve_executable('sh')), str(source/'configure'),
+                '--build='+triple, '--host='+('riscv64-linux-gnu' if profile is None else profile['host']), '--enable-assembly', '--enable-static',
                 '--enable-shared', '--prefix='+str(runner.output/'install')])
             run('build', [str(resolve_executable('make')), '-j4', 'V=1'],
                 ('config.h', 'gmp.h', 'gmp-mparam.h', 'Makefile', 'config.status', 'libtool'))
@@ -198,10 +212,24 @@ def acquire(tooling, prep, archives, output, project, archive_provenance=False):
             run('prepare', [*make, 'prepare'], ('.config',))
             run('diagnostic-build', [*make, '-j1', 'init/main.o'],
                 ('.config', 'include/config/auto.conf', 'include/generated/autoconf.h'))
-        runner.step('import', [*prepare, 'import-capture', '--capture', str(capture), '--stage', native_stage,
+        library_stage = native_stage
+        if goals:
+            if project != 'gmp':
+                raise ValueError('PROJECT_TEST_TARGET_GMP_ONLY')
+            for index, goal in enumerate(goals):
+                directory, target = goal.split(':', 1) if ':' in goal else ('.', goal)
+                stage = 'test-build-'+str(index)
+                test_inputs = ['config.h', 'gmp.h', 'gmp-mparam.h', 'Makefile', 'config.status', 'libtool']
+                if directory != '.':test_inputs.append(str(Path(directory)/'Makefile'))
+                run(stage, [str(resolve_executable('make')), '-C', directory, '-j4', 'V=1', target], test_inputs)
+                name = 'test-records.json' if index == len(goals)-1 else 'test-records-'+str(index)+'.json'
+                runner.step('import-'+stage, [*prepare, 'import-capture', '--capture', str(capture),
+                    '--stage', stage, '--output', str(runner.output/name)])
+        runner.step('import', [*prepare, 'import-capture', '--capture', str(capture), '--stage', library_stage,
                                '--output', str(runner.output/'records.json')])
+        inspection_target = [] if profile is None else ['--target', 'riscv64' if profile['side']=='source' else 'x86_64']
         runner.step('inspect', [*prepare, 'inspect', '--records', str(runner.output/'records.json'),
-                                '--output', str(runner.output/'contexts.json')])
+                                *inspection_target, '--output', str(runner.output/'contexts.json')])
         runner.state.update(currentStage='complete', status='complete', acquisitionComplete=True)
         runner.save()
         print(json.dumps({'acquisitionComplete': True, 'output': str(runner.output), 'semanticApproval': False,
@@ -222,6 +250,8 @@ def main(argv=None):
     parser.add_argument('project', choices=tuple(RELEASES))
     parser.add_argument('--archive-provenance',action='store_true',
                         help='Observe GNU regular-ar append/index input and output provenance')
+    parser.add_argument('--build-profile', help='Explicit identity-bound source or target GMP profile')
+    parser.add_argument('--test-target', action='append', default=[], help='Official [build-subdirectory:]make-goal, captured separately in order')
     args = parser.parse_args(argv)
     try:
         return acquire(**vars(args))
