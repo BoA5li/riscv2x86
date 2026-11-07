@@ -142,4 +142,7 @@ def replay(value):
     fresh = acquire(value['candidatePath'], value['recordsPath'], value['archivePath'])
     require_json_match(fresh, value, 'DEPENDENCY_INDEPENDENT_REPLAY_MISMATCH')
     return {'dependencyInventoryReplayComplete':True, 'inventoryIdentity':value['inventoryIdentity'],
+            'replayedInventoryIdentity':value['inventoryIdentity'],
+            'replayedBlockerCount':len(value['blockers']),
+            'status':'blocked' if value['blockers'] else 'inventory-only',
             'semanticApproval':False, 'productionAcceptanceComplete':False}

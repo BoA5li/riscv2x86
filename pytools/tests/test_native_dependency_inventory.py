@@ -16,9 +16,12 @@ from riscv2x86_py import native_backend_inventory as backends
 
 
 @pytest.fixture
-def objects(tmp_path):
+def objects(tmp_path, request):
     cc = shutil.which('gcc'); ar = shutil.which('ar')
     if not cc or not ar:pytest.skip('native GCC and ar required')
+    mode = getattr(request, 'param', 'nonpic')
+    flags = {'nonpic': ['-fno-pic', '-fno-pie'], 'default': [],
+             'pic': ['-fPIC'], 'pie': ['-fPIE']}[mode]
     sources = {
         'root':'extern long leaf(long); long entry(long x){return leaf(x)+1;}',
         'leaf':'extern long last(long); long leaf(long x){return last(x);}',
@@ -28,7 +31,7 @@ def objects(tmp_path):
     }
     for name, source in sources.items():
         (tmp_path/(name+'.c')).write_text(source)
-        subprocess.run([cc,'-c','-O2',name+'.c','-o',name+'.o'],cwd=tmp_path,check=True)
+        subprocess.run([cc,'-c','-O2',*flags,name+'.c','-o',name+'.o'],cwd=tmp_path,check=True)
     archive = tmp_path/'providers.a'
     subprocess.run([ar,'rcs',str(archive),'leaf.o','last.o'],cwd=tmp_path,check=True)
     return tmp_path, cc, ar, archive
@@ -251,3 +254,182 @@ def test_cli_backends_static_inventory_and_replay_preserve_missing(tmp_path):
     result=json.loads((tmp_path/'first/result.json').read_text())
     assert result['blockers'][0]['reason']=='BACKEND_MANIFEST_MISSING'
     assert not result['backendValidationPerformed']
+
+
+@pytest.mark.parametrize('objects', ['default', 'pic', 'pie'], indirect=True)
+def test_real_compiler_modes_preserve_unresolved_toolchain_symbols(objects):
+    """Compiler defaults are inputs, not an assumption of zero external symbols."""
+    directory,cc,ar,archive=objects
+    result=analyze((directory/'root.o').read_bytes(), archive.read_bytes(), actions(directory,['leaf','last']))
+    assert len(result['graph']['selectedObjects'])==3
+    assert {edge['symbol'] for edge in result['graph']['edges']} >= {'leaf','last'}
+    assert not any(b.get('symbol') in {'leaf','last'} for b in result['blockers'])
+    nm=shutil.which('nm')
+    if not nm:pytest.skip('native nm required for independent symbol inventory')
+    for path in (directory/'root.o', directory/'leaf.o', directory/'last.o'):
+        text=subprocess.run([nm,'-u',str(path)],check=True,capture_output=True,text=True).stdout
+        extras={line.split()[-1] for line in text.splitlines() if line.split()}-{'leaf','last'}
+        reported={b.get('symbol') for b in result['blockers']}
+        assert extras <= reported
+    assert not result['graph']['actualLinkSelectionVerified']
+
+
+@pytest.mark.parametrize('symbol', ['_GLOBAL_OFFSET_TABLE_', 'other_toolchain_symbol'])
+def test_symbol_names_never_grant_link_permission(symbol):
+    # No relocation/use inference exists in this conservative policy. Even an
+    # unreferenced declaration stays explicit until a real link contract exists.
+    root={'definitions':[], 'undefined':[{'name':symbol,'binding':1}]}
+    result=closure(root,[])
+    assert result['blockers']==[{'reason':'external-contract-required','object':'root','symbol':symbol}]
+    assert not result['actualLinkSelectionVerified']
+
+
+def test_repeated_missing_base_has_one_observation_and_all_reference_owners(tmp_path):
+    paths=[];base=tmp_path/'base.json'
+    for name in ('one','two','three'):
+        p=tmp_path/(name+'.json');body={'schemaVersion':'test','baseBackendPath':str(base),
+            'baseBackendDigest':'sha256:expected','files':{}}
+        body['backendIdentity']=identity(body);p.write_text(json.dumps(body));paths.append(p)
+    result=backends.inspect(paths)
+    assert [b['reason'] for b in result['blockers']]==['BACKEND_MANIFEST_MISSING']
+    assert len(result['baseReferences'])==3
+    assert len(result['diagnosticSummary']['paths'][0]['owners'])==3
+    assert {e['owner'] for e in result['baseReferences']}==set(map(str,paths))
+    assert {e['status'] for e in result['baseReferences']}=={'unavailable'}
+    replay=backends.replay(result)
+    assert replay['replayedBlockerCount']==1 and replay['status']=='blocked'
+    assert replay['replayedInventoryIdentity']==result['inventoryIdentity']
+
+
+def test_base_digest_mismatch_requires_actual_readable_content(tmp_path):
+    base=tmp_path/'base.json';base.write_text('{"schemaVersion":"test"}')
+    paths=[]
+    for name in ('one','two'):
+        p=tmp_path/(name+'.json');p.write_text(json.dumps({'schemaVersion':'test',
+            'baseBackendPath':str(base),'baseBackendDigest':'sha256:wrong'}));paths.append(p)
+    result=backends.inspect(paths)
+    assert len(result['baseReferences'])==2
+    assert all(b['reason']=='BASE_BACKEND_DIGEST_MISMATCH' for b in result['blockers'])
+    assert all(b['actualDigest']==digest(base) for b in result['blockers'])
+
+
+def test_backend_file_reasons_and_unique_paths_retain_owners(tmp_path):
+    present=tmp_path/'present';present.write_bytes(b'changed')
+    missing=tmp_path/'missing';directory=tmp_path/'dir';directory.mkdir()
+    roots=[]
+    for name in ('first','second'):
+        p=tmp_path/(name+'.json');p.write_text(json.dumps({'schemaVersion':'test','files':{
+            str(present):'sha256:old',str(missing):'sha256:old',str(directory):'sha256:old'}}));roots.append(p)
+    result=backends.inspect(roots);summary=result['diagnosticSummary']
+    assert summary['blockerCount']==6 and summary['affectedPathCount']==3
+    assert summary['reasonCounts']=={'BACKEND_BOUND_FILE_DIGEST_MISMATCH':2,
+        'BACKEND_BOUND_FILE_MISSING':2,'BACKEND_BOUND_FILE_NOT_REGULAR':2}
+    assert all(len(row['owners'])==2 for row in summary['paths'])
+    assert all('observation' in row for row in result['blockers'])
+
+
+def test_backend_unreadable_is_not_missing_or_digest_mismatch(tmp_path,monkeypatch):
+    import errno
+    p=tmp_path/'backend.json';blocked=tmp_path/'plugin'
+    p.write_text(json.dumps({'schemaVersion':'test','files':{str(blocked):'sha256:expected'}}))
+    original=backends._observe
+    def observe(name):
+        if name==str(blocked):
+            return {'status':'unreadable','errorType':'PermissionError','errno':errno.EACCES}
+        return original(name)
+    monkeypatch.setattr(backends,'_observe',observe)
+    result=backends.inspect([p])
+    assert result['blockers'][0]['reason']=='BACKEND_BOUND_FILE_UNREADABLE'
+    assert result['blockers'][0]['actualDigest'] is None
+    assert backends.replay(result)['replayedBlockerCount']==1
+
+
+def test_newly_available_negative_observation_rejected_at_closing(tmp_path,monkeypatch):
+    p=tmp_path/'missing.json';original=backends._observe;calls=0
+    def observe(name):
+        nonlocal calls
+        calls+=1
+        if calls==2:p.write_text('{"schemaVersion":"test"}')
+        return original(name)
+    monkeypatch.setattr(backends,'_observe',observe)
+    with pytest.raises(ValueError,match='CLOSING_OBSERVATION_CHANGED'):backends.inspect([p])
+
+
+def test_legacy_inventory_replay_retains_original_count_and_rejects_forgery(tmp_path):
+    from riscv2x86_py.native_backend_inventory_v1 import inspect as old_inspect
+    # Legacy duplicated missing/mismatch observations are preserved as history,
+    # never rewritten or silently interpreted as an empty current inventory.
+    paths=[]
+    for name in ('one','two'):
+        p=tmp_path/(name+'.json');p.write_text(json.dumps({'schemaVersion':'test',
+            'baseBackendPath':str(tmp_path/'missing.json'),'baseBackendDigest':'sha256:old'}));paths.append(p)
+    legacy=old_inspect(paths);assert len(legacy['blockers'])==2
+    replay=backends.replay(legacy)
+    assert replay['replayedBlockerCount']==2
+    assert replay['replayedSchemaVersion'].endswith('.v1')
+    assert not replay['programObservationCapabilityVerified']
+    legacy['blockers']=[];legacy['inventoryIdentity']=identity({k:v for k,v in legacy.items() if k!='inventoryIdentity'})
+    with pytest.raises(ValueError,match='REPLAY_MISMATCH'):backends.replay(legacy)
+
+
+def test_unknown_inventory_schema_cannot_replay(tmp_path):
+    report={'schemaVersion':'unknown','roots':[],'blockers':[]};report['inventoryIdentity']=identity(report)
+    with pytest.raises(ValueError,match='SCHEMA_UNSUPPORTED'):backends.replay(report)
+
+
+def test_cli_initial_and_replay_stdout_counts_match(tmp_path):
+    import sys
+    script=Path(__file__).resolve().parents[2]/'experiment/inspect_native_dependencies.py'
+    paths=tmp_path/'paths.txt';paths.write_text(str(tmp_path/'absent.json')+'\n')
+    first=subprocess.run([sys.executable,str(script),'backends','--paths-file',str(paths),
+        '--output',str(tmp_path/'initial')],check=True,text=True,capture_output=True)
+    replay=subprocess.run([sys.executable,str(script),'replay-backends','--input',str(tmp_path/'initial/result.json'),
+        '--output',str(tmp_path/'again')],check=True,text=True,capture_output=True)
+    left=json.loads(first.stdout);right=json.loads(replay.stdout)
+    assert left['blockerCount']==right['blockerCount']==1
+    assert left['affectedPathCount']==right['affectedPathCount']==1
+    assert left['status']==right['status']=='blocked'
+    assert right['replayComplete'] and not right['inventoryComplete']
+    assert not right['productionAcceptanceComplete']
+    state=json.loads((tmp_path/'again/run-status.json').read_text())
+    assert state['status']=='complete' and state['inventoryStatus']=='blocked'
+
+
+def test_summary_cannot_silently_default_absent_replay_count():
+    import importlib.util
+    script=Path(__file__).resolve().parents[2]/'experiment/inspect_native_dependencies.py'
+    spec=importlib.util.spec_from_file_location('dependency_cli',script)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    with pytest.raises(ValueError,match='BLOCKER_COUNT_REQUIRED'):
+        module.summarize({'staticBackendInventoryReplayComplete':True})
+
+
+def test_nonregular_manifest_and_empty_roots_are_explicit(tmp_path):
+    report=backends.inspect([tmp_path])
+    assert report['blockers'][0]['reason']=='BACKEND_MANIFEST_NOT_REGULAR'
+    assert backends.inspect([])['blockers'][0]['reason']=='BACKEND_ROOTS_EMPTY'
+
+
+def test_unreadable_base_is_not_reported_as_digest_mismatch(tmp_path,monkeypatch):
+    base=tmp_path/'base.json';root=tmp_path/'root.json'
+    root.write_text(json.dumps({'schemaVersion':'test','baseBackendPath':str(base),
+        'baseBackendDigest':'sha256:expected'}))
+    original=backends._observe
+    def observe(name):
+        if name==str(base):return {'status':'unreadable','errorType':'PermissionError','errno':13}
+        return original(name)
+    monkeypatch.setattr(backends,'_observe',observe)
+    report=backends.inspect([root])
+    assert [b['reason'] for b in report['blockers']]==['BACKEND_MANIFEST_UNREADABLE']
+    assert report['baseReferences'][0]['status']=='unavailable'
+
+
+def test_readable_base_has_all_matched_references_without_approval(tmp_path):
+    base=tmp_path/'base.json';base.write_text('{"schemaVersion":"test"}')
+    root=tmp_path/'root.json';root.write_text(json.dumps({'schemaVersion':'test',
+        'baseBackendPath':str(base),'baseBackendDigest':digest(base)}))
+    report=backends.inspect([root])
+    assert not report['blockers']
+    assert report['baseReferences'][0]['status']=='digest-matched'
+    assert backends.replay(report)['replayedBlockerCount']==0
+    assert not report['backendValidationPerformed'] and not report['productionAcceptanceComplete']

@@ -10,6 +10,28 @@ from riscv2x86_py import native_backend_inventory as backends
 from riscv2x86_py.project_acquisition import Runner
 
 
+def summarize(result):
+    replay = (result.get('staticBackendInventoryReplayComplete') is True
+              or result.get('dependencyInventoryReplayComplete') is True)
+    if replay:
+        count = result.get('replayedBlockerCount')
+        if type(count) is not int or count < 0:
+            raise ValueError('INVENTORY_REPLAY_BLOCKER_COUNT_REQUIRED')
+    else:
+        if not isinstance(result.get('blockers'), list):
+            raise ValueError('INVENTORY_BLOCKER_LIST_REQUIRED')
+        count = len(result['blockers'])
+    summary = {'operationComplete':True, 'inventoryComplete':not replay,
+               'replayComplete':replay, 'blockerCount':count,
+               'status':'blocked' if count else 'inventory-only',
+               'semanticApproval':False, 'productionAcceptanceComplete':False}
+    if replay:
+        summary['replayedInventoryIdentity'] = result['replayedInventoryIdentity']
+    if 'diagnosticSummary' in result:
+        summary['affectedPathCount'] = result['diagnosticSummary']['affectedPathCount']
+    return summary
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='operation',required=True)
@@ -31,15 +53,14 @@ def main(argv=None):
             result = backends.inspect([p for p in Path(args.paths_file).read_text().splitlines() if p.strip()])
         elif args.operation == 'replay':result = dependencies.replay(dependencies.read(args.input))
         else:result = backends.replay(dependencies.read(args.input))
+        summary = summarize(result)
         artifact = runner.output/'result.json'
         artifact.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
         runner.state.update(status='complete', currentStage='complete',
-            inventoryComplete=True, semanticApproval=False, productionAcceptanceComplete=False)
+            inventoryStatus=summary['status'],
+            **{key:value for key,value in summary.items() if key != 'status'})
         runner.save()
-        print(json.dumps({'resultPath':str(artifact),
-            'inventoryComplete':True,'blockerCount':len(result.get('blockers',[])),
-            'status':result.get('status','inventory-only'),
-            'semanticApproval':False,'productionAcceptanceComplete':False}))
+        print(json.dumps({'resultPath':str(artifact), **summary}))
         return 0
     except (OSError,ValueError,KeyError,TypeError) as exc:
         runner.state.update(status='failed',primaryFailure={'type':type(exc).__name__,'detail':str(exc)},
