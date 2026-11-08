@@ -61,7 +61,8 @@ def constants(raw):
 
 
 def acquire(requirements_path, output, objdump, *, timeout=120):
-    root = Path(output).absolute(); root.mkdir(); root = root.resolve()
+    from .native_deployment_prerequisites import output_path
+    root = output_path(output); root.mkdir(); root = root.resolve()
     requirements_path = Path(requirements_path).resolve(strict=True)
     parent = snapshot(requirements_path); req = read(requirements_path); checked(req, 'requirementsIdentity')
     ledger_dir = root/'ledger'; ledger_dir.mkdir()

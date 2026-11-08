@@ -60,7 +60,7 @@ def test_real_substitution_relinks_both_alias_operands_without_original_mutation
     original = d.digest(p/'original.o'); lib = d.digest(p/'libprobe.so.1')
     assert len(plan['entryLibraryPositions']) == 2
     assert subprocess.run([str(p/'test-program')]).returncode == 3
-    value = d.execute(plan, root/'deployment')
+    value = d.execute(plan, root/'deployment', diagnostic_only=True)
     assert value['capturedInputReplacementVerified'] and value['candidateDefinitionAttributionVerified']
     assert value['capturedBaselineBytesReproduced']
     assert subprocess.run([str(root/'deployment/program')]).returncode == 7
@@ -75,7 +75,7 @@ def test_real_substitution_relinks_both_alias_operands_without_original_mutation
 
 def test_loader_selection_and_execution_are_not_binding_or_semantic_proofs(captured):
     root, _, plan = captured
-    d.execute(plan, root/'deployment')
+    d.execute(plan, root/'deployment', diagnostic_only=True)
     value = observe(root/'deployment/result.json', root/'observed', diagnostic=True)
     assert value['loaderListSelectionVerified'] and value['testExecutionPerformed']
     assert value['observedReturnCode'] == 7
@@ -90,7 +90,7 @@ def test_same_bytes_at_different_build_role_do_not_select_another_object(capture
     wrong['originalObject']['argumentIndex'] += 1
     wrong = d.seal({k:v for k,v in wrong.items() if k!='deploymentPlanIdentity'}, 'deploymentPlanIdentity')
     with pytest.raises(ValueError, match='REDERIVATION_MISMATCH'):
-        d.execute(wrong, root/'wrong')
+        d.execute(wrong, root/'wrong', diagnostic_only=True)
     assert not (root/'wrong').exists()
 
 
@@ -105,7 +105,7 @@ def test_unknown_link_semantics_are_rejected_not_dropped(captured, option):
 
 def test_alias_retarget_and_rehashed_claim_are_rejected(captured):
     root, p, plan = captured
-    d.execute(plan, root/'deployment')
+    d.execute(plan, root/'deployment', diagnostic_only=True)
     path = root/'deployment/result.json'; v = d.read(path)
     v['runtimeLibrarySelectionVerified'] = True
     write_json(path, d.seal({k:x for k,x in v.items() if k!='deploymentIdentity'}, 'deploymentIdentity'))
@@ -120,7 +120,7 @@ def test_changed_parent_object_blocks_replay(captured):
     root, p, plan = captured
     (p/'original.o').write_bytes((p/'original.o').read_bytes()+b'changed')
     with pytest.raises(ValueError):
-        d.execute(plan, root/'out')
+        d.execute(plan, root/'out', diagnostic_only=True)
 
 
 def test_constant_witnesses_follow_relocations_not_local_label_names(tmp_path):
@@ -149,7 +149,7 @@ def test_link_failure_keeps_successor_stages_not_run(captured):
     fresh = d.prepare(cpath, plan['libraryRecords']['path'], plan['testRecords']['path'],
                       plan['requirements']['path'], environment=plan['environment'])
     with pytest.raises(ValueError, match='LINK_FAILED:derived-entry'):
-        d.execute(fresh, root/'failed')
+        d.execute(fresh, root/'failed', diagnostic_only=True)
     state = d.read(root/'failed/run-status.json')
     assert state['primaryFailure'] and state['stages'][-1]['status'] == 'failed'
     assert not (root/'failed/result.json').exists()
@@ -159,7 +159,7 @@ def test_overriding_loader_library_is_not_executed(captured):
     root, p, plan = captured
     plan = d.prepare(plan['candidatePath'], plan['libraryRecords']['path'], plan['testRecords']['path'],
                      plan['requirements']['path'], environment=dict(plan['environment'], LD_LIBRARY_PATH=str(p)))
-    d.execute(plan, root/'deployment')
+    d.execute(plan, root/'deployment', diagnostic_only=True)
     with pytest.raises(ValueError, match='EXPECTED_LIBRARY_NOT_SELECTED'):
         observe(root/'deployment/result.json', root/'observed')
     assert not (root/'observed/natural').exists()

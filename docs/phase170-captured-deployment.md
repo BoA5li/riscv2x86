@@ -1,5 +1,8 @@
 # Phase170：捕获链接的精确替换、隔离部署与自动引用诊断
 
+这是phase170历史用法。phase171新增正式部署审计前置及观察v2，使用新代码时请遵循
+[phase171验证文档](phase171-observation-integrity.md)，不要混用旧deploy参数。
+
 基线：`phase169-native-validation-evidence`，远端提交
 `de6210a744fb8409ffd7de1cde873ff14c8d4ea7`。
 交付分支：`phase170-native-deployment-closure`。

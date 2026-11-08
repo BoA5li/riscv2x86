@@ -306,9 +306,15 @@ def implicit_inputs(mapfile, cwd):
     return result
 
 
-def execute(plan, output, timeout=300):
+def execute(plan, output, timeout=300, *, audit_path=None, diagnostic_only=False):
+    from .native_deployment_prerequisites import check as check_audit, output_path
     validate(plan)
-    root = Path(output).absolute(); root.mkdir(); root = root.resolve()
+    if type(diagnostic_only) is not bool or diagnostic_only and audit_path is not None:
+        raise ValueError('DEPLOYMENT_MODE_INVALID')
+    if not diagnostic_only and audit_path is None:
+        raise ValueError('DEPLOYMENT_SUCCESSFUL_CANDIDATE_AUDIT_REQUIRED')
+    audit_binding = None if diagnostic_only else check_audit(plan, audit_path)
+    root = output_path(output); root.mkdir(); root = root.resolve()
     (root/'plan.json').write_text(json.dumps(plan, indent=2)+'\n')
     stage_names = ['baseline-library', 'derived-library', 'baseline-entry', 'derived-entry']
     state = {'schemaVersion': RESULT, 'deploymentPlanIdentity': plan['deploymentPlanIdentity'],
@@ -373,6 +379,8 @@ def execute(plan, output, timeout=300):
         body = {'schemaVersion': RESULT, 'deploymentPlanIdentity': plan['deploymentPlanIdentity'],
                 'planPath': str(root/'plan.json'), 'planDigest': digest(root/'plan.json'),
                 'artifacts': artifacts, 'commands': commands, 'linkLoadInputs': loads,
+                'deploymentMode': 'diagnostic-only' if diagnostic_only else 'audited-local-candidate',
+                'candidateAudit': audit_binding,
                 'capturedInputReplacementVerified': True, 'entryLibraryOperandsReplaced': True,
                 'capturedBaselineBytesReproduced': baseline_match,
                 'derivedLibraryBuildComplete': True, 'derivedEntryBuildComplete': True,
@@ -388,6 +396,10 @@ def execute(plan, output, timeout=300):
             body['blockers'].append('CAPTURED_BASELINE_BYTES_NOT_REPRODUCED')
         if not owner['candidateDefinitionAttributionVerified']:
             body['blockers'].append('CANDIDATE_DEFINITION_ATTRIBUTION_UNRESOLVED')
+        if audit_binding is not None:
+            verify_snapshot(audit_binding); check_audit(plan, audit_binding['path'])
+        else:
+            body['blockers'].append('CANDIDATE_INDEPENDENT_AUDIT_REQUIRED')
         body['evidenceDigests'] = {str(p.relative_to(root)): digest(p) for p in root.rglob('*')
                                    if p.is_file() and p.name not in ('run-status.json', 'result.json')}
         result = seal(body, 'deploymentIdentity')
@@ -423,6 +435,13 @@ def check_result(path):
         if parse(Path(row['path']).read_bytes()) != row['elf']:
             raise ValueError('DEPLOYMENT_ELF_CHANGED')
     plan = read(value['planPath']); root = path.parent
+    mode = value.get('deploymentMode', 'legacy-diagnostic')
+    if mode == 'audited-local-candidate':
+        from .native_deployment_prerequisites import check as check_audit
+        if check_audit(plan, value['candidateAudit']['path']) != value['candidateAudit']:
+            raise ValueError('DEPLOYMENT_AUDIT_BINDING_CHANGED')
+    elif mode not in ('diagnostic-only', 'legacy-diagnostic') or value.get('candidateAudit') is not None:
+        raise ValueError('DEPLOYMENT_MODE_INVALID')
     expected_paths = {'baseline-library': root/'baseline-library',
                       'derived-library': root/'lib'/Path(plan['library']['originalOutput']['path']).name,
                       'baseline-entry': root/'baseline-entry', 'derived-entry': root/'program'}
@@ -470,7 +489,12 @@ def check_result(path):
 
 
 def replay(path, output, timeout=300):
-    original = check_result(path); fresh = execute(read(original['planPath']), output, timeout)
+    from .native_deployment_prerequisites import output_path
+    original = check_result(path)
+    root = output_path(output); root.mkdir()
+    fresh = execute(read(original['planPath']), root/'rebuild', timeout,
+                    audit_path=(original.get('candidateAudit') or {}).get('path'),
+                    diagnostic_only=original.get('deploymentMode') != 'audited-local-candidate')
     # Paths and map headers change with the isolated output directory. Do not
     # strip differing bytes and call that an independent equivalence proof.
     def projection(value):
@@ -486,8 +510,9 @@ def replay(path, output, timeout=300):
     body = {'schemaVersion': 'riscv2x86.captured-deployment-replay.v1',
             'originalDeploymentIdentity': original['deploymentIdentity'],
             'freshDeploymentIdentity': fresh['deploymentIdentity'], 'artifactBytesReproduced': matched,
+            'freshDeploymentPath': str(root/'rebuild/result.json'),
             'independentDeploymentRebuildComplete': matched,
             'semanticApproval': False, 'productionAcceptanceComplete': False}
     result = seal(body, 'replayIdentity')
-    (Path(output)/'replay.json').write_text(json.dumps(result, indent=2)+'\n')
+    (root/'replay.json').write_text(json.dumps(result, indent=2)+'\n')
     return result

@@ -25,6 +25,9 @@ def main(argv=None):
     for name in ('candidate', 'library-action', 'entry-action'):
         prepare.add_argument('--'+name)
     deploy = sub.add_parser('deploy'); deploy.add_argument('--plan', required=True)
+    mode = deploy.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--audit', help='artifact-bound deployment-audit.json prerequisite')
+    mode.add_argument('--diagnostic-only', action='store_true', help='no audit prerequisite; never formal acceptance')
     replay = sub.add_parser('replay'); replay.add_argument('--input', required=True)
     source = sub.add_parser('inspect-source'); source.add_argument('--requirements', required=True)
     source.add_argument('--objdump', required=True)
@@ -32,12 +35,16 @@ def main(argv=None):
     run.add_argument('--arg', action='append', default=[])
     run.add_argument('--diagnostic', action='store_true')
     audit = sub.add_parser('audit-candidate'); audit.add_argument('--plan', required=True)
-    for parser in (deploy, replay, source, run, audit):
+    repeat = sub.add_parser('replay-observation'); repeat.add_argument('--input', required=True)
+    for parser in (deploy, replay, source, run, audit, repeat):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
+        if hasattr(args, 'output'):
+            from riscv2x86_py.native_deployment_prerequisites import output_path
+            output_path(args.output)
         if hasattr(args, 'timeout_seconds') and not 1 <= args.timeout_seconds <= 86400:
             raise ValueError('CLOSURE_TIMEOUT_INVALID')
         if args.operation == 'prepare':
@@ -60,32 +67,37 @@ def main(argv=None):
             with Path(args.output).open('x') as f:
                 json.dump(value, f, indent=2); f.write('\n')
         elif args.operation == 'deploy':
-            value = deployment.execute(deployment.read(args.plan), args.output, args.timeout_seconds)
+            value = deployment.execute(deployment.read(args.plan), args.output, args.timeout_seconds,
+                                       audit_path=args.audit, diagnostic_only=args.diagnostic_only)
         elif args.operation == 'replay':
             value = deployment.replay(args.input, args.output, args.timeout_seconds)
         elif args.operation == 'inspect-source':
             from riscv2x86_py.native_reference_inspection import acquire
             value = acquire(args.requirements, args.output, args.objdump, timeout=args.timeout_seconds)
         elif args.operation == 'audit-candidate':
-            from riscv2x86_py.native_project_translation import audit as candidate_audit
+            from riscv2x86_py.native_deployment_prerequisites import audit as candidate_audit
             plan = deployment.read(args.plan); deployment.validate(plan)
-            value = candidate_audit(deployment.read(plan['candidatePath']), args.output,
-                                    timeout=args.timeout_seconds)
+            value = candidate_audit(plan, args.output, timeout=args.timeout_seconds)
+        elif args.operation == 'replay-observation':
+            value = observation.replay_observation(args.input, args.output, args.timeout_seconds)
         elif args.operation == 'observe':
             value = observation.observe(args.input, args.output, arguments=args.arg,
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == observation.SCHEMA:
+            if value.get('schemaVersion', '').startswith('riscv2x86.deployment-observation.'):
                 observation.check_observation(args.input)
             else:
                 deployment.check_result(args.input)
-        result = {k: value[k] for k in ('deploymentPlanIdentity', 'deploymentIdentity',
+        result = {k: value[k] for k in ('schemaVersion', 'deploymentMode', 'deploymentPlanIdentity', 'deploymentIdentity',
                    'independentDeploymentRebuildComplete', 'capturedInputReplacementVerified',
                    'candidateDefinitionAttributionVerified', 'capturedBaselineBytesReproduced',
                    'derivedLibraryBuildComplete', 'derivedEntryBuildComplete', 'loaderListSelectionVerified',
                    'testExecutionPerformed', 'observedReturnCode', 'parentObligationCount', 'referenceCount',
+                   'naturalRunCompletedWithinBudget', 'diagnosticRunCompletedWithinBudget', 'runtimeBindingClosureComplete',
                    'targetDependencyLinkClosureComplete', 'externalContractClosureComplete') if k in value}
+        for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode'):
+            if key in value: result[key] = value[key]
         if 'nativeCandidateIndependentAuditComplete' in value:
             result['nativeCandidateIndependentAuditComplete'] = value['nativeCandidateIndependentAuditComplete']
         result.update(operation=args.operation, evidenceOperationComplete=True,
