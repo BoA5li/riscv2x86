@@ -9,7 +9,7 @@ import re
 import struct
 from .native_external_providers import read, checked
 from .native_elf_runtime import parse
-from .native_link_evidence import audit, SCHEMA_V2
+from .native_link_evidence import audit, SCHEMA_V2, SCHEMA_V3
 from .project_build_records import identity
 from .project_compile_context import digest
 
@@ -56,7 +56,7 @@ def contributions(text):
 
 def derive(value, directory):
     checked(value, 'linkBuildIdentity')
-    if value.get('schemaVersion') != SCHEMA_V2:
+    if value.get('schemaVersion') not in (SCHEMA_V2, SCHEMA_V3):
         raise ValueError('LINK_ATTRIBUTION_V2_BUILD_REQUIRED')
     root = Path(directory)
     for name, expected in value['artifactDigests'].items():

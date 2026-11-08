@@ -19,6 +19,8 @@ REQUEST='riscv2x86.native-link-request.v1'
 SCHEMA='riscv2x86.native-link-build.v1'
 REQUEST_V2='riscv2x86.native-link-request.v2'
 SCHEMA_V2='riscv2x86.native-link-build.v2'
+REQUEST_V3='riscv2x86.native-link-request.v3'
+SCHEMA_V3='riscv2x86.native-link-build.v3'
 
 
 def ordered_plan(items):
@@ -37,8 +39,31 @@ def ordered_plan(items):
     return result
 
 
+def positioned_plan(items):
+    """One explicit candidate slot; never move it ahead of archive/group inputs.
+
+    This is a deployment recipe, not proof that it replaces a captured input.
+    Archive-member replacement still needs a separately derived archive.
+    """
+    if not isinstance(items, list):
+        raise ValueError('NATIVE_LINK_POSITIONED_PLAN_REQUIRED')
+    def slot(item):
+        return isinstance(item, dict) and set(item) == {'candidate'} and item['candidate'] is True
+    slots = [i for i, item in enumerate(items) if slot(item)]
+    if len(slots) != 1 or any('candidate' in item and not slot(item)
+                              for item in items if isinstance(item, dict)):
+        raise ValueError('NATIVE_LINK_EXACT_CANDIDATE_SLOT_REQUIRED')
+    # Validate group nesting across the slot, not independently on either side.
+    ordered_plan([item for i, item in enumerate(items) if i != slots[0]])
+    result = []
+    for item in items:
+        result.append(item if item == {'candidate': True} or 'group' in item else
+                      {'file': str(Path(item['file']).resolve(strict=True))})
+    return result
+
+
 def request(candidate,side,compiler,inputs,mode='executable',static=False,pie=None,abi_options=(),
-            *, ordered_inputs=None):
+            *, ordered_inputs=None, positioned_inputs=None):
     if side not in ('source','target') or mode not in ('executable','shared'):
         raise ValueError('NATIVE_LINK_SIDE_OR_MODE_INVALID')
     if type(static) is not bool or pie is not None and type(pie) is not bool:
@@ -48,25 +73,30 @@ def request(candidate,side,compiler,inputs,mode='executable',static=False,pie=No
     for option in options:
         if not re.fullmatch(r'-(?:mabi|march)=[a-zA-Z0-9_+.-]+',option):
             raise ValueError('NATIVE_LINK_ABI_OPTION_UNSUPPORTED')
-    if ordered_inputs is not None and inputs:raise ValueError('NATIVE_LINK_MIXED_INPUT_FORMS')
-    plan=None if ordered_inputs is None else ordered_plan(ordered_inputs)
+    if sum((bool(inputs), ordered_inputs is not None, positioned_inputs is not None)) > 1:
+        raise ValueError('NATIVE_LINK_MIXED_INPUT_FORMS')
+    plan=(positioned_plan(positioned_inputs) if positioned_inputs is not None else
+          None if ordered_inputs is None else ordered_plan(ordered_inputs))
     paths=([str(Path(p).resolve(strict=True)) for p in inputs] if plan is None else
            [item['file'] for item in plan if 'file' in item])
     if plan is None and len(paths)!=len(set(paths)):raise ValueError('NATIVE_LINK_DUPLICATE_INPUT')
     body={'schemaVersion':REQUEST,'candidatePath':str(Path(candidate).resolve(strict=True)),
         'side':side,'compiler':str(resolve_executable(compiler)),'inputs':paths,
         'mode':mode,'static':static,'pie':pie,'abiOptions':options}
-    if plan is not None:body.update(schemaVersion=REQUEST_V2,orderedInputs=plan)
+    if positioned_inputs is not None:body.update(schemaVersion=REQUEST_V3,positionedInputs=plan)
+    elif plan is not None:body.update(schemaVersion=REQUEST_V2,orderedInputs=plan)
     return dict(body,linkRequestIdentity=identity(body))
 
 
 def build(value,output,timeout=300):
     checked(value,'linkRequestIdentity')
-    if value['schemaVersion'] not in (REQUEST,REQUEST_V2):raise ValueError('NATIVE_LINK_REQUEST_SCHEMA_INVALID')
-    v2=value['schemaVersion']==REQUEST_V2
+    if value['schemaVersion'] not in (REQUEST,REQUEST_V2,REQUEST_V3):raise ValueError('NATIVE_LINK_REQUEST_SCHEMA_INVALID')
+    v3=value['schemaVersion']==REQUEST_V3
+    v2=value['schemaVersion'] in (REQUEST_V2,REQUEST_V3)
     reconstructed=request(value['candidatePath'],value['side'],value['compiler'],[] if v2 else value['inputs'],
                           value['mode'],value['static'],value['pie'],value['abiOptions'],
-                          ordered_inputs=value['orderedInputs'] if v2 else None)
+                          ordered_inputs=value['orderedInputs'] if v2 and not v3 else None,
+                          positioned_inputs=value['positionedInputs'] if v3 else None)
     if reconstructed!=value:raise ValueError('NATIVE_LINK_REQUEST_NONCANONICAL')
     out=Path(output).resolve(strict=True)
     if any(out.iterdir()):
@@ -140,13 +170,14 @@ def build(value,output,timeout=300):
     if value['pie'] is not None:argv.append('-pie' if value['pie'] else '-no-pie')
     inputs=value['inputs']
     if v2:
-        inputs=[item['file'] if 'file' in item else '-Wl,--'+item['group']+'-group'
-                for item in value['orderedInputs']]
+        plan=value['positionedInputs'] if v3 else value['orderedInputs']
+        inputs=[root if item == {'candidate':True} else item['file'] if 'file' in item
+                else '-Wl,--'+item['group']+'-group' for item in plan]
         for symbol in definitions:
             if not re.fullmatch(r'[A-Za-z_.$][A-Za-z0-9_.$]*',symbol['name']):
                 raise ValueError('NATIVE_LINK_TRACE_SYMBOL_UNSUPPORTED')
             argv.extend(['-Xlinker','--trace-symbol','-Xlinker',symbol['name']])
-    argv.extend([root,*inputs,'-Wl,-z,defs','-Wl,-t',
+    argv.extend([*(inputs if v3 else [root,*inputs]),'-Wl,-z,defs','-Wl,-t',
                  '-Xlinker','-Map','-Xlinker',str(linkmap),'-o',str(program)])
     run('link',argv)
     output_raw=program.read_bytes();elf=parse(output_raw)
@@ -175,12 +206,14 @@ def build(value,output,timeout=300):
                        'TYPED_CALL_OBJECT_EFFECT_CONTRACT','ACTUAL_TRANSLATED_EXECUTION','PROGRAM_L0_L3_AUDIT']}
     if v2:
         body.update(schemaVersion=SCHEMA_V2,linkEnvironment=environment)
+    if v3:body.update(schemaVersion=SCHEMA_V3,candidateInputPositionVerified=True,
+                      capturedInputReplacementVerified=False)
     return dict(body,linkBuildIdentity=identity(body))
 
 
 def audit(value,original_output,new_output,timeout=300):
     checked(value,'linkBuildIdentity')
-    if value['schemaVersion'] not in (SCHEMA,SCHEMA_V2):raise ValueError('NATIVE_LINK_BUILD_SCHEMA_INVALID')
+    if value['schemaVersion'] not in (SCHEMA,SCHEMA_V2,SCHEMA_V3):raise ValueError('NATIVE_LINK_BUILD_SCHEMA_INVALID')
     old=Path(original_output).resolve(strict=True)
     for name,expected in value['artifactDigests'].items():
         if Path(name).name!=name:raise ValueError('NATIVE_LINK_ARTIFACT_NAME_INVALID')

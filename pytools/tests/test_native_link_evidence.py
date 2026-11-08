@@ -95,3 +95,45 @@ def test_command_line_link_request_build_and_audit(candidate):
     again=subprocess.run([sys.executable,str(script),'link','--request',str(p/'request.json'),
         '--output',str(p/'cli-link')],capture_output=True)
     assert again.returncode==2
+
+
+def test_v3_explicit_slot_is_preserved_and_independently_attributed(candidate):
+    p,cc,receipt=candidate
+    plan=[{'file':str(p/'main.o')},{'group':'start'},{'candidate':True},{'group':'end'}]
+    req=request(receipt,'target',cc,[],positioned_inputs=plan)
+    assert req['schemaVersion'].endswith('.v3')
+    out=p/'v3';out.mkdir();value=build(req,out)
+    assert value['candidateInputPositionVerified'] and not value['capturedInputReplacementVerified']
+    args=value['commands'][-1]['arguments']
+    assert args.index(str(p/'main.o')) < args.index(str(p/'target.o'))
+    path=out/'result.json';path.write_text(json.dumps(value))
+    again=p/'v3-again';again.mkdir()
+    assert audit(value,out,again)['nativeLinkIndependentRebuildComplete']
+    from riscv2x86_py.native_link_attribution import derive
+    assert derive(value,out)['candidateDefinitionAttributionVerified']
+
+
+def test_v3_never_reorders_archive_to_make_link_succeed(candidate):
+    p,cc,receipt=candidate
+    (p/'entry.c').write_text('extern int helper(int);int translated_entry(int x){return helper(x);}')
+    (p/'helper.c').write_text('int helper(int x){return x+1;}')
+    for name,out in [('entry.c','target.o'),('helper.c','helper.o')]:
+        subprocess.run([cc,'-c',str(p/name),'-o',str(p/out)],check=True)
+    subprocess.run(['ar','rcs',str(p/'helper.a'),str(p/'helper.o')],check=True)
+    value=json.loads(receipt.read_text());value['targetObjectDigest']=digest(p/'target.o')
+    value['artifactDigests']['target.o']=digest(p/'target.o')
+    value['candidateIdentity']=identity({k:v for k,v in value.items() if k!='candidateIdentity'})
+    receipt.write_text(json.dumps(value))
+    bad=[{'file':str(p/'main.o')},{'file':str(p/'helper.a')},{'candidate':True}]
+    out=p/'bad-order';out.mkdir()
+    with pytest.raises(ValueError,match='COMMAND_FAILED:link'):
+        build(request(receipt,'target',cc,[],positioned_inputs=bad),out)
+    good=[bad[0],bad[2],bad[1]];out=p/'good-order';out.mkdir()
+    assert build(request(receipt,'target',cc,[],positioned_inputs=good),out)['linkBuildComplete']
+
+
+@pytest.mark.parametrize('items',[[],[{'candidate':True},{'candidate':True}],
+    [{'candidate':False}],[{'candidate':1}],[{'candidate':True},{'group':'end'}]])
+def test_v3_requires_exactly_one_typed_candidate_slot(candidate,items):
+    from riscv2x86_py.native_link_evidence import positioned_plan
+    with pytest.raises(ValueError):positioned_plan(items)

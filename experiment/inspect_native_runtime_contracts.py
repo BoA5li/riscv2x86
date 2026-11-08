@@ -21,6 +21,8 @@ def main(argv=None):
     requirements_replay.add_argument('--input',required=True);requirements_replay.add_argument('--output',required=True)
     requirements=sub.add_parser('requirements')
     requirements.add_argument('--input',required=True);requirements.add_argument('--output',required=True)
+    for operation in ('reference-ledger', 'replay-reference-ledger'):
+        p=sub.add_parser(operation);p.add_argument('--input',required=True);p.add_argument('--output',required=True)
     replay=sub.add_parser('replay-providers')
     for name in ('input','output'):replay.add_argument('--'+name,required=True)
     template=sub.add_parser('link-request')
@@ -33,6 +35,7 @@ def main(argv=None):
     template.add_argument('--abi-option',action='append',default=[])
     template.add_argument('--output',required=True)
     template.add_argument('--ordered-inputs', help='JSON ordered file/group plan; enables v2, preserves duplicates')
+    template.add_argument('--positioned-inputs', help='JSON v3 file/group/candidate-slot deployment plan')
     for operation,argument in (('link','request'),('audit-link','input'),('attribute-link','input')):
         p=sub.add_parser(operation);p.add_argument('--'+argument,required=True)
         p.add_argument('--output',required=True);p.add_argument('--timeout-seconds',type=int,default=300)
@@ -57,7 +60,8 @@ def main(argv=None):
         if args.operation=='link-request':
             value=links.request(args.candidate,args.side,args.compiler,args.input,args.mode,args.static,
                 {'yes':True,'no':False,'default':None}[args.pie],args.abi_option,
-                ordered_inputs=None if args.ordered_inputs is None else providers.read(args.ordered_inputs))
+                ordered_inputs=None if args.ordered_inputs is None else providers.read(args.ordered_inputs),
+                positioned_inputs=None if args.positioned_inputs is None else providers.read(args.positioned_inputs))
             with Path(args.output).open('x',encoding='utf-8') as stream:
                 json.dump(value,stream,ensure_ascii=False,indent=2);stream.write('\n')
             print(json.dumps({'requestPath':args.output,'linkRequestIdentity':value['linkRequestIdentity'],
@@ -76,6 +80,12 @@ def main(argv=None):
         elif args.operation=='requirements':
             from riscv2x86_py.native_external_requirements import acquire
             value=acquire(args.input,runner.output)
+        elif args.operation=='reference-ledger':
+            from riscv2x86_py.native_reference_ledger import acquire
+            value=acquire(args.input,runner.output)
+        elif args.operation=='replay-reference-ledger':
+            from riscv2x86_py.native_reference_ledger import replay
+            value=replay(providers.read(args.input),runner.output)
         elif args.operation=='link':
             value=links.build(providers.read(args.request),runner.output,args.timeout_seconds)
         elif args.operation=='attribute-link':
@@ -89,7 +99,7 @@ def main(argv=None):
             semanticApproval=False,productionAcceptanceComplete=False)
         if 'blockers' in value:runner.state['blockerCount']=len(value['blockers'])
         runner.save()
-        keys=('candidateDefinitionCoverageComplete','replayedBlockerCount','linkBuildComplete',
+        keys=('parentObligationCount','referenceCount','referenceLedgerReplayComplete','candidateDefinitionCoverageComplete','replayedBlockerCount','linkBuildComplete',
               'requirementsReplayComplete','obligationCount','externalContractClosureComplete',
               'externalProviderReplayComplete','nativeLinkIndependentRebuildComplete',
               'candidateObjectExplicitInputVerified','candidateExportsPresent','candidateDefinitionAttributionVerified',
