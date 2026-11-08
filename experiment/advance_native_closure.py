@@ -43,6 +43,9 @@ def main(argv=None):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
+    audit_check = sub.add_parser('check-audit')
+    audit_check.add_argument('--plan', required=True)
+    audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
         if hasattr(args, 'output'):
@@ -81,6 +84,11 @@ def main(argv=None):
             from riscv2x86_py.native_deployment_prerequisites import audit as candidate_audit
             plan = deployment.read(args.plan); deployment.validate(plan)
             value = candidate_audit(plan, args.output, timeout=args.timeout_seconds)
+        elif args.operation == 'check-audit':
+            from riscv2x86_py.native_deployment_prerequisites import check as check_audit
+            plan = deployment.read(args.plan); deployment.validate(plan)
+            check_audit(plan, args.input)
+            value = {'auditPrerequisiteIntegrityChecked': True}
         elif args.operation == 'inspect-context':
             from riscv2x86_py.native_context_bridge import acquire as bridge
             value = bridge(args.plan, args.output, clang=args.clang, timeout=args.timeout_seconds, observation_path=args.observation)
@@ -109,7 +117,8 @@ def main(argv=None):
                    'entryAbiContractComplete', 'legalObjectInputContractComplete',
                    'outputTerminationContractComplete', 'translatedInstanceExecutionVerified',
                    'l0L3AcceptanceComplete') if k in value}
-        for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode'):
+        for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode',
+                    'auditPrerequisiteIntegrityChecked'):
             if key in value: result[key] = value[key]
         if 'nativeCandidateIndependentAuditComplete' in value:
             result['nativeCandidateIndependentAuditComplete'] = value['nativeCandidateIndependentAuditComplete']

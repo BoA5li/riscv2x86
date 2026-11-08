@@ -224,6 +224,11 @@ def acquire(plan_path, output, *, clang, timeout=300, observation_path=None):
     root = output_path(output)
     plan = deployment.read(plan_path)
     candidate, source, artifacts, producer, bindings, contexts = inputs(plan)
+    # Reject an incompatible observation/audit before expensive target CPP
+    # acquisition or creating an incomplete output directory. Recheck later
+    # during derivation to detect changes during acquisition.
+    if observation_path is not None:
+        observation_inventory(observation_path, plan)
     root.mkdir()
     # Reuse the native input acquisition and its dependency/tool/data-model
     # checks. In particular, do not add -DPIC to already expanded source CPP.

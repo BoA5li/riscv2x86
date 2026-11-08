@@ -116,7 +116,8 @@ def test_fake_boolean_audit_is_not_accepted(captured):
     assert not (root/'formal').exists()
 
 
-def test_artifact_bound_audit_gate_and_mismatch(captured, monkeypatch):
+@pytest.fixture
+def audited_capture(captured, monkeypatch):
     """Exercise orchestration, not a mock proof of real cross-ISA translation."""
     from riscv2x86_py import native_project_translation as translation
     from riscv2x86_py import native_audit_evidence, project_native_binding
@@ -148,6 +149,11 @@ def test_artifact_bound_audit_gate_and_mismatch(captured, monkeypatch):
     result = prereq.audit(plan, root/'audit')
     receipt = result['auditPrerequisitePath']
     assert prereq.check(plan, receipt)['digest'] == d.digest(receipt)
+    return root, p, plan, receipt
+
+
+def test_artifact_bound_audit_gate_and_mismatch(audited_capture):
+    root, p, plan, receipt = audited_capture
     deployed = d.execute(plan, root/'formal', audit_path=receipt)
     assert deployed['deploymentMode'] == 'audited-local-candidate'
     assert d.check_result(root/'formal/result.json')

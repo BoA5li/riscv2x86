@@ -1,5 +1,9 @@
 # Native context bridge: implementation, limits and validation
 
+> The phase172 rerun procedure below is historical. For current tools use
+> [phase173 validation](phase173-verifier-identity.md): re-audit and redeploy before
+> collecting observations or context reports; v1 audit prerequisites are not upgraded.
+
 This extends the existing project-input and instance-binding path. It does not
 implement a second translator or grant another route to semantic approval.
 
