@@ -10,7 +10,7 @@ from .native_elf_runtime import parse, candidates
 from .native_captured_deployment import snapshot
 
 
-def describe(path):
+def describe(path, *, legacy_v2=False):
     raw = Path(path).read_bytes(); elf = parse(raw)
     off = struct.unpack_from('<Q', raw, 40)[0]
     size, count, names = struct.unpack_from('<HHH', raw, 58)
@@ -43,14 +43,21 @@ def describe(path):
             raise ValueError('DYNAMIC_OBLIGATION_SYMBOL_AMBIGUOUS')
         s = symbols[0]; role = semantics.get(elf['machine'], {}).get(r['type'], 'unsupported')
         rows.append({'relocation': r, 'symbol': s, 'role': role,
-                     'bindingCanOccurBeforeCall': role != 'jump-slot' or now,
+                     'bindingCanOccurBeforeCall': (role != 'jump-slot' or now) if legacy_v2 else binding_timing(role, now),
                      'behaviorContractVerified': False})
     return {'file': snapshot(path), 'elf': elf, 'dynamicTags': tags,
             'bindNowDeclared': bool(now), 'relocationObligations': rows}
 
 
-def inspect(paths):
-    objects = [describe(p) for p in dict.fromkeys(paths)]
+def binding_timing(role, now):
+    """Unknown relocation semantics have unknown timing, even with BIND_NOW."""
+    if role == 'unsupported':
+        return None
+    return role != 'jump-slot' or bool(now)
+
+
+def inspect(paths, *, legacy_v2=False):
+    objects = [describe(p, legacy_v2=legacy_v2) for p in dict.fromkeys(paths)]
     providers = [{'path': o['file']['path'], 'digest': o['file']['digest'], 'elf': o['elf']} for o in objects]
     copies = []
     for obj in objects:

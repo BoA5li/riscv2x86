@@ -189,3 +189,47 @@ def test_unknown_receipt_fields_and_cli_prerequisite_are_rejected(observed):
         '--library-records', 'missing', '--test-records', 'missing', '--output', '/plan.json'],
         capture_output=True, text=True)
     assert result.returncode == 2 and 'RESULT_PARENT_REQUIRED' in result.stderr
+
+
+def test_v2_reports_keep_their_original_policy_and_new_runs_are_v3(observed):
+    root, _, _, current = observed
+    assert current['schemaVersion'] == 'riscv2x86.deployment-observation.v3'
+    coverage = current['bindingEvidenceCoverage']
+    assert coverage['endpointOccurrenceCount'] == 2 * len(current['diagnosticBindings'])
+    assert not coverage['diagnosticEventsProveNaturalRunBindings']
+    path = root/'observation/result.json'
+    parent = d.check_result(current['deploymentPath'])
+    legacy = obs.derive(path.parent, d.read(path.parent/'execution-plan.json'), parent, schema=obs.LEGACY)
+    legacy['artifactDigests'] = current['artifactDigests']
+    legacy = d.seal(legacy, 'observationIdentity')
+    path.write_text(json.dumps(legacy))
+    assert obs.check_observation(path) == legacy
+    assert 'bindingEvidenceCoverage' not in legacy
+
+
+def test_unknown_elf_relocation_keeps_timing_unknown_even_with_bind_now(tmp_path):
+    import struct
+    cc = shutil.which('gcc')
+    if not cc: pytest.skip('native GCC required')
+    source = tmp_path/'probe.c'; source.write_text('int unrelated_value = 3;')
+    output = tmp_path/'probe.so'
+    subprocess.run([cc, '-shared', '-fPIC', '-Wl,-z,now', str(source), '-o', str(output)], check=True)
+    raw = bytearray(output.read_bytes())
+    if struct.unpack_from('<H', raw, 18)[0] != 62:
+        pytest.skip('x86-64 ELF required')
+    section_offset = struct.unpack_from('<Q', raw, 40)[0]
+    section_size, section_count = struct.unpack_from('<HH', raw, 58)
+    for index in range(section_count):
+        sec = struct.unpack_from('<IIQQQQIIQQ', raw, section_offset+index*section_size)
+        if sec[1] == 4 and sec[5]:
+            info = struct.unpack_from('<Q', raw, sec[4]+8)[0]
+            struct.pack_into('<Q', raw, sec[4]+8, (info & ~0xffffffff) | 0x7fffffff)
+            break
+    else:
+        pytest.fail('fixture contains no RELA section')
+    output.write_bytes(raw)
+    v = describe(output)
+    assert v['bindNowDeclared']
+    unknown = [r for r in v['relocationObligations'] if r['role'] == 'unsupported']
+    assert len(unknown) == 1 and unknown[0]['bindingCanOccurBeforeCall'] is None
+    assert not unknown[0]['behaviorContractVerified']

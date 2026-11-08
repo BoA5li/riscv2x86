@@ -36,7 +36,10 @@ def main(argv=None):
     run.add_argument('--diagnostic', action='store_true')
     audit = sub.add_parser('audit-candidate'); audit.add_argument('--plan', required=True)
     repeat = sub.add_parser('replay-observation'); repeat.add_argument('--input', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat):
+    context = sub.add_parser('inspect-context'); context.add_argument('--plan', required=True)
+    context.add_argument('--clang', required=True)
+    context.add_argument('--observation', help='validated observation from this exact deployment plan')
+    for parser in (deploy, replay, source, run, audit, repeat, context):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -78,6 +81,9 @@ def main(argv=None):
             from riscv2x86_py.native_deployment_prerequisites import audit as candidate_audit
             plan = deployment.read(args.plan); deployment.validate(plan)
             value = candidate_audit(plan, args.output, timeout=args.timeout_seconds)
+        elif args.operation == 'inspect-context':
+            from riscv2x86_py.native_context_bridge import acquire as bridge
+            value = bridge(args.plan, args.output, clang=args.clang, timeout=args.timeout_seconds, observation_path=args.observation)
         elif args.operation == 'replay-observation':
             value = observation.replay_observation(args.input, args.output, args.timeout_seconds)
         elif args.operation == 'observe':
@@ -85,7 +91,10 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion', '').startswith('riscv2x86.deployment-observation.'):
+            if value.get('schemaVersion') == 'riscv2x86.native-context-bridge.v1':
+                from riscv2x86_py.native_context_bridge import check as check_bridge
+                check_bridge(args.input)
+            elif value.get('schemaVersion', '').startswith('riscv2x86.deployment-observation.'):
                 observation.check_observation(args.input)
             else:
                 deployment.check_result(args.input)
@@ -95,7 +104,11 @@ def main(argv=None):
                    'derivedLibraryBuildComplete', 'derivedEntryBuildComplete', 'loaderListSelectionVerified',
                    'testExecutionPerformed', 'observedReturnCode', 'parentObligationCount', 'referenceCount',
                    'naturalRunCompletedWithinBudget', 'diagnosticRunCompletedWithinBudget', 'runtimeBindingClosureComplete',
-                   'targetDependencyLinkClosureComplete', 'externalContractClosureComplete') if k in value}
+                   'targetDependencyLinkClosureComplete', 'externalContractClosureComplete',
+                   'sourceContentLineageVerified', 'targetNativeInputAcquired', 'targetContextCompatibilityVerified',
+                   'entryAbiContractComplete', 'legalObjectInputContractComplete',
+                   'outputTerminationContractComplete', 'translatedInstanceExecutionVerified',
+                   'l0L3AcceptanceComplete') if k in value}
         for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode'):
             if key in value: result[key] = value[key]
         if 'nativeCandidateIndependentAuditComplete' in value:

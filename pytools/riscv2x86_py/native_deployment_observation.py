@@ -12,7 +12,8 @@ from .native_experiment_driver import command
 from .native_external_providers import checked
 from .project_compile_context import digest
 
-SCHEMA = 'riscv2x86.deployment-observation.v2'
+LEGACY = 'riscv2x86.deployment-observation.v2'
+SCHEMA = 'riscv2x86.deployment-observation.v3'
 MANIFEST = 'riscv2x86.observation-execution.v1'
 RECEIPT = 'riscv2x86.observation-command.v1'
 
@@ -89,7 +90,7 @@ def _selection(paths, unknown, library):
             and selected[0]['digest'] == library['digest'])
 
 
-def derive(root, manifest, value):
+def derive(root, manifest, value, *, schema=SCHEMA):
     """Shared deterministic projection: no result-level conclusion is trusted."""
     root = Path(root).resolve(strict=True); checked(manifest, 'executionIdentity')
     if (set(manifest) != {'schemaVersion', 'deploymentPath', 'deploymentDigest', 'deploymentIdentity',
@@ -136,10 +137,10 @@ def derive(root, manifest, value):
     for row in bindings:
         for k in ('requester', 'provider'):
             if row[k]['kind'] == 'file': files.append(row[k]['resolvedPath'])
-    dynamic = inspect_dynamic([str(Path(p).resolve(strict=True)) for p in files])
+    dynamic = inspect_dynamic([str(Path(p).resolve(strict=True)) for p in files], legacy_v2=schema == LEGACY)
     natural = by_stage['natural']; version = by_stage['loader-version']
     version_ok = version['returnCode'] == 0 and version['failureReason'] is None
-    return {'schemaVersion': SCHEMA, 'deploymentPath': manifest['deploymentPath'],
+    result = {'schemaVersion': schema, 'deploymentPath': manifest['deploymentPath'],
             'deploymentDigest': manifest['deploymentDigest'], 'deploymentIdentity': value['deploymentIdentity'],
             'executionManifestDigest': digest(root/'execution-plan.json'), 'executionIdentity': manifest['executionIdentity'],
             'loader': loader, 'commands': commands, 'loaderCapabilities': {
@@ -161,6 +162,18 @@ def derive(root, manifest, value):
             'remainingWork': ['NATURAL_RUN_LOADED_OBJECT_IDENTITY', 'ALL_APPLICABLE_BINDINGS',
                               'VIRTUAL_OBJECT_RUNTIME_IDENTITY', 'CANDIDATE_INSTANCE_EXECUTION',
                               'TYPED_BEHAVIOR_CONTRACTS', 'PROGRAM_AUDIT']}
+    if schema != LEGACY:
+        endpoints = [row[k] for row in bindings for k in ('requester', 'provider')]
+        result['bindingEvidenceCoverage'] = {
+            'eventCount': len(bindings), 'endpointOccurrenceCount': len(endpoints),
+            'unverifiedFileEndpointOccurrences': sum(e['kind'] == 'file' and not e['runtimeIdentityVerified'] for e in endpoints),
+            'unverifiedLabelEndpointOccurrences': sum(e['kind'] == 'loader-label' and not e['runtimeIdentityVerified'] for e in endpoints),
+            'unresolvedFileEndpointOccurrences': sum(e['kind'] == 'unresolved-file' for e in endpoints),
+            'unverifiedEndpointOccurrences': sum(e['runtimeIdentityVerified'] is not True for e in endpoints),
+            'unparsedLineCount': len(syntax),
+            'unverifiedObjectBindingsIsExhaustive': False,
+            'diagnosticEventsProveNaturalRunBindings': False}
+    return result
 
 
 def observe(deployment_path, output, *, arguments=(), timeout=300, diagnostic=False):
@@ -199,11 +212,11 @@ def observe(deployment_path, output, *, arguments=(), timeout=300, diagnostic=Fa
 
 def check_observation(path):
     path = Path(path).resolve(strict=True); value = read(path); checked(value, 'observationIdentity')
-    if value.get('schemaVersion') != SCHEMA:
+    if value.get('schemaVersion') not in (LEGACY, SCHEMA):
         raise ValueError('OBSERVATION_LEGACY_RECEIPTS_MISSING_REACQUIRE_V2')
     parent = check_result(value['deploymentPath']); manifest = read(path.parent/'execution-plan.json')
     if manifest['deploymentPath'] != value['deploymentPath']: raise ValueError('OBSERVATION_PARENT_PATH_MISMATCH')
-    fresh = derive(path.parent, manifest, parent)
+    fresh = derive(path.parent, manifest, parent, schema=value['schemaVersion'])
     fresh['artifactDigests'] = {str(p.relative_to(path.parent)): digest(p) for p in path.parent.rglob('*') if p.is_file() and p != path}
     if seal(fresh, 'observationIdentity') != value: raise ValueError('OBSERVATION_FULL_REDERIVATION_MISMATCH')
     return value
