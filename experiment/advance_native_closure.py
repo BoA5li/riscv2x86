@@ -140,7 +140,7 @@ def main(argv=None):
             if value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
                 from riscv2x86_py.native_program_comparison import check as check_comparison
                 check_comparison(args.input)
-            elif value.get('schemaVersion') in ('riscv2x86.diagnostic-map-bindings.v1', 'riscv2x86.diagnostic-map-bindings.v2'):
+            elif value.get('schemaVersion') in ('riscv2x86.diagnostic-map-bindings.v1', 'riscv2x86.diagnostic-map-bindings.v2', 'riscv2x86.diagnostic-map-bindings.v3'):
                 from riscv2x86_py.native_runtime_identity import check as check_runtime
                 check_runtime(args.input)
             elif value.get('schemaVersion') in ('riscv2x86.native-contract-evidence.v1', 'riscv2x86.native-contract-evidence.v2'):
@@ -165,6 +165,7 @@ def main(argv=None):
                    'outputTerminationContractComplete', 'translatedInstanceExecutionVerified',
                    'l0L3AcceptanceComplete', 'mappedEndpointOccurrencesVerified', 'requiredMappedImagesVerified',
                    'bindingEventCount', 'mappingCaptureFailureCount', 'endpointOccurrenceCount',
+                   'streamHeaderReplayVerified', 'fragmentedBindingEventCount',
                    'unverifiedEndpointOccurrenceCount', 'diagnosticEndpointMappingComplete',
                    'endpointFailureReasonCounts', 'metadataFailureReasonCounts',
                    'metadataCompatibleProviderEvents', 'diagnosticReturnCode',

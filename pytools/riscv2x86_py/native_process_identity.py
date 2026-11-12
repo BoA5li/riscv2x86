@@ -17,7 +17,7 @@ import threading
 
 from .native_captured_deployment import seal
 from .project_compile_context import digest
-from .native_binding_syntax import parse as binding_syntax
+from .native_binding_syntax import BindingStream
 
 REG_NAMES = ('r15 r14 r13 r12 rbp rbx r11 r10 r9 r8 rax rcx rdx rsi rdi '
              'orig_rax rip cs eflags rsp ss fs_base gs_base ds es fs gs').split()
@@ -54,18 +54,16 @@ def _stable_stat(st):
     return [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
 
 
-def binding_aliases(raw, pid, cache, *, proc_root=Path('/proc')):
+def binding_aliases(headers, pid, cache, *, proc_root=Path('/proc')):
     """Resolve labels while the child is stopped, never during report replay.
 
-    Only complete lines wholly present in this write are eligible. A split
-    diagnostic keeps missing alias evidence rather than borrowing a later stat.
+    Headers come from the incremental stream at this stop. Pending headers
+    remain visible in later writes, including version/newline-only tails.
     The stat must refer to an image already captured in this process.
     """
-    complete = raw[:raw.rfind(b'\n')+1].decode('utf-8', errors='replace')
-    events, _ = binding_syntax(complete)
-    labels = sorted({e[side]['label'] for e in events for side in ('requester', 'provider')
+    labels = sorted({e[side+'Label'] for e in headers for side in ('requester', 'provider')
                      if e['processId'] == pid and e[side+'Namespace'] == 0
-                     and Path(e[side]['label']).is_absolute()})
+                     and Path(e[side+'Label']).is_absolute()})
     rows = []
     for label in labels:
         row = {'label': label}
@@ -134,6 +132,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
     os.close(out); os.close(err)
     epochs = []; writes = []; cache = {}; image_bytes = 0; map_bytes = 0; stops = 0
     alias_bytes = 0
+    binding_stream = BindingStream()
     pending = None; executed = False; reaped = False
     failure = None; code = None
     def wait():
@@ -257,13 +256,14 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                                 stream.seek(pending['offset']); written = stream.read(result)
                             if len(written) != result:
                                 raise ValueError('PROCESS_IDENTITY_WRITE_BYTES_MISMATCH')
-                            aliases = binding_aliases(written, pid, cache)
-                            alias_bytes += len(json.dumps(aliases).encode('utf-8'))
+                            headers = binding_stream.feed(written)
+                            aliases = binding_aliases(headers, pid, cache)
+                            alias_bytes += len(json.dumps([headers,aliases]).encode('utf-8'))
                             if alias_bytes > 64*1024*1024:
                                 raise ValueError('PROCESS_IDENTITY_ALIAS_METADATA_BUDGET_EXCEEDED')
                             writes.append({'offset': pending['offset'], 'size': result,
                                            'epoch': pending['epoch'], 'stopOrdinal': stops,
-                                           'bindingAliases': aliases})
+                                           'bindingAliases': aliases, 'bindingHeaders':headers})
                         if pending['number'] in (9, 10, 11, 25) and result >= 0:
                             mappings({'kind':'syscall','number':pending['number'],
                                       'arguments':pending['arguments'],'returnValue':result})
@@ -284,7 +284,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                 except ProcessLookupError: pass
             try: os.waitpid(pid, 0)
             except ChildProcessError: pass
-    result = seal({'schemaVersion': 'riscv2x86.process-map-capture.v2',
+    result = seal({'schemaVersion': 'riscv2x86.process-map-capture.v3',
         'backend': 'linux-x86_64-ptrace-syscall-single-process.v1',
         'syscallPhaseSource':'PTRACE_GET_SYSCALL_INFO',
         'processId': pid, 'arguments': list(argv), 'directory': str(Path(cwd).resolve()),

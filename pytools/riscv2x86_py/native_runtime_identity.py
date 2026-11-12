@@ -11,14 +11,14 @@ from collections import Counter
 
 from . import native_captured_deployment as deployment
 from .native_deployment_observation import check_observation
-from .native_binding_syntax import parse as binding_events
+from .native_binding_syntax import parse as binding_events, BindingStream
 from .native_dynamic_obligations import describe
 from .native_external_providers import checked
 from .project_compile_context import digest
 from .project_build_records import identity
 from .native_process_identity import capture
 
-SCHEMA = 'riscv2x86.diagnostic-map-bindings.v2'
+SCHEMA = 'riscv2x86.diagnostic-map-bindings.v3'
 
 
 def local(root, name):
@@ -131,9 +131,15 @@ def associate(endpoint, side, event, relevant, epochs, process):
         reasons.append('EVENT_WRITE_COVERAGE_MISSING')
     for write in relevant:
         aliases = [a for a in write['bindingAliases'] if a['label'] == label]
+        visible = any(h['lineStart']==event['byteRange'][0]
+                      and h['processId']==event['processId']
+                      and h[side+'Namespace']==event[side+'Namespace']
+                      and h[side+'Label']==label for h in write['bindingHeaders'])
         matches = []
         if Path(label).is_absolute():
-            if len(aliases) != 1:
+            if not visible:
+                reasons.append('ENDPOINT_HEADER_NOT_YET_OBSERVABLE')
+            elif len(aliases) != 1:
                 reasons.append('STOPPED_ALIAS_EVIDENCE_NOT_UNIQUE' if aliases else 'STOPPED_ALIAS_EVIDENCE_MISSING')
             elif 'failureReason' in aliases[0]:
                 reasons.append('STOPPED_ALIAS_CAPTURE_FAILED')
@@ -154,6 +160,7 @@ def associate(endpoint, side, event, relevant, epochs, process):
         else:
             selected.append(matches[0])
         evidence.append({'epoch': write['epoch'], 'stopOrdinal': write['stopOrdinal'],
+                         'endpointHeaderObservable':visible,
                          'aliasEvidence': aliases, 'candidateCount': len(matches),
                          'mapSnapshotIdentities': [o['mapIdentity'] for o in matches],
                          'mappingInstanceIdentities': [o['mappingInstanceIdentity'] for o in matches]})
@@ -178,7 +185,7 @@ def derive(root, process):
                         'timeoutSeconds','returnCode','failureReason','epochs','stderrWrites','stdoutDigest','stderrDigest',
                         'intervention','untracedRunEquivalenceVerified','semanticApproval','productionAcceptanceComplete',
                         'processCaptureIdentity','logLimit','imageLimit','stopLimit','stopCount'}
-            or process['schemaVersion'] != 'riscv2x86.process-map-capture.v2'
+            or process['schemaVersion'] != 'riscv2x86.process-map-capture.v3'
             or process['backend'] != 'linux-x86_64-ptrace-syscall-single-process.v1'
             or process['failureReason'] is not None or process['intervention'] != 'ptrace'
             or process['untracedRunEquivalenceVerified'] is not False
@@ -229,9 +236,9 @@ def derive(root, process):
         epochs.append(objects)
     raw = (root/'stderr.log').read_bytes(); text = raw.decode('utf-8', errors='strict')
     events, unparsed = binding_events(text)
-    lines = raw.splitlines(keepends=True); offsets = [0]
-    for line in lines: offsets.append(offsets[-1]+len(line))
-    last = 0; previous_stop=-1; alias_bytes=0
+    lines = raw.split(b'\n'); offsets = [0]
+    for i,line in enumerate(lines): offsets.append(offsets[-1]+len(line)+(i<len(lines)-1))
+    last = 0; previous_stop=-1; alias_bytes=0; binding_stream=BindingStream()
     for write in process['stderrWrites']:
         if (type(write['offset']) is not int or type(write['size']) is not int
                 or write['offset'] != last or write['size'] < 1
@@ -250,7 +257,15 @@ def derive(root, process):
                 raise ValueError('RUNTIME_IDENTITY_STALE_WRITE_EPOCH')
         aliases=write.get('bindingAliases')
         if not isinstance(aliases,list):raise ValueError('RUNTIME_IDENTITY_STOPPED_ALIASES_REQUIRED_RECAPTURE')
-        alias_bytes += len(json.dumps(aliases).encode('utf-8'))
+        headers=binding_stream.feed(raw[write['offset']:write['offset']+write['size']])
+        if write.get('bindingHeaders') != headers:
+            raise ValueError('RUNTIME_IDENTITY_STREAM_HEADER_REPLAY_MISMATCH_RECAPTURE')
+        observable_labels={h[s+'Label'] for h in headers for s in ('requester','provider')
+                           if h['processId']==process['processId'] and h[s+'Namespace']==0
+                           and Path(h[s+'Label']).is_absolute()}
+        if any(not isinstance(a,dict) or a.get('label') not in observable_labels for a in aliases):
+            raise ValueError('RUNTIME_IDENTITY_ALIAS_WITHOUT_OBSERVABLE_HEADER')
+        alias_bytes += len(json.dumps([headers,aliases]).encode('utf-8'))
         if alias_bytes>64*1024*1024:raise ValueError('RUNTIME_IDENTITY_ALIAS_BUDGET_INVALID')
         for a in aliases:
             if (not isinstance(a,dict) or not isinstance(a.get('label'),str)
@@ -269,6 +284,7 @@ def derive(root, process):
     joined = []
     for event in events:
         start, stop = offsets[event['line']], offsets[event['line']+1]
+        event['byteRange']=[start,stop]
         relevant = [w for w in process['stderrWrites'] if w['offset'] < stop and start < w['offset']+w['size']]
         endpoints = {}; objects_by_side={}
         for side in ('requester','provider'):
@@ -318,6 +334,8 @@ def derive(root, process):
     metadata_failures=Counter(code for r in joined for code in r['metadataReasonCodes'])
     verified=sum(r[k]['diagnosticMappedIdentityVerified'] for r in joined for k in ('requester','provider'))
     return {'events': joined, 'unparsedLines': unparsed, 'mappingCaptureFailures':capture_failures,
+            'streamHeaderReplayVerified':True,
+            'fragmentedBindingEventCount':sum(len(r['writeEpochs'])>1 for r in joined),
             'capturedImageDigests':sorted({o['digest'] for epoch in epochs for o in epoch}),
             'bindingEventCount':len(joined), 'mappingCaptureFailureCount':len(capture_failures),
             'mappedEndpointOccurrencesVerified': verified,
@@ -366,7 +384,7 @@ def check(path):
     path = Path(path).resolve(strict=True); root = path.parent
     value = deployment.read(path); checked(value,'runtimeIdentityReportIdentity')
     if value.get('schemaVersion') != SCHEMA:
-        raise ValueError('RUNTIME_IDENTITY_V2_STOPPED_ALIAS_EVIDENCE_REQUIRED_RECAPTURE')
+        raise ValueError('RUNTIME_IDENTITY_V3_STREAM_EVIDENCE_REQUIRED_RECAPTURE')
     inputs = deployment.read(root/'inputs.json'); checked(inputs,'runtimeInputsIdentity')
     if (set(inputs)!={'schemaVersion','observation','timeoutSeconds','runtimeInputsIdentity'}
             or inputs['schemaVersion']!='riscv2x86.runtime-identity-inputs.v1'):

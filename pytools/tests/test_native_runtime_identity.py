@@ -14,6 +14,7 @@ import pytest
 from .test_native_captured_deployment import captured
 from riscv2x86_py import native_captured_deployment as d
 from riscv2x86_py import native_runtime_identity as runtime
+from riscv2x86_py.native_binding_syntax import BindingStream
 from riscv2x86_py.native_process_identity import capture, parse_maps, binding_aliases
 
 
@@ -32,7 +33,7 @@ def mapping_receipt(captured):
     ep=trace/'maps/000000.json';ep.write_text(json.dumps(epoch))
     log=f"41: binding file {image} [0] to {image} [0]: normal symbol `value'\n".encode()
     (trace/'stdout.log').write_bytes(b'');(trace/'stderr.log').write_bytes(log)
-    process=d.seal({'schemaVersion':'riscv2x86.process-map-capture.v2',
+    process=d.seal({'schemaVersion':'riscv2x86.process-map-capture.v3',
         'backend':'linux-x86_64-ptrace-syscall-single-process.v1','processId':41,
         'syscallPhaseSource':'PTRACE_GET_SYSCALL_INFO',
         'arguments':['/fixture'],'directory':str(root),'environment':{},'timeoutSeconds':10,
@@ -40,12 +41,27 @@ def mapping_receipt(captured):
         'logLimit':16*1024*1024,'imageLimit':64*1024*1024,'stopLimit':200000,'stopCount':3,
         'epochs':[{'path':'maps/000000.json','digest':d.digest(ep)}],
         'stderrWrites':[{'offset':0,'size':len(log),'epoch':0,'stopOrdinal':3,
+            'bindingHeaders':BindingStream().feed(log),
             'bindingAliases':[{'label':str(image),'capturedFileStat':obj['capturedFileStat'],
                                'imageDigest':obj['digest']}]}],
         'stdoutDigest':d.digest(trace/'stdout.log'),'stderrDigest':d.digest(trace/'stderr.log'),
         'intervention':'ptrace','untracedRunEquivalenceVerified':False,
         'semanticApproval':False,'productionAcceptanceComplete':False},'processCaptureIdentity')
     return trace,process,epoch
+
+
+def derive_fixture(root, process):
+    stream=BindingStream();raw=(root/'stderr.log').read_bytes()
+    for w in process['stderrWrites']:
+        fragment=raw[w['offset']:w['offset']+w['size']]
+        if fragment:
+            w['bindingHeaders']=stream.feed(fragment)
+            eligible={h[s+'Label'] for h in w['bindingHeaders'] for s in ('requester','provider')
+                      if h['processId']==process['processId'] and h[s+'Namespace']==0}
+            # Synthetic receipts model only labels observable at that stop;
+            # they never retroactively attach a later-known endpoint.
+            w['bindingAliases']=[a for a in w['bindingAliases'] if a['label'] in eligible]
+    return runtime.derive(root,seal_process(process))
 
 
 def seal_process(value):return d.seal({k:v for k,v in value.items() if k!='processCaptureIdentity'},'processCaptureIdentity')
@@ -72,7 +88,7 @@ def test_wrong_event_identity_or_symbol_version_cannot_be_promoted(mapping_recei
     if change=='version':raw=raw.rstrip()+b' [WRONG_VERSION]\n'
     (root/'stderr.log').write_bytes(raw)
     process['stderrDigest']=d.digest(root/'stderr.log');process['stderrWrites'][0]['size']=len(raw)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     if change in ('pid','namespace'):assert result['mappedEndpointOccurrencesVerified']==0
     else:assert result['metadataCompatibleProviderEvents']==0
 
@@ -88,7 +104,7 @@ def test_receipt_corruption_is_rejected(mapping_receipt,change):
     elif change=='epoch':(root/'maps/000000.json').write_text('{}')
     elif change=='writes':process['stderrWrites'][0]['size']-=1
     else:process['epochs'][0]['path']='../outside.json'
-    with pytest.raises(ValueError):runtime.derive(root,seal_process(process))
+    with pytest.raises(ValueError):derive_fixture(root,process)
 
 
 def test_partial_line_across_different_mappings_is_not_one_object_identity(mapping_receipt):
@@ -102,7 +118,7 @@ def test_partial_line_across_different_mappings_is_not_one_object_identity(mappi
     size=process['stderrWrites'][0]['size'];cut=size//2
     process['stderrWrites']=[{'offset':0,'size':cut,'epoch':0,'stopOrdinal':3,'bindingAliases':process['stderrWrites'][0]['bindingAliases']},
         {'offset':cut,'size':size-cut,'epoch':1,'stopOrdinal':5,'bindingAliases':process['stderrWrites'][0]['bindingAliases']}];process['stopCount']=5
-    assert runtime.derive(root,seal_process(process))['mappedEndpointOccurrencesVerified']==0
+    assert derive_fixture(root,process)['mappedEndpointOccurrencesVerified']==0
 
 
 def test_mapped_virtual_object_is_selected_by_elf_identity_not_a_label_whitelist(mapping_receipt):
@@ -125,7 +141,7 @@ def test_mapped_virtual_object_is_selected_by_elf_identity_not_a_label_whitelist
     process['epochs'][0]['digest']=d.digest(path)
     (root/'stderr.log').write_bytes(log);process['stderrDigest']=d.digest(root/'stderr.log')
     process['stderrWrites'][0]['size']=len(log)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==2
     assert result['events'][0]['provider']['objectKind']=='mapped-virtual-elf'
 
@@ -144,7 +160,7 @@ def test_ptrace_collector_preserves_permission_failure_or_real_capture(tmp_path)
             pytest.skip('ptrace unavailable; recorded failure, not a verified runtime identity')
         raise
     assert process['returnCode']==0 and process['epochs'] and process['stderrWrites']
-    assert process['schemaVersion']=='riscv2x86.process-map-capture.v2'
+    assert process['schemaVersion']=='riscv2x86.process-map-capture.v3'
     assert any(w['bindingAliases'] for w in process['stderrWrites'])
     result=runtime.derive(root,process)
     assert result['mappedEndpointOccurrencesVerified']>0
@@ -236,7 +252,7 @@ def test_alias_is_bound_by_stopped_file_identity_without_reopening_log_paths(map
     (root/'stderr.log').write_bytes(log)
     process['stderrDigest']=d.digest(root/'stderr.log');process['stderrWrites'][0]['size']=len(log)
     process['stderrWrites'][0]['bindingAliases'][0]['label']=alias
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==2
     assert result['diagnosticEndpointMappingComplete']
     assert result['endpointFailureReasonCounts']=={}
@@ -252,7 +268,7 @@ def test_alias_spelling_or_current_realpath_does_not_replace_capture_evidence(ma
     elif change=='digest':aliases[0]['imageDigest']='sha256:'+'0'*64
     elif change=='duplicate':aliases.append(deepcopy(aliases[0]))
     else:aliases[0]={'label':aliases[0]['label'],'failureReason':'fixture inaccessible'}
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['unverifiedEndpointOccurrenceCount']==2
     assert result['metadataFailureReasonCounts']=={'ENDPOINT_MAPPING_IDENTITY_REQUIRED':1}
     assert not result['diagnosticEndpointMappingComplete']
@@ -266,18 +282,18 @@ def test_stopped_alias_collector_checks_actual_symlink_inode_and_cached_image(ma
     alias=processroot/'arbitrary-link';alias.symlink_to(image)
     raw=b"41: binding file /arbitrary-link [0] to /arbitrary-link [0]: normal symbol `value'\n"
     cache={tuple(obj['capturedFileStat']):{'digest':obj['digest']}}
-    rows=binding_aliases(raw,41,cache,proc_root=fakeproc)
+    rows=binding_aliases(BindingStream().feed(raw),41,cache,proc_root=fakeproc)
     assert rows==[{'label':'/arbitrary-link','capturedFileStat':obj['capturedFileStat'],'imageDigest':obj['digest']}]
+    assert binding_aliases(BindingStream().feed(raw.rstrip(b'\n')),41,cache,proc_root=fakeproc)==rows
     alias.unlink();alias.write_bytes(b'different inode')
-    assert 'failureReason' in binding_aliases(raw,41,cache,proc_root=fakeproc)[0]
-    assert binding_aliases(raw.rstrip(b'\n'),41,cache,proc_root=fakeproc)==[]
-    assert binding_aliases(raw,42,cache,proc_root=fakeproc)==[]
+    assert 'failureReason' in binding_aliases(BindingStream().feed(raw),41,cache,proc_root=fakeproc)[0]
+    assert binding_aliases(BindingStream().feed(raw),42,cache,proc_root=fakeproc)==[]
 
 
 def split_writes(process):
     size=process['stderrWrites'][0]['size'];aliases=process['stderrWrites'][0]['bindingAliases']
-    process['stderrWrites']=[{'offset':0,'size':size//2,'epoch':0,'stopOrdinal':3,'bindingAliases':aliases},
-        {'offset':size//2,'size':size-size//2,'epoch':1,'stopOrdinal':5,'bindingAliases':aliases}]
+    process['stderrWrites']=[{'offset':0,'size':size-1,'epoch':0,'stopOrdinal':3,'bindingAliases':aliases},
+        {'offset':size-1,'size':1,'epoch':1,'stopOrdinal':5,'bindingAliases':aliases}]
     process['stopCount']=5
 
 
@@ -287,7 +303,7 @@ def test_mprotect_snapshot_change_does_not_create_a_new_load_identity(mapping_re
     second['maps'][0]['permissions']='r--p'
     second['objects'][0]['maps']=deepcopy(second['maps'])
     write_epoch(root,process,second);split_writes(process)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==2
     evidence=result['events'][0]['provider']['mappingEvidence']
     assert evidence[0]['mapSnapshotIdentities']!=evidence[1]['mapSnapshotIdentities']
@@ -299,7 +315,7 @@ def test_unload_reload_same_inode_and_address_is_a_different_generation(mapping_
     gap={'index':1,'stopOrdinal':4,'objects':[],'maps':[]};write_epoch(root,process,gap)
     again=deepcopy(epoch);again.update(index=2,stopOrdinal=5);write_epoch(root,process,again)
     split_writes(process);process['stderrWrites'][1].update(epoch=2,stopOrdinal=6);process['stopCount']=6
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==0
     assert result['endpointFailureReasonCounts']['MAPPING_INSTANCE_CHANGED_ACROSS_WRITES']==2
 
@@ -309,7 +325,7 @@ def test_multiple_load_anchors_are_not_merged_by_inode_or_image_digest(mapping_r
     extra=deepcopy(epoch['maps'][0]);extra['start']+=0x10000;extra['end']+=0x10000
     epoch['maps'].append(extra);epoch['objects'][0]['maps']=deepcopy(epoch['maps'])
     write_epoch(root,process,epoch)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==0
     assert result['endpointFailureReasonCounts']=={'MAPPING_LOAD_ANCHOR_AMBIGUOUS_OR_MISSING':2}
 
@@ -318,9 +334,9 @@ def test_stale_epoch_and_legacy_capture_cannot_be_relabelled_as_new_evidence(map
     root,process,epoch=mapping_receipt
     second=deepcopy(epoch);second.update(index=1,stopOrdinal=3)
     write_epoch(root,process,second)
-    with pytest.raises(ValueError,match='STALE_WRITE_EPOCH'):runtime.derive(root,seal_process(process))
+    with pytest.raises(ValueError,match='STALE_WRITE_EPOCH'):derive_fixture(root,process)
     process['schemaVersion']='riscv2x86.process-map-capture.v1'
-    with pytest.raises(ValueError):runtime.derive(root,seal_process(process))
+    with pytest.raises(ValueError):derive_fixture(root,process)
 
 
 def test_unknown_binding_mode_preserves_mapping_but_not_metadata_approval(mapping_receipt):
@@ -328,7 +344,7 @@ def test_unknown_binding_mode_preserves_mapping_but_not_metadata_approval(mappin
     raw=(root/'stderr.log').read_bytes().replace(b': normal symbol',b': unknown symbol')
     (root/'stderr.log').write_bytes(raw);process['stderrDigest']=d.digest(root/'stderr.log')
     process['stderrWrites'][0]['size']=len(raw)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==2
     assert result['metadataCompatibleProviderEvents']==0
     assert result['metadataFailureReasonCounts']=={'BINDING_MODE_UNSUPPORTED':1}
@@ -340,7 +356,7 @@ def test_fixed_remap_same_bytes_and_address_is_not_hidden_by_identical_snapshots
         mappingMutation={'kind':'syscall','number':9,'arguments':[0x10000,0x5000,5,0x12,7,0],
                          'returnValue':0x10000})
     write_epoch(root,process,second);split_writes(process)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==0
     assert result['endpointFailureReasonCounts']['MAPPING_INSTANCE_CHANGED_ACROSS_WRITES']==2
 
@@ -351,14 +367,14 @@ def test_selectively_omitting_a_second_mapping_cannot_hide_ambiguity(mapping_rec
     epoch['maps'].append(extra)
     write_epoch(root,process,epoch)
     with pytest.raises(ValueError,match='BACKING_MAP_GROUP_INCOMPLETE'):
-        runtime.derive(root,seal_process(process))
+        derive_fixture(root,process)
 
 
 def test_empty_binding_log_cannot_vacuously_complete_mapping_coverage(mapping_receipt):
     root,process,_=mapping_receipt
     (root/'stderr.log').write_bytes(b'');process['stderrDigest']=d.digest(root/'stderr.log')
     process['stderrWrites']=[]
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['bindingEventCount']==0 and not result['diagnosticEndpointMappingComplete']
 
 
@@ -366,7 +382,7 @@ def test_legacy_runtime_report_requires_recapture_not_posthoc_realpath(tmp_path)
     path=tmp_path/'result.json'
     path.write_text(json.dumps(d.seal({'schemaVersion':'riscv2x86.diagnostic-map-bindings.v1'},
                                      'runtimeIdentityReportIdentity')))
-    with pytest.raises(ValueError,match='STOPPED_ALIAS_EVIDENCE_REQUIRED_RECAPTURE'):runtime.check(path)
+    with pytest.raises(ValueError,match='STREAM_EVIDENCE_REQUIRED_RECAPTURE'):runtime.check(path)
 
 
 def test_mremap_destination_replacement_breaks_continuity_even_when_anchor_survives(mapping_receipt):
@@ -381,6 +397,71 @@ def test_mremap_destination_replacement_breaks_continuity_even_when_anchor_survi
     second['maps'][1].update(start=0x14000,end=0x15000)
     second['objects'][0]['maps']=[deepcopy(second['maps'][0])]
     write_epoch(root,process,second);split_writes(process)
-    result=runtime.derive(root,seal_process(process))
+    result=derive_fixture(root,process)
     assert result['mappedEndpointOccurrencesVerified']==0
     assert result['endpointFailureReasonCounts']['MAPPING_INSTANCE_CHANGED_ACROSS_WRITES']==2
+
+
+def collect_stream_fixture(root, process, epoch, chunks, proc_root, before_write=None):
+    """Real alias opens, synthetic stops/maps: not a ptrace authenticity test."""
+    stream=BindingStream();writes=[];offset=0
+    obj=epoch['objects'][0];cache={tuple(obj['capturedFileStat']):{'digest':obj['digest']}}
+    for i,chunk in enumerate(chunks):
+        if before_write:before_write(i)
+        headers=stream.feed(chunk)
+        writes.append({'offset':offset,'size':len(chunk),'epoch':0,'stopOrdinal':3+2*i,
+                       'bindingHeaders':headers,
+                       'bindingAliases':binding_aliases(headers,41,cache,proc_root=proc_root)})
+        offset+=len(chunk)
+    (root/'stderr.log').write_bytes(b''.join(chunks));process['stderrDigest']=d.digest(root/'stderr.log')
+    process['stderrWrites']=writes;process['stopCount']=writes[-1]['stopOrdinal']
+    return seal_process(process)
+
+
+@pytest.mark.parametrize('version',[None,'ABSENT_VERSION'])
+def test_split_body_tail_pipeline_collects_real_aliases_and_keeps_version_checks(mapping_receipt,tmp_path,version):
+    root,process,epoch=mapping_receipt;image=epoch['objects'][0]['path']
+    proc=tmp_path/'proc';(proc/'41').mkdir(parents=True);(proc/'41/root').symlink_to('/')
+    body=f"41: binding file {image} [0] to {image} [0]: normal symbol `value'".encode()
+    tail=b'\n' if version is None else f' [{version}]\n'.encode()
+    process=collect_stream_fixture(root,process,epoch,[body,tail],proc)
+    result=runtime.derive(root,process)
+    assert result['streamHeaderReplayVerified'] and result['fragmentedBindingEventCount']==1
+    assert result['mappedEndpointOccurrencesVerified']==2
+    assert result['metadataCompatibleProviderEvents']==(1 if version is None else 0)
+    assert all(w['bindingAliases'] for w in process['stderrWrites'])
+    assert not result['untracedRuntimeBindingClosureComplete']
+    assert not result['events'][0]['actualCallExecutionVerified']
+
+
+def test_alias_replacement_between_body_and_tail_is_not_hidden_by_same_epoch(mapping_receipt,tmp_path):
+    root,process,epoch=mapping_receipt;image=epoch['objects'][0]['path']
+    proc=tmp_path/'proc';processroot=proc/'41/root';processroot.mkdir(parents=True)
+    alias=processroot/'switch';alias.symlink_to(image)
+    body=b"41: binding file /switch [0] to /switch [0]: normal symbol `value'"
+    def replace(i):
+        if i==1:alias.unlink();alias.write_bytes(b'new file')
+    process=collect_stream_fixture(root,process,epoch,[body,b'\n'],proc,replace)
+    result=runtime.derive(root,process)
+    assert result['mappedEndpointOccurrencesVerified']==0
+    assert result['endpointFailureReasonCounts']['STOPPED_ALIAS_CAPTURE_FAILED']==2
+
+
+def test_early_unobservable_header_is_not_backfilled_from_later_alias(mapping_receipt,tmp_path):
+    root,process,epoch=mapping_receipt;image=epoch['objects'][0]['path']
+    proc=tmp_path/'proc';(proc/'41').mkdir(parents=True);(proc/'41/root').symlink_to('/')
+    raw=f"41: binding file {image} [0] to {image} [0]: normal symbol `value'\n".encode()
+    process=collect_stream_fixture(root,process,epoch,[raw[:12],raw[12:]],proc)
+    result=runtime.derive(root,process)
+    assert result['mappedEndpointOccurrencesVerified']==0
+    assert result['endpointFailureReasonCounts']['ENDPOINT_HEADER_NOT_YET_OBSERVABLE']==2
+    process['stderrWrites'][0]['bindingAliases']=deepcopy(process['stderrWrites'][1]['bindingAliases'])
+    with pytest.raises(ValueError,match='ALIAS_WITHOUT_OBSERVABLE_HEADER'):
+        runtime.derive(root,seal_process(process))
+
+
+def test_rehashed_stream_header_forgery_is_rejected(mapping_receipt):
+    root,process,_=mapping_receipt
+    process['stderrWrites'][0]['bindingHeaders'][0]['headerEnd']+=1
+    with pytest.raises(ValueError,match='STREAM_HEADER_REPLAY_MISMATCH'):
+        runtime.derive(root,seal_process(process))

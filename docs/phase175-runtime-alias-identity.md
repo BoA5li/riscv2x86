@@ -1,5 +1,8 @@
 # Phase175：停止时路径关联、映射连续性与自动缺口盘点
 
+> 真实加载器的跨写入日志采集修订见 [phase176](phase176-stream-runtime-evidence.md)。
+> 使用phase176时重新审计部署并采集v3证据，保留本轮v2结果，不能直接修改版本。
+
 ## 问题、修订范围与验收边界
 
 基于 phase174 `64dea7dae0df86ba6b3ad93f0f09472082505dfe`。
