@@ -219,7 +219,19 @@ def derive(plan, candidate, source, artifacts, producer, target, target_artifact
     return deployment.seal(body, 'contextBridgeIdentity')
 
 
-def acquire(plan_path, output, *, clang, timeout=300, observation_path=None):
+def reusable_input(receipt_path,context,clang):
+    """Revalidate acquisition artifacts independently of old audit verdicts."""
+    from .project_tool_resolution import resolve_executable
+    snapshot=deployment.snapshot(receipt_path)
+    receipt=deployment.read(receipt_path);artifacts=validated_input(receipt)
+    if (receipt['context']!=context or receipt['target']!='x86_64'
+            or receipt['inspectionCompiler']!=str(resolve_executable(clang))):
+        raise ValueError('NATIVE_INPUT_REUSE_CONTEXT_OR_COMPILER_MISMATCH')
+    deployment.verify_snapshot(snapshot)
+    return receipt,artifacts,snapshot
+
+
+def acquire(plan_path, output, *, clang, timeout=300, observation_path=None,reuse_receipt=None):
     from .native_deployment_prerequisites import output_path
     root = output_path(output)
     plan = deployment.read(plan_path)
@@ -229,16 +241,21 @@ def acquire(plan_path, output, *, clang, timeout=300, observation_path=None):
     # during derivation to detect changes during acquisition.
     if observation_path is not None:
         observation_inventory(observation_path, plan)
+    reused=reusable_input(reuse_receipt,producer,clang) if reuse_receipt else None
     root.mkdir()
     # Reuse the native input acquisition and its dependency/tool/data-model
     # checks. In particular, do not add -DPIC to already expanded source CPP.
-    target = native.acquire(producer, clang, root/'target-native-input', target='x86_64', timeout=timeout)
-    target_artifacts = validated_input(target)
+    if reused:
+        target,target_artifacts,target_snapshot=reused
+    else:
+        target = native.acquire(producer, clang, root/'target-native-input', target='x86_64', timeout=timeout)
+        target_artifacts = validated_input(target)
+        target_snapshot=deployment.snapshot(root/'target-native-input/native-input.json')
     candidate, source, artifacts, producer, bindings, contexts = inputs(plan)
     report = derive(plan, candidate, source, artifacts, producer, target, target_artifacts, bindings, contexts, observation_path)
     body = {'schemaVersion': 'riscv2x86.native-context-bridge-inputs.v1',
             'plan': deployment.snapshot(plan_path),
-            'targetReceipt': deployment.snapshot(root/'target-native-input/native-input.json'),
+            'targetReceipt': target_snapshot,
             'observation': deployment.snapshot(observation_path) if observation_path else None}
     manifest = deployment.seal(body, 'contextBridgeInputsIdentity')
     (root/'inputs.json').write_text(json.dumps(manifest, indent=2)+'\n')

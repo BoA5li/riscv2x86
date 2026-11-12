@@ -108,3 +108,37 @@ def test_object_alias_binds_same_canonical_producer_without_erasing_lexical_inpu
     assert first['path']==str(p/'object-alias.o')
     node=next(n for n in report['nodes'] if n['nodeIdentity']==first['nodeIdentity'])
     assert node['file']['resolvedPath']==str(p/'main.o')
+
+
+def test_archive_diagnostic_retains_underlying_selection_reason(captured):
+    root,_,_=captured;plan=archive_plan(captured,capture_archive=False)
+    report=contexts.derive(plan,deploy(root,plan))
+    gap=next(g for g in report['inputGaps'] if g['reasonCode']=='ARCHIVE_OPERATION_CHAIN_NOT_UNIQUE_OR_UNAVAILABLE')
+    assert gap['candidateCount']==0
+    assert gap['selectionAttempts']
+    assert {a['selection']['reason'] for a in gap['selectionAttempts']}=={'ARCHIVE_OPERATION_EVIDENCE_MISSING'}
+
+
+def test_assembly_data_object_does_not_receive_function_contract(captured):
+    root,p,old=captured
+    record=d.read(old['testRecords']['path']);config=d.read(record['captureConfig'])
+    wrapper=config['wrappers']['cc']['path']
+    (p/'data.S').write_text('.data\n.globl arbitrary_table\n.type arbitrary_table,@object\n'
+                           'arbitrary_table:\n.quad 17\n.size arbitrary_table,8\n'
+                           '.section .note.GNU-stack,"",@progbits\n')
+    for args in [ ['-c','data.S','-o','data.o'],
+        ['-o','asm-program','main.o','data.o',str(p/'libprobe.so'),'./libprobe.so.1',
+         '-Wl,-rpath','-Wl,'+str(p)]]:
+        _,code=run(record['captureConfig'],'test',[wrapper,*args],cwd=p);assert code==0
+    new=inventory(record['captureConfig'],stage='test');path=root/'asm-records.json';path.write_text(json.dumps(new))
+    entry=next(a for a in new['actions'] if (a.get('observedOutput') or {}).get('path')==str(p/'asm-program'))
+    plan=d.prepare(root/'candidate.json',old['libraryRecords']['path'],path,old['requirements']['path'],
+                   entry_action=entry['actionIdentity'],environment=old['environment'])
+    report=contexts.derive(plan,deploy(root,plan))
+    node=next(n for n in report['nodes'] if n['file']['path']==str(p/'data.o'))
+    assert node['producerBound']
+    symbol=next(s for s in node['assemblyInterface']['definedSymbols'] if s['name']=='arbitrary_table')
+    assert symbol['type']==1
+    assert not node['assemblyInterface']['nativeAbiContractVerified']
+    assert report['capturedProducerClosureComplete']
+    assert any(g['reasonCode']=='ASSEMBLY_CONTEXT_CONTRACT_REQUIRED' for g in report['inputGaps'])

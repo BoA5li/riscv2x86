@@ -1,3 +1,5 @@
+> 后续修订与回执消费验证见 [phase178-context-resolution.md](phase178-context-resolution.md)。
+
 # Phase177：依赖生产者、调用范围与上下文批量采集
 
 ## 新材料确认的问题

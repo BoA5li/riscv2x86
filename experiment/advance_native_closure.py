@@ -38,18 +38,26 @@ def main(argv=None):
     repeat = sub.add_parser('replay-observation'); repeat.add_argument('--input', required=True)
     context = sub.add_parser('inspect-context'); context.add_argument('--plan', required=True)
     context.add_argument('--clang', required=True)
+    context.add_argument('--reuse-native-input')
     context.add_argument('--observation', help='validated observation from this exact deployment plan')
     runtime = sub.add_parser('capture-runtime'); runtime.add_argument('--observation', required=True)
     contracts = sub.add_parser('inspect-contracts')
     contracts.add_argument('--context', required=True); contracts.add_argument('--observation', required=True)
     contracts.add_argument('--clang', required=True); contracts.add_argument('--runtime')
     contracts.add_argument('--comparison')
+    contracts.add_argument('--reuse-entry-receipt',action='append',default=[])
     batch=sub.add_parser('acquire-context-batch')
     batch.add_argument('--contracts',required=True);batch.add_argument('--clang',required=True)
     batch.add_argument('--start-index',type=int,default=0);batch.add_argument('--count',type=int,default=4)
+    batch.add_argument('--reuse-receipt',action='append',default=[])
+    resolution=sub.add_parser('resolve-contexts')
+    resolution.add_argument('--contracts',required=True)
+    resolution.add_argument('--context-batch',action='append',required=True)
+    resolution.add_argument('--output',required=True)
     refinement=sub.add_parser('refine-contracts')
     refinement.add_argument('--input',required=True);refinement.add_argument('--output',required=True)
     refinement.add_argument('--runtime');refinement.add_argument('--comparison')
+    refinement.add_argument('--context-resolution')
     prepare_comparison=sub.add_parser('prepare-comparison')
     for name in ('deployment','source-program','domain','output'):
         prepare_comparison.add_argument('--'+name,required=True)
@@ -68,7 +76,7 @@ def main(argv=None):
     audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
-        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher'):
+        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution'):
             value = getattr(args, name, None)
             if value is not None and (not value or not Path(value).is_file()):
                 raise ValueError('CLOSURE_INPUT_REGULAR_FILE_REQUIRED:' + name)
@@ -115,7 +123,8 @@ def main(argv=None):
             value = {'auditPrerequisiteIntegrityChecked': True}
         elif args.operation == 'refine-contracts':
             from riscv2x86_py.native_contract_evidence import refine as refine_contracts
-            value=refine_contracts(args.input,args.output,runtime_path=args.runtime,comparison_path=args.comparison)
+            value=refine_contracts(args.input,args.output,runtime_path=args.runtime,
+                comparison_path=args.comparison,resolution_path=args.context_resolution)
         elif args.operation == 'prepare-comparison':
             from riscv2x86_py.native_program_comparison import prepare as prepare_comparison
             value=prepare_comparison(args.deployment,args.source_program,args.source_machine,args.domain,args.output,
@@ -129,14 +138,19 @@ def main(argv=None):
         elif args.operation == 'acquire-context-batch':
             from riscv2x86_py.native_context_batch import acquire as acquire_batch
             value=acquire_batch(args.contracts,args.output,clang=args.clang,start=args.start_index,
-                                count=args.count,timeout=args.timeout_seconds)
+                                count=args.count,timeout=args.timeout_seconds,reuse_paths=args.reuse_receipt)
+        elif args.operation == 'resolve-contexts':
+            from riscv2x86_py.native_context_resolution import acquire as resolve_contexts
+            value=resolve_contexts(args.contracts,args.context_batch,args.output)
         elif args.operation == 'inspect-contracts':
             from riscv2x86_py.native_contract_evidence import acquire as acquire_contracts
             value = acquire_contracts(args.context, args.observation, args.output, clang=args.clang,
-                                      timeout=args.timeout_seconds, runtime_path=args.runtime, comparison_path=args.comparison)
+                                      timeout=args.timeout_seconds, runtime_path=args.runtime, comparison_path=args.comparison,
+                                      reuse_receipts=args.reuse_entry_receipt)
         elif args.operation == 'inspect-context':
             from riscv2x86_py.native_context_bridge import acquire as bridge
-            value = bridge(args.plan, args.output, clang=args.clang, timeout=args.timeout_seconds, observation_path=args.observation)
+            value = bridge(args.plan, args.output, clang=args.clang, timeout=args.timeout_seconds,
+                           observation_path=args.observation,reuse_receipt=args.reuse_native_input)
         elif args.operation == 'replay-observation':
             value = observation.replay_observation(args.input, args.output, args.timeout_seconds)
         elif args.operation == 'observe':
@@ -144,7 +158,10 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.native-context-batch.v1':
+            if value.get('schemaVersion') == 'riscv2x86.native-context-resolution.v1':
+                from riscv2x86_py.native_context_resolution import check as check_resolution
+                check_resolution(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-context-batch.v1':
                 from riscv2x86_py.native_context_batch import check as check_batch
                 check_batch(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
@@ -153,7 +170,7 @@ def main(argv=None):
             elif value.get('schemaVersion') in ('riscv2x86.diagnostic-map-bindings.v1', 'riscv2x86.diagnostic-map-bindings.v2', 'riscv2x86.diagnostic-map-bindings.v3'):
                 from riscv2x86_py.native_runtime_identity import check as check_runtime
                 check_runtime(args.input)
-            elif value.get('schemaVersion') in ('riscv2x86.native-contract-evidence.v1', 'riscv2x86.native-contract-evidence.v2', 'riscv2x86.native-contract-evidence.v3'):
+            elif value.get('schemaVersion') in ('riscv2x86.native-contract-evidence.v1', 'riscv2x86.native-contract-evidence.v2', 'riscv2x86.native-contract-evidence.v3','riscv2x86.native-contract-evidence.v4'):
                 from riscv2x86_py.native_contract_evidence import check as check_contracts
                 check_contracts(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-context-bridge.v1':
@@ -204,6 +221,11 @@ def main(argv=None):
             result['producerCompileContextCount']=len(producers['compileContexts'])
             result['producerGapReasonCounts']=dict(sorted(Counter(g['reasonCode'] for g in producers['inputGaps']).items()))
             result['explicitPICArgumentsEqual']=value['programScope']['explicitPICArgumentsEqual']
+        if 'contextResolutionIdentity' in value:
+            for key in ('consumedContextCount','producerCompileContextCount','remainingWorkReasonCounts'):
+                result[key]=value[key]
+            result['callReasonCounts']=value['resolution']['callReasonCounts']
+            result['uniqueStrongFunctionCandidateCallCount']=value['resolution']['uniqueStrongFunctionCandidateCallCount']
         result.update(operation=args.operation, evidenceOperationComplete=True,
                       semanticApproval=False, productionAcceptanceComplete=False)
         if hasattr(args, 'output'):

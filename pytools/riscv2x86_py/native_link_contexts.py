@@ -78,16 +78,34 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
               'producerActionIdentity':None,'compileContextIdentity':None}
         nodes[node_id]=node;raw=read(row)
         if raw.startswith(b'!<arch>\n'):
-            node['kind']='regular-archive';members=archive_members(raw);choices=[]
+            node['kind']='regular-archive';members=archive_members(raw);choices=[];attempts=[]
             for config_id,config in configs.items():
                 group=[a for aid,a in actions.items() if config_id in origins[aid] and before(a,consumer)
                        and same_clock(a,consumer)]
                 if config.get('archiveCapture'):
                     selection=select(group,config['directory'],row['path'],row['digest'])
+                    attempts.append({'captureConfigIdentity':config_id,
+                        'eligibleActionCount':len(group),'selection':selection,
+                        'archiveActionCandidates':[{
+                            'actionIdentity':a['actionIdentity'],'arguments':a['arguments'],
+                            'directory':a['directory'],
+                            'observedInvocationInterval':a.get('observedInvocationInterval'),
+                            'before':{k:v for k,v in a['archiveOperationEvidence']['before'].items()
+                                if k in ('supported','reason','profile','plan','archive')},
+                            'after':{k:v for k,v in a['archiveOperationEvidence']['after'].items()
+                                if k in ('status','archive','detail','returnCode')}}
+                            for a in group if a.get('archiveOperationEvidence') is not None]})
                     if selection['complete']:choices.append(selection)
+                else:
+                    attempts.append({'captureConfigIdentity':config_id,
+                        'eligibleActionCount':len(group),'selection':{
+                            'complete':False,'reason':'ARCHIVE_CAPTURE_PROFILE_REQUIRED'}})
             choices={identity(c):c for c in choices}
+            node['archiveSelectionAttempts']=attempts
+            node['completeArchiveChainCandidateCount']=len(choices)
             if len(choices)!=1:
-                gap(node_id,'ARCHIVE_OPERATION_CHAIN_NOT_UNIQUE_OR_UNAVAILABLE');return node_id
+                gap(node_id,'ARCHIVE_OPERATION_CHAIN_NOT_UNIQUE_OR_UNAVAILABLE',
+                    candidateCount=len(choices),selectionAttempts=attempts);return node_id
             selection=next(iter(choices.values()))
             if len(members)!=len(selection['members']):raise ValueError('LINK_CONTEXT_ARCHIVE_MEMBER_COUNT_MISMATCH')
             node['archiveOperationIdentities']=selection['operationIdentities'];node['producerBound']=True
@@ -123,6 +141,17 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
                 node['compileContextIdentity']=context['contextIdentity']
                 if not context['inspectionReady']:gap(node_id,'C_CONTEXT_NOT_INSPECTABLE',blockers=context['blockers'])
             else:gap(node_id,'ASSEMBLY_CONTEXT_CONTRACT_REQUIRED')
+            if producer['kind']=='assemble':
+                # ELF type is authoritative: an assembly object may export
+                # data rather than functions. No calling convention is
+                # inferred from its file name or from STT_NOTYPE symbols.
+                node['assemblyInterface']={
+                    'definedSymbols':[s for s in elf['staticSymbols']
+                        if s['defined'] and s['name'] and s['binding'] in (1,2,10)],
+                    'undefinedSymbols':[s for s in elf['staticSymbols']
+                        if not s['defined'] and s['name']],
+                    'nativeAbiContractVerified':False,
+                    'objectEffectContractVerified':False}
         else:
             link=deployment.captured_link(producer)
             for child in link['inputs']:

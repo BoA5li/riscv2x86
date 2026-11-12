@@ -73,11 +73,22 @@ def derive(inputs,receipts):
     return deployment.seal(body,'contextBatchIdentity')
 
 
-def acquire(path,output,*,clang,start=0,count=4,timeout=300):
+def acquire(path,output,*,clang,start=0,count=4,timeout=300,reuse_paths=()):
     from .native_deployment_prerequisites import output_path
     if type(timeout) is not int or not 1<=timeout<=86400:raise ValueError('CONTEXT_BATCH_TIMEOUT_INVALID')
     report=contracts.check(path);contexts=selected(report,start,count)
     compiler=str(resolve_executable(clang));reusable=parent_receipts(path,report)
+    allowed={c['contextIdentity']:c for c in report['producerContextClosure']['compileContexts']}
+    for receipt_path in reuse_paths:
+        receipt=deployment.read(receipt_path);validated_input(receipt)
+        cid=receipt['context']['contextIdentity']
+        if (cid not in allowed or receipt['context']!=allowed[cid]
+                or receipt['target']!='x86_64' or receipt['inspectionCompiler']!=compiler):
+            raise ValueError('CONTEXT_BATCH_REUSE_CONTEXT_OR_TOOL_MISMATCH')
+        key=(cid,compiler);snapshot=deployment.snapshot(receipt_path)
+        if key in reusable and deployment.read(reusable[key]['path'])['nativeInputIdentity']!=receipt['nativeInputIdentity']:
+            raise ValueError('CONTEXT_BATCH_CONFLICTING_REUSE_RECEIPTS')
+        reusable[key]=snapshot
     root=output_path(output);root.mkdir()
     inputs={'schemaVersion':'riscv2x86.native-context-batch-inputs.v1',
             'contracts':deployment.snapshot(path),'clang':deployment.snapshot(compiler),
