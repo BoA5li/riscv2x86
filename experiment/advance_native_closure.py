@@ -44,6 +44,9 @@ def main(argv=None):
     contracts.add_argument('--context', required=True); contracts.add_argument('--observation', required=True)
     contracts.add_argument('--clang', required=True); contracts.add_argument('--runtime')
     contracts.add_argument('--comparison')
+    batch=sub.add_parser('acquire-context-batch')
+    batch.add_argument('--contracts',required=True);batch.add_argument('--clang',required=True)
+    batch.add_argument('--start-index',type=int,default=0);batch.add_argument('--count',type=int,default=4)
     refinement=sub.add_parser('refine-contracts')
     refinement.add_argument('--input',required=True);refinement.add_argument('--output',required=True)
     refinement.add_argument('--runtime');refinement.add_argument('--comparison')
@@ -56,7 +59,7 @@ def main(argv=None):
     prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
     comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
     comparison.add_argument('--output', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, contracts):
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, contracts, batch):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -65,7 +68,7 @@ def main(argv=None):
     audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
-        for name in ('plan', 'context', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher'):
+        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher'):
             value = getattr(args, name, None)
             if value is not None and (not value or not Path(value).is_file()):
                 raise ValueError('CLOSURE_INPUT_REGULAR_FILE_REQUIRED:' + name)
@@ -123,6 +126,10 @@ def main(argv=None):
         elif args.operation == 'capture-runtime':
             from riscv2x86_py.native_runtime_identity import acquire as acquire_runtime
             value = acquire_runtime(args.observation, args.output, timeout=args.timeout_seconds)
+        elif args.operation == 'acquire-context-batch':
+            from riscv2x86_py.native_context_batch import acquire as acquire_batch
+            value=acquire_batch(args.contracts,args.output,clang=args.clang,start=args.start_index,
+                                count=args.count,timeout=args.timeout_seconds)
         elif args.operation == 'inspect-contracts':
             from riscv2x86_py.native_contract_evidence import acquire as acquire_contracts
             value = acquire_contracts(args.context, args.observation, args.output, clang=args.clang,
@@ -137,13 +144,16 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
+            if value.get('schemaVersion') == 'riscv2x86.native-context-batch.v1':
+                from riscv2x86_py.native_context_batch import check as check_batch
+                check_batch(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
                 from riscv2x86_py.native_program_comparison import check as check_comparison
                 check_comparison(args.input)
             elif value.get('schemaVersion') in ('riscv2x86.diagnostic-map-bindings.v1', 'riscv2x86.diagnostic-map-bindings.v2', 'riscv2x86.diagnostic-map-bindings.v3'):
                 from riscv2x86_py.native_runtime_identity import check as check_runtime
                 check_runtime(args.input)
-            elif value.get('schemaVersion') in ('riscv2x86.native-contract-evidence.v1', 'riscv2x86.native-contract-evidence.v2'):
+            elif value.get('schemaVersion') in ('riscv2x86.native-contract-evidence.v1', 'riscv2x86.native-contract-evidence.v2', 'riscv2x86.native-contract-evidence.v3'):
                 from riscv2x86_py.native_contract_evidence import check as check_contracts
                 check_contracts(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-context-bridge.v1':
@@ -173,7 +183,8 @@ def main(argv=None):
                    'diagnosticMappedEndpointOccurrencesVerified',
                    'entryDirectObjectContextAcquisitionComplete', 'entryAbiClosureVerified',
                    'processObservableComparisonStatus', 'sourceReturnCode', 'targetReturnCode',
-                   'l1EligibilityVerified') if k in value}
+                   'l1EligibilityVerified','startIndex','nextIndex','totalContextCount',
+                   'selectedContextAcquisitionComplete') if k in value}
         for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode',
                     'auditPrerequisiteIntegrityChecked'):
             if key in value: result[key] = value[key]
@@ -185,6 +196,14 @@ def main(argv=None):
             result['entryInputGapReasonCounts']=coverage['entryInputGapReasonCounts']
             result['relocationContractKindCounts']=coverage['relocationContractKindCounts']
             result['contractStageStatuses']={k:v['status'] for k,v in value['stages'].items()}
+        if 'producerContextClosure' in value:
+            from collections import Counter
+            producers=value['producerContextClosure']
+            result['capturedProducerClosureComplete']=producers['capturedProducerClosureComplete']
+            result['producerNodeCount']=len(producers['nodes'])
+            result['producerCompileContextCount']=len(producers['compileContexts'])
+            result['producerGapReasonCounts']=dict(sorted(Counter(g['reasonCode'] for g in producers['inputGaps']).items()))
+            result['explicitPICArgumentsEqual']=value['programScope']['explicitPICArgumentsEqual']
         result.update(operation=args.operation, evidenceOperationComplete=True,
                       semanticApproval=False, productionAcceptanceComplete=False)
         if hasattr(args, 'output'):

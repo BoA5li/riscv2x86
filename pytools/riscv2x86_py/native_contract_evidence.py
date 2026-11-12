@@ -213,7 +213,15 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
     from .native_contract_readiness import inventory
     relocations=relocation_contracts(observed['dynamicObligations'])
     coverage=inventory(graphs, entries, joins, relocations, entry_gaps, runtime, comparison)
-    return deployment.seal({'schemaVersion':'riscv2x86.native-contract-evidence.v2',
+    from .native_link_contexts import derive as producer_contexts
+    from .native_program_scope import derive as program_scope
+    producer_graph=producer_contexts(plan,deployed)
+    scoped=program_scope(context,graphs,entries,joins,deployed)
+    from .native_object_initializers import derive as initializer_proofs
+    models={'source':source['analysisInput']['dataModels']['native'],'candidate':candidate_model,
+            'nativeTarget':target_receipt['analysisInput']['dataModels']['native']}
+    initializers={name:initializer_proofs(graph,models[name]) for name,graph in graphs.items()}
+    return deployment.seal({'schemaVersion':'riscv2x86.native-contract-evidence.v3',
         'deploymentPlanIdentity':plan['deploymentPlanIdentity'],'observationIdentity':observed['observationIdentity'],
         'contextBridgeIdentity':context['contextBridgeIdentity'],'candidateIdentity':candidate['candidateIdentity'],
         'dataModels':{'source':source['analysisInput']['dataModels']['native'],
@@ -225,6 +233,8 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
         'entryCapturedInputContextCoverageComplete':len(entries)==len(producers) and not entry_gaps,
         'entryAbiClosureVerified':False,
         'relocationContracts':relocations, 'coverageInventory':coverage,
+        'producerContextClosure':producer_graph, 'programScope':scoped,
+        'constantInitializerEvidence':initializers,
         'runtimeIdentityReportIdentity':runtime['runtimeIdentityReportIdentity'] if runtime else None,
         'processComparisonIdentity':comparison['processComparisonIdentity'] if comparison else None,
         'diagnosticMappedEndpointOccurrencesVerified':runtime['mappedEndpointOccurrencesVerified'] if runtime else 0,
@@ -314,8 +324,8 @@ def check(path):
     from .native_external_providers import checked
     path=Path(path).resolve(strict=True);root=path.parent
     stored=deployment.read(path);checked(stored,'contractEvidenceIdentity')
-    if stored.get('schemaVersion') != 'riscv2x86.native-contract-evidence.v2':
-        raise ValueError('CONTRACT_EVIDENCE_V2_REDERIVATION_REQUIRED')
+    if stored.get('schemaVersion') != 'riscv2x86.native-contract-evidence.v3':
+        raise ValueError('CONTRACT_EVIDENCE_V3_REDERIVATION_REQUIRED')
     inputs=deployment.read(root/'inputs.json');checked(inputs,'contractInputsIdentity')
     if (set(inputs)!={'schemaVersion','context','observation','entryReceipts','runtime','comparison','contractInputsIdentity'}
             or inputs['schemaVersion']!='riscv2x86.native-contract-inputs.v1'):

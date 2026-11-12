@@ -172,6 +172,10 @@ def test_entry_acquisition_and_contract_report_are_rederived(contract_pipeline):
     assert coverage['unverifiedRelocationContractIdentities']
     assert 'entry:0' in coverage['contexts']
     assert 'RUNTIME_EVIDENCE_NOT_ACQUIRED' in result['stages']['runtime-binding']['reasonCodes']
+    assert result['producerContextClosure']['capturedProducerClosureComplete']
+    assert len(result['producerContextClosure']['deployedReplacements'])==2
+    assert not result['programScope']['fullProgramScopeComplete']
+    assert 'source' in result['constantInitializerEvidence']
 
 
 def test_readiness_inventory_tracks_unresolved_calls_objects_and_variadic_abi():
@@ -228,3 +232,39 @@ def test_refinement_reuses_validated_entry_receipts_and_rejects_wrong_parent(con
     with pytest.raises(ValueError,match='COMPARISON_DEPLOYMENT_MISMATCH'):
         contracts.refine(root/'contracts/result.json',root/'wrong',comparison_path=fake)
     assert not (root/'wrong').exists()
+
+
+def test_context_batch_reuses_bound_parent_input_without_recompilation(contract_pipeline,monkeypatch):
+    from riscv2x86_py import native_context_batch as batch
+    root,result=contract_pipeline
+    monkeypatch.setattr(batch.native,'acquire',lambda *a,**k:pytest.fail('parent receipt should be reused'))
+    value=batch.acquire(root/'contracts/result.json',root/'context-batch',clang=sys.executable,start=0,count=1)
+    assert value['selectedContextAcquisitionComplete']
+    assert value['rows'][0]['reusedParentReceipt']
+    assert not value['nativeAbiClosureVerified'] and not value['legalObjectDomainVerified']
+    assert batch.check(root/'context-batch/result.json')==value
+    path=root/'context-batch/result.json';value['semanticApproval']=True
+    path.write_text(json.dumps(d.seal({k:v for k,v in value.items() if k!='contextBatchIdentity'},'contextBatchIdentity')))
+    with pytest.raises(ValueError,match='REDERIVATION_MISMATCH'):batch.check(path)
+
+
+def test_context_batch_acquires_dependency_cpp_and_binds_new_receipt(contract_pipeline):
+    # contract_pipeline runs real native GCC; its Clang inspection protocol is
+    # explicitly mocked. This tests acquisition/binding, never ISA semantics.
+    from riscv2x86_py import native_context_batch as batch
+    root,_=contract_pipeline
+    value=batch.acquire(root/'contracts/result.json',root/'dependency-batch',clang=sys.executable,start=0,count=2)
+    assert value['selectedContextAcquisitionComplete']
+    assert value['rows'][0]['reusedParentReceipt']
+    assert not value['rows'][1]['reusedParentReceipt']
+    assert Path(value['rows'][1]['receipt']['path']).parent.name=='context-000001'
+    assert batch.check(root/'dependency-batch/result.json')==value
+
+
+@pytest.mark.parametrize('start,count',[(-1,1),(0,0),(0,65),(9999,1)])
+def test_context_batch_rejects_invalid_ranges_before_output_creation(contract_pipeline,start,count):
+    from riscv2x86_py import native_context_batch as batch
+    root,_=contract_pipeline
+    with pytest.raises(ValueError,match='RANGE_INVALID'):
+        batch.acquire(root/'contracts/result.json',root/'invalid-batch',clang=sys.executable,start=start,count=count)
+    assert not (root/'invalid-batch').exists()
