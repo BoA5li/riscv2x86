@@ -17,6 +17,7 @@ import threading
 
 from .native_captured_deployment import seal
 from .project_compile_context import digest
+from .native_binding_syntax import parse as binding_syntax
 
 REG_NAMES = ('r15 r14 r13 r12 rbp rbx r11 r10 r9 r8 rax rcx rdx rsi rdi '
              'orig_rax rip cs eflags rsp ss fs_base gs_base ds es fs gs').split()
@@ -51,6 +52,41 @@ def parse_maps(text):
 
 def _stable_stat(st):
     return [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+
+
+def binding_aliases(raw, pid, cache, *, proc_root=Path('/proc')):
+    """Resolve labels while the child is stopped, never during report replay.
+
+    Only complete lines wholly present in this write are eligible. A split
+    diagnostic keeps missing alias evidence rather than borrowing a later stat.
+    The stat must refer to an image already captured in this process.
+    """
+    complete = raw[:raw.rfind(b'\n')+1].decode('utf-8', errors='replace')
+    events, _ = binding_syntax(complete)
+    labels = sorted({e[side]['label'] for e in events for side in ('requester', 'provider')
+                     if e['processId'] == pid and e[side+'Namespace'] == 0
+                     and Path(e[side]['label']).is_absolute()})
+    rows = []
+    for label in labels:
+        row = {'label': label}
+        try:
+            source = proc_root/str(pid)/'root'/label.lstrip('/')
+            with source.open('rb') as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError('ALIAS_NOT_REGULAR_FILE')
+                signature = _stable_stat(before)
+                if (signature != _stable_stat(os.fstat(stream.fileno()))
+                        or signature != _stable_stat(source.stat())):
+                    raise ValueError('ALIAS_CHANGED_DURING_CAPTURE')
+                evidence = cache.get(tuple(signature))
+                if evidence is None:
+                    raise ValueError('ALIAS_BACKING_IMAGE_NOT_CAPTURED')
+                row.update(capturedFileStat=signature, imageDigest=evidence['digest'])
+        except (OSError, ValueError) as exc:
+            row['failureReason'] = str(exc)
+        rows.append(row)
+    return rows
 
 
 def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*1024,
@@ -97,6 +133,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
             os._exit(127)
     os.close(out); os.close(err)
     epochs = []; writes = []; cache = {}; image_bytes = 0; map_bytes = 0; stops = 0
+    alias_bytes = 0
     pending = None; executed = False; reaped = False
     failure = None; code = None
     def wait():
@@ -115,7 +152,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                 raise ValueError('PROCESS_IDENTITY_IMAGE_BUDGET_EXCEEDED')
             path.write_bytes(raw)
         return {'blob': str(path.relative_to(root)), 'digest': 'sha256:'+sha}
-    def mappings():
+    def mappings(mutation):
         nonlocal map_bytes
         if len(epochs)>=4096:raise ValueError('PROCESS_IDENTITY_MAP_EPOCH_BUDGET_EXCEEDED')
         rows = parse_maps(Path('/proc', str(pid), 'maps').read_text())
@@ -158,7 +195,8 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                         captured.append(item)
                 except (OSError, ValueError) as exc:
                     captured.append(dict(item, captureFailure=str(exc)))
-        epoch = {'index': len(epochs), 'stopOrdinal': stops, 'maps': rows, 'objects': captured}
+        epoch = {'index': len(epochs), 'stopOrdinal': stops, 'mappingMutation': mutation,
+                 'maps': rows, 'objects': captured}
         encoded=json.dumps(epoch,sort_keys=True).encode('utf-8');map_bytes+=len(encoded)
         if map_bytes>64*1024*1024:raise ValueError('PROCESS_IDENTITY_MAP_METADATA_BUDGET_EXCEEDED')
         path = root/'maps'/('%06d.json' % len(epochs)); path.write_bytes(encoded)
@@ -182,7 +220,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
             sig = os.WSTOPSIG(status); event = status >> 16
             if event == 4:
                 if executed: raise ValueError('PROCESS_IDENTITY_REEXEC_UNSUPPORTED')
-                executed = True; mappings()
+                executed = True; mappings({'kind':'exec'})
             elif sig == signal.SIGTRAP|0x80:
                 regs = Registers(); ptrace(12, pid, 0, ctypes.byref(regs))
                 info=SyscallInfo()
@@ -198,21 +236,37 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                 if info.op == 1:
                     if executed and number in (56, 57, 58, 435):
                         raise ValueError('PROCESS_IDENTITY_MULTIPROCESS_UNSUPPORTED')
+                    # shmat/shmdt/remap_file_pages/pkey_mprotect can change
+                    # mapping state outside the four recorded transitions.
+                    # Reject rather than silently reusing a stale epoch.
+                    if executed and number in (30, 67, 216, 329):
+                        raise ValueError('PROCESS_IDENTITY_MAPPING_SYSCALL_UNSUPPORTED:'+str(number))
                     if executed and ((number == 3 and regs.rdi == 2)
                             or (number in (33, 292) and regs.rsi == 2)
                             or (number == 436 and regs.rdi <= 2 <= regs.rsi)):
                         raise ValueError('PROCESS_IDENTITY_STDERR_REBIND_UNSUPPORTED')
                     pending = {'number': number, 'write': executed and number in (1, 20) and regs.rdi == 2,
+                               'arguments':[regs.rdi,regs.rsi,regs.rdx,regs.r10,regs.r8,regs.r9],
                                'offset': (root/'stderr.log').stat().st_size,
                                'epoch': len(epochs)-1}
                 else:
                     result = ctypes.c_longlong(regs.rax).value
                     if executed and pending is not None:
                         if pending['write'] and result > 0:
+                            with (root/'stderr.log').open('rb') as stream:
+                                stream.seek(pending['offset']); written = stream.read(result)
+                            if len(written) != result:
+                                raise ValueError('PROCESS_IDENTITY_WRITE_BYTES_MISMATCH')
+                            aliases = binding_aliases(written, pid, cache)
+                            alias_bytes += len(json.dumps(aliases).encode('utf-8'))
+                            if alias_bytes > 64*1024*1024:
+                                raise ValueError('PROCESS_IDENTITY_ALIAS_METADATA_BUDGET_EXCEEDED')
                             writes.append({'offset': pending['offset'], 'size': result,
-                                           'epoch': pending['epoch'], 'stopOrdinal': stops})
+                                           'epoch': pending['epoch'], 'stopOrdinal': stops,
+                                           'bindingAliases': aliases})
                         if pending['number'] in (9, 10, 11, 25) and result >= 0:
-                            mappings()
+                            mappings({'kind':'syscall','number':pending['number'],
+                                      'arguments':pending['arguments'],'returnValue':result})
                     pending = None
             elif sig not in (signal.SIGSTOP,):
                 ptrace(24, pid, 0, sig); continue
@@ -230,7 +284,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                 except ProcessLookupError: pass
             try: os.waitpid(pid, 0)
             except ChildProcessError: pass
-    result = seal({'schemaVersion': 'riscv2x86.process-map-capture.v1',
+    result = seal({'schemaVersion': 'riscv2x86.process-map-capture.v2',
         'backend': 'linux-x86_64-ptrace-syscall-single-process.v1',
         'syscallPhaseSource':'PTRACE_GET_SYSCALL_INFO',
         'processId': pid, 'arguments': list(argv), 'directory': str(Path(cwd).resolve()),

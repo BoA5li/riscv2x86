@@ -140,10 +140,10 @@ def main(argv=None):
             if value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
                 from riscv2x86_py.native_program_comparison import check as check_comparison
                 check_comparison(args.input)
-            elif value.get('schemaVersion') == 'riscv2x86.diagnostic-map-bindings.v1':
+            elif value.get('schemaVersion') in ('riscv2x86.diagnostic-map-bindings.v1', 'riscv2x86.diagnostic-map-bindings.v2'):
                 from riscv2x86_py.native_runtime_identity import check as check_runtime
                 check_runtime(args.input)
-            elif value.get('schemaVersion') == 'riscv2x86.native-contract-evidence.v1':
+            elif value.get('schemaVersion') in ('riscv2x86.native-contract-evidence.v1', 'riscv2x86.native-contract-evidence.v2'):
                 from riscv2x86_py.native_contract_evidence import check as check_contracts
                 check_contracts(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-context-bridge.v1':
@@ -164,7 +164,9 @@ def main(argv=None):
                    'entryAbiContractComplete', 'legalObjectInputContractComplete',
                    'outputTerminationContractComplete', 'translatedInstanceExecutionVerified',
                    'l0L3AcceptanceComplete', 'mappedEndpointOccurrencesVerified', 'requiredMappedImagesVerified',
-                   'bindingEventCount', 'mappingCaptureFailureCount',
+                   'bindingEventCount', 'mappingCaptureFailureCount', 'endpointOccurrenceCount',
+                   'unverifiedEndpointOccurrenceCount', 'diagnosticEndpointMappingComplete',
+                   'endpointFailureReasonCounts', 'metadataFailureReasonCounts',
                    'metadataCompatibleProviderEvents', 'diagnosticReturnCode',
                    'tracedRunReturnCodeMatchesReference', 'tracedRunStdoutMatchesReference',
                    'diagnosticMappedEndpointOccurrencesVerified',
@@ -176,6 +178,12 @@ def main(argv=None):
             if key in value: result[key] = value[key]
         if 'nativeCandidateIndependentAuditComplete' in value:
             result['nativeCandidateIndependentAuditComplete'] = value['nativeCandidateIndependentAuditComplete']
+        if 'coverageInventory' in value:
+            coverage=value['coverageInventory']
+            result['runtimeEvidenceState']=coverage['runtimeEvidenceState']
+            result['entryInputGapReasonCounts']=coverage['entryInputGapReasonCounts']
+            result['relocationContractKindCounts']=coverage['relocationContractKindCounts']
+            result['contractStageStatuses']={k:v['status'] for k,v in value['stages'].items()}
         result.update(operation=args.operation, evidenceOperationComplete=True,
                       semanticApproval=False, productionAcceptanceComplete=False)
         if hasattr(args, 'output'):

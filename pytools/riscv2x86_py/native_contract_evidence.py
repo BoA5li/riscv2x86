@@ -196,12 +196,24 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
         'output-termination':['SOURCE_TARGET_COMPARISON_POLICY_AND_EXECUTIONS_REQUIRED'],
         'program-validation':['INSTANCE_INSTRUCTION_COVERAGE_AND_COMMON_FRAMEWORK_ADMISSION_REQUIRED']}
     stages = {k:{'status':Status.INCONCLUSIVE.value,'reasonCodes':v} for k,v in reasons.items()}
+    if runtime is None:
+        stages['runtime-binding']['reasonCodes'].append('RUNTIME_EVIDENCE_NOT_ACQUIRED')
+    else:
+        if not runtime['diagnosticEndpointMappingComplete']:
+            stages['runtime-binding']['reasonCodes'].append('DIAGNOSTIC_ENDPOINT_MAPPING_INCOMPLETE')
+        if runtime['metadataFailureReasonCounts']:
+            stages['runtime-binding']['reasonCodes'].append('SYMBOL_METADATA_CONTRACTS_UNVERIFIED')
+    if entry_gaps:
+        stages['entry-abi']['reasonCodes'].append('ENTRY_CAPTURED_INPUT_CONTEXT_COVERAGE_INCOMPLETE')
     if comparison is not None:
         stages['output-termination']['boundedProcessObservationStatus']=comparison['processObservableComparisonStatus']
         stages['output-termination']['reasonCodes']=['OBJECT_EXTERNAL_EFFECT_ERROR_PATH_AND_TERMINATION_RELATION_CLOSURE_REQUIRED']
         if comparison['processObservableComparisonStatus']=='failed':
             stages['output-termination']['status']=Status.FAILED.value
-    return deployment.seal({'schemaVersion':'riscv2x86.native-contract-evidence.v1',
+    from .native_contract_readiness import inventory
+    relocations=relocation_contracts(observed['dynamicObligations'])
+    coverage=inventory(graphs, entries, joins, relocations, entry_gaps, runtime, comparison)
+    return deployment.seal({'schemaVersion':'riscv2x86.native-contract-evidence.v2',
         'deploymentPlanIdentity':plan['deploymentPlanIdentity'],'observationIdentity':observed['observationIdentity'],
         'contextBridgeIdentity':context['contextBridgeIdentity'],'candidateIdentity':candidate['candidateIdentity'],
         'dataModels':{'source':source['analysisInput']['dataModels']['native'],
@@ -212,7 +224,7 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
             g['reasonCode'] in ('ENTRY_DIRECT_OBJECT_PRODUCER_NOT_UNIQUE','ENTRY_CONTEXT_NOT_INSPECTABLE') for g in entry_gaps),
         'entryCapturedInputContextCoverageComplete':len(entries)==len(producers) and not entry_gaps,
         'entryAbiClosureVerified':False,
-        'relocationContracts':relocation_contracts(observed['dynamicObligations']),
+        'relocationContracts':relocations, 'coverageInventory':coverage,
         'runtimeIdentityReportIdentity':runtime['runtimeIdentityReportIdentity'] if runtime else None,
         'processComparisonIdentity':comparison['processComparisonIdentity'] if comparison else None,
         'diagnosticMappedEndpointOccurrencesVerified':runtime['mappedEndpointOccurrencesVerified'] if runtime else 0,
@@ -302,6 +314,8 @@ def check(path):
     from .native_external_providers import checked
     path=Path(path).resolve(strict=True);root=path.parent
     stored=deployment.read(path);checked(stored,'contractEvidenceIdentity')
+    if stored.get('schemaVersion') != 'riscv2x86.native-contract-evidence.v2':
+        raise ValueError('CONTRACT_EVIDENCE_V2_REDERIVATION_REQUIRED')
     inputs=deployment.read(root/'inputs.json');checked(inputs,'contractInputsIdentity')
     if (set(inputs)!={'schemaVersion','context','observation','entryReceipts','runtime','comparison','contractInputsIdentity'}
             or inputs['schemaVersion']!='riscv2x86.native-contract-inputs.v1'):

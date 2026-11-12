@@ -164,6 +164,36 @@ def test_entry_acquisition_and_contract_report_are_rederived(contract_pipeline):
     assert contracts.check(root/'contracts/result.json')==result
     assert not result['semanticApproval']
     assert all(v['status']=='inconclusive' for v in result['stages'].values())
+    coverage=result['coverageInventory']
+    assert coverage['runtimeEvidenceState']=='not-acquired'
+    assert coverage['boundedProcessComparisonState']=='not-acquired'
+    assert not coverage['candidateInstructionExecutionCoverageVerified']
+    assert coverage['entryInputGapReasonCounts']
+    assert coverage['unverifiedRelocationContractIdentities']
+    assert 'entry:0' in coverage['contexts']
+    assert 'RUNTIME_EVIDENCE_NOT_ACQUIRED' in result['stages']['runtime-binding']['reasonCodes']
+
+
+def test_readiness_inventory_tracks_unresolved_calls_objects_and_variadic_abi():
+    from riscv2x86_py.native_contract_readiness import inventory
+    callee=dict(fn('callee','decl:1',0,10),variadic=True)
+    caller=fn('caller','decl:2',20,60,body=True)
+    caller['inner'][-1]['inner']=[
+        {'kind':'CallExpr','inner':[{'kind':'DeclRefExpr','referencedDecl':
+            {'kind':'FunctionDecl','id':'decl:1','name':'callee'}}]},
+        {'kind':'CallExpr','inner':[{'kind':'DeclRefExpr','referencedDecl':
+            {'kind':'VarDecl','id':'decl:3','name':'fp'}}]},
+        {'kind':'VarDecl','id':'decl:4','name':'array','type':{'qualType':'int[4]'}}]
+    graph=contracts.ast_graph({'kind':'TranslationUnitDecl','inner':[callee,caller]},'fixture-ast')
+    coverage=inventory({'source':graph},[],[],[],[],None,None)
+    source=coverage['contexts']['source']
+    assert source['callSiteCount']==2
+    assert len(source['unresolvedCallEvidenceIdentities'])==1
+    assert len(source['variadicCallEvidenceIdentities'])==1
+    assert len(source['legalObjectContractRequiredEvidenceIdentities'])==1
+    assert len(source['nativeAbiRequiredCallEvidenceIdentities'])==2
+    assert source['nativeAbiMachineJoinRequiredFunctionIdentities']
+    assert not coverage['commonFrameworkAdmissionVerified']
 
 
 @pytest.mark.parametrize('change',['rehashed-result','entry-log','input-schema'])
