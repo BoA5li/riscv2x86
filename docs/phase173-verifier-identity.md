@@ -1,5 +1,7 @@
 # Phase173：验证器身份、跨 worktree 回执与实验重跑
 
+> 本文记录 phase173。使用 phase174 工具时，请按 [phase174 分步流程](phase174-runtime-contract-evidence.md) 重新审计并建立新证据链。
+
 本轮修复 phase172 在新 worktree 检查旧审计回执时出现的
 `DEPLOYMENT_AUDIT_VERIFIER_CHANGED`。本轮不宣告 ABI、合法对象、输出终止合同或
 程序级 L0–L3 验证已经完成。

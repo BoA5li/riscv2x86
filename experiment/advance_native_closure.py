@@ -39,7 +39,24 @@ def main(argv=None):
     context = sub.add_parser('inspect-context'); context.add_argument('--plan', required=True)
     context.add_argument('--clang', required=True)
     context.add_argument('--observation', help='validated observation from this exact deployment plan')
-    for parser in (deploy, replay, source, run, audit, repeat, context):
+    runtime = sub.add_parser('capture-runtime'); runtime.add_argument('--observation', required=True)
+    contracts = sub.add_parser('inspect-contracts')
+    contracts.add_argument('--context', required=True); contracts.add_argument('--observation', required=True)
+    contracts.add_argument('--clang', required=True); contracts.add_argument('--runtime')
+    contracts.add_argument('--comparison')
+    refinement=sub.add_parser('refine-contracts')
+    refinement.add_argument('--input',required=True);refinement.add_argument('--output',required=True)
+    refinement.add_argument('--runtime');refinement.add_argument('--comparison')
+    prepare_comparison=sub.add_parser('prepare-comparison')
+    for name in ('deployment','source-program','domain','output'):
+        prepare_comparison.add_argument('--'+name,required=True)
+    prepare_comparison.add_argument('--source-machine',type=int,required=True)
+    prepare_comparison.add_argument('--source-launcher')
+    prepare_comparison.add_argument('--launcher-arg',action='append',default=[])
+    prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
+    comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
+    comparison.add_argument('--output', required=True)
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, contracts):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -48,6 +65,10 @@ def main(argv=None):
     audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
+        for name in ('plan', 'context', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher'):
+            value = getattr(args, name, None)
+            if value is not None and (not value or not Path(value).is_file()):
+                raise ValueError('CLOSURE_INPUT_REGULAR_FILE_REQUIRED:' + name)
         if hasattr(args, 'output'):
             from riscv2x86_py.native_deployment_prerequisites import output_path
             output_path(args.output)
@@ -89,6 +110,23 @@ def main(argv=None):
             plan = deployment.read(args.plan); deployment.validate(plan)
             check_audit(plan, args.input)
             value = {'auditPrerequisiteIntegrityChecked': True}
+        elif args.operation == 'refine-contracts':
+            from riscv2x86_py.native_contract_evidence import refine as refine_contracts
+            value=refine_contracts(args.input,args.output,runtime_path=args.runtime,comparison_path=args.comparison)
+        elif args.operation == 'prepare-comparison':
+            from riscv2x86_py.native_program_comparison import prepare as prepare_comparison
+            value=prepare_comparison(args.deployment,args.source_program,args.source_machine,args.domain,args.output,
+                source_launcher=args.source_launcher,launcher_arguments=args.launcher_arg,timeout=args.timeout_seconds)
+        elif args.operation == 'compare-programs':
+            from riscv2x86_py.native_program_comparison import acquire as compare_programs
+            value = compare_programs(args.plan, args.output)
+        elif args.operation == 'capture-runtime':
+            from riscv2x86_py.native_runtime_identity import acquire as acquire_runtime
+            value = acquire_runtime(args.observation, args.output, timeout=args.timeout_seconds)
+        elif args.operation == 'inspect-contracts':
+            from riscv2x86_py.native_contract_evidence import acquire as acquire_contracts
+            value = acquire_contracts(args.context, args.observation, args.output, clang=args.clang,
+                                      timeout=args.timeout_seconds, runtime_path=args.runtime, comparison_path=args.comparison)
         elif args.operation == 'inspect-context':
             from riscv2x86_py.native_context_bridge import acquire as bridge
             value = bridge(args.plan, args.output, clang=args.clang, timeout=args.timeout_seconds, observation_path=args.observation)
@@ -99,7 +137,16 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.native-context-bridge.v1':
+            if value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
+                from riscv2x86_py.native_program_comparison import check as check_comparison
+                check_comparison(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.diagnostic-map-bindings.v1':
+                from riscv2x86_py.native_runtime_identity import check as check_runtime
+                check_runtime(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-contract-evidence.v1':
+                from riscv2x86_py.native_contract_evidence import check as check_contracts
+                check_contracts(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-context-bridge.v1':
                 from riscv2x86_py.native_context_bridge import check as check_bridge
                 check_bridge(args.input)
             elif value.get('schemaVersion', '').startswith('riscv2x86.deployment-observation.'):
@@ -116,7 +163,14 @@ def main(argv=None):
                    'sourceContentLineageVerified', 'targetNativeInputAcquired', 'targetContextCompatibilityVerified',
                    'entryAbiContractComplete', 'legalObjectInputContractComplete',
                    'outputTerminationContractComplete', 'translatedInstanceExecutionVerified',
-                   'l0L3AcceptanceComplete') if k in value}
+                   'l0L3AcceptanceComplete', 'mappedEndpointOccurrencesVerified', 'requiredMappedImagesVerified',
+                   'bindingEventCount', 'mappingCaptureFailureCount',
+                   'metadataCompatibleProviderEvents', 'diagnosticReturnCode',
+                   'tracedRunReturnCodeMatchesReference', 'tracedRunStdoutMatchesReference',
+                   'diagnosticMappedEndpointOccurrencesVerified',
+                   'entryDirectObjectContextAcquisitionComplete', 'entryAbiClosureVerified',
+                   'processObservableComparisonStatus', 'sourceReturnCode', 'targetReturnCode',
+                   'l1EligibilityVerified') if k in value}
         for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode',
                     'auditPrerequisiteIntegrityChecked'):
             if key in value: result[key] = value[key]

@@ -20,6 +20,10 @@ def write_json(path, value):
 
 @pytest.fixture
 def captured(tmp_path):
+    return captured_project(tmp_path)
+
+
+def captured_project(tmp_path, *, language_flags=()):
     cc = shutil.which('gcc')
     if not cc: pytest.skip('native GCC required')
     p = tmp_path/'build'; p.mkdir()
@@ -33,10 +37,10 @@ def captured(tmp_path):
     def invoke(stage, args):
         _, code = run(config, stage, [wrapper, *args], cwd=p)
         assert code == 0
-    invoke('build', ['-O2', '-fPIC', '-c', 'original.c', '-o', 'original.o'])
+    invoke('build', ['-O2', *language_flags, '-fPIC', '-c', 'original.c', '-o', 'original.o'])
     invoke('build', ['-shared', 'original.o', '-Wl,-soname', '-Wl,libprobe.so.1', '-o', 'libprobe.so.1'])
     (p/'libprobe.so').symlink_to('libprobe.so.1')
-    invoke('test', ['-O2', '-c', 'main.c', '-o', 'main.o'])
+    invoke('test', ['-O2', *language_flags, '-c', 'main.c', '-o', 'main.o'])
     invoke('test', ['-O2', '-o', 'test-program', 'main.o', str(p/'libprobe.so'), './libprobe.so.1',
                     '-Wl,-rpath', '-Wl,'+str(p)])
     library = write_json(tmp_path/'library.json', inventory(config, stage='build'))
