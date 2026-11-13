@@ -88,7 +88,7 @@ def binding_aliases(headers, pid, cache, *, proc_root=Path('/proc')):
 
 
 def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*1024,
-            image_limit=64*1024*1024, stop_limit=200000):
+            image_limit=64*1024*1024, stop_limit=200000, entry_probe=None):
     if platform.system() != 'Linux' or platform.machine() != 'x86_64' or ctypes.sizeof(ctypes.c_void_p)!=8:
         raise ValueError('PROCESS_IDENTITY_X86_64_LINUX_REQUIRED')
     if threading.active_count()!=1:
@@ -200,6 +200,7 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
         if map_bytes>64*1024*1024:raise ValueError('PROCESS_IDENTITY_MAP_METADATA_BUDGET_EXCEEDED')
         path = root/'maps'/('%06d.json' % len(epochs)); path.write_bytes(encoded)
         epochs.append({'path': str(path.relative_to(root)), 'digest': digest(path)})
+        if entry_probe is not None:entry_probe.mapped(pid,ptrace,epoch,root,stops)
     try:
         status = wait()
         if os.WIFEXITED(status) or os.WIFSIGNALED(status): reaped = True
@@ -268,6 +269,10 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
                             mappings({'kind':'syscall','number':pending['number'],
                                       'arguments':pending['arguments'],'returnValue':result})
                     pending = None
+            elif sig==signal.SIGTRAP and entry_probe is not None:
+                regs=Registers();ptrace(12,pid,0,ctypes.byref(regs))
+                if not entry_probe.trapped(pid,ptrace,regs,len(epochs)-1,stops):
+                    raise ValueError('ENTRY_PROBE_UNEXPECTED_TRAP')
             elif sig not in (signal.SIGSTOP,):
                 ptrace(24, pid, 0, sig); continue
             ptrace(24, pid)
@@ -285,12 +290,14 @@ def capture(argv, cwd, environment, output, *, timeout=300, log_limit=16*1024*10
             try: os.waitpid(pid, 0)
             except ChildProcessError: pass
     result = seal({'schemaVersion': 'riscv2x86.process-map-capture.v3',
-        'backend': 'linux-x86_64-ptrace-syscall-single-process.v1',
+        'backend': ('linux-x86_64-ptrace-syscall-single-process.v1' if entry_probe is None else
+                    'linux-x86_64-ptrace-single-shot-function-entry.v1'),
         'syscallPhaseSource':'PTRACE_GET_SYSCALL_INFO',
         'processId': pid, 'arguments': list(argv), 'directory': str(Path(cwd).resolve()),
         'environment': dict(environment), 'timeoutSeconds': timeout, 'returnCode': code,
         'logLimit':log_limit,'imageLimit':image_limit,'stopLimit':stop_limit,'stopCount':stops,
         'failureReason': failure, 'epochs': epochs, 'stderrWrites': writes,
+        **({'entryProbeEvidence':entry_probe.evidence()} if entry_probe is not None else {}),
         'stdoutDigest': digest(root/'stdout.log'), 'stderrDigest': digest(root/'stderr.log'),
         'intervention': 'ptrace', 'untracedRunEquivalenceVerified': False,
         'semanticApproval': False, 'productionAcceptanceComplete': False}, 'processCaptureIdentity')

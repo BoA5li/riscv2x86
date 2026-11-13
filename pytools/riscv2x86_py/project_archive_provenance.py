@@ -35,9 +35,12 @@ def configure(tools, profiles):
             raise ValueError('ARCHIVE_GNU_TOOL_REQUIRED')
         result[name] = {'profile': profile, 'version': run.stdout, 'stderr': run.stderr}
     from . import native_dependency_evidence as parser
+    from . import gnu_response_files as response
     return {'policy': POLICY, 'clockDomain':clock_domain(), 'parserPath':str(Path(parser.__file__).resolve()),
             'parserDigest':digest(parser.__file__), 'modulePath': str(Path(__file__).resolve()),
-            'moduleDigest': digest(__file__), 'tools': result}
+            'moduleDigest': digest(__file__), 'tools': result,
+            'responseParserPath':str(Path(response.__file__).resolve()),
+            'responseParserDigest':digest(response.__file__),'responseParserPolicy':response.POLICY}
 
 
 def grammar(profile, args, cwd):
@@ -123,6 +126,7 @@ class Session:
         self.config = config; self.directory = config['directory']; self.lock = None
         self.profile = config.get('archiveCapture', {}).get('tools', {}).get(tool)
         self.before = None; self.args = args; self.tool = tool
+        self.execution_arguments=list(args)
 
     def __enter__(self):
         policy = self.config.get('archiveCapture')
@@ -132,9 +136,19 @@ class Session:
         base = {'policy': POLICY, 'profile': self.profile['profile'],
                 'arguments': list(self.args), 'directory': os.getcwd()}
         try:
-            plan = grammar(self.profile['profile'], self.args, os.getcwd())
+            if any(a.startswith('@') for a in self.args):
+                from .gnu_response_files import capture
+                if 'responseParserPolicy' not in policy:
+                    raise ValueError('ARCHIVE_RESPONSE_CAPTURE_PROFILE_REQUIRED')
+                expansion=capture(self.directory,self.args,os.getcwd())
+                base['responseExpansion']=expansion
+                effective=expansion['effectiveArguments']
+                self.execution_arguments=list(effective)
+            else:effective=self.args
+            plan = grammar(self.profile['profile'], effective, os.getcwd())
         except ValueError as exc:
             self.before = dict(base, supported=False, reason=str(exc)); return self
+        self.execution_arguments=list(effective)
         folder = Path(self.directory)/'archive-locks'; folder.mkdir(exist_ok=True)
         # Canonical paths serialize cooperating ar/ranlib aliases in this capture.
         key = bytes_digest(str(Path(plan['archivePath']).resolve()).encode())[7:]
@@ -167,10 +181,16 @@ def verify(directory, before, after, argv, cwd, code):
     """Reconstruct member relations from bound blobs; no command execution."""
     if before['policy'] != POLICY or before['directory'] != cwd or before['arguments'] != argv[1:]:
         raise ValueError('ARCHIVE_OPERATION_BINDING_INVALID')
+    effective=argv[1:]
+    if 'responseExpansion' in before:
+        from .gnu_response_files import replay
+        effective=replay(directory,before['responseExpansion'],effective,cwd)
     if not before['supported']:
         if after != {'status':'unsupported'}: raise ValueError('ARCHIVE_UNSUPPORTED_STATUS_INVALID')
         return {'verified':False, 'reason':before['reason']}
-    plan = grammar(before['profile'],argv[1:],cwd)
+    if any(a.startswith('@') for a in effective):
+        raise ValueError('ARCHIVE_RESPONSE_EVIDENCE_REQUIRED')
+    plan = grammar(before['profile'],effective,cwd)
     if plan != before['plan']: raise ValueError('ARCHIVE_PLAN_MISMATCH')
     if code != 0:
         if after != {'status':'tool-failed','returnCode':code}: raise ValueError('ARCHIVE_FAILURE_STATUS_INVALID')
@@ -210,7 +230,10 @@ def select(actions, directory, archive_path, archive_digest):
         if not result['verified']:
             plan = before.get('plan')
             if plan is None or plan['archivePath'] == path:
-                return {'complete':False,'reason':result['reason']}
+                return {'complete':False,'reason':result['reason'],
+                        'blockingActionIdentity':action['actionIdentity'],
+                        'blockingArguments':action['arguments'],
+                        'blockingDirectory':action['directory']}
             continue
         if result['archivePath'] == path:
             operations.append((evidence['startedMonotonicNs'],evidence['finishedMonotonicNs'],action,result))

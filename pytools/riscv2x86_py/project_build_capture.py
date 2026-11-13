@@ -118,6 +118,13 @@ def load(path,*,inputs=True):
         if (policy['policy'] != POLICY or digest(policy['modulePath']) != policy['moduleDigest']
                 or digest(policy['parserPath']) != policy['parserDigest']):
             raise ValueError('ARCHIVE_CAPTURE_IMPLEMENTATION_CHANGED')
+        response_keys={'responseParserPath','responseParserDigest','responseParserPolicy'}
+        if response_keys & set(policy):
+            from . import gnu_response_files as response
+            if (not response_keys<=set(policy) or policy['responseParserPolicy']!=response.POLICY
+                    or digest(policy['responseParserPath'])!=policy['responseParserDigest']
+                    or digest(response.__file__)!=policy['responseParserDigest']):
+                raise ValueError('ARCHIVE_RESPONSE_IMPLEMENTATION_CHANGED')
     for p,h in [('driverPath','driverDigest'),('modulePath','moduleDigest'),('python','pythonDigest')]:
         if digest(value[p])!=value[h]:raise ValueError('PROJECT_CAPTURE_IMPLEMENTATION_CHANGED:'+p)
     for item in [*value['tools'].values(),*value['wrappers'].values()]:
@@ -214,15 +221,16 @@ def _invoke(value,tool,args,archive_session):
     if archive_session.before is not None:
         started['archiveBefore'] = archive_session.before
     first=write(str(path)+'.start.json',started)
+    execution_argv=[selected['path'],*archive_session.execution_arguments]
     error=None
     try:
-        result=subprocess.run(argv,check=False)
+        result=subprocess.run(execution_argv,check=False)
         code=result.returncode
     except OSError as exc:
         code=127;error=type(exc).__name__+': '+str(exc)
     finished={'schemaVersion':SCHEMA+'.invocation-finish','captureIdentity':value['recordIdentity'],
         'invocationId':token,'startIdentity':first['recordIdentity'],'returnCode':code,
-        'launchError':error,'output':_output(argv,cwd),'finishedMonotonicNs':time.monotonic_ns(),
+        'launchError':error,'output':_output(execution_argv,cwd),'finishedMonotonicNs':time.monotonic_ns(),
         'toolDigestAfter':digest(selected['path'])}
     if archive_session.before is not None:
         finished['archiveAfter'] = archive_session.finish(code)
@@ -328,6 +336,8 @@ def inventory(config,*,stage=None):
                         profile = value.get('archiveCapture', {}).get('tools', {}).get(a['tool'])
                         if profile is None or profile['profile'] != a['archiveBefore']['profile']:
                             raise ValueError('ARCHIVE_CAPTURE_PROFILE_MISMATCH')
+                        if 'responseExpansion' in a['archiveBefore'] and 'responseParserPolicy' not in value['archiveCapture']:
+                            raise ValueError('ARCHIVE_RESPONSE_PROFILE_REQUIRED')
                         verify(value['directory'],a['archiveBefore'],b['archiveAfter'],
                                a['arguments'],a['directory'],b['returnCode'])
                         action['archiveOperationEvidence'] = {

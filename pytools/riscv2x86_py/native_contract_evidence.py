@@ -150,7 +150,7 @@ def relocation_contracts(dynamic):
 
 
 def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=None, comparison_path=None,
-           resolution_path=None,archive_audit_path=None):
+           resolution_path=None,archive_audit_path=None,entry_coverage_path=None):
     from .native_deployment_observation import check_observation
     context = bridge.check(context_path); observed = check_observation(observation_path)
     manifest = deployment.read(Path(context_path).resolve().parent/'inputs.json')
@@ -252,9 +252,10 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
         'stages':stages,'frameworkEvaluationReadiness':context['frameworkEvaluationReadiness'],
         'scope':'contract-input-evidence-for-existing-consumers-not-semantic-approval',
         'semanticApproval':False,'productionAcceptanceComplete':False},'contractEvidenceIdentity')
-    if resolution_path is None and archive_audit_path is None:return result
+    if resolution_path is None and archive_audit_path is None and entry_coverage_path is None:return result
     body={k:v for k,v in result.items() if k!='contractEvidenceIdentity'}
-    body['schemaVersion']='riscv2x86.native-contract-evidence.v4'
+    if resolution_path is not None or archive_audit_path is not None:
+        body['schemaVersion']='riscv2x86.native-contract-evidence.v4'
     if resolution_path is not None:
         from .native_context_resolution import check as check_resolution
         resolved=check_resolution(resolution_path)
@@ -285,6 +286,22 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
             'scope':'independently-rebuilt-observed-allocated-contributions-not-all-extraction',
             'reasonCodes':[] if audited['independentObservedArchiveContributionsVerified'] else
                 ['INDEPENDENT_ARCHIVE_CONTRIBUTION_EVIDENCE_REQUIRED']}
+    if entry_coverage_path is not None:
+        from .native_entry_probe import check as check_entry
+        entry=check_entry(entry_coverage_path)
+        base=deployment.seal(body,'contractEvidenceIdentity')
+        if (entry['contractEvidenceIdentity']!=base['contractEvidenceIdentity']
+                or entry['deploymentIdentity']!=deployed['deploymentIdentity']):
+            raise ValueError('CONTRACT_ENTRY_COVERAGE_BASE_MISMATCH')
+        body['schemaVersion']='riscv2x86.native-contract-evidence.v4'
+        body['candidateFunctionEntryEvidence']={k:entry[k] for k in (
+            'entryCoverageIdentity','candidateFunctionEntriesObserved','observedFunctionCount',
+            'expectedFunctionCount','candidateInstructionExecutionCoverageVerified',
+            'nativeAbiClosureVerified','legalObjectDomainVerified','untracedRunCoverageVerified')}
+        body['validationProgress']['subgoals']['instrumented-candidate-function-entry']={
+            'status':'verified' if entry['candidateFunctionEntriesObserved'] else 'inconclusive',
+            'scope':'single-shot-instrumented-function-entry-not-inline-instance-or-ABI-proof',
+            'reasonCodes':[] if entry['candidateFunctionEntriesObserved'] else ['CANDIDATE_FUNCTION_ENTRY_NOT_OBSERVED']}
     return deployment.seal(body,'contractEvidenceIdentity')
 
 
@@ -385,31 +402,34 @@ def check(path):
         raise ValueError('CONTRACT_EVIDENCE_V3_REDERIVATION_REQUIRED')
     inputs=deployment.read(root/'inputs.json');checked(inputs,'contractInputsIdentity')
     expected={'schemaVersion','context','observation','entryReceipts','runtime','comparison','contractInputsIdentity'}
-    if inputs['schemaVersion'] in ('riscv2x86.native-contract-inputs.v2','riscv2x86.native-contract-inputs.v3'):expected.add('contextResolution')
-    if inputs['schemaVersion']=='riscv2x86.native-contract-inputs.v3':expected.add('archiveAudit')
+    if inputs['schemaVersion'] in ('riscv2x86.native-contract-inputs.v2','riscv2x86.native-contract-inputs.v3','riscv2x86.native-contract-inputs.v4'):expected.add('contextResolution')
+    if inputs['schemaVersion'] in ('riscv2x86.native-contract-inputs.v3','riscv2x86.native-contract-inputs.v4'):expected.add('archiveAudit')
+    if inputs['schemaVersion']=='riscv2x86.native-contract-inputs.v4':expected.add('entryCoverage')
     if (set(inputs)!=expected or inputs['schemaVersion'] not in (
-            'riscv2x86.native-contract-inputs.v1','riscv2x86.native-contract-inputs.v2','riscv2x86.native-contract-inputs.v3')):
+            'riscv2x86.native-contract-inputs.v1','riscv2x86.native-contract-inputs.v2','riscv2x86.native-contract-inputs.v3','riscv2x86.native-contract-inputs.v4')):
         raise ValueError('CONTRACT_INPUT_SCHEMA_INVALID')
     for row in [inputs['context'],inputs['observation'],*inputs['entryReceipts'],*([inputs['runtime']] if inputs['runtime'] else []),
                 *([inputs['comparison']] if inputs['comparison'] else []),
                 *([inputs['contextResolution']] if inputs.get('contextResolution') else []),
-                *([inputs['archiveAudit']] if inputs.get('archiveAudit') else [])]:
+                *([inputs['archiveAudit']] if inputs.get('archiveAudit') else []),
+                *([inputs['entryCoverage']] if inputs.get('entryCoverage') else [])]:
         deployment.verify_snapshot(row)
     fresh=derive(inputs['context']['path'],inputs['observation']['path'],
                  entry_receipts=[r['path'] for r in inputs['entryReceipts']],
                  runtime_path=inputs['runtime']['path'] if inputs['runtime'] else None,
                  comparison_path=inputs['comparison']['path'] if inputs['comparison'] else None,
                  resolution_path=inputs['contextResolution']['path'] if inputs.get('contextResolution') else None,
-                 archive_audit_path=inputs['archiveAudit']['path'] if inputs.get('archiveAudit') else None)
+                 archive_audit_path=inputs['archiveAudit']['path'] if inputs.get('archiveAudit') else None,
+                 entry_coverage_path=inputs['entryCoverage']['path'] if inputs.get('entryCoverage') else None)
     if fresh!=stored:raise ValueError('CONTRACT_EVIDENCE_REDERIVATION_MISMATCH')
     return stored
 
 
-def refine(input_path, output, *, runtime_path=None, comparison_path=None,resolution_path=None,archive_audit_path=None):
+def refine(input_path, output, *, runtime_path=None, comparison_path=None,resolution_path=None,archive_audit_path=None,entry_coverage_path=None):
     """Reuse validated native input receipts; do not rerun unchanged compilers."""
     import json
     from .native_deployment_prerequisites import output_path
-    if runtime_path is None and comparison_path is None and resolution_path is None and archive_audit_path is None:
+    if runtime_path is None and comparison_path is None and resolution_path is None and archive_audit_path is None and entry_coverage_path is None:
         raise ValueError('CONTRACT_REFINEMENT_NEW_EVIDENCE_REQUIRED')
     check(input_path)
     old=deployment.read(Path(input_path).resolve().parent/'inputs.json')
@@ -417,9 +437,10 @@ def refine(input_path, output, *, runtime_path=None, comparison_path=None,resolu
     comparison_path=comparison_path or (old['comparison']['path'] if old['comparison'] else None)
     resolution_path=resolution_path or (old['contextResolution']['path'] if old.get('contextResolution') else None)
     archive_audit_path=archive_audit_path or (old['archiveAudit']['path'] if old.get('archiveAudit') else None)
+    entry_coverage_path=entry_coverage_path or (old['entryCoverage']['path'] if old.get('entryCoverage') else None)
     result=derive(old['context']['path'],old['observation']['path'],
                   entry_receipts=[r['path'] for r in old['entryReceipts']],
-                  runtime_path=runtime_path,comparison_path=comparison_path,resolution_path=resolution_path,archive_audit_path=archive_audit_path)
+                  runtime_path=runtime_path,comparison_path=comparison_path,resolution_path=resolution_path,archive_audit_path=archive_audit_path,entry_coverage_path=entry_coverage_path)
     inputs={**{k:v for k,v in old.items() if k!='contractInputsIdentity'},
             'runtime':deployment.snapshot(runtime_path) if runtime_path else None,
             'comparison':deployment.snapshot(comparison_path) if comparison_path else None}
@@ -430,6 +451,11 @@ def refine(input_path, output, *, runtime_path=None, comparison_path=None,resolu
         inputs['schemaVersion']='riscv2x86.native-contract-inputs.v3'
         inputs['contextResolution']=deployment.snapshot(resolution_path) if resolution_path else None
         inputs['archiveAudit']=deployment.snapshot(archive_audit_path)
+    if entry_coverage_path:
+        inputs['schemaVersion']='riscv2x86.native-contract-inputs.v4'
+        inputs['contextResolution']=deployment.snapshot(resolution_path) if resolution_path else None
+        inputs['archiveAudit']=deployment.snapshot(archive_audit_path) if archive_audit_path else None
+        inputs['entryCoverage']=deployment.snapshot(entry_coverage_path)
     root=output_path(output);root.mkdir()
     (root/'inputs.json').write_text(json.dumps(deployment.seal(inputs,'contractInputsIdentity'),indent=2))
     (root/'result.json').write_text(json.dumps(result,indent=2)+'\n')

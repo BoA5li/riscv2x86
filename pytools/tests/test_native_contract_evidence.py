@@ -268,3 +268,26 @@ def test_context_batch_rejects_invalid_ranges_before_output_creation(contract_pi
     with pytest.raises(ValueError,match='RANGE_INVALID'):
         batch.acquire(root/'contracts/result.json',root/'invalid-batch',clang=sys.executable,start=start,count=count)
     assert not (root/'invalid-batch').exists()
+
+
+def test_function_entry_evidence_returns_to_contracts_without_stage_promotion(contract_pipeline,monkeypatch):
+    from riscv2x86_py import native_entry_probe
+    root,base=contract_pipeline
+    source=root/'contracts/result.json';evidence=root/'entry-fixture.json'
+    evidence.write_text('{}')
+    # Entry checker is a protocol boundary; real capture/replay has separate tests.
+    observed={'entryCoverageIdentity':'fixture-entry-identity',
+        'contractEvidenceIdentity':base['contractEvidenceIdentity'],
+        'deploymentIdentity':d.read(root/'deployment/result.json')['deploymentIdentity'],
+        'candidateFunctionEntriesObserved':True,'observedFunctionCount':1,'expectedFunctionCount':1,
+        'candidateInstructionExecutionCoverageVerified':False,'nativeAbiClosureVerified':False,
+        'legalObjectDomainVerified':False,'untracedRunCoverageVerified':False}
+    monkeypatch.setattr(native_entry_probe,'check',lambda path:observed)
+    result=contracts.refine(source,root/'entry-refined',entry_coverage_path=evidence)
+    assert result['validationProgress']['subgoals']['instrumented-candidate-function-entry']['status']=='verified'
+    assert result['stages']==base['stages'] and not result['entryAbiClosureVerified']
+    assert not result['semanticApproval'] and contracts.check(root/'entry-refined/result.json')==result
+    observed['contractEvidenceIdentity']='different-base'
+    with pytest.raises(ValueError,match='ENTRY_COVERAGE_BASE_MISMATCH'):
+        contracts.refine(source,root/'wrong-entry',entry_coverage_path=evidence)
+    assert not (root/'wrong-entry').exists()

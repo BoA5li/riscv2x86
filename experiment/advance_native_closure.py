@@ -41,6 +41,8 @@ def main(argv=None):
     context.add_argument('--reuse-native-input')
     context.add_argument('--observation', help='validated observation from this exact deployment plan')
     runtime = sub.add_parser('capture-runtime'); runtime.add_argument('--observation', required=True)
+    entry_probe = sub.add_parser('capture-entry')
+    entry_probe.add_argument('--contracts', required=True)
     contracts = sub.add_parser('inspect-contracts')
     contracts.add_argument('--context', required=True); contracts.add_argument('--observation', required=True)
     contracts.add_argument('--clang', required=True); contracts.add_argument('--runtime')
@@ -67,6 +69,7 @@ def main(argv=None):
     refinement.add_argument('--runtime');refinement.add_argument('--comparison')
     refinement.add_argument('--context-resolution')
     refinement.add_argument('--archive-audit')
+    refinement.add_argument('--entry-coverage')
     prepare_comparison=sub.add_parser('prepare-comparison')
     for name in ('deployment','source-program','domain','output'):
         prepare_comparison.add_argument('--'+name,required=True)
@@ -76,7 +79,7 @@ def main(argv=None):
     prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
     comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
     comparison.add_argument('--output', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, contracts, batch, priority,archive_audit):
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, contracts, batch, priority,archive_audit):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -85,7 +88,7 @@ def main(argv=None):
     audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
-        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution','archive_audit','resolution'):
+        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution','archive_audit','resolution','entry_coverage'):
             value = getattr(args, name, None)
             if value is not None and (not value or not Path(value).is_file()):
                 raise ValueError('CLOSURE_INPUT_REGULAR_FILE_REQUIRED:' + name)
@@ -134,7 +137,7 @@ def main(argv=None):
             from riscv2x86_py.native_contract_evidence import refine as refine_contracts
             value=refine_contracts(args.input,args.output,runtime_path=args.runtime,
                 comparison_path=args.comparison,resolution_path=args.context_resolution,
-                archive_audit_path=args.archive_audit)
+                archive_audit_path=args.archive_audit,entry_coverage_path=args.entry_coverage)
         elif args.operation == 'audit-archive-selection':
             from riscv2x86_py.native_archive_audit import acquire as audit_archive
             value=audit_archive(args.deployment,args.output,timeout=args.timeout_seconds)
@@ -150,6 +153,9 @@ def main(argv=None):
         elif args.operation == 'compare-programs':
             from riscv2x86_py.native_program_comparison import acquire as compare_programs
             value = compare_programs(args.plan, args.output)
+        elif args.operation == 'capture-entry':
+            from riscv2x86_py.native_entry_probe import acquire as acquire_entry
+            value = acquire_entry(args.contracts, args.output, timeout=args.timeout_seconds)
         elif args.operation == 'capture-runtime':
             from riscv2x86_py.native_runtime_identity import acquire as acquire_runtime
             value = acquire_runtime(args.observation, args.output, timeout=args.timeout_seconds)
@@ -181,7 +187,10 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.native-archive-selection-audit.v1':
+            if value.get('schemaVersion') == 'riscv2x86.candidate-function-entry.v1':
+                from riscv2x86_py.native_entry_probe import check as check_entry
+                check_entry(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-archive-selection-audit.v1':
                 from riscv2x86_py.native_archive_audit import check as check_archive_audit
                 check_archive_audit(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-context-resolution.v1':
@@ -210,7 +219,11 @@ def main(argv=None):
                    'independentDeploymentRebuildComplete', 'capturedInputReplacementVerified',
                    'candidateDefinitionAttributionVerified', 'capturedBaselineBytesReproduced',
                    'derivedLibraryBuildComplete', 'derivedEntryBuildComplete', 'loaderListSelectionVerified',
-                   'testExecutionPerformed', 'observedReturnCode', 'parentObligationCount', 'referenceCount',
+                   'testExecutionPerformed', 'observedReturnCode',
+                   'candidateFunctionEntriesObserved', 'observedFunctionCount', 'expectedFunctionCount',
+                   'traceFailureReason', 'candidateInstructionExecutionCoverageVerified',
+                   'nativeAbiClosureVerified', 'legalObjectDomainVerified', 'untracedRunCoverageVerified',
+                   'tracedReturnCodeMatchesReference', 'tracedStdoutMatchesReference', 'parentObligationCount', 'referenceCount',
                    'naturalRunCompletedWithinBudget', 'diagnosticRunCompletedWithinBudget', 'runtimeBindingClosureComplete',
                    'targetDependencyLinkClosureComplete', 'externalContractClosureComplete',
                    'sourceContentLineageVerified', 'targetNativeInputAcquired', 'targetContextCompatibilityVerified',
