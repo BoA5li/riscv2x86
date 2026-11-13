@@ -208,6 +208,7 @@ _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
     "automatic-l2-effect-differential": _automatic_l2_effect_factory,
     "automatic-l2-functional-relation": _automatic_l2_functional_relation_factory,
     "l0-build-matrix": _l0_build_matrix_factory,
+    "native-l0-build-matrix": lambda config: __import__("riscv2x86_py.native_l0_materialization",fromlist=["factory"]).factory(config),
     "l1-functional-differential": _l1_differential_factory,
     "l2-logical-operand-differential": _l2_operand_differential_factory,
     "l2-effect-trace-differential": _l2_effect_trace_differential_factory,

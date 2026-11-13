@@ -72,4 +72,7 @@ def summary(path):
         'suggestedContextIndices':resolved['resolution']['suggestedContextIndices'] if resolved else [],
         'potentialFunctionCount':resolved['resolution']['potentialFunctionCount'] if resolved else None,
         'frameworkEvaluationReadiness':report['frameworkEvaluationReadiness'],
+        'apiExperimentEvidence':report.get('apiExperimentEvidence'),
+        'candidateStatementEvidence':report.get('candidateStatementEvidence'),
+        'nativeFrameworkEvidence':report.get('nativeFrameworkEvidence'),
         'semanticApproval':report['semanticApproval'],'productionAcceptanceComplete':report['productionAcceptanceComplete']}

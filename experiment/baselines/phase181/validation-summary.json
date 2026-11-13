@@ -1,0 +1,13 @@
+{
+  "scope": "phase180-phase181 joint focused regression; not GMP acceptance",
+  "passed": 301,
+  "skipped": 5,
+  "elapsedSeconds": 312.58,
+  "skipReasons": {
+    "ptrace unavailable": 2,
+    "RISC-V GCC and QEMU unavailable": 3
+  },
+  "realGmpExperimentPerformed": false,
+  "fullL0L3AcceptanceProved": false,
+  "semanticApproval": false
+}

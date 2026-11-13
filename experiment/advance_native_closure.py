@@ -43,6 +43,19 @@ def main(argv=None):
     runtime = sub.add_parser('capture-runtime'); runtime.add_argument('--observation', required=True)
     entry_probe = sub.add_parser('capture-entry')
     entry_probe.add_argument('--contracts', required=True)
+    api_prepare=sub.add_parser('prepare-api');api_prepare.add_argument('--contracts',required=True)
+    api_run=sub.add_parser('run-api');api_run.add_argument('--contracts',required=True)
+    api_run.add_argument('--domain',required=True);api_run.add_argument('--source-library',required=True)
+    api_run.add_argument('--source-launcher',required=True);api_run.add_argument('--launcher-arg',action='append',default=[])
+    statements=sub.add_parser('capture-statements');statements.add_argument('--api-experiment',required=True)
+    framework_export=sub.add_parser('export-framework');framework_export.add_argument('--contracts',required=True)
+    framework_run=sub.add_parser('run-framework');framework_run.add_argument('--contracts',required=True)
+    framework_run.add_argument('--request',required=True)
+    native_l0=sub.add_parser('materialize-native-l0');native_l0.add_argument('--contracts',required=True)
+    native_l0.add_argument('--instance',required=True)
+    native_request=sub.add_parser('prepare-native-l0-request');native_request.add_argument('--native-build',required=True)
+    native_request.add_argument('--framework-output',required=True);native_request.add_argument('--qemu',required=True)
+    native_request.add_argument('--source-isa',required=True)
     contracts = sub.add_parser('inspect-contracts')
     contracts.add_argument('--context', required=True); contracts.add_argument('--observation', required=True)
     contracts.add_argument('--clang', required=True); contracts.add_argument('--runtime')
@@ -70,6 +83,7 @@ def main(argv=None):
     refinement.add_argument('--context-resolution')
     refinement.add_argument('--archive-audit')
     refinement.add_argument('--entry-coverage')
+    refinement.add_argument('--api-experiment');refinement.add_argument('--statement-probe');refinement.add_argument('--framework-execution')
     prepare_comparison=sub.add_parser('prepare-comparison')
     for name in ('deployment','source-program','domain','output'):
         prepare_comparison.add_argument('--'+name,required=True)
@@ -79,7 +93,7 @@ def main(argv=None):
     prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
     comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
     comparison.add_argument('--output', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, contracts, batch, priority,archive_audit):
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, api_prepare, api_run, statements, framework_export, framework_run, native_l0, native_request, contracts, batch, priority,archive_audit):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -88,7 +102,7 @@ def main(argv=None):
     audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
-        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution','archive_audit','resolution','entry_coverage'):
+        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution','archive_audit','resolution','entry_coverage','source_library','api_experiment','statement_probe','framework_execution','request','native_build','qemu'):
             value = getattr(args, name, None)
             if value is not None and (not value or not Path(value).is_file()):
                 raise ValueError('CLOSURE_INPUT_REGULAR_FILE_REQUIRED:' + name)
@@ -137,7 +151,8 @@ def main(argv=None):
             from riscv2x86_py.native_contract_evidence import refine as refine_contracts
             value=refine_contracts(args.input,args.output,runtime_path=args.runtime,
                 comparison_path=args.comparison,resolution_path=args.context_resolution,
-                archive_audit_path=args.archive_audit,entry_coverage_path=args.entry_coverage)
+                archive_audit_path=args.archive_audit,entry_coverage_path=args.entry_coverage,api_path=args.api_experiment,
+                statement_path=args.statement_probe,framework_path=args.framework_execution)
         elif args.operation == 'audit-archive-selection':
             from riscv2x86_py.native_archive_audit import acquire as audit_archive
             value=audit_archive(args.deployment,args.output,timeout=args.timeout_seconds)
@@ -153,6 +168,32 @@ def main(argv=None):
         elif args.operation == 'compare-programs':
             from riscv2x86_py.native_program_comparison import acquire as compare_programs
             value = compare_programs(args.plan, args.output)
+        elif args.operation == 'materialize-native-l0':
+            from riscv2x86_py.native_l0_materialization import acquire as materialize_l0
+            value=materialize_l0(args.contracts,args.instance,args.output,timeout=args.timeout_seconds)
+        elif args.operation == 'prepare-native-l0-request':
+            from riscv2x86_py.native_l0_materialization import prepare_request
+            value=prepare_request(args.native_build,args.output,args.framework_output,args.qemu,source_isa=args.source_isa)
+        elif args.operation == 'prepare-api':
+            from riscv2x86_py.native_api_experiment import prepare as prepare_api
+            value=prepare_api(args.contracts,args.output)
+        elif args.operation == 'run-api':
+            from riscv2x86_py.native_api_experiment import acquire as run_api,context
+            domain=deployment.read(args.domain);report=context(args.contracts)[0]
+            matches=[f for f in report['graphs']['candidate']['functionDefinitions']
+                     if f['functionEvidenceIdentity']==domain.get('functionEvidenceIdentity')]
+            if len(matches)!=1:raise ValueError('API_DOMAIN_FUNCTION_REQUIRED')
+            value=run_api(args.contracts,args.domain,matches[0]['astPath'],args.source_library,args.output,
+                source_launcher=args.source_launcher,launcher_arguments=args.launcher_arg,timeout=args.timeout_seconds)
+        elif args.operation == 'capture-statements':
+            from riscv2x86_py.native_statement_probe import acquire as capture_statements
+            value=capture_statements(args.api_experiment,args.output,timeout=args.timeout_seconds)
+        elif args.operation == 'export-framework':
+            from riscv2x86_py.native_framework_admission import export as export_framework
+            value=export_framework(args.contracts,args.output)
+        elif args.operation == 'run-framework':
+            from riscv2x86_py.native_framework_admission import acquire as run_framework
+            value=run_framework(args.contracts,args.request,args.output)
         elif args.operation == 'capture-entry':
             from riscv2x86_py.native_entry_probe import acquire as acquire_entry
             value = acquire_entry(args.contracts, args.output, timeout=args.timeout_seconds)
@@ -187,7 +228,19 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.candidate-function-entry.v1':
+            if value.get('schemaVersion') == 'riscv2x86.native-l0-materialization.v1':
+                from riscv2x86_py.native_l0_materialization import check as check_native_l0
+                check_native_l0(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-api-experiment.v1':
+                from riscv2x86_py.native_api_experiment import check as check_api
+                check_api(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-statement-probe.v1':
+                from riscv2x86_py.native_statement_probe import check as check_statements
+                check_statements(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-framework-execution.v1':
+                from riscv2x86_py.native_framework_admission import check as check_framework
+                check_framework(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.candidate-function-entry.v1':
                 from riscv2x86_py.native_entry_probe import check as check_entry
                 check_entry(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-archive-selection-audit.v1':
@@ -220,6 +273,9 @@ def main(argv=None):
                    'candidateDefinitionAttributionVerified', 'capturedBaselineBytesReproduced',
                    'derivedLibraryBuildComplete', 'derivedEntryBuildComplete', 'loaderListSelectionVerified',
                    'testExecutionPerformed', 'observedReturnCode',
+                   'compilerDeclarationWitnessesComplete','processObservationStatus','harnessObservationProtocolComplete',
+                   'instrumentedStatementCoverageComplete','instrumentedOutputMatchesApiRun','canonicalInstructionCoverageVerified',
+                   'originalFrameworkInvoked','frameworkResult',
                    'candidateFunctionEntriesObserved', 'observedFunctionCount', 'expectedFunctionCount',
                    'traceFailureReason', 'candidateInstructionExecutionCoverageVerified',
                    'nativeAbiClosureVerified', 'legalObjectDomainVerified', 'untracedRunCoverageVerified',

@@ -21,8 +21,9 @@ def _digest(path: Path) -> str:
 
 
 def _checked(argv: tuple[str, ...], cwd: Path, timeout: int) -> str:
+    from .native_toolchain_environment import kwargs as environment_kwargs
     result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True,
-                            timeout=timeout, check=False)
+                            timeout=timeout, check=False, **environment_kwargs(argv))
     if result.returncode:
         raise RuntimeError("L0 reference command failed: " + " ".join(argv) + "\n" + result.stderr)
     return result.stdout.strip()
@@ -56,9 +57,13 @@ def build_l0_reference_manifest(
     *, source_path: Path, target_path: Path, output_directory: Path,
     translation: TranslationArtifact, link_kind: str, timeout: int = 60,
     source_compiler: str = 'riscv64-linux-gnu-gcc',
-    source_flags_override=None, target_flags_override=None, target_link_flags_override=(),
+    source_flags_override=None, target_flags_override=None, target_link_flags_override=(), target_link_arguments=(),
 ) -> tuple[L0BuildMatrix, ProgramArtifact, ProgramArtifact]:
     """Build all declared cells first, then freeze their hashes as the oracle."""
+    from .l0_build_matrix import render_link_template,validate_link_template
+    if target_link_arguments:
+        validate_link_template(target_link_arguments)
+        if target_link_flags_override:raise ValueError('L0 link flags and positional recipe cannot be combined')
     output_directory.mkdir(parents=True, exist_ok=False)
     dependencies = resolve_runtime_contracts((translation.runtime_contract_id,))
     includes = tuple("-I" + item for item in dependencies.include_directories)
@@ -96,8 +101,9 @@ def build_l0_reference_manifest(
                 sanitizer_flags = (() if sanitizer == "none" else
                                    ("-fsanitize=" + {"asan": "address", "ubsan": "undefined"}[sanitizer],))
                 mode = ("-shared",) if link_kind == "shared_library" else ()
-                _checked((compiler, *target_link_flags_override, *sanitizer_flags, *mode, str(obj), *libdirs, *libs,
-                          "-o", str(out)), output_directory, timeout)
+                link_argv=((compiler,*sanitizer_flags,*render_link_template(target_link_arguments,obj,out),*libdirs,*libs)
+                           if target_link_arguments else (compiler, *target_link_flags_override, *sanitizer_flags, *mode, str(obj), *libdirs, *libs,"-o",str(out)))
+                _checked(link_argv,output_directory,timeout)
                 targets[ident] = ExpectedArtifact(
                     _digest(out), _digest(obj), link_kind, compiler, triple, flags,
                     dependencies.libraries, _elf(out, output_directory, timeout),
@@ -127,7 +133,7 @@ def build_l0_reference_manifest(
         include_directories=dependencies.include_directories,
         library_directories=dependencies.library_directories,
         libraries=dependencies.libraries,
-        link_kind=link_kind, runtime_timeout_seconds=timeout,target_link_flags=tuple(target_link_flags_override),
+        link_kind=link_kind, runtime_timeout_seconds=timeout,target_link_flags=tuple(target_link_flags_override),target_link_arguments=tuple(target_link_arguments),
     )
     return (matrix,
             ProgramArtifact("source", str(source_obj), "object", _digest(source_obj)),

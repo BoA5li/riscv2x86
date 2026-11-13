@@ -291,3 +291,47 @@ def test_function_entry_evidence_returns_to_contracts_without_stage_promotion(co
     with pytest.raises(ValueError,match='ENTRY_COVERAGE_BASE_MISMATCH'):
         contracts.refine(source,root/'wrong-entry',entry_coverage_path=evidence)
     assert not (root/'wrong-entry').exists()
+
+
+def test_bounded_api_and_statement_evidence_join_without_global_stage_promotion(contract_pipeline,monkeypatch):
+    from riscv2x86_py import native_api_experiment,native_statement_probe
+    root,base=contract_pipeline
+    api_path=root/'api-fixture.json';api_path.write_text('{}')
+    statement_path=root/'statement-fixture.json';statement_path.write_text('{}')
+    bounded={'contractEvidenceIdentity':base['contractEvidenceIdentity'],'apiExperimentIdentity':'fixture-api',
+        'compilerDeclarationWitnessesComplete':True,'objectConstructionContract':{'calleeAllAccessesProvedLegal':False},
+        'harnessObservationProtocolComplete':True,'processObservationStatus':'verified',
+        'nativeAbiClosureVerified':False,'legalObjectDomainVerified':False,'scope':'bounded-api-under-declared-preconditions'}
+    statement={'contractEvidenceIdentity':base['contractEvidenceIdentity'],'statementProbeIdentity':'fixture-statement',
+        'instrumentedStatementCoverageComplete':True,'canonicalInstructionCoverageVerified':False,
+        'untracedRunCoverageVerified':False,'instrumentedLibraryRuntimeIdentityVerified':False,
+        'scope':'instrumented-statement-only'}
+    # Protocol boundaries only; native compiler / marker tests execute separately.
+    monkeypatch.setattr(native_api_experiment,'check',lambda path:bounded)
+    monkeypatch.setattr(native_statement_probe,'check',lambda path:statement)
+    result=contracts.refine(root/'contracts/result.json',root/'bounded-refined',api_path=api_path,statement_path=statement_path)
+    assert result['stages']==base['stages']
+    assert result['validationProgress']['subgoals']['bounded-api-observations']['status']=='verified'
+    assert not result['candidateStatementEvidence']['canonicalInstructionCoverageVerified']
+    assert contracts.check(root/'bounded-refined/result.json')==result
+    bounded['contractEvidenceIdentity']='wrong-base'
+    with pytest.raises(ValueError,match='NATIVE_EXPERIMENT_BASE_MISMATCH'):
+        contracts.refine(root/'contracts/result.json',root/'wrong-bounded',api_path=api_path)
+
+
+def test_framework_summary_records_actual_invocation_not_guard_as_execution(contract_pipeline,monkeypatch):
+    from riscv2x86_py import native_framework_admission as framework
+    root,base=contract_pipeline;path=root/'framework-fixture.json';path.write_text('{}')
+    value={'contractEvidenceIdentity':base['contractEvidenceIdentity'],'nativeFrameworkIdentity':'fixture-native-framework',
+        'originalFrameworkInvoked':True,'executedOriginalValidatorLevels':['L0'],
+        'frameworkResult':{'status':'inconclusive','reasonCodes':['native.stage-required:entry-abi'],
+            'layers':[{'level':'L0','status':'verified','evidenceIdentity':'fixture-l0','detail':'actual fixture callback'},
+                      {'level':'L1','status':'inconclusive','evidenceIdentity':'','detail':'native-admission-not-layer-execution'}]},
+        'scope':'requested-profile-with-native-admission-prerequisites'}
+    monkeypatch.setattr(framework,'check',lambda path:value)
+    result=contracts.refine(root/'contracts/result.json',root/'framework-refined',framework_path=path)
+    assert result['frameworkEvaluationReadiness']['L0']['status']=='verified'
+    assert result['frameworkEvaluationReadiness']['L1']['status']=='not_run'
+    assert result['frameworkEvaluationReadiness']['L1']['admissionStatus']=='inconclusive'
+    assert result['stages']['program-validation']['status']=='inconclusive'
+    assert contracts.check(root/'framework-refined/result.json')==result
