@@ -150,7 +150,7 @@ def relocation_contracts(dynamic):
 
 
 def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=None, comparison_path=None,
-           resolution_path=None):
+           resolution_path=None,archive_audit_path=None):
     from .native_deployment_observation import check_observation
     context = bridge.check(context_path); observed = check_observation(observation_path)
     manifest = deployment.read(Path(context_path).resolve().parent/'inputs.json')
@@ -222,11 +222,15 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
     from .native_link_contexts import derive as producer_contexts
     from .native_program_scope import derive as program_scope
     producer_graph=producer_contexts(plan,deployed)
+    from .native_archive_selection import derive as archive_selection
+    archive_contributions=archive_selection(plan,deployed,producer_graph)
     scoped=program_scope(context,graphs,entries,joins,deployed)
     from .native_object_initializers import derive as initializer_proofs
     models={'source':source['analysisInput']['dataModels']['native'],'candidate':candidate_model,
             'nativeTarget':target_receipt['analysisInput']['dataModels']['native']}
     initializers={name:initializer_proofs(graph,models[name]) for name,graph in graphs.items()}
+    from .native_validation_progress import derive as validation_progress
+    progress=validation_progress(context,deployed,observed,producer_graph,runtime,comparison)
     result=deployment.seal({'schemaVersion':'riscv2x86.native-contract-evidence.v3',
         'deploymentPlanIdentity':plan['deploymentPlanIdentity'],'observationIdentity':observed['observationIdentity'],
         'contextBridgeIdentity':context['contextBridgeIdentity'],'candidateIdentity':candidate['candidateIdentity'],
@@ -240,28 +244,47 @@ def derive(context_path, observation_path, *, entry_receipts=(), runtime_path=No
         'entryAbiClosureVerified':False,
         'relocationContracts':relocations, 'coverageInventory':coverage,
         'producerContextClosure':producer_graph, 'programScope':scoped,
-        'constantInitializerEvidence':initializers,
+        'archiveMemberSelectionEvidence':archive_contributions,
+        'constantInitializerEvidence':initializers,'validationProgress':progress,
         'runtimeIdentityReportIdentity':runtime['runtimeIdentityReportIdentity'] if runtime else None,
         'processComparisonIdentity':comparison['processComparisonIdentity'] if comparison else None,
         'diagnosticMappedEndpointOccurrencesVerified':runtime['mappedEndpointOccurrencesVerified'] if runtime else 0,
         'stages':stages,'frameworkEvaluationReadiness':context['frameworkEvaluationReadiness'],
         'scope':'contract-input-evidence-for-existing-consumers-not-semantic-approval',
         'semanticApproval':False,'productionAcceptanceComplete':False},'contractEvidenceIdentity')
-    if resolution_path is None:return result
-    from .native_context_resolution import check as check_resolution
-    resolved=check_resolution(resolution_path)
-    if resolved['contractEvidenceIdentity']!=result['contractEvidenceIdentity']:
-        raise ValueError('CONTRACT_RESOLUTION_BASE_EVIDENCE_MISMATCH')
-    # Consume the relation in the existing contract workflow. The resolution
-    # proves inspection/provider candidate relationships, not machine ABI.
+    if resolution_path is None and archive_audit_path is None:return result
     body={k:v for k,v in result.items() if k!='contractEvidenceIdentity'}
     body['schemaVersion']='riscv2x86.native-contract-evidence.v4'
-    body['contextResolution']={k:resolved[k] for k in (
-        'contextResolutionIdentity','consumedContextCount','producerCompileContextCount',
-        'remainingWorkReasonCounts','resolution')}
-    body['stages']['entry-abi']['contextResolutionIdentity']=resolved['contextResolutionIdentity']
-    body['stages']['entry-abi']['consumedProducerContextCount']=resolved['consumedContextCount']
-    body['coverageInventory']['producerContextResolutionIdentity']=resolved['contextResolutionIdentity']
+    if resolution_path is not None:
+        from .native_context_resolution import check as check_resolution
+        resolved=check_resolution(resolution_path)
+        if resolved['contractEvidenceIdentity']!=result['contractEvidenceIdentity']:
+            raise ValueError('CONTRACT_RESOLUTION_BASE_EVIDENCE_MISMATCH')
+        body['contextResolution']={k:resolved[k] for k in (
+            'contextResolutionIdentity','consumedContextCount','producerCompileContextCount',
+            'remainingWorkReasonCounts','resolution')}
+        body['stages']['entry-abi']['contextResolutionIdentity']=resolved['contextResolutionIdentity']
+        body['stages']['entry-abi']['consumedProducerContextCount']=resolved['consumedContextCount']
+        body['coverageInventory']['producerContextResolutionIdentity']=resolved['contextResolutionIdentity']
+        body['validationProgress']['contextConsumption']={
+            'contextResolutionIdentity':resolved['contextResolutionIdentity'],
+            'validatedReceiptContextCount':resolved['validatedReceiptContextCount'],
+            'analyzedProducerUnitCount':resolved['analyzedProducerUnitCount'],
+            'uniqueStrongFunctionCandidateCallCount':resolved['resolution']['uniqueStrongFunctionCandidateCallCount'],
+            'nativeAbiClosureVerified':False}
+    if archive_audit_path is not None:
+        from .native_archive_audit import check as check_archive_audit
+        audited=check_archive_audit(archive_audit_path)
+        if audited['deploymentIdentity']!=deployed['deploymentIdentity']:
+            raise ValueError('CONTRACT_ARCHIVE_AUDIT_DEPLOYMENT_MISMATCH')
+        body['archiveSelectionAudit']={k:audited[k] for k in (
+            'archiveSelectionAuditIdentity','independentObservedArchiveContributionsVerified',
+            'verifiedObservedArchiveMemberCount','actualLinkSelectionClosureVerified')}
+        body['validationProgress']['subgoals']['observed-archive-contributions']={
+            'status':'verified' if audited['independentObservedArchiveContributionsVerified'] else 'inconclusive',
+            'scope':'independently-rebuilt-observed-allocated-contributions-not-all-extraction',
+            'reasonCodes':[] if audited['independentObservedArchiveContributionsVerified'] else
+                ['INDEPENDENT_ARCHIVE_CONTRIBUTION_EVIDENCE_REQUIRED']}
     return deployment.seal(body,'contractEvidenceIdentity')
 
 
@@ -362,43 +385,51 @@ def check(path):
         raise ValueError('CONTRACT_EVIDENCE_V3_REDERIVATION_REQUIRED')
     inputs=deployment.read(root/'inputs.json');checked(inputs,'contractInputsIdentity')
     expected={'schemaVersion','context','observation','entryReceipts','runtime','comparison','contractInputsIdentity'}
-    if inputs['schemaVersion']=='riscv2x86.native-contract-inputs.v2':expected.add('contextResolution')
+    if inputs['schemaVersion'] in ('riscv2x86.native-contract-inputs.v2','riscv2x86.native-contract-inputs.v3'):expected.add('contextResolution')
+    if inputs['schemaVersion']=='riscv2x86.native-contract-inputs.v3':expected.add('archiveAudit')
     if (set(inputs)!=expected or inputs['schemaVersion'] not in (
-            'riscv2x86.native-contract-inputs.v1','riscv2x86.native-contract-inputs.v2')):
+            'riscv2x86.native-contract-inputs.v1','riscv2x86.native-contract-inputs.v2','riscv2x86.native-contract-inputs.v3')):
         raise ValueError('CONTRACT_INPUT_SCHEMA_INVALID')
     for row in [inputs['context'],inputs['observation'],*inputs['entryReceipts'],*([inputs['runtime']] if inputs['runtime'] else []),
                 *([inputs['comparison']] if inputs['comparison'] else []),
-                *([inputs['contextResolution']] if inputs.get('contextResolution') else [])]:
+                *([inputs['contextResolution']] if inputs.get('contextResolution') else []),
+                *([inputs['archiveAudit']] if inputs.get('archiveAudit') else [])]:
         deployment.verify_snapshot(row)
     fresh=derive(inputs['context']['path'],inputs['observation']['path'],
                  entry_receipts=[r['path'] for r in inputs['entryReceipts']],
                  runtime_path=inputs['runtime']['path'] if inputs['runtime'] else None,
                  comparison_path=inputs['comparison']['path'] if inputs['comparison'] else None,
-                 resolution_path=inputs['contextResolution']['path'] if inputs.get('contextResolution') else None)
+                 resolution_path=inputs['contextResolution']['path'] if inputs.get('contextResolution') else None,
+                 archive_audit_path=inputs['archiveAudit']['path'] if inputs.get('archiveAudit') else None)
     if fresh!=stored:raise ValueError('CONTRACT_EVIDENCE_REDERIVATION_MISMATCH')
     return stored
 
 
-def refine(input_path, output, *, runtime_path=None, comparison_path=None,resolution_path=None):
+def refine(input_path, output, *, runtime_path=None, comparison_path=None,resolution_path=None,archive_audit_path=None):
     """Reuse validated native input receipts; do not rerun unchanged compilers."""
     import json
     from .native_deployment_prerequisites import output_path
-    if runtime_path is None and comparison_path is None and resolution_path is None:
+    if runtime_path is None and comparison_path is None and resolution_path is None and archive_audit_path is None:
         raise ValueError('CONTRACT_REFINEMENT_NEW_EVIDENCE_REQUIRED')
     check(input_path)
     old=deployment.read(Path(input_path).resolve().parent/'inputs.json')
     runtime_path=runtime_path or (old['runtime']['path'] if old['runtime'] else None)
     comparison_path=comparison_path or (old['comparison']['path'] if old['comparison'] else None)
     resolution_path=resolution_path or (old['contextResolution']['path'] if old.get('contextResolution') else None)
+    archive_audit_path=archive_audit_path or (old['archiveAudit']['path'] if old.get('archiveAudit') else None)
     result=derive(old['context']['path'],old['observation']['path'],
                   entry_receipts=[r['path'] for r in old['entryReceipts']],
-                  runtime_path=runtime_path,comparison_path=comparison_path,resolution_path=resolution_path)
+                  runtime_path=runtime_path,comparison_path=comparison_path,resolution_path=resolution_path,archive_audit_path=archive_audit_path)
     inputs={**{k:v for k,v in old.items() if k!='contractInputsIdentity'},
             'runtime':deployment.snapshot(runtime_path) if runtime_path else None,
             'comparison':deployment.snapshot(comparison_path) if comparison_path else None}
     if resolution_path:
         inputs['schemaVersion']='riscv2x86.native-contract-inputs.v2'
         inputs['contextResolution']=deployment.snapshot(resolution_path)
+    if archive_audit_path:
+        inputs['schemaVersion']='riscv2x86.native-contract-inputs.v3'
+        inputs['contextResolution']=deployment.snapshot(resolution_path) if resolution_path else None
+        inputs['archiveAudit']=deployment.snapshot(archive_audit_path)
     root=output_path(output);root.mkdir()
     (root/'inputs.json').write_text(json.dumps(deployment.seal(inputs,'contractInputsIdentity'),indent=2))
     (root/'result.json').write_text(json.dumps(result,indent=2)+'\n')

@@ -50,6 +50,14 @@ def main(argv=None):
     batch.add_argument('--contracts',required=True);batch.add_argument('--clang',required=True)
     batch.add_argument('--start-index',type=int,default=0);batch.add_argument('--count',type=int,default=4)
     batch.add_argument('--reuse-receipt',action='append',default=[])
+    batch.add_argument('--context-index',type=int,action='append')
+    priority=sub.add_parser('acquire-priority-contexts')
+    priority.add_argument('--resolution',required=True);priority.add_argument('--clang',required=True)
+    priority.add_argument('--count',type=int,default=4)
+    archive_audit=sub.add_parser('audit-archive-selection')
+    archive_audit.add_argument('--deployment',required=True)
+    summary=sub.add_parser('summarize-contracts')
+    summary.add_argument('--input',required=True);summary.add_argument('--output',required=True)
     resolution=sub.add_parser('resolve-contexts')
     resolution.add_argument('--contracts',required=True)
     resolution.add_argument('--context-batch',action='append',required=True)
@@ -58,6 +66,7 @@ def main(argv=None):
     refinement.add_argument('--input',required=True);refinement.add_argument('--output',required=True)
     refinement.add_argument('--runtime');refinement.add_argument('--comparison')
     refinement.add_argument('--context-resolution')
+    refinement.add_argument('--archive-audit')
     prepare_comparison=sub.add_parser('prepare-comparison')
     for name in ('deployment','source-program','domain','output'):
         prepare_comparison.add_argument('--'+name,required=True)
@@ -67,7 +76,7 @@ def main(argv=None):
     prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
     comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
     comparison.add_argument('--output', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, contracts, batch):
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, contracts, batch, priority,archive_audit):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -76,7 +85,7 @@ def main(argv=None):
     audit_check.add_argument('--input', required=True)
     args = p.parse_args(argv)
     try:
-        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution'):
+        for name in ('plan', 'context', 'contracts', 'observation', 'runtime', 'comparison', 'deployment', 'domain', 'source_program', 'source_launcher','context_resolution','archive_audit','resolution'):
             value = getattr(args, name, None)
             if value is not None and (not value or not Path(value).is_file()):
                 raise ValueError('CLOSURE_INPUT_REGULAR_FILE_REQUIRED:' + name)
@@ -124,7 +133,16 @@ def main(argv=None):
         elif args.operation == 'refine-contracts':
             from riscv2x86_py.native_contract_evidence import refine as refine_contracts
             value=refine_contracts(args.input,args.output,runtime_path=args.runtime,
-                comparison_path=args.comparison,resolution_path=args.context_resolution)
+                comparison_path=args.comparison,resolution_path=args.context_resolution,
+                archive_audit_path=args.archive_audit)
+        elif args.operation == 'audit-archive-selection':
+            from riscv2x86_py.native_archive_audit import acquire as audit_archive
+            value=audit_archive(args.deployment,args.output,timeout=args.timeout_seconds)
+        elif args.operation == 'summarize-contracts':
+            from riscv2x86_py.native_validation_progress import summary as contract_summary
+            value=contract_summary(args.input)
+            with Path(args.output).open('x') as stream:
+                json.dump(value,stream,indent=2,ensure_ascii=False);stream.write('\n')
         elif args.operation == 'prepare-comparison':
             from riscv2x86_py.native_program_comparison import prepare as prepare_comparison
             value=prepare_comparison(args.deployment,args.source_program,args.source_machine,args.domain,args.output,
@@ -138,7 +156,12 @@ def main(argv=None):
         elif args.operation == 'acquire-context-batch':
             from riscv2x86_py.native_context_batch import acquire as acquire_batch
             value=acquire_batch(args.contracts,args.output,clang=args.clang,start=args.start_index,
-                                count=args.count,timeout=args.timeout_seconds,reuse_paths=args.reuse_receipt)
+                                count=args.count,timeout=args.timeout_seconds,reuse_paths=args.reuse_receipt,
+                                indices=args.context_index)
+        elif args.operation == 'acquire-priority-contexts':
+            from riscv2x86_py.native_context_resolution import acquire_priority
+            value=acquire_priority(args.resolution,args.output,clang=args.clang,
+                                   count=args.count,timeout=args.timeout_seconds)
         elif args.operation == 'resolve-contexts':
             from riscv2x86_py.native_context_resolution import acquire as resolve_contexts
             value=resolve_contexts(args.contracts,args.context_batch,args.output)
@@ -158,7 +181,10 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.native-context-resolution.v1':
+            if value.get('schemaVersion') == 'riscv2x86.native-archive-selection-audit.v1':
+                from riscv2x86_py.native_archive_audit import check as check_archive_audit
+                check_archive_audit(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-context-resolution.v1':
                 from riscv2x86_py.native_context_resolution import check as check_resolution
                 check_resolution(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-context-batch.v1':
@@ -201,7 +227,7 @@ def main(argv=None):
                    'entryDirectObjectContextAcquisitionComplete', 'entryAbiClosureVerified',
                    'processObservableComparisonStatus', 'sourceReturnCode', 'targetReturnCode',
                    'l1EligibilityVerified','startIndex','nextIndex','totalContextCount',
-                   'selectedContextAcquisitionComplete') if k in value}
+                   'selectedContextAcquisitionComplete','selectedContextIndices') if k in value}
         for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode',
                     'auditPrerequisiteIntegrityChecked'):
             if key in value: result[key] = value[key]
@@ -221,11 +247,20 @@ def main(argv=None):
             result['producerCompileContextCount']=len(producers['compileContexts'])
             result['producerGapReasonCounts']=dict(sorted(Counter(g['reasonCode'] for g in producers['inputGaps']).items()))
             result['explicitPICArgumentsEqual']=value['programScope']['explicitPICArgumentsEqual']
-        if 'contextResolutionIdentity' in value:
+        if 'contextResolutionIdentity' in value and 'resolution' in value:
             for key in ('consumedContextCount','producerCompileContextCount','remainingWorkReasonCounts'):
                 result[key]=value[key]
             result['callReasonCounts']=value['resolution']['callReasonCounts']
             result['uniqueStrongFunctionCandidateCallCount']=value['resolution']['uniqueStrongFunctionCandidateCallCount']
+        if 'archiveSelectionAuditIdentity' in value:
+            for key in ('artifactBytesReproduced','archiveContributionRelationsReproduced',
+                        'independentObservedArchiveContributionsVerified','verifiedObservedArchiveMemberCount'):
+                result[key]=value[key]
+        if 'archiveMemberSelectionEvidence' in value:
+            result['observedArchiveMemberCount']=value['archiveMemberSelectionEvidence']['observedArchiveMemberCount']
+        if 'validationProgress' in value:
+            result['verifiedSubgoals']=[k for k,v in value['validationProgress']['subgoals'].items()
+                                       if v['status']=='verified']
         result.update(operation=args.operation, evidenceOperationComplete=True,
                       semanticApproval=False, productionAcceptanceComplete=False)
         if hasattr(args, 'output'):

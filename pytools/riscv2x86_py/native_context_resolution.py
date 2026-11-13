@@ -20,6 +20,12 @@ from .project_build_records import identity
 SCHEMA = 'riscv2x86.native-context-resolution.v1'
 
 
+def replaced_input(node,substitution):
+    return (node['consumerActionIdentity']==substitution['consumerActionIdentity']
+            and all(node['file'][k]==substitution['originalObject'][k]
+                    for k in ('resolvedPath','digest')))
+
+
 def elf_input(snapshot):
     deployment.verify_snapshot(snapshot)
     raw = Path(snapshot['path']).read_bytes()
@@ -40,6 +46,7 @@ def consume(units, roots):
     index = {}; unit_by_id = {u['unitIdentity']:u for u in units}
     if len(unit_by_id) != len(units):
         raise ValueError('CONTEXT_RESOLUTION_DUPLICATE_UNIT')
+    if set(roots)-set(unit_by_id):raise ValueError('CONTEXT_RESOLUTION_ROOT_UNIT_MISSING')
     for unit in units:
         if unit['machine'] != 62:
             raise ValueError('CONTEXT_RESOLUTION_X86_64_REQUIRED')
@@ -53,10 +60,15 @@ def consume(units, roots):
             # STT_NOTYPE, IFUNC, data and weak/unique bindings require their
             # own contracts. Do not invent function ABI facts for them.
             for symbol in symbols:
-                key = (unit['unitIdentity'], tuple(definition['astPath']),
+                key = (unit['object'].get('resolvedPath',unit['unitIdentity']),unit['object']['digest'],
+                       definition['functionEvidenceIdentity'],
                        symbol['tableIndex'], symbol['entryIndex'])
-                index.setdefault(label, {})[key] = {
+                providers=index.setdefault(label,{})
+                if key in providers:
+                    providers[key]['occurrenceUnitIdentities'].append(unit['unitIdentity']);continue
+                providers[key] = {
                     'unitIdentity':unit['unitIdentity'], 'object':unit['object'],
+                    'occurrenceUnitIdentities':[unit['unitIdentity']],
                     'functionEvidenceIdentity':definition['functionEvidenceIdentity'],
                     'astPath':definition['astPath'], 'signature':definition['signature'],
                     'symbol':symbol,
@@ -100,10 +112,34 @@ def consume(units, roots):
                 if call['callSiteEvidenceIdentity'] in visited:
                     candidate_units.update(p['unitIdentity'] for p in providers)
             body = {'unitIdentity':uid,'callSiteEvidenceIdentity':call['callSiteEvidenceIdentity'],
+                    'functionAstPath':call['functionAstPath'],
                     'classification':kind,'inKnownLocalScope':call['callSiteEvidenceIdentity'] in visited,
                     'declaration':decl,'providerCandidates':providers,'reasonCodes':reason,
                     'actualLinkSelectionVerified':False,'nativeAbiContractVerified':False}
             calls.append(dict(body, contextCallJoinIdentity=identity(body)))
+    # Extend the acquisition worklist over *potential* interprocedural edges.
+    # All ambiguous candidate definitions are retained. This does not choose
+    # an archive member/interposed provider or prove that a call executes.
+    by_call={(r['unitIdentity'],r['callSiteEvidenceIdentity']):r for r in calls}
+    pending=[(uid,tuple(path)) for uid,paths in roots.items() for path in paths]
+    potential=set()
+    while pending:
+        uid,path=pending.pop()
+        if (uid,path) in potential:continue
+        potential.add((uid,path))
+        for call in unit_by_id[uid]['graph']['callSites']:
+            if tuple(call['functionAstPath'] or ())!=path:continue
+            row=by_call[(uid,call['callSiteEvidenceIdentity'])]
+            if row['classification']!='direct':continue
+            if call['definitionIncluded']:
+                pending.extend((uid,tuple(p)) for p in call['definitionAstPaths'])
+            else:
+                pending.extend((p['unitIdentity'],tuple(p['astPath'])) for p in row['providerCandidates']
+                               if p['symbol']['type']==2 and p['inspectionSignatureShapeEqual'])
+    for row in calls:
+        row['inPotentialInterproceduralScope']=(row['unitIdentity'],tuple(row['functionAstPath'] or ())) in potential
+        row.pop('contextCallJoinIdentity')
+        row['contextCallJoinIdentity']=identity(row)
     return {'callJoins':calls,'localScopes':scopes,
             'knownLocalScopeProviderUnitPriorities':[
                 {'unitIdentity':uid,'relatedCallSiteCount':count}
@@ -113,6 +149,8 @@ def consume(units, roots):
                 len(r['providerCandidates'])==1
                 and r['providerCandidates'][0]['inspectionDefinitionAndStrongFunctionSymbolJoined']
                 and r['providerCandidates'][0]['inspectionSignatureShapeEqual'] for r in calls),
+            'potentialFunctionCount':len(potential),
+            'potentialScopeAssumesCandidateProviderEdges':True,
             'unvisitedFunctionsProvedUnreachable':False,'fullProgramScopeComplete':False}
 
 
@@ -157,7 +195,7 @@ def derive(contracts_path, batch_paths):
         snapshot=node['file'];object_snapshots.append(snapshot)
         # Never use the replaced original object's AST as the deployed
         # candidate definition. Both canonical output and bytes must match.
-        replaced=all(snapshot[k]==original[k] for k in ('resolvedPath','digest'))
+        replaced=replaced_input(node,closure['candidateSubstitution'])
         elf=elf_input(candidate if replaced else snapshot)
         if elf['machine']!=62 or elf['elfType']!=1:
             raise ValueError('CONTEXT_RESOLUTION_OBJECT_MACHINE_OR_TYPE_MISMATCH')
@@ -193,18 +231,23 @@ def derive(contracts_path, batch_paths):
                 if unit['contextIdentity']==entry['context']['contextIdentity']:
                     roots[unit['unitIdentity']]=report['programScope']['localScopes']['entry:'+str(index)]['rootAstPaths']
     resolution=consume(units,roots)
-    requests={}
+    requests={};local_requests={}
     for row in resolution['callJoins']:
         declaration=row['declaration']
-        if (row['inKnownLocalScope'] and row['classification']=='direct'
+        if (row['inPotentialInterproceduralScope'] and row['classification']=='direct'
                 and declaration and declaration.get('linkerName')
                 and not declaration.get('internalLinkage')):
             requests.setdefault(declaration['linkerName'],[]).append(row['contextCallJoinIdentity'])
+            if row['inKnownLocalScope']:
+                local_requests.setdefault(declaration['linkerName'],[]).append(row['contextCallJoinIdentity'])
     priorities={}
     for row in work:
         requested=sorted({request for symbol in row.get('definedSymbols',[])
                           for request in requests.get(symbol['name'],[])})
-        row['relatedKnownLocalCallJoinIdentities']=requested
+        row['relatedKnownLocalCallJoinIdentities']=sorted({request for symbol in row.get('definedSymbols',[])
+            for request in local_requests.get(symbol['name'],[])})
+        row['relatedPotentialCallJoinIdentities']=requested
+        row['associationScope']='potential-interprocedural-not-proved-execution'
         row['actualLinkSelectionVerified']=False
         if requested and row['contextIndex'] is not None:
             priorities.setdefault(row['contextIndex'],set()).update(requested)
@@ -220,6 +263,7 @@ def derive(contracts_path, batch_paths):
     body={'schemaVersion':SCHEMA,'contractEvidenceIdentity':report['contractEvidenceIdentity'],
           'deploymentPlanIdentity':report['deploymentPlanIdentity'],
           'contextBatchIdentities':checked_batches,'consumedContextCount':len(receipts),
+          'validatedReceiptContextCount':len(receipts),'analyzedProducerUnitCount':len(units),
           'producerCompileContextCount':len(contexts),'units':units,
           'resolution':resolution,'remainingWork':work,
           'remainingWorkReasonCounts':dict(sorted(Counter(w['reasonCode'] for w in work).items())),
@@ -256,3 +300,14 @@ def check(path):
     fresh=derive(inputs['contracts']['path'],[s['path'] for s in inputs['batches']])
     if fresh!=stored:raise ValueError('CONTEXT_RESOLUTION_REDERIVATION_MISMATCH')
     return stored
+
+
+def acquire_priority(resolution_path,output,*,clang,count=4,timeout=300):
+    """A bounded next batch from validated priorities, never a reachability gate."""
+    if type(count) is not int or not 1<=count<=64:
+        raise ValueError('PRIORITY_CONTEXT_BUDGET_INVALID')
+    report=check(resolution_path)
+    inputs=deployment.read(Path(resolution_path).resolve().parent/'inputs.json')
+    indices=report['resolution']['suggestedContextIndices'][:count]
+    if not indices:raise ValueError('PRIORITY_CONTEXT_NO_C_CONTEXT_PENDING')
+    return batch.acquire(inputs['contracts']['path'],output,clang=clang,indices=indices,timeout=timeout)

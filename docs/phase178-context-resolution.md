@@ -1,3 +1,5 @@
+> 后续跨阶段修订与验证见 [phase179-cross-stage-validation.md](phase179-cross-stage-validation.md)。
+
 # Phase178：消费上下文回执、精确符号候选与可追溯归档诊断
 
 本轮基于 phase177-producer-context-scope。输入证据是用户实际运行的253项回归、

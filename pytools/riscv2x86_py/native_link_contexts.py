@@ -8,7 +8,6 @@ from pathlib import Path
 from hashlib import sha256
 
 from . import native_captured_deployment as deployment
-from .native_dependency_inventory import checked_records
 from .native_dependency_evidence import archive_members
 from .native_elf_runtime import parse
 from .project_archive_provenance import select
@@ -33,16 +32,8 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
     # here so another deployment cannot supply a convenient replacement DSO.
     if deployed['deploymentPlanIdentity']!=plan['deploymentPlanIdentity']:
         raise ValueError('LINK_CONTEXT_DEPLOYMENT_MISMATCH')
-    records=[];actions={};origins={};configs={}
-    for key in ('libraryRecords','testRecords'):
-        snapshot=plan[key];deployment.verify_snapshot(snapshot)
-        record=checked_records(snapshot['path']);records.append(snapshot)
-        config=deployment.read(record['captureConfig']);config_key=identity(deployment.snapshot(record['captureConfig']))
-        configs[config_key]=config
-        for action in record['actions']:
-            aid=action['actionIdentity']
-            if aid in actions and actions[aid]!=action:raise ValueError('LINK_CONTEXT_ACTION_COLLISION')
-            actions[aid]=action;origins.setdefault(aid,set()).add(config_key)
+    from .native_capture_scope import load,close,unrelated_archive_operation
+    records,actions,origins,configs,stage_facts,capture_scopes,raw_inventories=load(plan)
     nodes={};edges=[];contexts={};gaps=[];raw_cache={};snapshots={}
     def gap(node,code,**extra):
         gaps.append({'nodeIdentity':node,'reasonCode':code,**extra})
@@ -53,7 +44,9 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
         left,right=clocks(aa),clocks(bb)
         return len(left)==1 and left==right
     def candidates(row,consumer,kinds,*,exact_path):
-        return [a for a in actions.values() if a['kind'] in kinds and before(a,consumer) and same_clock(a,consumer)
+        return [a for a in actions.values() if a['kind'] in kinds
+                and stage_facts[a['actionIdentity']]['producerStageAdmitted']
+                and before(a,consumer) and same_clock(a,consumer)
                 and all((a.get('observedOutput') or {}).get(k)==row[k] for k in ('resolvedPath','digest'))
                 and (not exact_path or a['observedOutput']['path']==row['path'])]
     def read(row):
@@ -83,9 +76,15 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
                 group=[a for aid,a in actions.items() if config_id in origins[aid] and before(a,consumer)
                        and same_clock(a,consumer)]
                 if config.get('archiveCapture'):
-                    selection=select(group,config['directory'],row['path'],row['digest'])
+                    unrelated=[a['actionIdentity'] for a in group if unrelated_archive_operation(a,row)]
+                    selected_group=[a for a in group if a['actionIdentity'] not in unrelated]
+                    selection=select(selected_group,config['directory'],row['path'],row['digest'])
+                    if selection['complete'] and any(not stage_facts[aid]['producerStageAdmitted']
+                            for aid in selection['operationIdentities']):
+                        selection={'complete':False,'reason':'ARCHIVE_PRODUCER_STAGE_NOT_ADMITTED'}
                     attempts.append({'captureConfigIdentity':config_id,
                         'eligibleActionCount':len(group),'selection':selection,
+                        'excludedUnrelatedOperationIdentities':unrelated,
                         'archiveActionCandidates':[{
                             'actionIdentity':a['actionIdentity'],'arguments':a['arguments'],
                             'directory':a['directory'],
@@ -109,6 +108,7 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
             selection=next(iter(choices.values()))
             if len(members)!=len(selection['members']):raise ValueError('LINK_CONTEXT_ARCHIVE_MEMBER_COUNT_MISMATCH')
             node['archiveOperationIdentities']=selection['operationIdentities'];node['producerBound']=True
+            node['archiveProducerStages']=[stage_facts[aid] for aid in selection['operationIdentities']]
             node['actualExtractionSelectionVerified']=False
             for ordinal,(member,relation) in enumerate(zip(members,selection['members'])):
                 if member['digest']!=relation['digest']:raise ValueError('LINK_CONTEXT_ARCHIVE_MEMBER_DIGEST_MISMATCH')
@@ -134,6 +134,7 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
         if len(producers)!=1:
             gap(node_id,'CAPTURED_PRODUCER_NOT_UNIQUE_OR_UNAVAILABLE',candidateCount=len(producers));return node_id
         producer=producers[0];node['producerBound']=True;node['producerActionIdentity']=producer['actionIdentity']
+        node['producerStage']=stage_facts[producer['actionIdentity']]
         read(producer['observedOutput'])
         if node['kind']=='object':
             if producer['kind']=='compile':
@@ -174,13 +175,16 @@ def derive(plan, deployed, *, node_limit=4096, byte_limit=256*1024*1024):
                 'candidateObjectDigest':plan['candidateObject']['digest'],
                 'replacementVerified':deployed['capturedInputReplacementVerified']})
     for snapshot in snapshots.values():deployment.verify_snapshot(snapshot)
+    close(configs,raw_inventories)
     all_bound=bool(nodes) and all(n['producerBound'] for n in nodes.values())
     body={'schemaVersion':SCHEMA,'deploymentPlanIdentity':plan['deploymentPlanIdentity'],
           'deploymentIdentity':deployed['deploymentIdentity'],'recordSnapshots':records,
           'nodes':list(nodes.values()),'edges':edges,'entryOccurrences':roots,
+          'captureScopes':capture_scopes,'crossStageCaptureReplayPerformed':True,
           'compileContexts':list(contexts.values()),'inputGaps':gaps,'deployedReplacements':replacements,
           'candidateSubstitution':{'originalObject':plan['originalObject'],
               'candidateObject':plan['candidateObject'],'candidateIdentity':plan['candidateIdentity'],
+              'consumerActionIdentity':plan['library']['action']['actionIdentity'],
               'replacementVerified':deployed['capturedInputReplacementVerified']},
           'capturedProducerClosureComplete':all_bound,
           'scope':'captured-explicit-link-inputs-not-driver-defaults-or-runtime-providers',

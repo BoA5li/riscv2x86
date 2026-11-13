@@ -16,11 +16,22 @@ from .project_tool_resolution import resolve_executable
 SCHEMA='riscv2x86.native-context-batch.v1'
 
 
-def selected(report,start,count):
+def selection_indices(report,start,count,indices=None):
     contexts=report['producerContextClosure']['compileContexts']
+    if indices is not None:
+        if (not isinstance(indices,list) or not 1<=len(indices)<=64
+                or any(type(i) is not int or not 0<=i<len(contexts) for i in indices)
+                or len(set(indices))!=len(indices)):
+            raise ValueError('CONTEXT_BATCH_INDICES_INVALID')
+        return indices
     if type(start) is not int or type(count) is not int or not 0<=start<len(contexts) or not 1<=count<=64:
         raise ValueError('CONTEXT_BATCH_RANGE_INVALID')
-    return contexts[start:start+count]
+    return list(range(start,min(start+count,len(contexts))))
+
+
+def selected(report,start,count,indices=None):
+    return [report['producerContextClosure']['compileContexts'][i]
+            for i in selection_indices(report,start,count,indices)]
 
 
 def parent_receipts(path,report):
@@ -45,11 +56,16 @@ def derive(inputs,receipts):
         raise ValueError('CONTEXT_BATCH_TIMEOUT_INVALID')
     deployment.verify_snapshot(inputs['contracts']);deployment.verify_snapshot(inputs['clang'])
     report=contracts.check(inputs['contracts']['path'])
-    contexts=selected(report,inputs['startIndex'],inputs['count'])
+    if inputs['schemaVersion']=='riscv2x86.native-context-batch-inputs.v2' and (
+            not isinstance(inputs.get('contextIndices'),list)
+            or inputs['count']!=len(inputs['contextIndices']) or inputs['startIndex']!=0):
+        raise ValueError('CONTEXT_BATCH_SPARSE_RECIPE_INVALID')
+    indices=selection_indices(report,inputs['startIndex'],inputs['count'],inputs.get('contextIndices'))
+    contexts=selected(report,inputs['startIndex'],inputs['count'],inputs.get('contextIndices'))
     if len(contexts)!=len(receipts):raise ValueError('CONTEXT_BATCH_RECEIPT_COUNT_MISMATCH')
     reusable=parent_receipts(inputs['contracts']['path'],report)
     rows=[]
-    for index,(context,snapshot) in enumerate(zip(contexts,receipts),inputs['startIndex']):
+    for index,context,snapshot in zip(indices,contexts,receipts):
         missing=blockers(report,context)
         if snapshot is None:
             if not missing:raise ValueError('CONTEXT_BATCH_READY_CONTEXT_OMITTED')
@@ -65,7 +81,10 @@ def derive(inputs,receipts):
                      'reusedParentReceipt':snapshot==reusable.get((context['contextIdentity'],receipt['inspectionCompiler'])),
                      'reasonCodes':[],'receipt':snapshot})
     body={'schemaVersion':SCHEMA,'contractEvidenceIdentity':report['contractEvidenceIdentity'],
-          'startIndex':inputs['startIndex'],'nextIndex':inputs['startIndex']+len(rows),
+          'startIndex':inputs['startIndex'] if inputs.get('contextIndices') is None else None,
+          'nextIndex':inputs['startIndex']+len(rows) if inputs.get('contextIndices') is None else None,
+          'selectedContextIndices':indices,
+          'selectionMode':'explicit-indices' if inputs.get('contextIndices') is not None else 'range',
           'totalContextCount':len(report['producerContextClosure']['compileContexts']),
           'rows':rows,'selectedContextAcquisitionComplete':bool(rows) and all(r['nativeInputAcquired'] for r in rows),
           'nativeAbiClosureVerified':False,'legalObjectDomainVerified':False,
@@ -73,10 +92,11 @@ def derive(inputs,receipts):
     return deployment.seal(body,'contextBatchIdentity')
 
 
-def acquire(path,output,*,clang,start=0,count=4,timeout=300,reuse_paths=()):
+def acquire(path,output,*,clang,start=0,count=4,timeout=300,reuse_paths=(),indices=None):
     from .native_deployment_prerequisites import output_path
     if type(timeout) is not int or not 1<=timeout<=86400:raise ValueError('CONTEXT_BATCH_TIMEOUT_INVALID')
-    report=contracts.check(path);contexts=selected(report,start,count)
+    report=contracts.check(path);contexts=selected(report,start,count,indices)
+    selected_indices=selection_indices(report,start,count,indices)
     compiler=str(resolve_executable(clang));reusable=parent_receipts(path,report)
     allowed={c['contextIdentity']:c for c in report['producerContextClosure']['compileContexts']}
     for receipt_path in reuse_paths:
@@ -93,8 +113,12 @@ def acquire(path,output,*,clang,start=0,count=4,timeout=300,reuse_paths=()):
     inputs={'schemaVersion':'riscv2x86.native-context-batch-inputs.v1',
             'contracts':deployment.snapshot(path),'clang':deployment.snapshot(compiler),
             'startIndex':start,'count':count,'timeoutSeconds':timeout}
+    if indices is not None:
+        inputs['schemaVersion']='riscv2x86.native-context-batch-inputs.v2'
+        inputs['contextIndices']=indices
+        inputs['count']=len(indices);inputs['startIndex']=0
     receipts=[]
-    for index,context in enumerate(contexts,start):
+    for index,context in zip(selected_indices,contexts):
         if blockers(report,context):receipts.append(None);continue
         cached=reusable.get((context['contextIdentity'],compiler))
         if cached is not None:receipts.append(cached);continue
@@ -111,8 +135,10 @@ def acquire(path,output,*,clang,start=0,count=4,timeout=300,reuse_paths=()):
 def check(path):
     path=Path(path).resolve(strict=True);value=deployment.read(path);checked(value,'contextBatchIdentity')
     inputs=deployment.read(path.parent/'inputs.json');checked(inputs,'batchInputsIdentity')
-    if (set(inputs)!={'schemaVersion','contracts','clang','startIndex','count','timeoutSeconds','receipts','batchInputsIdentity'}
-            or inputs['schemaVersion']!='riscv2x86.native-context-batch-inputs.v1'):
+    expected={'schemaVersion','contracts','clang','startIndex','count','timeoutSeconds','receipts','batchInputsIdentity'}
+    if inputs['schemaVersion']=='riscv2x86.native-context-batch-inputs.v2':expected.add('contextIndices')
+    if (set(inputs)!=expected or inputs['schemaVersion'] not in (
+            'riscv2x86.native-context-batch-inputs.v1','riscv2x86.native-context-batch-inputs.v2')):
         raise ValueError('CONTEXT_BATCH_INPUT_SCHEMA_INVALID')
     if derive(inputs,inputs['receipts'])!=value:raise ValueError('CONTEXT_BATCH_REDERIVATION_MISMATCH')
     return value
