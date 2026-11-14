@@ -19,3 +19,23 @@ def test_rejects_variadic_and_non_scalar_abi():
     try: function_abi_sidecar_from_dict(x)
     except ValueError: pass
     else: raise AssertionError("aggregate ABI must fail closed")
+
+
+def test_accepts_amd64_scalar_profile_only_with_matching_triple():
+    import pytest
+    x=_sidecar();x['targetTriple']='x86_64-unknown-linux-gnu'
+    function=x['functions'][0];function['sourceAbiProfile']='sysv-amd64'
+    function['entryArguments'][0]['register']='rdi';function['returnValues'][0]['register']='rax'
+    assert function_abi_sidecar_from_dict(x).for_function('f').source_abi_profile=='sysv-amd64'
+    x['targetTriple']='riscv64-linux-gnu'
+    with pytest.raises(ValueError,match='target triple mismatch'):function_abi_sidecar_from_dict(x)
+
+
+def test_truthy_strings_and_wrong_integer_width_do_not_become_complete():
+    from copy import deepcopy
+    import pytest
+    for field,value in [('complete','false'),('widthBits',32),('signedness','signed'),('widthBits',True)]:
+        x=_sidecar();x['functions'][0]['entryArguments'][0][field]=value
+        with pytest.raises(ValueError):function_abi_sidecar_from_dict(x)
+    x=_sidecar();x['functions'][0]['complete']='true'
+    with pytest.raises(ValueError,match='boolean'):function_abi_sidecar_from_dict(x)

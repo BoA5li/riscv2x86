@@ -1,0 +1,24 @@
+{
+  "scope": "conditional machine-proof consumer foundations; not complete native proof production",
+  "jointRegression": {
+    "passed": 499,
+    "skipped": 5,
+    "seconds": 353.58
+  },
+  "finalFoundationsRegression": {
+    "passed": 72,
+    "seconds": 0.54
+  },
+  "finalNativeIntegrationRegression": {
+    "passed": 2,
+    "seconds": 5.04
+  },
+  "countsOverlap": true,
+  "environmentSkips": {
+    "ptrace unavailable": 2,
+    "RISC-V GCC/QEMU unavailable": 3
+  },
+  "realGmpExperimentExecutedHere": false,
+  "fullNativeProofProductionImplemented": false,
+  "semanticApproval": false
+}
