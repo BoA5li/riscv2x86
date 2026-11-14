@@ -1,0 +1,24 @@
+{
+  "scope": "native adapter consumer contracts and captured C input acquisition; not whole-program acceptance",
+  "jointRegression": {
+    "passed": 424,
+    "skipped": 5,
+    "seconds": 567.0
+  },
+  "finalRuntimeContractRegression": {
+    "passed": 40,
+    "seconds": 0.66
+  },
+  "finalCompletionContractRegression": {
+    "passed": 23,
+    "seconds": 40.82
+  },
+  "countsOverlap": true,
+  "environmentSkips": {
+    "ptrace unavailable": 2,
+    "RISC-V GCC/QEMU unavailable": 3
+  },
+  "realGmpExperimentExecutedHere": false,
+  "fullStageClosureImplemented": false,
+  "semanticApproval": false
+}

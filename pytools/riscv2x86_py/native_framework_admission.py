@@ -17,6 +17,7 @@ from .translation_validation import (TranslationArtifact,ProgramArtifact,Validat
     ValidationRuntimeRegistry,run_translation_validation,validation_plan_from_dict,target_environment_from_dict)
 from .validation_status import PreservationMode,ValidationStatus
 from .validation_runtime_registry import validation_runtime_registry_from_dict
+from .runtime_dependency_binding import NO_RUNTIME_CONTRACT_ID,NO_RUNTIME_CONTRACT_VERSION
 
 SCHEMA='riscv2x86.native-framework-execution.v1'
 
@@ -42,7 +43,7 @@ def artifacts(candidate):
         if not shell['compilerOperandTypeWitnessesComplete']:raise ValueError('FRAMEWORK_NATIVE_OPERAND_TYPES_REQUIRED')
         artifact=TranslationArtifact(instance,identity(source_model),identity(edit),edit['constraintRelationIdentity'],
             proof['proofIdentity'],PreservationMode.ARCHITECTURE_EQUIVALENT,identity(shell),
-            'riscv2x86.runtime.none','',identity({'tools':candidate['tools'],
+            NO_RUNTIME_CONTRACT_ID,NO_RUNTIME_CONTRACT_VERSION,identity({'tools':candidate['tools'],
                 'sourceFlags':candidate['sourceFlags'],'targetFlags':candidate['targetFlags']}),(),
             'integer','pure-c')
         body=asdict(artifact);body['preservation_mode']=artifact.preservation_mode.value

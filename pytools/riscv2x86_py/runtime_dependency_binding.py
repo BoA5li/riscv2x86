@@ -9,7 +9,22 @@ from typing import Iterable, Mapping
 from .helper_runtime_manifest import get_runtime_helper_contract
 
 _EMITTED = {"emitted", "strengthened", "functional_fallback"}
-_NO_RUNTIME = {"", "riscv2x86.runtime.none"}
+NO_RUNTIME_CONTRACT_ID = "riscv2x86.runtime.none"
+NO_RUNTIME_CONTRACT_VERSION = "v1"
+_NO_RUNTIME = {"", NO_RUNTIME_CONTRACT_ID}
+
+
+def validate_runtime_contract_version(contract_id: str, version: str) -> None:
+    """Typed build boundary: a non-empty but invented version is not enough."""
+    if not isinstance(contract_id,str) or not contract_id or not isinstance(version,str) or not version:
+        raise ValueError('runtime contract id/version must be non-empty strings')
+    if contract_id==NO_RUNTIME_CONTRACT_ID:
+        expected=NO_RUNTIME_CONTRACT_VERSION
+    else:
+        contract=get_runtime_helper_contract(contract_id)
+        if contract is None:raise ValueError('unregistered runtime contract: '+contract_id)
+        expected=contract.semantic_version
+    if version!=expected:raise ValueError('runtime contract version mismatch: '+contract_id)
 
 
 @dataclass(frozen=True)

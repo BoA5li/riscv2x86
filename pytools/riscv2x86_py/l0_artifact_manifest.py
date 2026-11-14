@@ -21,8 +21,18 @@ def _fields(value: Mapping[str, object], expected: set[str], label: str) -> None
 def _string(value: Mapping[str, object], name: str, label: str, empty: bool = False) -> str:
     item = value.get(name)
     if not isinstance(item, str) or (not empty and not item):
-        raise ValueError(f"{label}.{name} must be a string")
+        raise ValueError(f"{label}.{name} must be a " + ("string" if empty else "non-empty string"))
     return item
+
+
+def validate_translation_binding(translation_identity, plan, proof, runtime_id, runtime_version, recipe):
+    """Shared pre-build and manifest boundary; do not normalize invalid inputs."""
+    if not isinstance(translation_identity,str) or not _SHA256.fullmatch(translation_identity):
+        raise ValueError('translation identity must be a sha256 identity')
+    for name,value in (('planIdentity',plan),('proofIdentity',proof),('runtimeContractId',runtime_id),
+                       ('runtimeContractVersion',runtime_version),('recipeIdentity',recipe)):
+        if not isinstance(value,str) or not value:
+            raise ValueError('L0 translation binding '+name+' must be a non-empty string')
 
 
 def _strings(value: object, label: str) -> tuple[str, ...]:
@@ -135,11 +145,8 @@ class L0ArtifactManifest:
     def __post_init__(self) -> None:
         if self.schema_version != L0_ARTIFACT_MANIFEST_SCHEMA:
             raise ValueError("L0 artifact manifest schema is unsupported")
-        if not _SHA256.fullmatch(self.translation_identity):
-            raise ValueError("translation identity must be a sha256 identity")
-        if not all((self.plan_identity, self.proof_identity, self.runtime_contract_id,
-                    self.runtime_contract_version, self.recipe_identity)):
-            raise ValueError("L0 artifact manifest translation binding is incomplete")
+        validate_translation_binding(self.translation_identity,self.plan_identity,self.proof_identity,
+                                     self.runtime_contract_id,self.runtime_contract_version,self.recipe_identity)
         if tuple(sorted(self.targets)) != tuple(self.targets):
             raise ValueError("target manifest cells must be canonically ordered")
 

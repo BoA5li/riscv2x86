@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 import subprocess
 
-from .l0_artifact_manifest import ExpectedArtifact, ExpectedElf, L0_ARTIFACT_MANIFEST_SCHEMA
+from .l0_artifact_manifest import (ExpectedArtifact, ExpectedElf, L0_ARTIFACT_MANIFEST_SCHEMA,
+    validate_translation_binding,l0_artifact_manifest_from_dict,load_l0_artifact_manifest)
 from .l0_build_matrix import L0BuildMatrix, _inspect_elf, _run
-from .runtime_dependency_binding import resolve_runtime_contracts
+from .runtime_dependency_binding import resolve_runtime_contracts,validate_runtime_contract_version
 from .translation_validation import ProgramArtifact, TranslationArtifact
 
 COMPILERS = ("gcc", "clang")
@@ -61,6 +62,9 @@ def build_l0_reference_manifest(
 ) -> tuple[L0BuildMatrix, ProgramArtifact, ProgramArtifact]:
     """Build all declared cells first, then freeze their hashes as the oracle."""
     from .l0_build_matrix import render_link_template,validate_link_template
+    validate_translation_binding(translation.identity,translation.translation_plan_id,translation.proof_identity,
+                                 translation.runtime_contract_id,translation.runtime_contract_version,translation.recipe_id)
+    validate_runtime_contract_version(translation.runtime_contract_id,translation.runtime_contract_version)
     if target_link_arguments:
         validate_link_template(target_link_arguments)
         if target_link_flags_override:raise ValueError('L0 link flags and positional recipe cannot be combined')
@@ -123,8 +127,12 @@ def build_l0_reference_manifest(
                 "libraries": list(dependencies.libraries),
                 "source": _artifact_dict(source_expected),
                 "targets": {key: _artifact_dict(value) for key, value in sorted(targets.items())}}
+    # Reject a producer/consumer schema mismatch before returning any reference.
+    parsed=l0_artifact_manifest_from_dict(manifest)
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")),
                              encoding="utf-8")
+    if load_l0_artifact_manifest(manifest_path,_digest(manifest_path))!=parsed:
+        raise ValueError('L0 reference manifest serialization round-trip mismatch')
     matrix = L0BuildMatrix(
         str(source_path), source_compiler, source_flags, str(target_path), COMPILERS,
         target_flags, OPTIMIZATIONS, SANITIZERS, str(output_directory / "verify"),

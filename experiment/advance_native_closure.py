@@ -66,6 +66,10 @@ def main(argv=None):
     batch.add_argument('--start-index',type=int,default=0);batch.add_argument('--count',type=int,default=4)
     batch.add_argument('--reuse-receipt',action='append',default=[])
     batch.add_argument('--context-index',type=int,action='append')
+    completion=sub.add_parser('complete-context-inputs')
+    completion.add_argument('--contracts',required=True);completion.add_argument('--clang',required=True)
+    completion.add_argument('--context-batch',action='append',default=[])
+    completion.add_argument('--max-contexts',type=int,default=64);completion.add_argument('--batch-size',type=int,default=16)
     priority=sub.add_parser('acquire-priority-contexts')
     priority.add_argument('--resolution',required=True);priority.add_argument('--clang',required=True)
     priority.add_argument('--count',type=int,default=4)
@@ -93,7 +97,7 @@ def main(argv=None):
     prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
     comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
     comparison.add_argument('--output', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, api_prepare, api_run, statements, framework_export, framework_run, native_l0, native_request, contracts, batch, priority,archive_audit):
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, api_prepare, api_run, statements, framework_export, framework_run, native_l0, native_request, contracts, batch, completion, priority,archive_audit):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -200,6 +204,10 @@ def main(argv=None):
         elif args.operation == 'capture-runtime':
             from riscv2x86_py.native_runtime_identity import acquire as acquire_runtime
             value = acquire_runtime(args.observation, args.output, timeout=args.timeout_seconds)
+        elif args.operation == 'complete-context-inputs':
+            from riscv2x86_py.native_context_completion import acquire as complete_contexts
+            value=complete_contexts(args.contracts,args.context_batch,args.output,clang=args.clang,
+                max_contexts=args.max_contexts,batch_size=args.batch_size,timeout=args.timeout_seconds)
         elif args.operation == 'acquire-context-batch':
             from riscv2x86_py.native_context_batch import acquire as acquire_batch
             value=acquire_batch(args.contracts,args.output,clang=args.clang,start=args.start_index,
@@ -228,7 +236,10 @@ def main(argv=None):
                                         timeout=args.timeout_seconds, diagnostic=args.diagnostic)
         else:
             value = deployment.read(args.input)
-            if value.get('schemaVersion') == 'riscv2x86.native-l0-materialization.v1':
+            if value.get('schemaVersion') == 'riscv2x86.native-context-completion.v1':
+                from riscv2x86_py.native_context_completion import check as check_completion
+                check_completion(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-l0-materialization.v1':
                 from riscv2x86_py.native_l0_materialization import check as check_native_l0
                 check_native_l0(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-api-experiment.v1':
@@ -296,7 +307,8 @@ def main(argv=None):
                    'entryDirectObjectContextAcquisitionComplete', 'entryAbiClosureVerified',
                    'processObservableComparisonStatus', 'sourceReturnCode', 'targetReturnCode',
                    'l1EligibilityVerified','startIndex','nextIndex','totalContextCount',
-                   'selectedContextAcquisitionComplete','selectedContextIndices') if k in value}
+                   'selectedContextAcquisitionComplete','selectedContextIndices',
+                   'acquiredContextCount','remainingEligibleContextIndices','blockedContexts','allCapturedCContextsAcquired') if k in value}
         for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode',
                     'auditPrerequisiteIntegrityChecked'):
             if key in value: result[key] = value[key]

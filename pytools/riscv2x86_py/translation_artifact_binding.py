@@ -91,9 +91,11 @@ def translation_artifact_from_approval(
     runtime_id = approval.get("runtimeContractId")
     runtime_version = approval.get("runtimeContractVersion")
     if not isinstance(runtime_id, str) or not runtime_id:
-        runtime_id = approval.get("helperRuntimeContractId", "riscv2x86.runtime.none")
+        from .runtime_dependency_binding import NO_RUNTIME_CONTRACT_ID
+        runtime_id = approval.get("helperRuntimeContractId", NO_RUNTIME_CONTRACT_ID)
     if not isinstance(runtime_version, str) or not runtime_version:
-        runtime_version = approval.get("helperSemanticVersion", "v1")
+        from .runtime_dependency_binding import NO_RUNTIME_CONTRACT_VERSION
+        runtime_version = approval.get("helperSemanticVersion", NO_RUNTIME_CONTRACT_VERSION)
     ignored = approval.get("ignoredSourceState", [])
     if not isinstance(ignored, list) or not all(isinstance(x, str) and x for x in ignored):
         raise ValueError("approval ignoredSourceState is not an array of strings")

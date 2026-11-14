@@ -8,6 +8,14 @@ import pytest
 from riscv2x86_py.runtime_dependency_binding import dependencies_from_translated_report
 
 
+def test_typed_runtime_version_uses_registered_semantics():
+    from riscv2x86_py.runtime_dependency_binding import validate_runtime_contract_version
+    validate_runtime_contract_version('riscv2x86.runtime.none','v1')
+    validate_runtime_contract_version('riscv2x86_rt_monotonic_time_ns@v1','v1')
+    with pytest.raises(ValueError,match='version mismatch'):
+        validate_runtime_contract_version('riscv2x86_rt_monotonic_time_ns@v1','v2')
+
+
 def _runtime_tree(tmp_path):
     (tmp_path / "runtime/include").mkdir(parents=True)
     (tmp_path / "runtime/include/riscv2x86_runtime_helpers.h").write_text("void h(void);\n")
