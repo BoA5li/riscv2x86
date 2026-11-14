@@ -46,6 +46,9 @@ def artifacts(candidate):
                 'sourceFlags':candidate['sourceFlags'],'targetFlags':candidate['targetFlags']}),(),
             'integer','pure-c')
         body=asdict(artifact);body['preservation_mode']=artifact.preservation_mode.value
+        # Public parser consumes JSON arrays, including on direct in-memory
+        # calls. dataclasses.asdict preserves tuples and is not a JSON codec.
+        body['ignored_source_state']=list(artifact.ignored_source_state)
         rows.append({'instanceBindingIdentity':instance,'sourceModel':source_model,'shellFacts':shell,
                      'translationArtifact':body,'translationArtifactIdentity':artifact.identity,
                      'claimScope':proof['claimScope']})

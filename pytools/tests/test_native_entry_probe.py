@@ -140,3 +140,50 @@ def test_writable_text_is_never_instrumented(entry):
     trace,process=synthetic(entry);epoch=d.read(trace/'maps/000000.json')
     epoch['maps'][0]['permissions']='rwxp';epoch['objects'][0]['maps']=epoch['maps']
     assert probe.locations(process['entryProbeEvidence']['targets'][0],epoch,trace)==[]
+
+
+def split_epoch(trace,process):
+    first=d.read(trace/'maps/000000.json');second=deepcopy(first)
+    second.update(index=1,stopOrdinal=5,mappingMutation={'kind':'syscall','number':10,
+        'arguments':[0x1f000,4096,0,0,0,0],'returnValue':0})
+    second['maps'][0]['end']=0x1f000
+    second['objects'][0]['maps'][0]['end']=0x1f000
+    path=trace/'maps/000001.json';path.write_text(json.dumps(second))
+    process['epochs'].append({'path':'maps/000001.json','digest':d.digest(path)})
+    process['entryProbeEvidence']['observations'][0].update(hitEpoch=1,hitStopOrdinal=6)
+    process['stopCount']=7
+    return second
+
+
+def test_boundary_split_outside_entry_preserves_checked_code_position(entry):
+    trace,process=synthetic(entry);split_epoch(trace,process)
+    result=probe.derive(entry[1],save(trace,process))
+    assert result['candidateFunctionEntriesObserved']
+    assert not result['candidateInstructionExecutionCoverageVerified']
+
+
+@pytest.mark.parametrize('number,args,result',[
+    (9,[0,4096,5,0,0,0],0x10000),
+    (10,[0x10000,4096,5,0,0,0],0),
+    (11,[0x10000,1,0,0,0,0],0),
+    (25,[0x10000,4096,4096,0,0,0],0x30000),
+    (25,[0x30000,4096,4096,0,0,0],0x10000)])
+def test_same_image_remap_or_permission_change_cannot_be_hidden(number,args,result):
+    with pytest.raises(ValueError,match='ENTRY_MAPPING_MUTATED'):
+        probe.transition_preserves_entry(0x10800,{'mappingMutation':{
+            'kind':'syscall','number':number,'arguments':args,'returnValue':result}})
+
+
+@pytest.mark.parametrize('field',['offset','inode','path','permissions','stat','digest','unknown-transition'])
+def test_boundary_exception_never_accepts_changed_identity(entry,field):
+    trace,process=synthetic(entry);epoch=split_epoch(trace,process)
+    obj=epoch['objects'][0];mapping=epoch['maps'][0]
+    if field=='stat':obj['capturedFileStat'][3]+=1
+    elif field=='digest':obj['digest']='sha256:wrong'
+    elif field=='unknown-transition':epoch['mappingMutation']['number']=329
+    elif field=='offset':mapping[field]+=4096;obj['maps'][0][field]+=4096
+    elif field=='inode':mapping[field]+=1;obj['maps'][0][field]+=1
+    elif field=='path':mapping[field]+='-other';obj['maps'][0][field]+='-other'
+    else:mapping[field]='rwxp';obj['maps'][0][field]='rwxp'
+    path=trace/'maps/000001.json';path.write_text(json.dumps(epoch));process['epochs'][1]['digest']=d.digest(path)
+    with pytest.raises(ValueError):probe.derive(entry[1],save(trace,process))

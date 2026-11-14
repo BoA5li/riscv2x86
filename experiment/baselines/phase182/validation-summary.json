@@ -1,0 +1,12 @@
+{
+  "scope": "phase180-phase182 joint focused regression, not real GMP acceptance",
+  "passed": 314,
+  "skipped": 5,
+  "elapsedSeconds": 353.12,
+  "targetedPassed": 41,
+  "targetedSkipped": 2,
+  "realGmpCaptureRederived": false,
+  "realCrossIsaMatrixExecutedLocally": false,
+  "fullStageClosureImplemented": false,
+  "semanticApproval": false
+}

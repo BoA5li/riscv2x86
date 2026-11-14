@@ -7,6 +7,7 @@ untraced-run, whole-function ABI, pointer legality or inline-instance claim.
 """
 import ctypes
 import json
+import os
 from pathlib import Path
 import struct
 
@@ -19,6 +20,50 @@ from .project_build_records import identity
 
 SCHEMA='riscv2x86.candidate-function-entry.v1'
 MASK=(1<<64)-1
+
+
+def location_relation(hit,address,byte,obj,mapping,*,armed=False):
+    """Compare the code position, not unrelated boundaries of its VMA.
+
+    The arming snapshot itself remains exact. Later snapshots may split or
+    merge VMAs only while the address-to-file-offset relation, executable
+    private permission and sealed backing identity remain unchanged.
+    """
+    expected=hit['mapping']
+    checks={'address':hit['address']==address,
+        'original-byte':hit['originalByte']==byte and byte!=0xcc,
+        'image-digest':hit['mappedImageDigest']==obj['digest'],
+        'file-stat':hit['capturedFileStat']==obj['capturedFileStat'],
+        'mapping-identity':all(expected[k]==mapping[k] for k in ('device','inode','path','permissions')),
+        'file-offset':expected['offset']+address-expected['start']==mapping['offset']+address-mapping['start'],
+        'executable-private':mapping['permissions']=='r-xp' and mapping['start']<=address<mapping['end']}
+    if armed:checks['arming-mapping']=expected==mapping
+    failed=[name for name,ok in checks.items() if not ok]
+    if failed:raise ValueError('ENTRY_PROBE_CODE_LOCATION_MISMATCH:'+','.join(failed))
+
+
+def transition_preserves_entry(address,epoch):
+    """Reject even same-image replacement or temporary permission changes.
+
+    Bounded Linux x86-64 4KiB-page backend. mmap/mprotect/munmap lengths are
+    rounded up, and mremap checks both old and new ranges. Unknown transitions
+    never establish continuity. This is traced mapping continuity, not proof
+    against arbitrary in-process memory writes or untraced execution.
+    """
+    change=epoch.get('mappingMutation',{})
+    args=change.get('arguments');number=change.get('number');result=change.get('returnValue')
+    if (change.get('kind')!='syscall' or number not in (9,10,11,25)
+            or not isinstance(args,list) or len(args)!=6
+            or any(type(v) is not int or not 0<=v<=MASK for v in args)
+            or type(result) is not int or not 0<=result<=MASK):
+        raise ValueError('ENTRY_PROBE_MAPPING_TRANSITION_UNSUPPORTED')
+    ranges=[(result,args[1])] if number==9 else [(args[0],args[1])]
+    if number==25:ranges.append((result,args[2]))
+    for start,length in ranges:
+        end=start+((length+4095)//4096)*4096
+        if not length or start%4096 or end>MASK:
+            raise ValueError('ENTRY_PROBE_MAPPING_RANGE_UNSUPPORTED')
+        if start<=address<end:raise ValueError('ENTRY_PROBE_ENTRY_MAPPING_MUTATED')
 
 
 def targets(report,deployed):
@@ -82,6 +127,9 @@ class Probe:
             if not candidates:continue
             if len(candidates)!=1:raise ValueError('ENTRY_PROBE_LOAD_INSTANCE_AMBIGUOUS')
             address,byte,obj,mapping=candidates[0]
+            if address in self.armed:
+                location_relation(self.armed[address],address,byte,obj,mapping)
+                transition_preserves_entry(address,epoch)
             if key in self.addresses:
                 if self.addresses[key]!=address:raise ValueError('ENTRY_PROBE_RELOAD_UNSUPPORTED')
                 continue
@@ -162,10 +210,8 @@ def derive(contracts_path,process_path):
             candidates=locations(target,epochs[index],root)
             if len(candidates)!=1:raise ValueError('ENTRY_PROBE_LOAD_INSTANCE_AMBIGUOUS')
             address,byte,obj,mapping=candidates[0]
-            if (hit['address']!=address or hit['originalByte']!=byte or byte==0xcc
-                    or hit['mapping']!=mapping or hit['capturedFileStat']!=obj['capturedFileStat']
-                    or hit['mappedImageDigest']!=obj['digest']):
-                raise ValueError('ENTRY_PROBE_HIT_MAPPING_OR_PC_MISMATCH')
+            location_relation(hit,address,byte,obj,mapping,armed=index==armed)
+            if index>armed:transition_preserves_entry(address,epochs[index])
         if (hit['registersAtBreakpoint']['rip']!=hit['address']+1
                 or hit['scope']!='instrumented-function-entry-only'
                 or hit['armedStopOrdinal']!=epochs[armed]['stopOrdinal']
@@ -194,6 +240,7 @@ def derive(contracts_path,process_path):
 
 def acquire(contracts_path,output,*,timeout=300):
     from .native_deployment_prerequisites import output_path
+    if os.sysconf('SC_PAGE_SIZE')!=4096:raise ValueError('ENTRY_PROBE_PAGE_SIZE_UNSUPPORTED')
     if d.read(Path(contracts_path).resolve().parent/'inputs.json').get('entryCoverage') is not None:
         raise ValueError('ENTRY_PROBE_BASE_WITHOUT_ENTRY_COVERAGE_REQUIRED')
     report=contracts.check(contracts_path)

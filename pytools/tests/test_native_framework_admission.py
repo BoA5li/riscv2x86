@@ -76,6 +76,11 @@ def test_native_artifact_export_binds_actual_proof_and_rejects_rehashed_bad_scop
     candidate=d.seal({'localProofs':[proof],'edits':[edit],'sourceAstIdentity':identity({'ast':'fixture'}),
          'compilerOperandTypeWitnessesComplete':True,'tools':{},'sourceFlags':[],'targetFlags':[]},'candidateIdentity')
     result=adapter.artifacts(candidate)[0]
+    from riscv2x86_py.translation_validation import translation_artifact_from_dict
+    import json
+    direct=translation_artifact_from_dict(result['translationArtifact'])
+    assert direct==translation_artifact_from_dict(json.loads(json.dumps(result['translationArtifact'])))
+    assert direct.identity==result['translationArtifactIdentity']
     assert result['translationArtifact']['proof_identity']==proof['proofIdentity']
     assert result['translationArtifact']['fragment_id']=='instance'
     assert result['translationArtifact']['l2_authority_complete'] is False

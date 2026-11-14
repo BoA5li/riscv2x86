@@ -1,0 +1,12 @@
+......................................................................s. [ 22%]
+...........................................................ss........... [ 45%]
+..........................s...........................s................. [ 67%]
+........................................................................ [ 90%]
+...............................                                          [100%]
+=========================== short test summary info ============================
+SKIPPED [1] pytools/tests/test_native_l0_materialization.py:100: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_api_experiment.py:68: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_api_experiment.py:76: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_entry_probe.py:111: ptrace unavailable; no coverage claim
+SKIPPED [1] pytools/tests/test_native_runtime_identity.py:160: ptrace unavailable; recorded failure, not a verified runtime identity
+314 passed, 5 skipped in 353.12s (0:05:53)
