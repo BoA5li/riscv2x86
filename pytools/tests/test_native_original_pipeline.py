@@ -229,3 +229,12 @@ def test_request_binding_preserves_original_layers_builds_and_comparison(adapted
     with pytest.raises(ValueError,match='STALE_OR_FOREIGN'):
         route.evaluation_request(root/'translated/result.json',file,root/'foreign.json')
     assert not (root/'foreign.json').exists()
+
+
+def test_incomplete_translation_cannot_be_bound_to_program_evaluation(adapted,monkeypatch):
+    root,prepared,_,raw=adapted
+    backend_fixture(monkeypatch,prepared,raw,outcome=TranslationOutcome.UNSUPPORTED)
+    route.translate(root/'prepared/result.json',root/'translated')
+    with pytest.raises(ValueError,match='COMPLETE_TRANSLATION_REQUIRED'):
+        route.evaluation_request(root/'translated/result.json',root/'absent-request.json',root/'never.json')
+    assert not (root/'never.json').exists()

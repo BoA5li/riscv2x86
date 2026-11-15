@@ -279,7 +279,7 @@ def check_replay(path):
     return value
 
 
-def evaluation_request(translation_path,request_path,output):
+def bound_evaluation_request(translation_path,request_path):
     """Bind an explicit ORIGINAL evaluation request; never invent an input domain.
 
     Build commands, registry, comparison policy and layers must come from the
@@ -289,6 +289,8 @@ def evaluation_request(translation_path,request_path,output):
     from .evaluation import evaluation_request_from_dict, artifacts_from_report
     from .translation_validation import translation_artifact_from_dict
     value=check_translation(translation_path);prepared=check_input(value['input']['path'])
+    if not translation_complete(value):
+        raise ValueError('ORIGINAL_EVALUATION_COMPLETE_TRANSLATION_REQUIRED')
     request=d.read(request_path)
     # An explicit artifact map is authority, not a path template. It may only
     # describe artifacts derived by the ORIGINAL factory from this exact run.
@@ -305,6 +307,11 @@ def evaluation_request(translation_path,request_path,output):
         translatedReport=value['report']['path'],attemptArchive=value['attemptArchive']['path'],
         translationCommand=[])
     evaluation_request_from_dict(request)
+    return request
+
+
+def evaluation_request(translation_path,request_path,output):
+    request=bound_evaluation_request(translation_path,request_path)
     with Path(output).open('x') as stream:json.dump(request,stream,indent=2);stream.write('\n')
     return request
 
