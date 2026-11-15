@@ -1,0 +1,27 @@
+{
+  "baseCommit": "66c80853d230bea75d73d04d881c72dda62c143d",
+  "moduleCount": 54,
+  "broad": {
+    "passed": 689,
+    "skipped": 9,
+    "seconds": 426.2,
+    "exitCode": 0
+  },
+  "coreBeforeFinalImportFailureTest": {
+    "passed": 66,
+    "skipped": 1,
+    "seconds": 31.26
+  },
+  "finalPreflightSubset": {
+    "passed": 16,
+    "skipped": 1,
+    "seconds": 10.25
+  },
+  "setsOverlap": true,
+  "interruptedBroadRunHasNoCompletionClaim": true,
+  "realGhidraExecuted": false,
+  "realGmpTranslationExecuted": false,
+  "programValidationPerformed": false,
+  "semanticApproval": false,
+  "productionAcceptanceComplete": false
+}

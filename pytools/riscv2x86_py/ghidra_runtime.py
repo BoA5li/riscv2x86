@@ -4,6 +4,7 @@ import os
 import threading
 from pathlib import Path
 from typing import Any, Optional
+from .ghidra_configuration import resolve_install_dir, GhidraConfigurationError
 
 
 # 请先通过后文的语言枚举脚本确认这两个 Language ID。
@@ -23,6 +24,7 @@ class GhidraRuntimeError(RuntimeError):
 
 _runtime_lock = threading.Lock()
 _runtime_started = False
+_runtime_install_dir: Path | None = None
 _language_cache: dict[str, Any] = {}
 
 
@@ -36,25 +38,12 @@ def _resolve_install_dir(
 
         1. CLI --ghidra-install-dir
         2. GHIDRA_INSTALL_DIR 环境变量
-        3. None，交给 PyGhidra 自身的发现逻辑
+        3. 与寄存器查询相同的默认安装目录
+
+    显式空配置拒绝，不转换成工作目录或隐式发现。
     """
-    raw = (
-        ghidra_install_dir
-        or os.environ.get("GHIDRA_INSTALL_DIR")
-    )
-
-    if not raw:
-        return None
-
-    path = Path(raw).expanduser().resolve()
-
-    if not path.is_dir():
-        raise GhidraRuntimeError(
-            f"Ghidra install directory does not exist or is not a directory: "
-            f"{path}"
-        )
-
-    return path
+    try:return resolve_install_dir(ghidra_install_dir)
+    except GhidraConfigurationError as exc:raise GhidraRuntimeError(str(exc)) from exc
 
 
 def start_ghidra_runtime(
@@ -72,10 +61,13 @@ def start_ghidra_runtime(
       * 不应在 translate() / lift() 内部隐式启动 JVM；
       * CLI / 应用入口负责组合 runtime 与 pipeline。
     """
-    global _runtime_started
+    global _runtime_started, _runtime_install_dir
 
     with _runtime_lock:
+        install_dir = _resolve_install_dir(ghidra_install_dir)
         if _runtime_started:
+            if install_dir!=_runtime_install_dir:
+                raise GhidraRuntimeError('GHIDRA_RUNNING_INSTALLATION_MISMATCH')
             return
 
         try:
@@ -85,8 +77,6 @@ def start_ghidra_runtime(
                 "pyghidra is not installed. Install PyGhidra before running "
                 "the production translator."
             ) from exc
-
-        install_dir = _resolve_install_dir(ghidra_install_dir)
 
         try:
             if install_dir is not None:
@@ -107,6 +97,7 @@ def start_ghidra_runtime(
             ) from exc
 
         _runtime_started = True
+        _runtime_install_dir = install_dir
 
 
 def get_ghidra_language_service(
@@ -195,6 +186,9 @@ def load_real_ghidra_language(
         )
 
     language_id = language_id.strip()
+
+    # Cached language objects do not authorize a different installation.
+    start_ghidra_runtime(ghidra_install_dir=ghidra_install_dir)
 
     cached = _language_cache.get(language_id)
     if cached is not None:

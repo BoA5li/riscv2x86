@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -164,6 +165,12 @@ def main() -> int:
             ghidra_install_dir=args.ghidra_install_dir,
             language_id=args.ghidra_language_id,
         )
+        selected_installation=getattr(resolver,'installation_dir',None)
+        if selected_installation is not None:
+            # The register-query default and the in-process p-code runtime
+            # must use one canonical selection, including when no CLI option
+            # was supplied. This process is the backend tool environment.
+            os.environ['GHIDRA_INSTALL_DIR']=selected_installation
     except GhidraPythonRunError as exc:
         print(
             "[riscv2x86-py] cannot initialize Ghidra "

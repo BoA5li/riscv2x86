@@ -1,0 +1,21 @@
+......................................................................s. [ 10%]
+...........................................................ss........... [ 20%]
+..........................s...........................s................. [ 30%]
+........................................................................ [ 41%]
+........................................................................ [ 51%]
+........................................................................ [ 61%]
+........................................................................ [ 72%]
+.........................................ss............................. [ 82%]
+......s............................................................s.... [ 92%]
+..................................................                       [100%]
+=========================== short test summary info ============================
+SKIPPED [1] pytools/tests/test_native_l0_materialization.py:100: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_api_experiment.py:68: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_api_experiment.py:76: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_entry_probe.py:111: ptrace unavailable; no coverage claim
+SKIPPED [1] pytools/tests/test_native_runtime_identity.py:160: ptrace unavailable; recorded failure, not a verified runtime identity
+SKIPPED [1] pytools/tests/test_project_native_input.py:270: real Clang required; mock protocol tests do not replace this integration
+SKIPPED [1] pytools/tests/test_project_native_input.py:280: real RISC-V GCC and Clang required for source-toolchain integration
+SKIPPED [1] pytools/tests/test_native_integer_translation.py:198: real Clang, RV64 GCC, frontend and x86 GCC required
+SKIPPED [1] pytools/tests/test_ghidra_preflight.py:94: real Ghidra installation not supplied; synthetic query tests are not real Ghidra
+689 passed, 9 skipped in 426.20s (0:07:06)

@@ -43,6 +43,27 @@ def publish(path, value):
     os.replace(temporary, path)
 
 
+def publish_checked(path, value, checker):
+    """Publish an exclusive final result only AFTER its normal checker passes.
+
+    The temporary file has the same parent, so relative evidence lookup keeps
+    its normal meaning. A failed check leaves diagnostics, not a complete-looking
+    result.json. Hard-link publication is atomic and cannot overwrite a result.
+    """
+    path=Path(path)
+    if path.exists():raise FileExistsError(str(path))
+    temporary=None
+    try:
+        with tempfile.NamedTemporaryFile('w',dir=path.parent,prefix=path.stem+'-pending-',
+                                         suffix='.json',delete=False) as stream:
+            temporary=Path(stream.name)
+            json.dump(value,stream,indent=2);stream.write('\n');stream.flush();os.fsync(stream.fileno())
+        checker(temporary)
+        os.link(temporary,path)
+    finally:
+        if temporary is not None:temporary.unlink(missing_ok=True)
+
+
 def preflight(project, tools=None):
     rows = []; missing = []
     selected = ({name: os.environ.get(variable, default) for name, (variable, default) in TOOLS.items()}

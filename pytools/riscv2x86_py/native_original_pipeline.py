@@ -14,13 +14,15 @@ from . import project_native_binding as binding
 from . import project_native_input as native
 from .native_context_bridge import validated_input
 from .native_external_providers import checked
-from .project_acquisition import Runner, StageFailure
+from .project_acquisition import Runner, StageFailure, publish_checked
 from .project_compile_context import digest
 from .project_build_records import identity
 from .candidate_materialization import (materialize_candidate_tree,
     load_candidate_artifact_manifest, verify_candidate_artifact_manifest)
 from .translation_attempt import load_translation_attempt_archive
 from .native_verifier_manifest import current as verifier, compare as compare_verifier
+from .ghidra_configuration import resolve_install_dir
+from .ghidra_preflight import runtime_environment
 
 PREPARED='riscv2x86.native-original-input.v1'
 TRANSLATED='riscv2x86.native-original-translation.v1'
@@ -71,8 +73,7 @@ def prepare(bundle_path, output, *, timeout=300):
             'artifactDomain':'frozen-preprocessed-translation-unit',
             'originalSourceEditAuthorized':False,'semanticApproval':False,
             'productionAcceptanceComplete':False},'originalInputIdentity')
-        (runner.output/'result.json').write_text(json.dumps(value,indent=2)+'\n')
-        check_input(runner.output/'result.json')
+        publish_checked(runner.output/'result.json',value,check_input)
         runner.state.update(status='complete',currentStage='complete',acquisitionComplete=True);runner.save()
         return value
     except Exception as exc:
@@ -117,33 +118,39 @@ def check_input(path):
 
 
 def backend_command(prepared, report, *, ghidra_install_dir=None, ghidra_language_id=None):
+    install=str(resolve_install_dir(ghidra_install_dir))
     command=[sys.executable,'-m','riscv2x86_py.cli','--in',prepared['frontendReport']['path'],
-             '--out',str(report),'--xlen','64','--skip-verify']
-    for option,value in (('--ghidra-install-dir',ghidra_install_dir),('--ghidra-language-id',ghidra_language_id)):
+             '--out',str(report),'--xlen','64','--skip-verify','--ghidra-install-dir',install]
+    for option,value in (('--ghidra-language-id',ghidra_language_id),):
         if value is not None:command.extend((option,str(value)))
     return command
 
 
-def backend_environment(receipt,ghidra_install_dir):
+def backend_environment(receipt,ghidra_install_dir,*,runtime_env=None):
     env=environment(receipt['context']);env['PYTHONPATH']=str(Path(__file__).resolve().parents[1])
+    env.update(runtime_environment(runtime_env))
     # Both the register query and p-code lifter must select the same explicit
     # installation. The public CLI argument configures the former; the latter
     # uses the existing GHIDRA_INSTALL_DIR runtime interface.
-    if ghidra_install_dir is not None:env['GHIDRA_INSTALL_DIR']=str(ghidra_install_dir)
+    env['GHIDRA_INSTALL_DIR']=str(resolve_install_dir(ghidra_install_dir))
     return env
 
 
-def translate(input_path,output,*,ghidra_install_dir=None,ghidra_language_id=None,timeout=600):
+def translate(input_path,output,*,ghidra_install_dir=None,ghidra_language_id=None,timeout=600,runtime_env=None):
     """Invoke the public CLI, then the original candidate materializer.
 
     --skip-verify requests candidates withheld pending external validation. It
     does not skip the semantic proof gate and never grants program acceptance.
     """
     if type(timeout) is not int or not 1<=timeout<=86400:raise ValueError('ORIGINAL_INPUT_TIMEOUT_INVALID')
+    # Resolve in the caller's working directory, BEFORE entering a new output
+    # directory. Empty/missing/non-executable launchers create no partial run.
+    ghidra_install_dir=str(resolve_install_dir(ghidra_install_dir))
+    runtime_env=runtime_environment(runtime_env)
     prepared=check_input(input_path);runner=Runner(output,'original-pipeline-translation')
     try:
         bundle=d.read(prepared['bundle']['path']);receipt=d.read(bundle['nativeInputReceiptPath'])
-        env=backend_environment(receipt,ghidra_install_dir)
+        env=backend_environment(receipt,ghidra_install_dir,runtime_env=runtime_env)
         report=runner.output/'translated.json'
         command=backend_command(prepared,report,ghidra_install_dir=ghidra_install_dir,
                                 ghidra_language_id=ghidra_language_id)
@@ -161,13 +168,13 @@ def translate(input_path,output,*,ghidra_install_dir=None,ghidra_language_id=Non
             'candidateManifest':d.snapshot(runner.output/'candidate-manifest.json'),
             'candidateManifestIdentity':manifest.manifest_id,'command':row,
             'ghidraInstallDir':ghidra_install_dir,'ghidraLanguageId':ghidra_language_id,
+            'backendRuntimeEnvironment':runtime_env,
             'timeoutSeconds':timeout,'attemptOutcomes':[a.translation_outcome.value for a in attempts.attempts],
             'translationImplementation':'riscv2x86_py.cli/pipeline.run',
             'materializationImplementation':'candidate_materialization.materialize_candidate_tree',
             'originalSourceEditAuthorized':False,'semanticApproval':False,
             'productionAcceptanceComplete':False},'originalTranslationIdentity')
-        (runner.output/'result.json').write_text(json.dumps(value,indent=2)+'\n')
-        check_translation(runner.output/'result.json')
+        publish_checked(runner.output/'result.json',value,check_translation)
         runner.state.update(status='complete',currentStage='complete',acquisitionComplete=True);runner.save()
         return value
     except Exception as exc:
@@ -178,13 +185,15 @@ def check_translation(path):
     value=d.read(path);checked(value,'originalTranslationIdentity')
     if value['schemaVersion']!=TRANSLATED:raise ValueError('ORIGINAL_TRANSLATION_SCHEMA_INVALID')
     compare_verifier(value['adapterVerifier'],verifier());d.verify_snapshot(value['python'])
+    if str(resolve_install_dir(value['ghidraInstallDir']))!=value['ghidraInstallDir']:
+        raise ValueError('ORIGINAL_TRANSLATION_NONCANONICAL_GHIDRA_CONFIGURATION')
     for key in ('input','report','attemptArchive','candidateManifest'):d.verify_snapshot(value[key])
     prepared=check_input(value['input']['path']);check_command(value['command'])
     root=Path(path).resolve().parent
     command=backend_command(prepared,root/'translated.json',ghidra_install_dir=value['ghidraInstallDir'],
                             ghidra_language_id=value['ghidraLanguageId'])
     bundle=d.read(prepared['bundle']['path']);receipt=d.read(bundle['nativeInputReceiptPath'])
-    env=backend_environment(receipt,value['ghidraInstallDir'])
+    env=backend_environment(receipt,value['ghidraInstallDir'],runtime_env=value['backendRuntimeEnvironment'])
     if (value['command']['command']!=command or value['command']['directory']!=str(root)
             or value['command']['environment']!=env):raise ValueError('ORIGINAL_TRANSLATION_RECIPE_MISMATCH')
     manifest=load_candidate_artifact_manifest(value['candidateManifest']['path'])
@@ -216,7 +225,7 @@ def audit(translation_path,output):
     frontend.state.update(status='complete',currentStage='complete',acquisitionComplete=True);frontend.save()
     fresh=translate(old['input']['path'],root/'rebuild',
         ghidra_install_dir=old['ghidraInstallDir'],ghidra_language_id=old['ghidraLanguageId'],
-        timeout=old['timeoutSeconds'])
+        timeout=old['timeoutSeconds'],runtime_env=old['backendRuntimeEnvironment'])
     old_manifest=load_candidate_artifact_manifest(old['candidateManifest']['path'])
     new_manifest=load_candidate_artifact_manifest(fresh['candidateManifest']['path'])
     old_attempts=load_translation_attempt_archive(old['attemptArchive']['path'])
@@ -231,7 +240,7 @@ def audit(translation_path,output):
         'freshFrontendReport':d.snapshot(report),'freshFrontendCommand':row,
         'originalBackendReplayComplete':True,'semanticApproval':False,
         'productionAcceptanceComplete':False},'originalReplayIdentity')
-    (root/'result.json').write_text(json.dumps(value,indent=2)+'\n');check_replay(root/'result.json');return value
+    publish_checked(root/'result.json',value,check_replay);return value
 
 
 def check_replay(path):
@@ -250,6 +259,7 @@ def check_replay(path):
             or row['directory']!=receipt['context']['workingDirectory']
             or d.read(report)!=d.read(prepared['frontendReport']['path'])
             or old['input']!=fresh['input'] or old['attemptOutcomes']!=fresh['attemptOutcomes']
+            or any(old[key]!=fresh[key] for key in ('ghidraInstallDir','ghidraLanguageId','backendRuntimeEnvironment'))
             or old['command']['returnCode']!=fresh['command']['returnCode']
             or a.target_tree_digest!=b.target_tree_digest
             or load_translation_attempt_archive(old['attemptArchive']['path'])!=load_translation_attempt_archive(fresh['attemptArchive']['path'])
@@ -287,3 +297,63 @@ def evaluation_request(translation_path,request_path,output):
     evaluation_request_from_dict(request)
     with Path(output).open('x') as stream:json.dump(request,stream,indent=2);stream.write('\n')
     return request
+
+
+def run(bundle_path,output,*,ghidra_install_dir=None,ghidra_language_id=None,timeout=600):
+    """Gate original stages in order; never audit a missing/unsupported result."""
+    from . import ghidra_preflight
+    if type(timeout) is not int or not 1<=timeout<=86400:raise ValueError('ORIGINAL_INPUT_TIMEOUT_INVALID')
+    install=str(resolve_install_dir(ghidra_install_dir))
+    if ghidra_language_id not in (None,'RISCV:LE:64:default'):
+        raise ValueError('ORIGINAL_RV64_LANGUAGE_UNSUPPORTED')
+    bundle=d.read(bundle_path);binding.validate_artifacts(bundle)
+    receipt=d.read(bundle['nativeInputReceiptPath']);validated_input(receipt)
+    env=runtime_environment();runner=Runner(output,'original-pipeline-composed-run')
+    try:
+        runner.state['currentStage']='backend-preflight';runner.save()
+        ghidra_preflight.acquire(runner.output/'preflight',ghidra_install_dir=install,
+            environment=backend_environment(receipt,install,runtime_env=env),timeout=timeout)
+        runner.state['currentStage']='original-input';runner.save()
+        prepare(bundle_path,runner.output/'input',timeout=timeout)
+        runner.state['currentStage']='original-translation';runner.save()
+        value=translate(runner.output/'input/result.json',runner.output/'translation',
+            ghidra_install_dir=install,ghidra_language_id=ghidra_language_id,timeout=timeout,runtime_env=env)
+        if not translation_complete(value):
+            runner.state['currentStage']='original-translation-outcome';runner.save()
+            raise StageFailure('original-translation-outcome',value['command']['returnCode'] or 2)
+        runner.state['currentStage']='original-audit';runner.save()
+        audit(runner.output/'translation/result.json',runner.output/'audit')
+        value=d.seal({'schemaVersion':'riscv2x86.native-original-run.v1',
+            'bundle':d.snapshot(bundle_path),'verifier':verifier(),
+            'preflight':d.snapshot(runner.output/'preflight/result.json'),
+            'input':d.snapshot(runner.output/'input/result.json'),
+            'translation':d.snapshot(runner.output/'translation/result.json'),
+            'audit':d.snapshot(runner.output/'audit/result.json'),
+            'originalCandidateRouteComplete':True,'programValidationPerformed':False,
+            'semanticApproval':False,'productionAcceptanceComplete':False},'originalRunIdentity')
+        publish_checked(runner.output/'result.json',value,check_run)
+        runner.state.update(status='complete',currentStage='complete',acquisitionComplete=True);runner.save();return value
+    except Exception as exc:
+        runner.failure(runner.state['currentStage'],exc);raise
+
+
+def translation_complete(value):
+    return (value['command']['returnCode']==0 and bool(value['attemptOutcomes'])
+            and all(x in ('emitted','keep') for x in value['attemptOutcomes']))
+
+
+def check_run(path):
+    from . import ghidra_preflight
+    value=d.read(path);checked(value,'originalRunIdentity');compare_verifier(value['verifier'],verifier())
+    if value['schemaVersion']!='riscv2x86.native-original-run.v1':raise ValueError('ORIGINAL_RUN_SCHEMA_INVALID')
+    for key in ('bundle','preflight','input','translation','audit'):d.verify_snapshot(value[key])
+    preflight=ghidra_preflight.check(value['preflight']['path']);inp=check_input(value['input']['path'])
+    translated=check_translation(value['translation']['path']);replayed=check_replay(value['audit']['path'])
+    if (inp['bundle']!=value['bundle'] or translated['input']!=value['input']
+            or replayed['original']!=value['translation'] or not translation_complete(translated)
+            or preflight['installationDirectory']!=translated['ghidraInstallDir']
+            or preflight['environment']!=translated['command']['environment']
+            or value['originalCandidateRouteComplete'] is not True
+            or any(value[k] is not False for k in ('programValidationPerformed','semanticApproval','productionAcceptanceComplete'))):
+        raise ValueError('ORIGINAL_RUN_REDERIVATION_MISMATCH')
+    return value

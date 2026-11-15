@@ -30,6 +30,12 @@ def test_registry_loaders_require_versioned_schema_and_reject_duplicates():
     runtime = {
         "schemaVersion": PRIVILEGED_RUNTIME_REGISTRY_SCHEMA,
         "version": "runtime.test.v1",
+        # Explicit empty mapping snapshots match this parser-only fixture's
+        # empty mapping arrays. This is not evidence for a real CSR contract.
+        "mappingRegistries": [{"registryId":kind+".empty","semanticVersion":"1",
+                               "kind":kind,"complete":True}
+                              for kind in ('state','trap','interrupt','mmu')],
+        "mappingRegistryVersion": "mapping.test.v1",
         "contracts": [{
             "contractId": "counter.strict",
             "semanticVersion": "1",
@@ -41,6 +47,12 @@ def test_registry_loaders_require_versioned_schema_and_reject_duplicates():
     }
     loaded = privileged_runtime_registry_from_dict(runtime)
     assert loaded.version == "runtime.test.v1"
+    missing=dict(runtime);missing.pop('mappingRegistries')
+    with pytest.raises(ValueError,match='mappingRegistries'):
+        privileged_runtime_registry_from_dict(missing)
+    incomplete=dict(runtime);incomplete['mappingRegistries']=runtime['mappingRegistries'][:-1]
+    with pytest.raises(ValueError,match='missing or mismatched'):
+        privileged_runtime_registry_from_dict(incomplete)
     runtime["contracts"].append(dict(runtime["contracts"][0]))
     with pytest.raises(ValueError, match="duplicate"):
         privileged_runtime_registry_from_dict(runtime)
@@ -137,6 +149,7 @@ def test_cli_constructs_privileged_pipeline_inputs(monkeypatch, tmp_path):
         "riscv2x86-py",
         "--in", str(tmp_path / "in.json"),
         "--out", str(tmp_path / "out.json"),
+        "--skip-verify",
         "--privileged-execution-sidecar", str(execution),
         "--allow-functional-fallbacks",
     ])
@@ -145,3 +158,8 @@ def test_cli_constructs_privileged_pipeline_inputs(monkeypatch, tmp_path):
     assert inputs.execution_sidecar is not None
     assert inputs.preservation_policy.enabled
     assert inputs.functional_registry is None
+    # The positive case constructs candidate-only CLI inputs. Full verification
+    # must still refuse a missing validation context; do not relax the parser.
+    monkeypatch.setattr(sys,'argv',[x for x in sys.argv if x!='--skip-verify'])
+    with pytest.raises(SystemExit) as exc:cli.main()
+    assert exc.value.code==2

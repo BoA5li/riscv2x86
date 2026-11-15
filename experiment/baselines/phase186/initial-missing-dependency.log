@@ -1,0 +1,32 @@
+
+==================================== ERRORS ====================================
+______________ ERROR collecting tests/test_register_read_views.py ______________
+ImportError while importing test module '/workspace/scratch/0e7cfc2712f5/riscv2x86/pytools/tests/test_register_read_views.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pytools/tests/test_register_read_views.py:6: in <module>
+    from riscv2x86_py.lift import adapt_raw_pcode_op
+pytools/riscv2x86_py/lift.py:6: in <module>
+    import pypcode
+E   ModuleNotFoundError: No module named 'pypcode'
+_________ ERROR collecting tests/test_phase4_privileged_cli_ingress.py _________
+ImportError while importing test module '/workspace/scratch/0e7cfc2712f5/riscv2x86/pytools/tests/test_phase4_privileged_cli_ingress.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pytools/tests/test_phase4_privileged_cli_ingress.py:8: in <module>
+    from riscv2x86_py import cli
+pytools/riscv2x86_py/cli.py:13: in <module>
+    from .pipeline import run
+pytools/riscv2x86_py/pipeline.py:17: in <module>
+    from .lift import lift, GhidraLanguageRegisterResolver
+pytools/riscv2x86_py/lift.py:6: in <module>
+    import pypcode
+E   ModuleNotFoundError: No module named 'pypcode'
+!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2 errors in 0.59s

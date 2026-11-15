@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from .ghidra_configuration import resolve_install_dir, GhidraConfigurationError
 
 
 class GhidraPythonRunError(RuntimeError):
@@ -28,6 +31,8 @@ class PythonRunRegisterNameResolver:
     registers: tuple = ()
     language_id: str = ''
     big_endian: bool | None = None
+    installation_dir: str | None = None
+    query_evidence: dict | None = None
 
     def register_read_view_for_varnode(self, *, space, offset, size):
         from .register_views import database_read_view
@@ -47,12 +52,8 @@ class PythonRunRegisterNameResolver:
 
 
 def _default_ghidra_install_dir() -> Path:
-    configured = os.environ.get("GHIDRA_INSTALL_DIR")
-
-    if configured:
-        return Path(configured)
-
-    return Path("/opt/ghidra_11.2_PUBLIC")
+    try:return resolve_install_dir()
+    except GhidraConfigurationError as exc:raise GhidraPythonRunError(str(exc)) from exc
 
 
 def _default_python_run_path() -> Path:
@@ -78,21 +79,25 @@ def load_riscv64_register_resolver_via_pythonrun(
     python_run: Optional[Path] = None,
     query_script: Optional[Path] = None,
     ghidra_install_dir: Optional[str] = None,
+    evidence_directory: Optional[Path] = None,
+    environment: Optional[dict] = None,
+    timeout: int = 60,
 ) -> PythonRunRegisterNameResolver:
     """
     使用 Ghidra support/pythonRun 获取 RISCV:LE:64:default
     的真实寄存器定义，并在 CPython 中构造 resolver。
     """
 
-    if python_run is None:
-        if ghidra_install_dir is not None:
-            python_run = (
-                Path(ghidra_install_dir)
-                / "support"
-                / "pythonRun"
-            )
-        else:
-            python_run = _default_python_run_path()
+    if type(timeout) is not int or not 1<=timeout<=86400:raise GhidraPythonRunError('GHIDRA_QUERY_TIMEOUT_INVALID')
+    selected_dir=None
+    if python_run is None or ghidra_install_dir is not None:
+        try:selected_dir=resolve_install_dir(ghidra_install_dir)
+        except GhidraConfigurationError as exc:raise GhidraPythonRunError(str(exc)) from exc
+    if python_run is None:python_run=selected_dir/'support/pythonRun'
+    else:
+        python_run=Path(python_run).resolve()
+        if selected_dir is not None and python_run!=(selected_dir/'support/pythonRun').resolve():
+            raise GhidraPythonRunError('GHIDRA_QUERY_INSTALLATION_CONFLICT')
 
     query_script = (
         query_script
@@ -116,14 +121,38 @@ def load_riscv64_register_resolver_via_pythonrun(
             f"Ghidra register query script not found: {query_script}"
         )
 
-    completed = subprocess.run(
-        [str(python_run), str(query_script)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        text=True,
-        timeout=60,
-    )
+    from .project_compile_context import digest
+    from .project_build_records import identity
+    python_run=python_run.resolve(strict=True);query_script=query_script.resolve(strict=True)
+    tools={str(p):digest(p) for p in (python_run,query_script)}
+    evidence={'schemaVersion':'riscv2x86.ghidra-register-query.v1',
+        'installationDirectory':str(selected_dir) if selected_dir is not None else None,
+        'command':[str(python_run),str(query_script)],'tools':tools,
+        'timeoutSeconds':timeout,'environment':environment,
+        'semanticApproval':False,'productionAcceptanceComplete':False}
+    directory=Path(evidence_directory).resolve() if evidence_directory is not None else None
+    if directory is not None:directory.mkdir(parents=True,exist_ok=False)
+
+    # Reuse the existing bounded process-group driver. Killing only pythonRun
+    # may leave its JVM or descendants running after a timeout.
+    from .native_experiment_driver import command as bounded_command
+    from types import SimpleNamespace
+    with tempfile.TemporaryDirectory(prefix='rv2x86-ghidra-query-') as temporary:
+        code,reason=bounded_command([str(python_run),str(query_script)],Path.cwd(),
+            dict(os.environ) if environment is None else environment,temporary,timeout,8*1024*1024)
+        stdout=(Path(temporary)/'stdout.log').read_text()
+        stderr=(Path(temporary)/'stderr.log').read_text()
+    completed=SimpleNamespace(returncode=code,stdout=stdout,stderr=stderr)
+    if directory is not None:
+        (directory/'stdout.log').write_text(completed.stdout)
+        (directory/'stderr.log').write_text(completed.stderr)
+    evidence.update(returnCode=completed.returncode,failureReason=reason,maxLogBytes=8*1024*1024,
+        stdoutDigest='sha256:'+sha256(completed.stdout.encode()).hexdigest(),
+        stderrDigest='sha256:'+sha256(completed.stderr.encode()).hexdigest())
+    if directory is not None:
+        (directory/'query.json').write_text(json.dumps(dict(evidence,queryIdentity=identity(evidence)),indent=2)+'\n')
+    if any(digest(p)!=sha for p,sha in tools.items()):raise GhidraPythonRunError('GHIDRA_QUERY_TOOL_CHANGED')
+    if reason is not None:raise GhidraPythonRunError('GHIDRA_QUERY_'+reason)
 
     if completed.returncode != 0:
         raise GhidraPythonRunError(
@@ -134,41 +163,41 @@ def load_riscv64_register_resolver_via_pythonrun(
             f"stderr:\n{completed.stderr}"
         )
 
-    raw_stdout = completed.stdout
+    parsed=parse_register_query_output(completed.stdout)
+    return replace(parsed,installation_dir=str(selected_dir) if selected_dir is not None else None,
+                   query_evidence=dict(evidence,queryIdentity=identity(evidence)))
 
-    content = "".join(
-        [
-            line.strip()
-            for line in raw_stdout.splitlines()
-            if line.strip()
-        ]
-    )
 
-    start = content.find("{")
-    end = content.rfind("}")
+def parse_register_query_output(raw_stdout):
+    """Same strict response consumer for acquisition and stored-evidence checks."""
+    if not isinstance(raw_stdout,str) or len(raw_stdout.encode())>8*1024*1024:
+        raise GhidraPythonRunError('GHIDRA_QUERY_OUTPUT_INVALID_OR_OVER_BUDGET')
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise GhidraPythonRunError('GHIDRA_QUERY_DUPLICATE_JSON_KEY:'+key)
+            result[key]=value
+        return result
+    def finite(value):raise GhidraPythonRunError('GHIDRA_QUERY_NONFINITE_JSON:'+value)
+    decoder=json.JSONDecoder(object_pairs_hook=unique,parse_constant=finite)
+    position=0;responses=[]
+    while True:
+        start=raw_stdout.find('{',position)
+        if start<0:break
+        try:record,end=decoder.raw_decode(raw_stdout,start)
+        except json.JSONDecodeError:
+            position=start+1;continue
+        position=end
+        if isinstance(record,dict) and 'ok' in record and 'language_id' in record:responses.append(record)
+    if len(responses)!=1:raise GhidraPythonRunError('GHIDRA_QUERY_RESPONSE_MISSING_OR_AMBIGUOUS')
+    data=responses[0]
 
-    if start == -1 or end == -1 or start >= end:
-        raise GhidraPythonRunError(
-            "Valid JSON block not found\n"
-            f"Raw cleaned content: {repr(content)}"
-        )
-
-    pure_json_str = content[start:end + 1]
-
-    try:
-        data = json.loads(pure_json_str)
-    except json.JSONDecodeError as exc:
-        raise GhidraPythonRunError(
-            "JSON parse failed\n"
-            f"Cut JSON: {repr(pure_json_str)}\n"
-            f"Raw stdout: {repr(raw_stdout)}\n"
-            f"STDERR:\n{completed.stderr}"
-        ) from exc
-
-    if not data.get("ok"):
+    if data.get("ok") is not True:
         raise GhidraPythonRunError(
             f"Ghidra query returned failure: {data}"
         )
+    if data.get('schemaVersion') not in (None,'riscv2x86.ghidra-register-database.v2'):
+        raise GhidraPythonRunError('GHIDRA_REGISTER_DATABASE_SCHEMA_UNSUPPORTED')
 
     if data.get("language_id") != "RISCV:LE:64:default":
         raise GhidraPythonRunError(
@@ -178,13 +207,16 @@ def load_riscv64_register_resolver_via_pythonrun(
 
     names = {}
 
-    for register in data.get("registers", []):
-        name = str(register["name"])
-        offset = int(register["offset"])
-        size = int(register["size"])
-
-        if size <= 0:
-            continue
+    registers=data.get('registers')
+    if not isinstance(registers,list) or not registers:raise GhidraPythonRunError('GHIDRA_REGISTER_DATABASE_REQUIRED')
+    seen={}
+    for register in registers:
+        if not isinstance(register,dict):raise GhidraPythonRunError('GHIDRA_REGISTER_RECORD_INVALID')
+        name=register.get('name');offset=register.get('offset');size=register.get('size')
+        if (not isinstance(name,str) or not name.strip() or '\0' in name or type(offset) is not int or offset<0
+                or type(size) is not int or size<=0):raise GhidraPythonRunError('GHIDRA_REGISTER_LOCATION_INVALID')
+        if name in seen and seen[name]!=(offset,size):raise GhidraPythonRunError('GHIDRA_REGISTER_NAME_CONFLICT')
+        seen[name]=(offset,size)
 
         key = ("register", offset, size)
 
@@ -196,6 +228,17 @@ def load_riscv64_register_resolver_via_pythonrun(
         )
 
     versioned = data.get('schemaVersion') == 'riscv2x86.ghidra-register-database.v2'
+    if versioned:
+        if data.get('bigEndian') is not False:raise GhidraPythonRunError('GHIDRA_RISCV_LE_ENDIANNESS_REQUIRED')
+        for register in registers:
+            if (type(register.get('bitLength')) is not int or not 0<register['bitLength']<=8*register['size']
+                    or type(register.get('isProcessorContext')) is not bool
+                    or not isinstance(register.get('baseName'),str) or not register['baseName']
+                    or type(register.get('baseOffset')) is not int or register['baseOffset']<0
+                    or type(register.get('baseSize')) is not int or register['baseSize']<=0):
+                raise GhidraPythonRunError('GHIDRA_REGISTER_VIEW_METADATA_REQUIRED')
+        if not any(r['bitLength']==64 and r['size']==8 and not r['isProcessorContext'] for r in registers):
+            raise GhidraPythonRunError('GHIDRA_RV64_REGISTER_WIDTH_REQUIRED')
     return PythonRunRegisterNameResolver(names=names,
         registers=tuple(data['registers']) if versioned else (),
         language_id=data['language_id'],big_endian=data.get('bigEndian') if versioned else None)

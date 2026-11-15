@@ -1,0 +1,65 @@
+.........................s................................F....          [100%]
+=================================== FAILURES ===================================
+_____ test_registry_loaders_require_versioned_schema_and_reject_duplicates _____
+
+    def test_registry_loaders_require_versioned_schema_and_reject_duplicates():
+        runtime = {
+            "schemaVersion": PRIVILEGED_RUNTIME_REGISTRY_SCHEMA,
+            "version": "runtime.test.v1",
+            "mappingRegistries": [],
+            "mappingRegistryVersion": "mapping.test.v1",
+            "contracts": [{
+                "contractId": "counter.strict",
+                "semanticVersion": "1",
+                "sourcePrivilegedIdentity": "sha256:source",
+                "targetEnvironmentId": "x86_64:sysv_amd64:gnu_att",
+                "runtimeSymbol": "rv2x86_counter",
+                "requiredTargetCapability": "runtime:counter",
+            }],
+        }
+>       loaded = privileged_runtime_registry_from_dict(runtime)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_phase4_privileged_cli_ingress.py:44: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/privileged_pipeline_inputs.py:513: in privileged_runtime_registry_from_dict
+    return PrivilegedRuntimeRegistry(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <riscv2x86_py.privileged_runtime_contracts.PrivilegedRuntimeRegistry object at 0x7f6fd1f83140>
+version = 'runtime.test.v1'
+contracts = (PrivilegedRuntimeContract(contract_id='counter.strict', semantic_version='1', source_privileged_identity='sha256:sour...=True, preserves_microarchitecture_intent=False, abi_isolated=True, may_return=True, may_unwind=False, complete=True),)
+mapping_registries = <riscv2x86_py.privileged_runtime_contracts.PrivilegedMappingRegistrySet object at 0x7f6fd1fc1d00>
+
+    def __init__(
+        self,
+        *,
+        version: str,
+        contracts: Iterable[PrivilegedRuntimeContract] = (),
+        mapping_registries: PrivilegedMappingRegistrySet | None = None,
+    ) -> None:
+        if not isinstance(version, str) or not version.strip():
+            raise TypeError("privileged runtime registry requires a version")
+        entries = tuple(contracts)
+        if not isinstance(mapping_registries, PrivilegedMappingRegistrySet):
+            if entries:
+                raise TypeError("privileged contracts require versioned mapping registries")
+            mapping_registries = PrivilegedMappingRegistrySet(version="empty.v1")
+        by_key: dict[tuple[str, ...], PrivilegedRuntimeContract] = {}
+        ids: set[tuple[str, str]] = set()
+        for contract in entries:
+            if not isinstance(contract, PrivilegedRuntimeContract):
+                raise TypeError("registry entries must be privileged contracts")
+            identity = (contract.contract_id, contract.semantic_version)
+            if identity in ids:
+                raise ValueError("duplicate privileged runtime contract identity")
+            ids.add(identity)
+            resolved = self._resolve_contract_mapping_registries(contract, mapping_registries)
+            if resolved is None:
+>               raise ValueError("privileged contract mapping registry is missing or mismatched")
+E               ValueError: privileged contract mapping registry is missing or mismatched
+
+pytools/riscv2x86_py/privileged_runtime_contracts.py:472: ValueError
+=========================== short test summary info ============================
+SKIPPED [1] pytools/tests/test_ghidra_preflight.py:83: real Ghidra installation not supplied; synthetic query tests are not real Ghidra
+1 failed, 61 passed, 1 skipped in 20.35s

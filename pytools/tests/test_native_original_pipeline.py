@@ -19,6 +19,10 @@ from .test_native_instance_binding import example
 
 @pytest.fixture
 def adapted(tmp_path,monkeypatch):
+    install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+    launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+    # A protocol fixture, not a real Ghidra capability certificate.
+    monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
     ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
         'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
         'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
@@ -50,14 +54,17 @@ def backend_fixture(monkeypatch,prepared,raw,*,outcome=TranslationOutcome.EMITTE
     def run(command,**kwargs):
         calls.append(command)
         if '--report-json' in command:
-            Path(command[command.index('--report-json')+1]).write_text(frontend_text)
+            value=json.loads(frontend_text);file=command[command.index('--')-1]
+            value['findings'][0]['fileName']=file;value['findings'][0]['fragment']['fileName']=file
+            Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
             return SimpleNamespace(returncode=0,stdout=b'fixture frontend',stderr=b'')
         if failed:return SimpleNamespace(returncode=5,stdout=b'',stderr=b'backend failed')
         report=Path(command[command.index('--out')+1]);start=raw.index(b'__asm__');stop=raw.index(b';',start)+1
         emitted=outcome==TranslationOutcome.EMITTED
-        finding=Finding(fileName=prepared['source']['path'],hasRewriteRange=True,
+        source_file=json.loads(Path(command[command.index('--in')+1]).read_text())['findings'][0]['fileName']
+        finding=Finding(fileName=source_file,hasRewriteRange=True,
             rewriteBeginOffset=start,rewriteEndOffset=stop,rawSourceText=raw[start:stop].decode(),
-            fragment=AsmFragment(id='fixture-fragment',fileName=prepared['source']['path'],beginOffset=start,endOffset=stop),
+            fragment=AsmFragment(id='fixture-fragment',fileName=source_file,beginOffset=start,endOffset=stop),
             translationOutcome=outcome.value,validationOutcome=ValidationOutcome.NOT_VERIFIED.value,
             publicationOutcome=PublicationOutcome.WITHHELD.value)
         finding.approvalArtifact={'requiredHeaders':[]}
@@ -133,6 +140,40 @@ def test_cli_cannot_silently_select_legacy_generator(tmp_path):
     spec=importlib.util.spec_from_file_location('legacy_cli',file);cli=importlib.util.module_from_spec(spec);spec.loader.exec_module(cli)
     assert cli.main(['create','--bundle','absent','--target-compiler','absent','--output',str(tmp_path/'never')])==2
     assert not (tmp_path/'never').exists()
+
+
+def test_empty_installation_rejected_before_creating_translation(adapted):
+    root,_,_,_=adapted
+    with pytest.raises(ValueError,match='EMPTY'):
+        route.translate(root/'prepared/result.json',root/'never',ghidra_install_dir='')
+    assert not (root/'never').exists()
+
+
+def test_composed_run_stops_on_preflight_failure(adapted,monkeypatch):
+    root,prepared,_,raw=adapted;calls=backend_fixture(monkeypatch,prepared,raw)
+    with pytest.raises(Exception):route.run(root/'bundle.json',root/'run')
+    assert not calls and not (root/'run/input').exists() and not (root/'run/audit').exists()
+    assert json.loads((root/'run/run-status.json').read_text())['currentStage']=='backend-preflight'
+
+
+def test_composed_run_reuses_original_stages_and_stops_on_unsupported(adapted,monkeypatch):
+    from .test_ghidra_preflight import payload
+    root,prepared,_,raw=adapted
+    launcher=Path(os.environ['GHIDRA_INSTALL_DIR'])/'support/pythonRun'
+    launcher.write_text('#!'+sys.executable+'\nprint('+repr(json.dumps(payload()))+')\n')
+    backend_fixture(monkeypatch,prepared,raw,outcome=TranslationOutcome.UNSUPPORTED)
+    with pytest.raises(route.StageFailure):route.run(root/'bundle.json',root/'blocked')
+    assert (root/'blocked/translation/result.json').exists()
+    assert not (root/'blocked/audit').exists() and not (root/'blocked/result.json').exists()
+    backend_fixture(monkeypatch,prepared,raw)
+    value=route.run(root/'bundle.json',root/'success')
+    assert value['originalCandidateRouteComplete'] and not value['programValidationPerformed']
+    assert not value['semanticApproval'] and route.check_run(root/'success/result.json')==value
+
+
+def test_nonzero_backend_code_is_not_a_complete_translation():
+    assert not route.translation_complete({'command':{'returnCode':2},'attemptOutcomes':['emitted']})
+    assert not route.translation_complete({'command':{'returnCode':0},'attemptOutcomes':[]})
 
 
 def test_request_binding_preserves_original_layers_builds_and_comparison(adapted,monkeypatch):
