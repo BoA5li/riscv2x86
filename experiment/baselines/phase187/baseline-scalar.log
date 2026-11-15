@@ -1,0 +1,130 @@
+.......F...........                                                      [100%]
+=================================== FAILURES ===================================
+___________ test_rv64_counter_csr_read_is_a_structured_runtime_route ___________
+
+    def test_rv64_counter_csr_read_is_a_structured_runtime_route() -> None:
+        """Counter CSRs must not become an accidental rdtsc/clock rewrite."""
+        fragment = AsmFragment(
+            id="counter-frag",
+            outputs=[AsmOperand(constraint="=r", exprText="time_val", isOutput=True)],
+            isVolatile=True,
+        )
+        a0 = Var(VarKind.REG, "register", 10, 8, "a0")
+        time = Var(VarKind.REG, "register", 0, 8, "time")
+        summary = IRSummary(
+            is_single_block=True, has_branch=False, has_call_or_return=False,
+            has_memory_barrier=False, has_atomic=False,
+            reads_regs={"time"}, writes_regs={"a0"}, reads_mem=False, writes_mem=False,
+            has_return=False, has_tail_call=False, has_indirect_control_flow=False,
+            has_timing_source=False, has_cache_operation=False,
+            has_speculation_control=False,
+        )
+        blocks = (Block(0x1000, [Op(0x1000, "COPY", a0, [time])], summary=summary,
+                        instructions=[CanonicalInsn(
+                            addr=0x1000, size=4,
+                            privileged_operations=(CanonicalPrivilegedOperation(
+                                kind=CanonicalPrivilegedOperationKind.CSR_ACCESS,
+                                csr_id="riscv.csr.time",
+                                csr_semantic_class="user_counter_observation",
+                                csr_operation=CanonicalCsrOperationKind.READ,
+                                read_value_node_id="node:time-value",
+                                read_modify_write=False,
+                                xlen_bits=64,
+                                required_extension_id="zicsr",
+                                access_gate_ids=("counteren:time",),
+                                access_gate_evaluation_complete=True,
+                                required_privilege_mode="u", may_trap=False,
+                                state_complete=True,
+                            ),),
+                        )]),)
+        cfg = CFGResult(
+            ok=True, entry=0x1000,
+            nodes={0x1000: CFGNode(addr=0x1000, size=4, instr_addrs=[0x1000])},
+        )
+        execution_facts = PrivilegedExecutionFacts(
+            fragment_id="counter-frag",
+            source_execution_profile=SourceExecutionProfile.RISCV_USER_PROCESS,
+            target_execution_mode=TargetExecutionMode.X86_USER_PROCESS,
+            source_privilege_spec_version="1.12",
+            source_isa_extensions=("i", "zicsr"),
+            initial_privilege_mode=SourcePrivilegeMode.U,
+            csr_access_policy=CsrAccessPolicyFacts(
+                policy_id="counter-policy-v1",
+                readable_csr_ids=("riscv.csr.time",), writable_csr_ids=(),
+                unknown_access=UnknownCsrAccessDisposition.DENY, complete=True,
+            ),
+            target_runtime_contract_set_id="x86-counter-v1", complete=True,
+            missing_fact_codes=(), provenance="compiler-plugin:test",
+            delegation_model=DelegationModelFacts(
+                "test-delegation-v2", True, True, (), (), True
+            ),
+            interrupt_model=InterruptModelFacts(
+                "test-interrupt-v2", True, True, "test-priority-v1", True, True
+            ),
+            virtual_memory_model=VirtualMemoryModelFacts(
+                "test-vm-v2", True, "test", 4096, 16, None, True
+            ),
+            trap_handler_binding=TrapHandlerBindingFacts(
+                "test-trap-v2", "test-handler", "test-trap-abi-v1",
+                "test-continuation-v1", True
+            ),
+            address_space=AddressSpaceIdentityFacts(
+                "test-address-space", "test-process", "test-lifetime-v1",
+                False, True
+            ),
+            os_or_runtime_identity="test-runtime",
+            kernel_or_vmm_version="test-version",
+            target_cpu_feature_profile_id="test-target-profile-v1",
+            schema_version=PRIVILEGED_EXECUTION_SIDECAR_SCHEMA_V2,
+        )
+        privileged_state = analyze_privileged_state(
+            fragment_id="counter-frag", blocks=blocks, cfg=cfg,
+            execution_facts=execution_facts,
+        )
+        observability = analyze_functional_observability(
+            fragment_id="counter-frag",
+            shell=SourceShellModel.from_fragment(fragment), summary=summary, cfg=cfg,
+            privileged_state=privileged_state, operand_width_bits={0: 64},
+        )
+        facts = TranslationRuntimeFacts(
+            rv_to_operand_index={"a0": 0}, operand_width_bits={0: 64}, provenance="phase4-test",
+        )
+        model = build_source_semantic_model(
+            fragment=fragment, blocks=blocks, cfg=cfg, summary=summary,
+            runtime_facts=facts, xlen=64, privileged_state=privileged_state,
+            functional_observability=observability,
+        )
+        assert model.read_only_csr is not None
+        assert model.read_only_csr.csr_name == "time"
+        routed = translate(
+            frag=fragment, lift=_IngressLift(), summary=summary, machine_code=b"\0\0\0\0", xlen=64,
+            blocks=blocks, cfg=cfg, runtime_facts=facts,
+            privileged_state=privileged_state,
+            functional_observability=observability,
+        )
+        assert routed.kind == "needs_route"
+        assert "TR_CSR_COUNTER_RUNTIME_CONTRACT_REQUIRED" in routed.reasonCodes
+    
+        functional_environment = TargetEnvironment.fixed_sysv_amd64_gnu_att(
+            available_features={"x86:gpr_inline_asm"},
+            helper_contract_capabilities={
+                MONOTONIC_TIME_NS_V1.required_environment_capability,
+            },
+        )
+        functional = translate(
+            frag=fragment, lift=_IngressLift(), summary=summary,
+            machine_code=b"\0\0\0\0", xlen=64, blocks=blocks,
+            cfg=cfg, runtime_facts=facts,
+            privileged_state=privileged_state,
+            functional_observability=observability,
+            target_environment=functional_environment,
+            allow_functional_fallbacks=True,
+        )
+>       assert functional.kind == "functional_c"
+E       AssertionError: assert 'needs_route' == 'functional_c'
+E         
+E         - functional_c
+E         + needs_route
+
+pytools/tests/test_phase6_rv64_add_contract.py:616: AssertionError
+1 failed, 18 passed in 0.90s

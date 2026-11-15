@@ -390,6 +390,7 @@ class Finding:
     rewriteEndOffset: int = 0
     rawSourceText: str = ""
     sourceDigest: str = ""
+    physicalEditBinding: Dict[str, Any] = field(default_factory=dict)
 
     # finding 的基础 source location。
     fileName: str = ""
@@ -425,6 +426,7 @@ class Finding:
     # before any validation/publication branch mutates the public finding.
     translationReasonCodes: List[str] = field(default_factory=list)
     translationPlanAttempts: List[Dict[str, Any]] = field(default_factory=list)
+    sourceModelDiagnostics: Dict[str, Any] = field(default_factory=dict)
     routeAuthorityDiagnostics: List[Dict[str, Any]] = field(default_factory=list)
     # Phase 6E/6F approved replacement provenance, consumed by C++ --apply.
     approvalArtifact: Dict[str, Any] = field(default_factory=dict)

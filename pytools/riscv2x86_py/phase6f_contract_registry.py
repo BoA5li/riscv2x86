@@ -33,6 +33,7 @@ from .privileged_renderer_manifest import (
 
 
 from .lrsc_target import recipe as _lrsc_recipe
+from .wide_integer_target import recipe as _wide_integer_recipe
 
 RecipeFactory = Callable[[ApprovedTargetLoweringPlan], object | None]
 
@@ -1262,6 +1263,10 @@ def _x86_asm_goto_zero_test_recipe(approved: ApprovedTargetLoweringPlan):
 GPR_INTEGER_RENDERER_CONTRACT_REGISTRY = RendererContractRegistry(
     registry_id="phase6f.target-contracts", version="helper-abi-contract-registry-v1",
     entries=(
+        RegisteredRendererContract("x86.gnu-att.gpr.unsigned-multiply-high.u32-u64.v1",
+            TargetLoweringKind.X86_GNU_INLINE_ASM,"x86.gnu-att.gpr.unsigned-multiply-high.u32-u64",
+            _wide_integer_recipe,
+            "x86_gnu_inline_asm_contract",frozenset({"x86:gpr_inline_asm"})),
         RegisteredRendererContract("x86.gnu-att.lrsc.locked-cas.multi-output.v1",
             TargetLoweringKind.X86_ATOMIC,"x86.gnu-att.lrsc.locked-cas.multi-output",
             _lrsc_recipe,

@@ -12,7 +12,7 @@ import pytest
 from riscv2x86_py import native_original_pipeline as route
 from riscv2x86_py import native_captured_deployment as d
 from riscv2x86_py.schema import (Finding,AsmFragment,TranslationOutcome,ValidationOutcome,
-    PublicationOutcome,make_translation_attempt_artifact,save_report)
+    PublicationOutcome,make_translation_attempt_artifact,save_report,load_report)
 from riscv2x86_py.translation_attempt import save_translation_attempt_archive,terminal_attempt_from_finding
 from .test_native_instance_binding import example
 
@@ -38,9 +38,11 @@ def adapted(tmp_path,monkeypatch):
     def run(command,**kwargs):
         calls.append((command,kwargs))
         if '--report-json' in command:
-            value=deepcopy(report);file=command[command.index('--')-1]
+            value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
             value['findings'][0]['fileName']=file
             value['findings'][0]['fragment']['fileName']=file
+            value['findings'][0]['fragment']['id']='fixture-fragment'
+            value['findings'][0]['hasRewriteRange']=True
             Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
         return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
     monkeypatch.setattr(route.subprocess,'run',run)
@@ -50,11 +52,11 @@ def adapted(tmp_path,monkeypatch):
 
 def backend_fixture(monkeypatch,prepared,raw,*,outcome=TranslationOutcome.EMITTED,failed=False):
     calls=[]
-    frontend_text=Path(prepared['frontendReport']['path']).read_text()
+    frontend_text=Path(prepared['rawFrontendReport']['path']).read_text()
     def run(command,**kwargs):
         calls.append(command)
         if '--report-json' in command:
-            value=json.loads(frontend_text);file=command[command.index('--')-1]
+            value=json.loads(frontend_text);file='/diagnostic-only/upstream/input.c'
             value['findings'][0]['fileName']=file;value['findings'][0]['fragment']['fileName']=file
             Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
             return SimpleNamespace(returncode=0,stdout=b'fixture frontend',stderr=b'')
@@ -62,11 +64,10 @@ def backend_fixture(monkeypatch,prepared,raw,*,outcome=TranslationOutcome.EMITTE
         report=Path(command[command.index('--out')+1]);start=raw.index(b'__asm__');stop=raw.index(b';',start)+1
         emitted=outcome==TranslationOutcome.EMITTED
         source_file=json.loads(Path(command[command.index('--in')+1]).read_text())['findings'][0]['fileName']
-        finding=Finding(fileName=source_file,hasRewriteRange=True,
-            rewriteBeginOffset=start,rewriteEndOffset=stop,rawSourceText=raw[start:stop].decode(),
-            fragment=AsmFragment(id='fixture-fragment',fileName=source_file,beginOffset=start,endOffset=stop),
-            translationOutcome=outcome.value,validationOutcome=ValidationOutcome.NOT_VERIFIED.value,
-            publicationOutcome=PublicationOutcome.WITHHELD.value)
+        finding=load_report(command[command.index('--in')+1])[0]
+        finding.translationOutcome=outcome.value
+        finding.validationOutcome=ValidationOutcome.NOT_VERIFIED.value
+        finding.publicationOutcome=PublicationOutcome.WITHHELD.value
         finding.approvalArtifact={'requiredHeaders':[]}
         finding.translationAttemptArtifact=make_translation_attempt_artifact(
             fragment_id='fixture-fragment',candidate_kind='c' if emitted else outcome.value,
@@ -174,6 +175,26 @@ def test_composed_run_reuses_original_stages_and_stops_on_unsupported(adapted,mo
 def test_nonzero_backend_code_is_not_a_complete_translation():
     assert not route.translation_complete({'command':{'returnCode':2},'attemptOutcomes':['emitted']})
     assert not route.translation_complete({'command':{'returnCode':0},'attemptOutcomes':[]})
+
+
+def test_presumed_diagnostic_path_does_not_authorize_original_source_edit(adapted,monkeypatch):
+    from riscv2x86_py import physical_edit_binding as physical
+    root,prepared,_,raw=adapted
+    original=load_report(prepared['frontendReport']['path'])[0]
+    assert original.fileName=='/diagnostic-only/upstream/input.c'
+    assert physical.source_path(original,root/'prepared/source')==root/'prepared/source/input.i'
+    assert not original.physicalEditBinding['originalSourceEditAuthorized']
+    before=Path(prepared['rawFrontendReport']['path']).read_bytes()
+    backend_fixture(monkeypatch,prepared,raw)
+    translated=route.translate(root/'prepared/result.json',root/'translated')
+    assert Path(prepared['rawFrontendReport']['path']).read_bytes()==before
+    manifest=json.loads(Path(translated['candidateManifest']['path']).read_text())
+    assert manifest['edits'][0]['relativePath']=='input.i'
+    forged=deepcopy(original);forged.physicalEditBinding['physicalRange'][0]+=1
+    b=forged.physicalEditBinding;b['physicalEditBindingIdentity']=d.identity({k:v for k,v in b.items() if k!='physicalEditBindingIdentity'})
+    with pytest.raises(ValueError,match='NOT_DERIVED'):physical.source_path(forged,root/'prepared/source')
+    changed=deepcopy(original);changed.fragment.inputs[0].constraint='r'
+    with pytest.raises(ValueError,match='SOURCE_CHANGED'):physical.source_path(changed,root/'prepared/source')
 
 
 def test_request_binding_preserves_original_layers_builds_and_comparison(adapted,monkeypatch):

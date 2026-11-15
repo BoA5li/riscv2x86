@@ -454,6 +454,10 @@ class SourceSemanticModel:
     whole_function_route: WholeFunctionRouteDecision | None = None
     # Complete local state description does not approve a target translation.
     lrsc_sequence: SourceLrScSequenceModel | None = None
+    # Whole GNU relation is separate from register/slot binding authority.
+    operand_permutations: tuple[tuple[int, ...], ...] = ()
+    operand_relation_identity: str = ""
+    operand_relation_error: str = ""
 
     @property
     def read_only_csr(self) -> SourceReadOnlyCounterCsrModel | None:
@@ -1425,6 +1429,14 @@ def build_source_semantic_model(
         reason_codes=reason_codes,
     )
 
+    from .gnu_operand_relations import derive as derive_operand_relation
+    relation = None
+    relation_error = ""
+    try:
+        relation = derive_operand_relation([o.constraint for o in shell.outputs],
+                                           [o.constraint for o in shell.inputs])
+    except ValueError as exc:
+        relation_error = str(exc)
     return SourceSemanticModel(
         shell=shell,
         runtime_facts=runtime_status,
@@ -1465,6 +1477,9 @@ def build_source_semantic_model(
         abi_effects=abi_effects,
         whole_function_route=whole_function_route,
         lrsc_sequence=lrsc_sequence,
+        operand_permutations=(() if relation is None else tuple(tuple(p) for p in relation["allowedOperandPermutations"])),
+        operand_relation_identity="" if relation is None else relation["relationIdentity"],
+        operand_relation_error=relation_error,
     )
 
 def _build_control_flow_model(
@@ -3147,6 +3162,7 @@ class SourceValueOperationKind(str, Enum):
     UNSIGNED_ADD = "unsigned_add"
     UNSIGNED_SUB = "unsigned_sub"
     UNSIGNED_MUL = "unsigned_mul"
+    UNSIGNED_MULTIPLY_HIGH = "unsigned_multiply_high"
     ZERO_EXTEND = "zero_extend"
     TRUNCATE = "truncate"
     # This is deliberately a named, finite straight-line contract rather
@@ -3331,6 +3347,8 @@ class SourceOperandBinding:
     expression: Optional[SourceExpressionBinding]
     lvalue: Optional[SourceLvalueBinding]
     address: Optional[SourceAddressBinding]
+    compiler_integer_type_complete: bool = False
+    compiler_expression_evaluation_complete: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -4215,6 +4233,14 @@ def _build_operand_model(
                 expression=semantic.expression,
                 lvalue=semantic.lvalue,
                 address=semantic.address,
+                compiler_integer_type_complete=bool(
+                    shell.all_operands[source_operand_index].compiler_type
+                    and shell.all_operands[source_operand_index].compiler_type.is_integer
+                    and shell.all_operands[source_operand_index].compiler_type.width_bits == width_bits),
+                compiler_expression_evaluation_complete=bool(
+                    shell.all_operands[source_operand_index].compiler_type
+                    and shell.all_operands[source_operand_index].compiler_type.side_effect_free
+                    and shell.all_operands[source_operand_index].compiler_type.expression_repeatable),
             )
         )
 
@@ -4514,7 +4540,7 @@ def _runtime_operand_semantics(
         expression = (
             SourceExpressionBinding(
                 expression_id=f"asm-operand:{index}",
-                c_type_id=(operand.compiler_type.type_identity if atomic_objects and operand.compiler_type else None),
+                c_type_id=(operand.compiler_type.type_identity if operand.compiler_type else None),
                 is_side_effect_free=(operand.compiler_type.side_effect_free if operand.compiler_type else True),
                 is_repeatable=(operand.compiler_type.expression_repeatable if operand.compiler_type else True),
             ) if reads else None
@@ -4527,7 +4553,7 @@ def _runtime_operand_semantics(
         lvalue = (
             SourceLvalueBinding(
                 lvalue_id=f"asm-operand:{index}",
-                c_type_id=(operand.compiler_type.type_identity if atomic_objects and operand.compiler_type else None),
+                c_type_id=(operand.compiler_type.type_identity if operand.compiler_type else None),
                 is_modifiable=(operand.compiler_type.modifiable_lvalue if operand.compiler_type else True),
             ) if writes else None
         )
@@ -5660,6 +5686,10 @@ def _build_value_operation_model(
     asm text, an instruction mnemonic, or renderer output.  The first family
     is intentionally limited to one direct 32/64-bit register binary op.
     """
+    from .wide_integer_source import build as wide_integer
+    wide = wide_integer(blocks=blocks, runtime_status=runtime_status, operands=operands, operation=operation)
+    if wide is not None:
+        return wide
     sequence = _build_add_then_shift_left_operation_model(
         blocks=blocks, runtime_status=runtime_status, operands=operands,
         operation=operation,

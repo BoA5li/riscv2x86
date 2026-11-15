@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
+from ..source_model_diagnostics import missing as source_missing
 from ..plan_types import TargetLoweringKind, TargetLoweringPlan
 from ..source_model import SourceOperandAccess, SourceOperandKind, SourceSemanticModel, SourceValueOperationKind, SourceStraightLineValueProgram
 
@@ -40,6 +41,9 @@ class X86GnuInlineAsmContract:
     # recover them from p-code, labels, or a template.
     local_branch_select: "X86LocalBranchSelectContract | None" = None
     local_unconditional_jump: "X86LocalUnconditionalJumpContract | None" = None
+    implicit_clobbers: tuple[str, ...] = ()
+    operand_relation_identity: str = ""
+    allowed_operand_permutations: tuple[tuple[int, ...], ...] = ()
 
 @dataclass(frozen=True)
 class X86LocalBranchSelectContract:
@@ -330,10 +334,13 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     feature="x86:gpr_inline_asm"
     if feature not in target_environment.available_features: return _fail(candidate_plan,"X86_INLINE_ASM_FEATURE_UNAVAILABLE",{"feature":feature})
     semantic_id = candidate_plan.metadata.get("renderer_semantic_contract_id")
+    from ..wide_integer_target import CONTRACT, derive as derive_wide
+    if semantic_id == CONTRACT:
+        return derive_wide(source_model,candidate_plan,target_environment)
     local_branch_select_route = semantic_id == "x86.gnu-att.local-branch-select.compare.u32-u64.v1"
     local_unconditional_jump_route = semantic_id == "x86.gnu-att.local-unconditional-jump.direct-copy.u32-u64.v2"
     local_cfg_route = local_branch_select_route or local_unconditional_jump_route
-    if not source_model.operands.complete or not source_model.operation.complete or not source_model.implicit_state.complete: return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
+    if not source_model.operands.complete or not source_model.operation.complete or not source_model.implicit_state.complete: return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE", source_missing(source_model))
     if ((not local_cfg_route and source_model.operation.kind.value != "register_only") or
             source_model.operation.reads_memory or source_model.operation.writes_memory or
             source_model.memory.reads_memory or source_model.memory.writes_memory or
@@ -366,7 +373,9 @@ def derive_x86_gnu_inline_asm_constraints(source_model: SourceSemanticModel, can
     if shell.has_memory_clobber or shell.has_asm_goto or shell.has_external_control_flow: return _fail(candidate_plan,"X86_INLINE_ASM_SHELL_UNSUPPORTED")
     if (not local_cfg_route and (source_model.value_operation is None or not source_model.value_operation.complete) and
             (source_model.value_program is None or not source_model.value_program.complete)):
-        return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE")
+        return _fail(candidate_plan,"X86_INLINE_ASM_SOURCE_INCOMPLETE", source_missing(source_model))
+    if source_model.value_operation is not None and source_model.value_operation.kind is SourceValueOperationKind.UNSIGNED_MULTIPLY_HIGH:
+        return _fail(candidate_plan,"X86_INLINE_ASM_SEMANTIC_CONTRACT_UNSUPPORTED")
     program_route = semantic_id == "x86.gnu-att.gpr.straight-line-u32-u64.v1"
     variable_shift_route = semantic_id == "x86.gnu-att.gpr.out-gpr-variable-shift.u32-u64.v1"
     comparison_route = semantic_id == "x86.gnu-att.gpr.out-gpr-boolean-compare.u32-u64.v1"

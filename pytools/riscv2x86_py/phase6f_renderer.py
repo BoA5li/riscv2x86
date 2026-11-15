@@ -164,6 +164,7 @@ class GnuInlineAsmRecipe:
     # into the C lvalue used by a GNU "m" operand.  Renderer never guesses
     # this from the operand class or template.
     memory_dereference_operand_indexes: tuple[int, ...] = ()
+    register_clobbers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -417,6 +418,13 @@ def _render_gnu(request: Phase6FRenderRequest, recipe: GnuInlineAsmRecipe, *, is
         for op in a.constraints.operand_constraints
     ):
         return _failure(request, RenderReasonCode.HOST_STACK_FRAME_REGISTER_FORBIDDEN, internal=True)
+    from .wide_integer_target import CONTRACT, recipe as wide_recipe
+    if a.plan.metadata.get("renderer_semantic_contract_id") == CONTRACT:
+        expected = wide_recipe(a)
+        if expected is None or recipe != expected[1]:
+            return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
+    elif recipe.register_clobbers:
+        return _failure(request, RenderReasonCode.CONSTRAINT_CONTRACT_INCONSISTENT, internal=True)
     ops = _operand_map(a.constraints); outputs = []
     for i in recipe.output_operand_indexes:
         op, binding = ops.get(i), _binding(ctx, i)
@@ -444,6 +452,7 @@ def _render_gnu(request: Phase6FRenderRequest, recipe: GnuInlineAsmRecipe, *, is
     if is_goto and (not expected_labels or expected_labels != recipe_labels):
         return _failure(request, RenderReasonCode.ASM_GOTO_LABEL_CONTRACT_MISMATCH, internal=True)
     clobbers = (() if not a.constraints.preserve_cc_clobber else ("cc",)) + (() if not a.constraints.memory_constraint.requires_memory_clobber else ("memory",))
+    clobbers = recipe.register_clobbers + clobbers
     node = GnuAsmNode(recipe.template, a.constraints.preserve_volatile, tuple(outputs), tuple(inputs), clobbers, labels)
     return RenderedReplacement(RenderedReplacementKind.GNU_ASM_GOTO if is_goto else RenderedReplacementKind.GNU_INLINE_ASM, node, _serialize_asm(node, is_goto=is_goto), (), a.source_model_id, a.plan.plan_id, ctx.renderer_id, ctx.renderer_version)
 

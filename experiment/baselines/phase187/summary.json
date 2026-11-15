@@ -1,0 +1,38 @@
+{
+  "baseCommit": "8ccbeb8dd5003d22f0506cccbf84addf09684e2f",
+  "expandedRegression": {
+    "moduleCount": 58,
+    "passed": 761,
+    "skipped": 10,
+    "seconds": 431.84,
+    "exitCode": 0,
+    "precededFinalConservativeGuards": true
+  },
+  "finalAffectedModules": {
+    "passed": 84,
+    "seconds": 30.38,
+    "exitCode": 0
+  },
+  "finalJoinedRouteAndComponents": {
+    "passed": 30,
+    "seconds": 8.74,
+    "exitCode": 0
+  },
+  "testSetsOverlap": true,
+  "supplementaryScalarModule": {
+    "basePassed": 18,
+    "baseFailed": 1,
+    "finalPassed": 18,
+    "finalFailed": 1,
+    "unchangedFailure": "test_rv64_counter_csr_read_is_a_structured_runtime_route"
+  },
+  "actualHostCompilerExecution": true,
+  "actualRealGhidraExecution": false,
+  "actualGmpExecution": false,
+  "originalMacroEditAuthorized": false,
+  "completeMachineAbiVerified": false,
+  "internalObjectDomainVerified": false,
+  "canonicalInstanceExecutionVerified": false,
+  "semanticApproval": false,
+  "productionAcceptanceComplete": false
+}

@@ -1035,6 +1035,18 @@ def _generate_register_only_candidates(
 
     if facts.target_is_x86:
         value = source_model.value_operation
+        from .wide_integer_target import CONTRACT
+        if value is not None and value.kind.value == "unsigned_multiply_high":
+            candidates.append(_plan(plan_id="x86.register-only-inline-asm.unsigned-multiply-high",
+                kind=TargetLoweringKind.X86_GNU_INLINE_ASM,family=TargetLoweringFamily.X86_INLINE_ASM,
+                priority_tier=PlanPriorityTier.X86_INLINE_ASM,deterministic_rank=36,
+                required_features=frozenset({"x86:gpr_inline_asm"}),
+                requirements=_x86_requirements(preserve_cc=True),
+                metadata={"renderer_semantic_contract_id":CONTRACT,
+                          "semantic_input_indexes":value.input_operand_indexes},
+                rationale=("Closed unsigned wide-product projection with explicit accumulator/high clobbers.",),
+                reason_codes=("unsigned-multiply-high-candidate",)))
+            return candidates
         if (value is not None and value.complete and value.immediate_value is None and
                 value.kind.value in {"signed_less", "unsigned_less", "signed_less_equal",
                                     "unsigned_less_equal", "equal", "not_equal"}):

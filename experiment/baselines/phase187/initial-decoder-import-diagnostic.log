@@ -1,0 +1,27 @@
+F
+=================================== FAILURES ===================================
+_________ test_actual_machine_leaf_facts_and_independent_rederivation __________
+
+binary = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-components/test_actual_machine_leaf_facts0/leaf.so')
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-components/test_actual_machine_leaf_facts0')
+
+    def test_actual_machine_leaf_facts_and_independent_rederivation(binary,tmp_path):
+>       value=machine.acquire(binary,'good',tmp_path/'machine')
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_program_proof_components.py:28: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/program_machine_evidence.py:100: in acquire
+    tool=decoder();raw=Path(elf).read_bytes();facts=derive(raw,symbol)
+         ^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def decoder():
+>       import pypcode,pypcode._pypcode as backend
+E       ModuleNotFoundError: No module named 'pypcode._pypcode'
+
+pytools/riscv2x86_py/program_machine_evidence.py:95: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED pytools/tests/test_program_proof_components.py::test_actual_machine_leaf_facts_and_independent_rederivation
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 0.21s

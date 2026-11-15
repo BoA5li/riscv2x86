@@ -66,6 +66,9 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _source_path(finding: Finding, source_root: Path) -> Path:
+    if finding.physicalEditBinding:
+        from .physical_edit_binding import source_path
+        return source_path(finding, source_root)
     raw = Path(finding.fileName or (finding.fragment.fileName if finding.fragment else ""))
     candidates = (raw, source_root / raw) if raw.is_absolute() else (source_root / raw,)
     for candidate in candidates:

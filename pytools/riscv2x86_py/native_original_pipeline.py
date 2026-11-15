@@ -54,19 +54,22 @@ def prepare(bundle_path, output, *, timeout=300):
     try:
         source=runner.output/'source';source.mkdir()
         file=source/'input.i';file.write_bytes(artifacts['inputBytes'])
+        raw_report=runner.output/'frontend-export.json'
         report=runner.output/'frontend-report.json'
-        command=binding.export_command(receipt,bundle['frontend'],file,report,runner.output)
+        command=binding.export_command(receipt,bundle['frontend'],file,raw_report,runner.output)
         row=execute(runner,'original-frontend',command,receipt['context']['workingDirectory'],
                     environment(receipt['context']),timeout)
         if row['returnCode']:
             raise StageFailure('original-frontend',row['returnCode'])
-        bindings=binding.derive(artifacts['canonicalAst'],d.read(report),file.read_bytes(),receipt['analysisInputIdentity'])
+        bindings=binding.derive(artifacts['canonicalAst'],d.read(raw_report),file.read_bytes(),receipt['analysisInputIdentity'])
         if bindings['occurrenceCount']<1:raise ValueError('ORIGINAL_INPUT_INLINE_ASM_INSTANCE_REQUIRED')
         inventory=runner.output/'instance-bindings.json';inventory.write_text(json.dumps(bindings,indent=2)+'\n')
+        from .physical_edit_binding import project
+        report.write_text(json.dumps(project(d.read(raw_report),bindings,file,runner.output/'result.json'),indent=2)+'\n')
         value=d.seal({'schemaVersion':PREPARED,'bundle':d.snapshot(bundle_path),
             'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
             'frontend':d.snapshot(bundle['frontend']),'source':d.snapshot(file),
-            'frontendReport':d.snapshot(report),'bindings':d.snapshot(inventory),
+            'rawFrontendReport':d.snapshot(raw_report),'frontendReport':d.snapshot(report),'bindings':d.snapshot(inventory),
             'command':row,'timeoutSeconds':timeout,
             'sourceLocationCount':None,'expandedInstanceCount':bindings['occurrenceCount'],
             'dependencyCompileContextCount':None,
@@ -89,7 +92,7 @@ def check_input(path):
     value=d.read(path);checked(value,'originalInputIdentity')
     if value['schemaVersion']!=PREPARED:raise ValueError('ORIGINAL_INPUT_SCHEMA_INVALID')
     compare_verifier(value['adapterVerifier'],verifier());d.verify_snapshot(value['python'])
-    for key in ('bundle','frontend','source','frontendReport','bindings'):d.verify_snapshot(value[key])
+    for key in ('bundle','frontend','source','rawFrontendReport','frontendReport','bindings'):d.verify_snapshot(value[key])
     bundle=d.read(value['bundle']['path']);binding.validate_artifacts(bundle)
     if digest(bundle['frontend'])!=bundle['frontendDigest']:raise ValueError('ORIGINAL_INPUT_FRONTEND_CHANGED')
     receipt=d.read(bundle['nativeInputReceiptPath']);artifacts=validated_input(receipt)
@@ -100,16 +103,19 @@ def check_input(path):
         raise ValueError('ORIGINAL_INPUT_FRONTEND_OR_TARGET_MISMATCH')
     row=value['command'];check_command(row)
     expected=binding.export_command(receipt,bundle['frontend'],source,
-                                    Path(value['frontendReport']['path']),root)
+                                    Path(value['rawFrontendReport']['path']),root)
     if (row['command']!=expected or row['returnCode']!=0
             or row['directory']!=receipt['context']['workingDirectory']
             or row['environment']!=environment(receipt['context'])):
         raise ValueError('ORIGINAL_INPUT_EXPORT_RECIPE_MISMATCH')
-    bindings=binding.derive(artifacts['canonicalAst'],d.read(value['frontendReport']['path']),
+    bindings=binding.derive(artifacts['canonicalAst'],d.read(value['rawFrontendReport']['path']),
                             source.read_bytes(),receipt['analysisInputIdentity'])
     if (d.read(value['bindings']['path'])!=bindings or type(value['expandedInstanceCount']) is not int
             or value['expandedInstanceCount']<1 or value['expandedInstanceCount']!=bindings['occurrenceCount']):
         raise ValueError('ORIGINAL_INPUT_BINDING_REDERIVATION_MISMATCH')
+    from .physical_edit_binding import project
+    if d.read(value['frontendReport']['path'])!=project(d.read(value['rawFrontendReport']['path']),bindings,source,root/'result.json'):
+        raise ValueError('ORIGINAL_INPUT_PHYSICAL_PROJECTION_MISMATCH')
     if (value['artifactDomain']!='frozen-preprocessed-translation-unit'
             or value['sourceLocationCount'] is not None or value['dependencyCompileContextCount'] is not None
             or any(value[k] is not False for k in ('originalSourceEditAuthorized','semanticApproval','productionAcceptanceComplete'))):
@@ -158,6 +164,8 @@ def translate(input_path,output,*,ghidra_install_dir=None,ghidra_language_id=Non
         archive=Path(str(report)+'.attempts.json')
         if not report.is_file() or not archive.is_file():
             raise StageFailure('original-backend',row['returnCode'] or 2)
+        from .physical_edit_binding import validate_report
+        validate_report(prepared,report)
         attempts=load_translation_attempt_archive(archive)
         manifest=materialize_candidate_tree(source_root=Path(prepared['source']['path']).parent,
             staging_root=runner.output/'candidate-staging',translated_report=report,
@@ -196,6 +204,8 @@ def check_translation(path):
     env=backend_environment(receipt,value['ghidraInstallDir'],runtime_env=value['backendRuntimeEnvironment'])
     if (value['command']['command']!=command or value['command']['directory']!=str(root)
             or value['command']['environment']!=env):raise ValueError('ORIGINAL_TRANSLATION_RECIPE_MISMATCH')
+    from .physical_edit_binding import validate_report
+    validate_report(prepared,value['report']['path'])
     manifest=load_candidate_artifact_manifest(value['candidateManifest']['path'])
     verify_candidate_artifact_manifest(manifest,source_root=Path(prepared['source']['path']).parent,
         staging_root=root/'candidate-staging',translated_report=value['report']['path'],
@@ -220,7 +230,7 @@ def audit(translation_path,output):
     command=binding.export_command(receipt,bundle['frontend'],Path(prepared['source']['path']),report,frontend.output)
     row=execute(frontend,'original-frontend',command,receipt['context']['workingDirectory'],
                 environment(receipt['context']),old['timeoutSeconds'])
-    if row['returnCode']!=0 or d.read(report)!=d.read(prepared['frontendReport']['path']):
+    if row['returnCode']!=0 or d.read(report)!=d.read(prepared['rawFrontendReport']['path']):
         raise ValueError('ORIGINAL_FRONTEND_INDEPENDENT_REEXPORT_MISMATCH')
     frontend.state.update(status='complete',currentStage='complete',acquisitionComplete=True);frontend.save()
     fresh=translate(old['input']['path'],root/'rebuild',
@@ -257,7 +267,7 @@ def check_replay(path):
     if (row['command']!=expected or row['returnCode']!=0
             or row['environment']!=environment(receipt['context'])
             or row['directory']!=receipt['context']['workingDirectory']
-            or d.read(report)!=d.read(prepared['frontendReport']['path'])
+            or d.read(report)!=d.read(prepared['rawFrontendReport']['path'])
             or old['input']!=fresh['input'] or old['attemptOutcomes']!=fresh['attemptOutcomes']
             or any(old[key]!=fresh[key] for key in ('ghidraInstallDir','ghidraLanguageId','backendRuntimeEnvironment'))
             or old['command']['returnCode']!=fresh['command']['returnCode']

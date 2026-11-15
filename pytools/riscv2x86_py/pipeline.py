@@ -2069,6 +2069,7 @@ def run(
         f.translationReasonCodes.extend(d["reasonCode"] for d in f.routeAuthorityDiagnostics
             if not d["accepted"] and d["reasonCode"] not in f.translationReasonCodes
             and not (sequence_approved and d["reasonCode"] == "LRSC_COMPILER_BINDING_COMPLETE_SEMANTIC_PROOF_REQUIRED"))
+        f.sourceModelDiagnostics = dict(translation_metadata.get("sourceModelDiagnostics", {}) or {})
         raw_plan_attempts = translation_metadata.get("attempts", ())
         f.translationPlanAttempts = [
             {

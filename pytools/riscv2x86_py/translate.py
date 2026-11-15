@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .source_model_diagnostics import missing as source_model_missing
 from .memory_contracts import LOAD_ROLES
 
 from dataclasses import dataclass, field, replace
@@ -428,7 +429,7 @@ class TargetLoweringAttempt:
     def from_proof_failure(
         cls, plan: TargetLoweringPlan, proof: SemanticProofResult
     ) -> "TargetLoweringAttempt":
-        return cls(plan.plan_id, "phase6d", tuple(x.value for x in proof.reason_codes))
+        return cls(plan.plan_id, "phase6d", tuple(x.value for x in proof.reason_codes), dict(proof.details))
 
 
 # =============================================================================
@@ -3780,6 +3781,7 @@ def _translate_phase6_proof_pipeline(
     catalog = target_semantic_catalog or TargetSemanticCatalog(
         supported_plan_kinds=frozenset(TargetLoweringKind),
         semantic_contract_ids=frozenset({
+            "x86.gnu-att.gpr.unsigned-multiply-high.u32-u64.v1",
             "x86.gnu-att.gpr.out-gpr-immediate-binary.v1",
             "x86.gnu-att.gpr.out-gpr-gpr-binary.v1",
             "x86.gnu-att.gpr.rw-gpr-binary.v1",
@@ -3937,6 +3939,7 @@ def _translate_phase6_proof_pipeline(
             metadata={
                 "attempts": attempt_metadata,
                 "candidatePlanCount": len(candidate_plans),
+                "sourceModelDiagnostics": source_model_missing(source_model),
                 "approvedPlanCount": 0,
             },
         )
@@ -4138,7 +4141,7 @@ def _translate_phase6_proof_pipeline(
             "abiWrapperRegistryVersion": None if context.abiWrapperRegistry is None else context.abiWrapperRegistry.version,
             "abiWrapperContractId": None if constraint is None else constraint.wrapper_contract_id,
         })
-    return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata, "approvalArtifact": artifact})
+    return _output(kind=kind, replacement=rendered.emitted_text, context=context, route="phase6f_rendered", notes=[], reason_codes=[], build_family="x86_gnu_att", requires_build_check=True, requires_block_proof=False, metadata={"sourceModelDiagnostics": source_model_missing(source_model), "selectedPlanId": rendered.approved_plan_id, "rendererId": rendered.renderer_id, "rendererVersion": rendered.renderer_version, "candidatePlanCount": len(candidate_plans), "approvedPlanCount": 1, "attempts": attempt_metadata, "approvalArtifact": artifact})
 
 
 def _approval_digest(value: str) -> str:

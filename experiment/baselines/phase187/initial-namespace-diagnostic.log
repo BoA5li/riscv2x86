@@ -1,0 +1,908 @@
+.................EEEEEEEE.EEE.EEF..F.....E                               [100%]
+==================================== ERRORS ====================================
+_ ERROR at setup of test_exact_physical_input_is_reexported_under_captured_environment _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_exact_physical_input_is_r0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f743b76e0>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_exact_physical_input_is_r0/prepared/run-status.json"}
+_ ERROR at setup of test_original_cli_and_materializer_are_called_without_legacy_generator _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_original_cli_and_material0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff0830>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_original_cli_and_material0/prepared/run-status.json"}
+_ ERROR at setup of test_unsupported_original_outcome_is_not_replaced_by_legacy_candidate _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_unsupported_original_outc0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff2300>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_unsupported_original_outc0/prepared/run-status.json"}
+_ ERROR at setup of test_missing_backend_report_keeps_failure_without_complete_result _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_missing_backend_report_ke0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff3fe0>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_missing_backend_report_ke0/prepared/run-status.json"}
+_ ERROR at setup of test_rehashed_scope_escalation_rejected[originalSourceEditAuthorized] _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_rehashed_scope_escalation0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff2930>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_rehashed_scope_escalation0/prepared/run-status.json"}
+_ ERROR at setup of test_rehashed_scope_escalation_rejected[semanticApproval] __
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_rehashed_scope_escalation1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff1940>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_rehashed_scope_escalation1/prepared/run-status.json"}
+_ ERROR at setup of test_rehashed_scope_escalation_rejected[productionAcceptanceComplete] _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_rehashed_scope_escalation2')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff2150>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_rehashed_scope_escalation2/prepared/run-status.json"}
+_____________ ERROR at setup of test_changed_exact_source_rejected _____________
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_changed_exact_source_reje0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff14c0>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_changed_exact_source_reje0/prepared/run-status.json"}
+_ ERROR at setup of test_empty_installation_rejected_before_creating_translation _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_empty_installation_reject0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73fe1460>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_empty_installation_reject0/prepared/run-status.json"}
+________ ERROR at setup of test_composed_run_stops_on_preflight_failure ________
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_composed_run_stops_on_pre0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff1790>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_composed_run_stops_on_pre0/prepared/run-status.json"}
+_ ERROR at setup of test_composed_run_reuses_original_stages_and_stops_on_unsupported _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_composed_run_reuses_origi0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f73ff2c30>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_composed_run_reuses_origi0/prepared/run-status.json"}
+_ ERROR at setup of test_presumed_diagnostic_path_does_not_authorize_original_source_edit _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_presumed_diagnostic_path_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f743b6fc0>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_presumed_diagnostic_path_0/prepared/run-status.json"}
+_ ERROR at setup of test_request_binding_preserves_original_layers_builds_and_comparison _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_request_binding_preserves0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f743b6c30>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_request_binding_preserves0/prepared/run-status.json"}
+_ ERROR at setup of test_program_plan_freezes_cells_and_separates_execution_preconditions _
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_program_plan_freezes_cell0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f1f743bd8b0>
+
+    @pytest.fixture
+    def adapted(tmp_path,monkeypatch):
+        install=tmp_path/'fake-ghidra';(install/'support').mkdir(parents=True)
+        launcher=install/'support/pythonRun';launcher.write_text('#!/bin/sh\nexit 0\n');launcher.chmod(0o755)
+        # A protocol fixture, not a real Ghidra capability certificate.
+        monkeypatch.setenv('GHIDRA_INSTALL_DIR',str(install))
+        ast,report,raw=example();receipt={'target':'riscv64','analysisInputIdentity':'fixture-input',
+            'context':{'workingDirectory':str(tmp_path),'environment':{'PATH':os.environ['PATH']}},
+            'analysisInput':{'inspectionArguments':['-O2','-march=rv64gc','-mabi=lp64d']}}
+        receipt_path=tmp_path/'native-input.json';receipt_path.write_text(json.dumps(receipt))
+        bundle={'frontend':str(Path(sys.executable).resolve()),'frontendDigest':d.digest(sys.executable),
+                'nativeInputReceiptPath':str(receipt_path)}
+        bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
+        # Already verified native boundary is isolated here. Exact physical binding
+        # and original artifact parsing/materialization run without mocks.
+        monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+        monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
+        calls=[]
+        def run(command,**kwargs):
+            calls.append((command,kwargs))
+            if '--report-json' in command:
+                value=deepcopy(report);file='/diagnostic-only/upstream/input.c'
+                value['findings'][0]['fileName']=file
+                value['findings'][0]['fragment']['fileName']=file
+                value['findings'][0]['fragment']['id']='fixture-fragment'
+                value['findings'][0]['hasRewriteRange']=True
+                Path(command[command.index('--report-json')+1]).write_text(json.dumps(value))
+            return SimpleNamespace(returncode=0,stdout=b'fixture stdout',stderr=b'')
+        monkeypatch.setattr(route.subprocess,'run',run)
+>       prepared=route.prepare(bundle_path,tmp_path/'prepared')
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_native_original_pipeline.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/native_original_pipeline.py:70: in prepare
+    'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
+                      ^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+---------------------------- Captured stderr setup -----------------------------
+{"acquisitionFailure": {"stage": "original-frontend", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_program_plan_freezes_cell0/prepared/run-status.json"}
+=================================== FAILURES ===================================
+_________ test_actual_machine_leaf_facts_and_independent_rederivation __________
+
+binary = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_actual_machine_leaf_facts0/leaf.so')
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_actual_machine_leaf_facts0')
+
+    def test_actual_machine_leaf_facts_and_independent_rederivation(binary,tmp_path):
+>       value=machine.acquire(binary,'good',tmp_path/'machine')
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_program_proof_components.py:28: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/program_machine_evidence.py:108: in acquire
+    value=d.seal({'schemaVersion':SCHEMA,'verifier':current(),'original':d.snapshot(elf),
+                                                    ^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+----------------------------- Captured stderr call -----------------------------
+{"acquisitionFailure": {"stage": "machine-facts", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_actual_machine_leaf_facts0/machine/run-status.json"}
+________ test_object_alias_initialization_and_checked_conditional_scope ________
+
+tmp_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase187-focused/test_object_alias_initializati0')
+
+    def test_object_alias_initialization_and_checked_conditional_scope(tmp_path):
+        input_path=tmp_path/'model.json';input_path.write_text(json.dumps(model()))
+>       value=objects.acquire(input_path,tmp_path/'object-evidence')
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_program_proof_components.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pytools/riscv2x86_py/program_object_evidence.py:101: in acquire
+    value=d.seal({'schemaVersion':SCHEMA,'verifier':current(),'input':d.snapshot(input_path),
+                                                    ^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def current():
+        root = Path(__file__).resolve(strict=True).parent
+        # Avoid declaring the current tree while already imported helpers come
+        # from another worktree. File path equality matters locally, not between
+        # two otherwise identical installations.
+        for name, module in tuple(sys.modules.items()):
+            if name != 'riscv2x86_py' and not name.startswith('riscv2x86_py.'):
+                continue
+            path = getattr(module, '__file__', None)
+            if path is None:
+>               raise ValueError('DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:'+name)
+E               ValueError: DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module
+
+pytools/riscv2x86_py/native_verifier_manifest.py:47: ValueError
+----------------------------- Captured stderr call -----------------------------
+{"acquisitionFailure": {"stage": "object-model", "type": "ValueError", "detail": "DEPLOYMENT_VERIFIER_MODULE_ORIGIN_UNAVAILABLE:riscv2x86_py.c_module"}, "statusPath": "/workspace/scratch/0e7cfc2712f5/phase187-focused/test_object_alias_initializati0/object-evidence/run-status.json"}
+2 failed, 26 passed, 14 errors in 3.35s
