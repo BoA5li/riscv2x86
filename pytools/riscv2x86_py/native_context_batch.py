@@ -118,18 +118,71 @@ def acquire(path,output,*,clang,start=0,count=4,timeout=300,reuse_paths=(),indic
         inputs['contextIndices']=indices
         inputs['count']=len(indices);inputs['startIndex']=0
     receipts=[]
+    # A checkpoint is acquisition progress, never a complete batch receipt.
+    # Publish each successful item before attempting the next compiler action.
+    def checkpoint(state, failure=None):
+        from .project_acquisition import publish
+        publish(root/'progress.json', {
+            'schemaVersion':'riscv2x86.native-context-batch-progress.v1',
+            'contracts':inputs['contracts'], 'clang':inputs['clang'],
+            'selectedContextIndices':selected_indices,
+            'processedContextIndices':selected_indices[:len(receipts)],
+            'acquiredContextIndices':[i for i,r in zip(selected_indices,receipts) if r is not None],
+            'receipts':receipts, 'state':state, 'failure':failure,
+            'semanticApproval':False, 'productionAcceptanceComplete':False})
+    checkpoint('running')
     for index,context in zip(selected_indices,contexts):
-        if blockers(report,context):receipts.append(None);continue
+        if blockers(report,context):
+            receipts.append(None);checkpoint('running');continue
         cached=reusable.get((context['contextIdentity'],compiler))
-        if cached is not None:receipts.append(cached);continue
+        if cached is not None:
+            receipts.append(cached);checkpoint('running');continue
         folder=root/('context-%06d'%index)
-        native.acquire(context,compiler,folder,target='x86_64',timeout=timeout)
+        try:
+            native.acquire(context,compiler,folder,target='x86_64',timeout=timeout)
+        except Exception as exc:
+            checkpoint('failed', {'contextIndex':index, 'type':type(exc).__name__,
+                                  'detail':str(exc)})
+            raise
         receipts.append(deployment.snapshot(folder/'native-input.json'))
+        checkpoint('running')
     inputs['receipts']=receipts
     (root/'inputs.json').write_text(json.dumps(deployment.seal(inputs,'batchInputsIdentity'),indent=2)+'\n')
     value=derive(inputs,receipts)
     (root/'result.json').write_text(json.dumps(value,indent=2)+'\n')
-    check(root/'result.json');return value
+    check(root/'result.json');checkpoint('complete');return value
+
+
+def recover(path, receipt_root, output, *, clang, timeout=300):
+    """Revalidate individual receipts, including pre-checkpoint interrupted runs.
+
+    Directory names and progress booleans do not authorize reuse. Every selected
+    receipt is independently validated by the same batch/context/tool checks.
+    An absent receipt remains absent, not successful or proved irrelevant.
+    """
+    report=contracts.check(path);compiler=str(resolve_executable(clang))
+    root=Path(receipt_root).resolve(strict=True)
+    if not root.is_dir():raise ValueError('CONTEXT_RECOVERY_DIRECTORY_REQUIRED')
+    known={c['contextIdentity']:(i,c) for i,c in enumerate(
+        report['producerContextClosure']['compileContexts'])}
+    found={}
+    for file in sorted(root.rglob('native-input.json')):
+        receipt=deployment.read(file);validated_input(receipt)
+        cid=receipt['context']['contextIdentity']
+        if cid not in known:raise ValueError('CONTEXT_RECOVERY_UNKNOWN_CONTEXT')
+        index,context=known[cid]
+        if (receipt['context']!=context or receipt['target']!='x86_64'
+                or receipt['inspectionCompiler']!=compiler):
+            raise ValueError('CONTEXT_RECOVERY_CONTEXT_OR_TOOL_MISMATCH')
+        if index in found:
+            previous=deployment.read(found[index])
+            if previous['nativeInputIdentity']!=receipt['nativeInputIdentity']:
+                raise ValueError('CONTEXT_RECOVERY_CONFLICTING_RECEIPTS')
+        else:found[index]=file
+    if not found:raise ValueError('CONTEXT_RECOVERY_NO_VALID_RECEIPTS')
+    if len(found)>64:raise ValueError('CONTEXT_RECOVERY_BATCH_BUDGET_EXCEEDED')
+    return acquire(path,output,clang=compiler,indices=sorted(found),
+                   reuse_paths=list(found.values()),timeout=timeout)
 
 
 def check(path):

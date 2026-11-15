@@ -102,10 +102,24 @@ def acquire(path,batch_paths,output,*,clang,max_contexts=64,batch_size=16,timeou
         'contracts':d.snapshot(path),'clang':d.snapshot(compiler),'previousBatches':snapshots,
         'newBatches':[],'maxContexts':max_contexts,'batchSize':batch_size,'timeoutSeconds':timeout}
     root=output_path(output);root.mkdir();selected=needed[:max_contexts]
+    from .project_acquisition import publish
+    def checkpoint(state,failure=None):
+        publish(root/'progress.json',{'schemaVersion':'riscv2x86.native-context-completion-progress.v1',
+            'contracts':inputs['contracts'],'clang':inputs['clang'],
+            'selectedContextIndices':selected,'completedBatches':inputs['newBatches'],
+            'previousBatches':inputs['previousBatches'],'state':state,'failure':failure,
+            'semanticApproval':False,'productionAcceptanceComplete':False})
+    checkpoint('running')
     for start in range(0,len(selected),batch_size):
         folder=root/('batch-%06d'%(start//batch_size))
-        batch.acquire(path,folder,clang=compiler,indices=selected[start:start+batch_size],timeout=timeout)
+        try:
+            batch.acquire(path,folder,clang=compiler,indices=selected[start:start+batch_size],timeout=timeout)
+        except Exception as exc:
+            checkpoint('failed',{'type':type(exc).__name__,'detail':str(exc),
+                                  'partialBatchDirectory':str(folder)})
+            raise
         inputs['newBatches'].append(d.snapshot(folder/'result.json'))
+        checkpoint('running')
         # A crash leaves independently checkable completed child batches. A
         # later call can reuse these via --context-batch; no status is forged.
         print(json.dumps({'completedBatchCount':len(inputs['newBatches']),
@@ -114,7 +128,7 @@ def acquire(path,batch_paths,output,*,clang,max_contexts=64,batch_size=16,timeou
     value=derive(inputs)
     (root/'inputs.json').write_text(json.dumps(inputs,indent=2)+'\n')
     (root/'result.json').write_text(json.dumps(value,indent=2)+'\n')
-    check(root/'result.json');return value
+    check(root/'result.json');checkpoint('complete');return value
 
 
 def check(path):

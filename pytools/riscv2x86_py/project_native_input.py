@@ -124,6 +124,18 @@ def ast_inventory(ast, input_identity):
     return dict(body, inventoryIdentity=identity(body))
 
 
+def execution_environment(context):
+    # v1 records search variables, not a full historical process environment.
+    # Do not inherit unrelated current values or claim the latter was captured.
+    captured=context.get('environment',context.get('searchEnvironment'))
+    if not isinstance(captured,dict) or not captured.get('PATH'):
+        raise ValueError('NATIVE_INPUT_CAPTURED_PATH_REQUIRED')
+    if any(not isinstance(k,str) or not k or '=' in k or '\0' in k
+           or (v is not None and (not isinstance(v,str) or '\0' in v)) for k,v in captured.items()):
+        raise ValueError('NATIVE_INPUT_ENVIRONMENT_INVALID')
+    return {k:v for k,v in captured.items() if v is not None and v!=''}
+
+
 def acquire(context, clang, output, *, target='riscv64', timeout=120):
     if type(timeout) is not int or timeout < 1:
         raise ValueError('NATIVE_INPUT_TIMEOUT_INVALID')
@@ -143,11 +155,12 @@ def acquire(context, clang, output, *, target='riscv64', timeout=120):
         native = [context['nativeCompiler'], *native_args]
         inspector = [compiler, '--target=' + target + '-linux-gnu',
             '-std=gnu11', *inspected_args]
+        environment = execution_environment(context)
         commands = []
         def run(stage, command, *, input_bytes=None):
             runner.state['currentStage'] = stage; runner.save()
             result = subprocess.run(command, cwd=cwd, input=input_bytes,
-                capture_output=True, timeout=timeout, check=False)
+                capture_output=True, timeout=timeout, check=False, env=environment)
             stdout = runner.output / (stage + '.stdout')
             stderr = runner.output / (stage + '.stderr')
             stdout.write_bytes(result.stdout); stderr.write_bytes(result.stderr)
@@ -161,6 +174,23 @@ def acquire(context, clang, output, *, target='riscv64', timeout=120):
                 runner.state.update(status='failed', primaryFailure={
                     'stage': stage, 'returnCode': result.returncode,
                     'stderrPath': str(stderr)})
+                if stage == 'inspection-native-input':
+                    # The exact CPP parse is the capability probe. No type
+                    # spelling replacements, dropped declarations or warning
+                    # suppression may turn this failure into a valid input.
+                    diagnostic = {
+                        'schemaVersion':'riscv2x86.native-inspection-capability.v1',
+                        'contextIdentity':context['contextIdentity'],
+                        'compilerPath':compiler, 'compilerDigest':tools[compiler],
+                        'inputDigest':bytes_identity(input_bytes),
+                        'command':command, 'returnCode':result.returncode,
+                        'integerDataModelMatched':True,
+                        'exactNativeInputParsingComplete':False,
+                        'reasonCode':'INSPECTION_FRONTEND_LANGUAGE_OR_TYPE_CAPABILITY_REQUIRED',
+                        'stderrDigest':digest(stderr),
+                        'semanticApproval':False,'productionAcceptanceComplete':False}
+                    (runner.output/'inspection-capability.json').write_text(json.dumps(
+                        dict(diagnostic,capabilityIdentity=identity(diagnostic)),indent=2)+'\n')
                 runner.save(); raise StageFailure(stage, result.returncode)
             return result.stdout
 
@@ -218,6 +248,9 @@ def acquire(context, clang, output, *, target='riscv64', timeout=120):
         if any(digest(p) != value for p, value in tools.items()):
             raise ValueError('NATIVE_INPUT_TOOL_CHANGED')
         body = {'schemaVersion': SCHEMA, 'context': context,
+            'executionEnvironment': environment,
+            'executionEnvironmentScope':('captured-process-environment' if 'environment' in context
+                                          else 'captured-search-variables-only'),
             'inspectionCompiler': compiler, 'target': target,
             'analysisInput': input_body, 'analysisInputIdentity': input_id,
             'commands': commands, 'astProjectionPolicy': AST_POLICY,
@@ -255,6 +288,12 @@ def validate_artifacts(receipt):
             or receipt.get('nativeInputIdentity') != identity({
                 k: v for k, v in receipt.items() if k != 'nativeInputIdentity'})):
         raise ValueError('NATIVE_INPUT_RECEIPT_INVALID')
+    if 'executionEnvironment' in receipt or 'executionEnvironmentScope' in receipt:
+        scope=('captured-process-environment' if 'environment' in receipt['context']
+               else 'captured-search-variables-only')
+        if (receipt.get('executionEnvironment')!=execution_environment(receipt['context'])
+                or receipt.get('executionEnvironmentScope')!=scope):
+            raise ValueError('NATIVE_INPUT_EXECUTION_ENVIRONMENT_MISMATCH')
     for row in receipt['commands']:
         for key in ('stdout', 'stderr'):
             if digest(row[key + 'Path']) != row[key + 'Digest']:
@@ -301,7 +340,12 @@ def replay(receipt, output, *, timeout=120):
 def replay_projection(value):
     """The same stored-evidence comparison used by independent acquisition."""
     result = {k: v for k, v in value.items() if k not in {
-        'nativeInputIdentity', 'canonicalAstPath', 'inventoryPath', 'commands'}}
+        'nativeInputIdentity', 'canonicalAstPath', 'inventoryPath', 'commands',
+        # These new fields are rederived from the context in validate_artifacts.
+        # Keep the captured context itself in this exact comparison. Older v1
+        # receipts did not record the execution policy; replay proves identical
+        # native input/AST, never an otherwise uncaptured historical environment.
+        'executionEnvironment', 'executionEnvironmentScope'}}
     result['commands'] = [{k: v for k, v in row.items() if k not in {
         'stdoutPath', 'stderrPath', 'stdoutDigest'}} for row in value['commands']]
     # Raw AST addresses change by process. All other stdout bytes remain

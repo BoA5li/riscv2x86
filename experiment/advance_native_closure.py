@@ -66,6 +66,14 @@ def main(argv=None):
     batch.add_argument('--start-index',type=int,default=0);batch.add_argument('--count',type=int,default=4)
     batch.add_argument('--reuse-receipt',action='append',default=[])
     batch.add_argument('--context-index',type=int,action='append')
+    recovery=sub.add_parser('recover-context-batch')
+    recovery.add_argument('--contracts',required=True);recovery.add_argument('--clang',required=True)
+    recovery.add_argument('--receipt-root',required=True)
+    inspectors=sub.add_parser('select-inspector')
+    inspectors.add_argument('--contracts',required=True);inspectors.add_argument('--context-index',required=True,type=int)
+    inspectors.add_argument('--inspection-candidate',action='append',required=True)
+    applicability=sub.add_parser('inspect-instance-applicability')
+    applicability.add_argument('--candidate',required=True)
     completion=sub.add_parser('complete-context-inputs')
     completion.add_argument('--contracts',required=True);completion.add_argument('--clang',required=True)
     completion.add_argument('--context-batch',action='append',default=[])
@@ -97,7 +105,7 @@ def main(argv=None):
     prepare_comparison.add_argument('--timeout-seconds',type=int,default=300)
     comparison = sub.add_parser('compare-programs'); comparison.add_argument('--plan', required=True)
     comparison.add_argument('--output', required=True)
-    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, api_prepare, api_run, statements, framework_export, framework_run, native_l0, native_request, contracts, batch, completion, priority,archive_audit):
+    for parser in (deploy, replay, source, run, audit, repeat, context, runtime, entry_probe, api_prepare, api_run, statements, framework_export, framework_run, native_l0, native_request, contracts, batch, completion, priority,archive_audit,recovery,inspectors,applicability):
         parser.add_argument('--output', required=True)
         parser.add_argument('--timeout-seconds', type=int, default=300)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
@@ -213,6 +221,15 @@ def main(argv=None):
             value=acquire_batch(args.contracts,args.output,clang=args.clang,start=args.start_index,
                                 count=args.count,timeout=args.timeout_seconds,reuse_paths=args.reuse_receipt,
                                 indices=args.context_index)
+        elif args.operation == 'recover-context-batch':
+            from riscv2x86_py.native_context_batch import recover
+            value=recover(args.contracts,args.receipt_root,args.output,clang=args.clang,timeout=args.timeout_seconds)
+        elif args.operation == 'select-inspector':
+            from riscv2x86_py.native_frontend_selection import acquire as select_inspector
+            value=select_inspector(args.contracts,args.context_index,args.inspection_candidate,args.output,timeout=args.timeout_seconds)
+        elif args.operation == 'inspect-instance-applicability':
+            from riscv2x86_py.native_instance_applicability import acquire as inspect_applicability
+            value=inspect_applicability(args.candidate,args.output)
         elif args.operation == 'acquire-priority-contexts':
             from riscv2x86_py.native_context_resolution import acquire_priority
             value=acquire_priority(args.resolution,args.output,clang=args.clang,
@@ -263,6 +280,12 @@ def main(argv=None):
             elif value.get('schemaVersion') == 'riscv2x86.native-context-batch.v1':
                 from riscv2x86_py.native_context_batch import check as check_batch
                 check_batch(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-instance-applicability.v1':
+                from riscv2x86_py.native_instance_applicability import check as check_applicability
+                check_applicability(args.input)
+            elif value.get('schemaVersion') == 'riscv2x86.native-inspector-selection.v1':
+                from riscv2x86_py.native_frontend_selection import check as check_selection
+                check_selection(args.input)
             elif value.get('schemaVersion') == 'riscv2x86.native-process-comparison.v1':
                 from riscv2x86_py.native_program_comparison import check as check_comparison
                 check_comparison(args.input)
@@ -308,7 +331,8 @@ def main(argv=None):
                    'processObservableComparisonStatus', 'sourceReturnCode', 'targetReturnCode',
                    'l1EligibilityVerified','startIndex','nextIndex','totalContextCount',
                    'selectedContextAcquisitionComplete','selectedContextIndices',
-                   'acquiredContextCount','remainingEligibleContextIndices','blockedContexts','allCapturedCContextsAcquired') if k in value}
+                   'acquiredContextCount','remainingEligibleContextIndices','blockedContexts','allCapturedCContextsAcquired',
+                   'inputAcquired','selectedReceipt','expandedTranslatedInstanceCount','requiresIndependentCandidateAudit') if k in value}
         for key in ('naturalObservationReproduced', 'auditPrerequisitePath', 'diagnosticObservedReturnCode',
                     'auditPrerequisiteIntegrityChecked'):
             if key in value: result[key] = value[key]
@@ -347,7 +371,7 @@ def main(argv=None):
         if hasattr(args, 'output'):
             result['output'] = str(Path(args.output).absolute())
         print(json.dumps(result))
-        return 0
+        return 2 if args.operation=='select-inspector' and not value['inputAcquired'] else 0
     except (OSError, ValueError, KeyError, TypeError, StopIteration, StageFailure, subprocess.SubprocessError) as exc:
         print(json.dumps({'error': type(exc).__name__, 'detail': str(exc),
                           'evidenceOperationComplete': False, 'semanticApproval': False,

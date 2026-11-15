@@ -1,0 +1,677 @@
+......................................................................s. [ 11%]
+...........................................................ss........... [ 23%]
+..........................s...........................s................. [ 35%]
+........................................................................ [ 47%]
+........................................................................ [ 58%]
+............................F...........F..F............................ [ 70%]
+F....F.................................................................. [ 82%]
+...................................ss................................... [ 94%]
+s..................................                                      [100%]
+=================================== FAILURES ===================================
+_______ test_selected_producer_closes_real_bindings_and_receipt_replays ________
+
+ingress = (PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_selected_producer_closes_0/renamed.c'), Posix...', to_dict=<function ingress.<locals>.<lambda> at 0x7f1449f1be20>), <function ingress.<locals>.seal at 0x7f1449ed8c20>)
+
+    def test_selected_producer_closes_real_bindings_and_receipt_replays(ingress):
+        source, report, manifest, tool, artifact, seal = ingress
+>       data = produce_intents(source, report, manifest)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_l3_production_ingress.py:88: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_selected_producer_closes_0/renamed.c')
+report = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_selected_producer_closes_0/translated.json')
+manifest_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_selected_producer_closes_0/producer.json')
+replay = False
+
+    def produce_intents(source, report, manifest_path, *, replay=False):
+        """Run only after approval materialization; return a new report, never edit code."""
+        from .mechanism_route_checks import compiler_bound_finding
+        from .translation_attempt import load_translation_attempt_archive
+        from .translation_artifact_binding import artifacts_from_report
+        source, report, manifest_path = map(lambda p: Path(p).resolve(), (source, report, manifest_path))
+        value = json.loads(manifest_path.read_text())
+        validate_manifest(value, source)
+        original = report.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+        data = json.loads(original)
+        archive = load_translation_attempt_archive(str(report) + '.attempts.json')
+        artifacts = artifacts_from_report(report, archive)
+        items = []
+        # Batch only the complete compiler-confirmed joint route. Partial reports
+        # and all other producers keep the existing per-finding ingress behavior.
+        from .joint_performance import enabled
+        bindings=None
+        if enabled() and len(data['findings'])>1 and all(
+                f"finding:{i}:{(f.get('fragment') or {}).get('id','')}" in artifacts for i,f in enumerate(data['findings'])):
+            candidate_path=report.with_name('compiler-candidates.json')
+            snapshot=json.loads(candidate_path.read_text())
+            from .compiler_joint_context import valid
+            functions=snapshot.get('functions') if isinstance(snapshot,dict) else None
+            if isinstance(functions,list) and all(isinstance(fn,dict) for fn in functions) and any(valid(fn) for fn in functions):
+                from .mechanism_route_checks import compiler_bound_findings
+                bound_findings,batch_snapshot=compiler_bound_findings(source,report)
+                bindings={f['fragment']['id']:(f,batch_snapshot) for f in bound_findings}
+        prerequisite_refusals = []
+        for index, finding in enumerate(data['findings']):
+            fragment = finding.get('fragment') or {}
+            fid = fragment.get('id', '')
+            if not replay and (finding.get('l3IntentProfile') is not None or finding.get('l3IntentReceipt') is not None or finding.get('l3IntentDisposition') is not None):
+                raise ValueError('l3.intent.preexisting-unreviewed-profile')
+            artifact = artifacts.get(f'finding:{index}:{fid}')
+            if artifact is None:
+                continue  # No translation candidate is not authority to infer intent=none.
+            bound, snapshot = bindings[fid] if bindings is not None else compiler_bound_finding(source, report, fid)
+            bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
+            finding.pop('l3IntentProfile', None)
+            finding.pop('l3IntentReceipt', None)
+            finding.pop('l3IntentDisposition', None)
+            if bound != finding:
+                raise ValueError('l3.intent.compiler-binding-mismatch')
+            if not artifact.effect_relation_set_identity:
+                # No relation is not authority for intent=none. Publish a framework
+                # precondition refusal so L2 requirements can still be classified.
+                from .l3_intent_requirements import _unknown_profile
+                profile = _unknown_profile(fid).to_dict()
+                decision = {'schemaVersion':'riscv2x86.l3-intent-disposition.v1',
+                    'fragmentId':fid,'profileIdentity':profile['profileIdentity'],
+                    'status':'prerequisites_missing','reasonCodes':['l3.intent.effect-relation-required']}
+                finding['l3IntentProfile']=profile
+                finding['l3IntentDisposition']=dict(decision,dispositionIdentity=_hash(decision))
+                prerequisite_refusals.append(fid)
+                continue
+            items.append({'findingIndex': index, 'finding': dict(finding),
+                          'compilerFunctions': snapshot.get('functions', []),
+                          'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
+                          asdict(artifact)})
+        if not items and prerequisite_refusals:
+            if not replay:
+                transcript=report.with_name(report.name+'.l3-intent-production.json')
+                with transcript.open('x') as stream:
+                    json.dump({'schemaVersion':'riscv2x86.l3-intent-prerequisite-refusal.v1',
+                        'producerInvoked':False,'fragmentIds':prerequisite_refusals,
+                        'sourceDigest':value['sourceDigest'],'semanticApproval':False},stream,indent=2)
+            return data
+        if not items:
+            # Terminal upstream refusals do not need an experiment profile. Keep
+            # their exact translation outcomes; unknown intent remains unproved.
+            if data['findings'] and all(f.get('translationOutcome') in {'unsupported','failed','needs_route'} for f in data['findings']):
+                return data
+            raise ValueError('l3.intent.approved-candidates-unavailable')
+        request = {'schemaVersion': 'riscv2x86.l3-intent-producer-request.v1',
+                   'sourcePath': str(source), 'sourceDigest': digest(source),
+                   'producerIdentity': value['producerIdentity'], 'candidates': items}
+        request['requestIdentity'] = _hash(request)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(value['command'], input=json.dumps(request, sort_keys=True),
+                text=True, capture_output=True, timeout=value['timeoutSeconds'], check=False)
+        except subprocess.TimeoutExpired as exc:
+            evidence = _execution_transcript(report, request, value['command'], exc.stdout, exc.stderr,
+                None, True, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            tail = exc.stderr or ''
+            if isinstance(tail, bytes):
+                tail = tail.decode('utf-8', errors='replace')
+            detail = {'reasonCode': 'l3.intent.producer-timed-out',
+                      'failureStage': 'l3_intent_production',
+                      'timeoutSeconds': value['timeoutSeconds'],
+                      'elapsedSeconds': time.monotonic() - started,
+                      'command': value['command'], 'stderrTail': tail[-8000:], **evidence}
+            raise IntentProducerError(detail) from exc
+        except OSError as exc:
+            evidence = _execution_transcript(report, request, value['command'], '', str(exc),
+                None, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            raise IntentProducerError({'reasonCode':'l3.intent.producer-start-failed',
+                'failureStage':'l3_intent_production', **evidence}) from exc
+        evidence = _execution_transcript(report, request, value['command'], completed.stdout, completed.stderr,
+            completed.returncode, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+        validate_manifest(value, source)
+        if manifest_path.read_bytes() != original_manifest:
+            raise ValueError('l3.intent.producer-modified-manifest')
+        if report.read_bytes() != original:
+            raise ValueError('l3.intent.producer-modified-input-report')
+        if completed.returncode:
+>           raise IntentProducerError({'reasonCode':'l3.intent.producer-failed',
+                'failureStage':'l3_intent_production', 'returnCode':completed.returncode,
+                'stderrTail':completed.stderr[-2000:], **evidence})
+E           riscv2x86_py.l3_intent_ingress.IntentProducerError: l3.intent.producer-failed:{"executionTranscriptDigest": "sha256:14636b28af75b04699d7f4074a57aa69949f570f90d0cbbae469ce4cdef48f91", "executionTranscriptPath": "/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_selected_producer_closes_0/translated.json.l3-intent-execution-52lkxfun.json", "failureStage": "l3_intent_production", "reasonCode": "l3.intent.producer-failed", "returnCode": 1, "stderrTail": "Traceback (most recent call last):\n  File \"/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_selected_producer_closes_0/producer.py\", line 5, in <module>\n    from riscv2x86_py.l3_intent_requirements import _hash\nModuleNotFoundError: No module named 'riscv2x86_py'\n"}
+
+pytools/riscv2x86_py/l3_intent_ingress.py:220: IntentProducerError
+___ test_rehashed_profile_and_receipt_must_replay_selected_semantic_producer ___
+
+ingress = (PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_rehashed_profile_and_rece0/renamed.c'), Posix...', to_dict=<function ingress.<locals>.<lambda> at 0x7f144c7920c0>), <function ingress.<locals>.seal at 0x7f144c791ee0>)
+
+    def test_rehashed_profile_and_receipt_must_replay_selected_semantic_producer(ingress):
+        source, report, manifest, tool, artifact, seal = ingress
+>       data = produce_intents(source, report, manifest)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_l3_production_ingress.py:159: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_rehashed_profile_and_rece0/renamed.c')
+report = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_rehashed_profile_and_rece0/translated.json')
+manifest_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_rehashed_profile_and_rece0/producer.json')
+replay = False
+
+    def produce_intents(source, report, manifest_path, *, replay=False):
+        """Run only after approval materialization; return a new report, never edit code."""
+        from .mechanism_route_checks import compiler_bound_finding
+        from .translation_attempt import load_translation_attempt_archive
+        from .translation_artifact_binding import artifacts_from_report
+        source, report, manifest_path = map(lambda p: Path(p).resolve(), (source, report, manifest_path))
+        value = json.loads(manifest_path.read_text())
+        validate_manifest(value, source)
+        original = report.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+        data = json.loads(original)
+        archive = load_translation_attempt_archive(str(report) + '.attempts.json')
+        artifacts = artifacts_from_report(report, archive)
+        items = []
+        # Batch only the complete compiler-confirmed joint route. Partial reports
+        # and all other producers keep the existing per-finding ingress behavior.
+        from .joint_performance import enabled
+        bindings=None
+        if enabled() and len(data['findings'])>1 and all(
+                f"finding:{i}:{(f.get('fragment') or {}).get('id','')}" in artifacts for i,f in enumerate(data['findings'])):
+            candidate_path=report.with_name('compiler-candidates.json')
+            snapshot=json.loads(candidate_path.read_text())
+            from .compiler_joint_context import valid
+            functions=snapshot.get('functions') if isinstance(snapshot,dict) else None
+            if isinstance(functions,list) and all(isinstance(fn,dict) for fn in functions) and any(valid(fn) for fn in functions):
+                from .mechanism_route_checks import compiler_bound_findings
+                bound_findings,batch_snapshot=compiler_bound_findings(source,report)
+                bindings={f['fragment']['id']:(f,batch_snapshot) for f in bound_findings}
+        prerequisite_refusals = []
+        for index, finding in enumerate(data['findings']):
+            fragment = finding.get('fragment') or {}
+            fid = fragment.get('id', '')
+            if not replay and (finding.get('l3IntentProfile') is not None or finding.get('l3IntentReceipt') is not None or finding.get('l3IntentDisposition') is not None):
+                raise ValueError('l3.intent.preexisting-unreviewed-profile')
+            artifact = artifacts.get(f'finding:{index}:{fid}')
+            if artifact is None:
+                continue  # No translation candidate is not authority to infer intent=none.
+            bound, snapshot = bindings[fid] if bindings is not None else compiler_bound_finding(source, report, fid)
+            bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
+            finding.pop('l3IntentProfile', None)
+            finding.pop('l3IntentReceipt', None)
+            finding.pop('l3IntentDisposition', None)
+            if bound != finding:
+                raise ValueError('l3.intent.compiler-binding-mismatch')
+            if not artifact.effect_relation_set_identity:
+                # No relation is not authority for intent=none. Publish a framework
+                # precondition refusal so L2 requirements can still be classified.
+                from .l3_intent_requirements import _unknown_profile
+                profile = _unknown_profile(fid).to_dict()
+                decision = {'schemaVersion':'riscv2x86.l3-intent-disposition.v1',
+                    'fragmentId':fid,'profileIdentity':profile['profileIdentity'],
+                    'status':'prerequisites_missing','reasonCodes':['l3.intent.effect-relation-required']}
+                finding['l3IntentProfile']=profile
+                finding['l3IntentDisposition']=dict(decision,dispositionIdentity=_hash(decision))
+                prerequisite_refusals.append(fid)
+                continue
+            items.append({'findingIndex': index, 'finding': dict(finding),
+                          'compilerFunctions': snapshot.get('functions', []),
+                          'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
+                          asdict(artifact)})
+        if not items and prerequisite_refusals:
+            if not replay:
+                transcript=report.with_name(report.name+'.l3-intent-production.json')
+                with transcript.open('x') as stream:
+                    json.dump({'schemaVersion':'riscv2x86.l3-intent-prerequisite-refusal.v1',
+                        'producerInvoked':False,'fragmentIds':prerequisite_refusals,
+                        'sourceDigest':value['sourceDigest'],'semanticApproval':False},stream,indent=2)
+            return data
+        if not items:
+            # Terminal upstream refusals do not need an experiment profile. Keep
+            # their exact translation outcomes; unknown intent remains unproved.
+            if data['findings'] and all(f.get('translationOutcome') in {'unsupported','failed','needs_route'} for f in data['findings']):
+                return data
+            raise ValueError('l3.intent.approved-candidates-unavailable')
+        request = {'schemaVersion': 'riscv2x86.l3-intent-producer-request.v1',
+                   'sourcePath': str(source), 'sourceDigest': digest(source),
+                   'producerIdentity': value['producerIdentity'], 'candidates': items}
+        request['requestIdentity'] = _hash(request)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(value['command'], input=json.dumps(request, sort_keys=True),
+                text=True, capture_output=True, timeout=value['timeoutSeconds'], check=False)
+        except subprocess.TimeoutExpired as exc:
+            evidence = _execution_transcript(report, request, value['command'], exc.stdout, exc.stderr,
+                None, True, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            tail = exc.stderr or ''
+            if isinstance(tail, bytes):
+                tail = tail.decode('utf-8', errors='replace')
+            detail = {'reasonCode': 'l3.intent.producer-timed-out',
+                      'failureStage': 'l3_intent_production',
+                      'timeoutSeconds': value['timeoutSeconds'],
+                      'elapsedSeconds': time.monotonic() - started,
+                      'command': value['command'], 'stderrTail': tail[-8000:], **evidence}
+            raise IntentProducerError(detail) from exc
+        except OSError as exc:
+            evidence = _execution_transcript(report, request, value['command'], '', str(exc),
+                None, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            raise IntentProducerError({'reasonCode':'l3.intent.producer-start-failed',
+                'failureStage':'l3_intent_production', **evidence}) from exc
+        evidence = _execution_transcript(report, request, value['command'], completed.stdout, completed.stderr,
+            completed.returncode, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+        validate_manifest(value, source)
+        if manifest_path.read_bytes() != original_manifest:
+            raise ValueError('l3.intent.producer-modified-manifest')
+        if report.read_bytes() != original:
+            raise ValueError('l3.intent.producer-modified-input-report')
+        if completed.returncode:
+>           raise IntentProducerError({'reasonCode':'l3.intent.producer-failed',
+                'failureStage':'l3_intent_production', 'returnCode':completed.returncode,
+                'stderrTail':completed.stderr[-2000:], **evidence})
+E           riscv2x86_py.l3_intent_ingress.IntentProducerError: l3.intent.producer-failed:{"executionTranscriptDigest": "sha256:06d0d12096f14f9db06f6eee9c761dca4c3ba4df15dd5b4493dfe1e2cff5c5f0", "executionTranscriptPath": "/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_rehashed_profile_and_rece0/translated.json.l3-intent-execution-dotxnykr.json", "failureStage": "l3_intent_production", "reasonCode": "l3.intent.producer-failed", "returnCode": 1, "stderrTail": "Traceback (most recent call last):\n  File \"/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_rehashed_profile_and_rece0/producer.py\", line 5, in <module>\n    from riscv2x86_py.l3_intent_requirements import _hash\nModuleNotFoundError: No module named 'riscv2x86_py'\n"}
+
+pytools/riscv2x86_py/l3_intent_ingress.py:220: IntentProducerError
+________ test_bounded_refusal_protocol_preserves_unknown_and_replays[] _________
+
+ingress = (PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_bounded_refusal_protocol_0/renamed.c'), Posix...', to_dict=<function ingress.<locals>.<lambda> at 0x7f144c7927a0>), <function ingress.<locals>.seal at 0x7f144c792c00>)
+malformed = ''
+
+    @pytest.mark.parametrize('malformed', ['', 'duplicate', 'not-list', 'wrong-profile'])
+    def test_bounded_refusal_protocol_preserves_unknown_and_replays(ingress, malformed):
+        source, report, manifest, tool, artifact, seal = ingress
+        text = tool.read_text()
+        marker = 'p["profileIdentity"]='
+        text = text.replace(marker, 'p.update(intentKind="unknown",experimentClasses=[],requiredProperties=[],sourceCapabilities=[],targetCapabilities=[],complete=False)\n'+marker)
+        text = text.replace('print(json.dumps(',
+            'd={"schemaVersion":"riscv2x86.l3-intent-disposition.v1","fragmentId":p["fragmentId"],'
+            '"profileIdentity":p["profileIdentity"],"status":"unsupported","reasonCodes":["bounded-route-only"]}\n'
+            'd["dispositionIdentity"]=_hash(d)\nprint(json.dumps(')
+        text = text.replace('response.v1', 'response.v2').replace('"profiles":[p]', '"profiles":[p],"dispositions":[d]')
+        if malformed == 'duplicate':text=text.replace('"dispositions":[d]', '"dispositions":[d,d]')
+        if malformed == 'not-list':text=text.replace('"dispositions":[d]', '"dispositions":{}')
+        if malformed == 'wrong-profile':text=text.replace('"profileIdentity":p["profileIdentity"]','"profileIdentity":"'+RELATION+'"')
+        tool.write_text(text);seal()
+        if malformed:
+            with pytest.raises(ValueError):produce_intents(source,report,manifest)
+            return
+>       data=produce_intents(source,report,manifest)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_l3_production_ingress.py:226: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_bounded_refusal_protocol_0/renamed.c')
+report = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_bounded_refusal_protocol_0/translated.json')
+manifest_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_bounded_refusal_protocol_0/producer.json')
+replay = False
+
+    def produce_intents(source, report, manifest_path, *, replay=False):
+        """Run only after approval materialization; return a new report, never edit code."""
+        from .mechanism_route_checks import compiler_bound_finding
+        from .translation_attempt import load_translation_attempt_archive
+        from .translation_artifact_binding import artifacts_from_report
+        source, report, manifest_path = map(lambda p: Path(p).resolve(), (source, report, manifest_path))
+        value = json.loads(manifest_path.read_text())
+        validate_manifest(value, source)
+        original = report.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+        data = json.loads(original)
+        archive = load_translation_attempt_archive(str(report) + '.attempts.json')
+        artifacts = artifacts_from_report(report, archive)
+        items = []
+        # Batch only the complete compiler-confirmed joint route. Partial reports
+        # and all other producers keep the existing per-finding ingress behavior.
+        from .joint_performance import enabled
+        bindings=None
+        if enabled() and len(data['findings'])>1 and all(
+                f"finding:{i}:{(f.get('fragment') or {}).get('id','')}" in artifacts for i,f in enumerate(data['findings'])):
+            candidate_path=report.with_name('compiler-candidates.json')
+            snapshot=json.loads(candidate_path.read_text())
+            from .compiler_joint_context import valid
+            functions=snapshot.get('functions') if isinstance(snapshot,dict) else None
+            if isinstance(functions,list) and all(isinstance(fn,dict) for fn in functions) and any(valid(fn) for fn in functions):
+                from .mechanism_route_checks import compiler_bound_findings
+                bound_findings,batch_snapshot=compiler_bound_findings(source,report)
+                bindings={f['fragment']['id']:(f,batch_snapshot) for f in bound_findings}
+        prerequisite_refusals = []
+        for index, finding in enumerate(data['findings']):
+            fragment = finding.get('fragment') or {}
+            fid = fragment.get('id', '')
+            if not replay and (finding.get('l3IntentProfile') is not None or finding.get('l3IntentReceipt') is not None or finding.get('l3IntentDisposition') is not None):
+                raise ValueError('l3.intent.preexisting-unreviewed-profile')
+            artifact = artifacts.get(f'finding:{index}:{fid}')
+            if artifact is None:
+                continue  # No translation candidate is not authority to infer intent=none.
+            bound, snapshot = bindings[fid] if bindings is not None else compiler_bound_finding(source, report, fid)
+            bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
+            finding.pop('l3IntentProfile', None)
+            finding.pop('l3IntentReceipt', None)
+            finding.pop('l3IntentDisposition', None)
+            if bound != finding:
+                raise ValueError('l3.intent.compiler-binding-mismatch')
+            if not artifact.effect_relation_set_identity:
+                # No relation is not authority for intent=none. Publish a framework
+                # precondition refusal so L2 requirements can still be classified.
+                from .l3_intent_requirements import _unknown_profile
+                profile = _unknown_profile(fid).to_dict()
+                decision = {'schemaVersion':'riscv2x86.l3-intent-disposition.v1',
+                    'fragmentId':fid,'profileIdentity':profile['profileIdentity'],
+                    'status':'prerequisites_missing','reasonCodes':['l3.intent.effect-relation-required']}
+                finding['l3IntentProfile']=profile
+                finding['l3IntentDisposition']=dict(decision,dispositionIdentity=_hash(decision))
+                prerequisite_refusals.append(fid)
+                continue
+            items.append({'findingIndex': index, 'finding': dict(finding),
+                          'compilerFunctions': snapshot.get('functions', []),
+                          'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
+                          asdict(artifact)})
+        if not items and prerequisite_refusals:
+            if not replay:
+                transcript=report.with_name(report.name+'.l3-intent-production.json')
+                with transcript.open('x') as stream:
+                    json.dump({'schemaVersion':'riscv2x86.l3-intent-prerequisite-refusal.v1',
+                        'producerInvoked':False,'fragmentIds':prerequisite_refusals,
+                        'sourceDigest':value['sourceDigest'],'semanticApproval':False},stream,indent=2)
+            return data
+        if not items:
+            # Terminal upstream refusals do not need an experiment profile. Keep
+            # their exact translation outcomes; unknown intent remains unproved.
+            if data['findings'] and all(f.get('translationOutcome') in {'unsupported','failed','needs_route'} for f in data['findings']):
+                return data
+            raise ValueError('l3.intent.approved-candidates-unavailable')
+        request = {'schemaVersion': 'riscv2x86.l3-intent-producer-request.v1',
+                   'sourcePath': str(source), 'sourceDigest': digest(source),
+                   'producerIdentity': value['producerIdentity'], 'candidates': items}
+        request['requestIdentity'] = _hash(request)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(value['command'], input=json.dumps(request, sort_keys=True),
+                text=True, capture_output=True, timeout=value['timeoutSeconds'], check=False)
+        except subprocess.TimeoutExpired as exc:
+            evidence = _execution_transcript(report, request, value['command'], exc.stdout, exc.stderr,
+                None, True, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            tail = exc.stderr or ''
+            if isinstance(tail, bytes):
+                tail = tail.decode('utf-8', errors='replace')
+            detail = {'reasonCode': 'l3.intent.producer-timed-out',
+                      'failureStage': 'l3_intent_production',
+                      'timeoutSeconds': value['timeoutSeconds'],
+                      'elapsedSeconds': time.monotonic() - started,
+                      'command': value['command'], 'stderrTail': tail[-8000:], **evidence}
+            raise IntentProducerError(detail) from exc
+        except OSError as exc:
+            evidence = _execution_transcript(report, request, value['command'], '', str(exc),
+                None, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            raise IntentProducerError({'reasonCode':'l3.intent.producer-start-failed',
+                'failureStage':'l3_intent_production', **evidence}) from exc
+        evidence = _execution_transcript(report, request, value['command'], completed.stdout, completed.stderr,
+            completed.returncode, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+        validate_manifest(value, source)
+        if manifest_path.read_bytes() != original_manifest:
+            raise ValueError('l3.intent.producer-modified-manifest')
+        if report.read_bytes() != original:
+            raise ValueError('l3.intent.producer-modified-input-report')
+        if completed.returncode:
+>           raise IntentProducerError({'reasonCode':'l3.intent.producer-failed',
+                'failureStage':'l3_intent_production', 'returnCode':completed.returncode,
+                'stderrTail':completed.stderr[-2000:], **evidence})
+E           riscv2x86_py.l3_intent_ingress.IntentProducerError: l3.intent.producer-failed:{"executionTranscriptDigest": "sha256:80033ec83b873a032ec43df657c51c59c7487efe37742b34686b43b35c60e09c", "executionTranscriptPath": "/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_bounded_refusal_protocol_0/translated.json.l3-intent-execution-v9qq0u6o.json", "failureStage": "l3_intent_production", "reasonCode": "l3.intent.producer-failed", "returnCode": 1, "stderrTail": "Traceback (most recent call last):\n  File \"/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_bounded_refusal_protocol_0/producer.py\", line 5, in <module>\n    from riscv2x86_py.l3_intent_requirements import _hash\nModuleNotFoundError: No module named 'riscv2x86_py'\n"}
+
+pytools/riscv2x86_py/l3_intent_ingress.py:220: IntentProducerError
+_______ test_joint_producer_batches_only_complete_compiler_bound_members _______
+
+ingress = (PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_joint_producer_batches_on0/renamed.c'), Posix...', to_dict=<function ingress.<locals>.<lambda> at 0x7f144b7cc180>), <function ingress.<locals>.seal at 0x7f144b7cd1c0>)
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f144a35c0e0>
+
+    def test_joint_producer_batches_only_complete_compiler_bound_members(ingress,monkeypatch):
+        from types import SimpleNamespace
+        from riscv2x86_py import mechanism_route_checks as checks,translation_artifact_binding as binding
+        from riscv2x86_py import l3_intent_ingress as subject
+        from riscv2x86_py.l3_trace_support import identity,digest,require_json_match
+        from tests.test_l3_provider_resolution import _facts
+        source,report,manifest,tool,artifact,seal=ingress
+        findings=[{'fragment':{'id':'fragment:'+str(i)},'translationOutcome':'emitted'} for i in range(3)]
+        report.write_text(json.dumps({'findings':findings}))
+        scope={'schemaVersion':'riscv2x86.compiler-joint-scope.v3','scope':'direct-typed-private-object-views',
+            'sourceDigest':digest(source),'functionIdentity':'fixture-function'}
+        scope['scopeIdentity']=identity(scope)
+        snapshot={'functions':[{'functionId':'fixture-function','sourceDigest':digest(source),'compilerJointScope':scope}]}
+        report.with_name('compiler-candidates.json').write_text(json.dumps(snapshot))
+        artifacts={}
+        for i,finding in enumerate(findings):
+            fields=dict(vars(artifact),fragment_id=finding['fragment']['id'])
+            artifacts['finding:'+str(i)+':'+finding['fragment']['id']]=SimpleNamespace(**fields)
+        monkeypatch.setattr(binding,'artifacts_from_report',lambda *a:artifacts)
+        calls={'single':0,'batch':0}
+        def single(s,r,fid):
+            calls['single']+=1;return next(f for f in json.loads(report.read_text())['findings'] if f['fragment']['id']==fid),snapshot
+        def batch(*a):calls['batch']+=1;return json.loads(report.read_text())['findings'],snapshot
+        monkeypatch.setattr(checks,'compiler_bound_finding',single);monkeypatch.setattr(checks,'compiler_bound_findings',batch)
+        profile,_=_facts()
+        tool.write_text('import json,sys,copy\nfrom riscv2x86_py.l3_intent_requirements import _hash\nr=json.load(sys.stdin);profiles=[]\n'
+            'for item in r["candidates"]:\n p=copy.deepcopy('+repr(profile)+');p["fragmentId"]=item["finding"]["fragment"]["id"];p["producer"]["producerIdentity"]=r["producerIdentity"];p["profileIdentity"]=_hash({k:v for k,v in p.items() if k!="profileIdentity"});profiles.append(p)\n'
+            'print(json.dumps({"schemaVersion":"riscv2x86.l3-intent-producer-response.v1","requestIdentity":r["requestIdentity"],"profiles":profiles}))\n')
+        seal();outputs=[]
+        for mode in ('0','1'):
+            calls.update(single=0,batch=0);monkeypatch.setenv('RV2X86_JOINT_PERFORMANCE_V2',mode)
+>           outputs.append(subject.produce_intents(source,report,manifest,replay=True))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+pytools/tests/test_joint_provenance_performance.py:167: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+source = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_joint_producer_batches_on0/renamed.c')
+report = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_joint_producer_batches_on0/translated.json')
+manifest_path = PosixPath('/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_joint_producer_batches_on0/producer.json')
+replay = True
+
+    def produce_intents(source, report, manifest_path, *, replay=False):
+        """Run only after approval materialization; return a new report, never edit code."""
+        from .mechanism_route_checks import compiler_bound_finding
+        from .translation_attempt import load_translation_attempt_archive
+        from .translation_artifact_binding import artifacts_from_report
+        source, report, manifest_path = map(lambda p: Path(p).resolve(), (source, report, manifest_path))
+        value = json.loads(manifest_path.read_text())
+        validate_manifest(value, source)
+        original = report.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+        data = json.loads(original)
+        archive = load_translation_attempt_archive(str(report) + '.attempts.json')
+        artifacts = artifacts_from_report(report, archive)
+        items = []
+        # Batch only the complete compiler-confirmed joint route. Partial reports
+        # and all other producers keep the existing per-finding ingress behavior.
+        from .joint_performance import enabled
+        bindings=None
+        if enabled() and len(data['findings'])>1 and all(
+                f"finding:{i}:{(f.get('fragment') or {}).get('id','')}" in artifacts for i,f in enumerate(data['findings'])):
+            candidate_path=report.with_name('compiler-candidates.json')
+            snapshot=json.loads(candidate_path.read_text())
+            from .compiler_joint_context import valid
+            functions=snapshot.get('functions') if isinstance(snapshot,dict) else None
+            if isinstance(functions,list) and all(isinstance(fn,dict) for fn in functions) and any(valid(fn) for fn in functions):
+                from .mechanism_route_checks import compiler_bound_findings
+                bound_findings,batch_snapshot=compiler_bound_findings(source,report)
+                bindings={f['fragment']['id']:(f,batch_snapshot) for f in bound_findings}
+        prerequisite_refusals = []
+        for index, finding in enumerate(data['findings']):
+            fragment = finding.get('fragment') or {}
+            fid = fragment.get('id', '')
+            if not replay and (finding.get('l3IntentProfile') is not None or finding.get('l3IntentReceipt') is not None or finding.get('l3IntentDisposition') is not None):
+                raise ValueError('l3.intent.preexisting-unreviewed-profile')
+            artifact = artifacts.get(f'finding:{index}:{fid}')
+            if artifact is None:
+                continue  # No translation candidate is not authority to infer intent=none.
+            bound, snapshot = bindings[fid] if bindings is not None else compiler_bound_finding(source, report, fid)
+            bound = {k: v for k, v in bound.items() if k not in {'l3IntentProfile', 'l3IntentReceipt', 'l3IntentDisposition'}}
+            finding.pop('l3IntentProfile', None)
+            finding.pop('l3IntentReceipt', None)
+            finding.pop('l3IntentDisposition', None)
+            if bound != finding:
+                raise ValueError('l3.intent.compiler-binding-mismatch')
+            if not artifact.effect_relation_set_identity:
+                # No relation is not authority for intent=none. Publish a framework
+                # precondition refusal so L2 requirements can still be classified.
+                from .l3_intent_requirements import _unknown_profile
+                profile = _unknown_profile(fid).to_dict()
+                decision = {'schemaVersion':'riscv2x86.l3-intent-disposition.v1',
+                    'fragmentId':fid,'profileIdentity':profile['profileIdentity'],
+                    'status':'prerequisites_missing','reasonCodes':['l3.intent.effect-relation-required']}
+                finding['l3IntentProfile']=profile
+                finding['l3IntentDisposition']=dict(decision,dispositionIdentity=_hash(decision))
+                prerequisite_refusals.append(fid)
+                continue
+            items.append({'findingIndex': index, 'finding': dict(finding),
+                          'compilerFunctions': snapshot.get('functions', []),
+                          'translationArtifact': artifact.to_dict() if hasattr(artifact, 'to_dict') else
+                          asdict(artifact)})
+        if not items and prerequisite_refusals:
+            if not replay:
+                transcript=report.with_name(report.name+'.l3-intent-production.json')
+                with transcript.open('x') as stream:
+                    json.dump({'schemaVersion':'riscv2x86.l3-intent-prerequisite-refusal.v1',
+                        'producerInvoked':False,'fragmentIds':prerequisite_refusals,
+                        'sourceDigest':value['sourceDigest'],'semanticApproval':False},stream,indent=2)
+            return data
+        if not items:
+            # Terminal upstream refusals do not need an experiment profile. Keep
+            # their exact translation outcomes; unknown intent remains unproved.
+            if data['findings'] and all(f.get('translationOutcome') in {'unsupported','failed','needs_route'} for f in data['findings']):
+                return data
+            raise ValueError('l3.intent.approved-candidates-unavailable')
+        request = {'schemaVersion': 'riscv2x86.l3-intent-producer-request.v1',
+                   'sourcePath': str(source), 'sourceDigest': digest(source),
+                   'producerIdentity': value['producerIdentity'], 'candidates': items}
+        request['requestIdentity'] = _hash(request)
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(value['command'], input=json.dumps(request, sort_keys=True),
+                text=True, capture_output=True, timeout=value['timeoutSeconds'], check=False)
+        except subprocess.TimeoutExpired as exc:
+            evidence = _execution_transcript(report, request, value['command'], exc.stdout, exc.stderr,
+                None, True, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            tail = exc.stderr or ''
+            if isinstance(tail, bytes):
+                tail = tail.decode('utf-8', errors='replace')
+            detail = {'reasonCode': 'l3.intent.producer-timed-out',
+                      'failureStage': 'l3_intent_production',
+                      'timeoutSeconds': value['timeoutSeconds'],
+                      'elapsedSeconds': time.monotonic() - started,
+                      'command': value['command'], 'stderrTail': tail[-8000:], **evidence}
+            raise IntentProducerError(detail) from exc
+        except OSError as exc:
+            evidence = _execution_transcript(report, request, value['command'], '', str(exc),
+                None, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+            raise IntentProducerError({'reasonCode':'l3.intent.producer-start-failed',
+                'failureStage':'l3_intent_production', **evidence}) from exc
+        evidence = _execution_transcript(report, request, value['command'], completed.stdout, completed.stderr,
+            completed.returncode, False, time.monotonic() - started, value['timeoutSeconds'], replay=replay)
+        validate_manifest(value, source)
+        if manifest_path.read_bytes() != original_manifest:
+            raise ValueError('l3.intent.producer-modified-manifest')
+        if report.read_bytes() != original:
+            raise ValueError('l3.intent.producer-modified-input-report')
+        if completed.returncode:
+>           raise IntentProducerError({'reasonCode':'l3.intent.producer-failed',
+                'failureStage':'l3_intent_production', 'returnCode':completed.returncode,
+                'stderrTail':completed.stderr[-2000:], **evidence})
+E           riscv2x86_py.l3_intent_ingress.IntentProducerError: l3.intent.producer-failed:{"executionTranscriptDigest": "sha256:855670c09746f360e856955e35be43453cba47d68db67d87df2f4a1d05cc8424", "executionTranscriptPath": "/tmp/translated.json.l3-intent-execution-z8gay3nf.json", "failureStage": "l3_intent_production", "reasonCode": "l3.intent.producer-failed", "returnCode": 1, "stderrTail": "Traceback (most recent call last):\n  File \"/workspace/scratch/0e7cfc2712f5/phase185-pytest-release/test_joint_producer_batches_on0/producer.py\", line 2, in <module>\n    from riscv2x86_py.l3_intent_requirements import _hash\nModuleNotFoundError: No module named 'riscv2x86_py'\n"}
+
+pytools/riscv2x86_py/l3_intent_ingress.py:220: IntentProducerError
+________________ test_nonzero_stack_loop_widens_and_terminates _________________
+
+    def test_nonzero_stack_loop_widens_and_terminates():
+        program='''from riscv2x86_py.function_frame_analysis import *
+    from riscv2x86_py.whole_function import *
+    nodes=tuple(FunctionCfgNode(n,'c',None,True) for n in ('e','loop','x'))
+    edges=tuple(FunctionCfgEdge(a,b,'flow',True) for a,b in [('e','loop'),('loop','loop'),('loop','x')])
+    graph=SourceFunctionControlFlowModel('e',nodes,edges,(FunctionExitBinding('x','x',FunctionExitKind.NORMAL_RETURN,True),),True)
+    r=analyze_function_frame(cfg=graph,transfers=(FunctionBlockTransfer('e',0),FunctionBlockTransfer('loop',-16),FunctionBlockTransfer('x',0)),required_call_alignment=16)
+    assert not r.complete and 'whole-function.stack-affine-nonconvergent' in r.missing_fact_codes
+    '''
+>       subprocess.run([sys.executable,'-c',program],check=True,timeout=5,capture_output=True,env=os.environ.copy())
+
+pytools/tests/test_function_frame_analysis.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = True, timeout = 5, check = True
+popenargs = (['/workspace/scratch/0e7cfc2712f5/test-venv/bin/python', '-c', "from riscv2x86_py.function_frame_analysis import *\nf...call_alignment=16)\nassert not r.complete and 'whole-function.stack-affine-nonconvergent' in r.missing_fact_codes\n"],)
+kwargs = {'env': {'CAAS_PREFIX_TRANSFER_AUTH_TOKEN_FILE': '/dev/shm/caas-prefix-transfer/token', 'COLORTERM': '', 'no_proxy': '...DEX_EXEC_SERVER_REMOTE_BASE_URL': 'https://codex-cloud-environments.chatgpt.com/api', ...}, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['/workspace/scratch/0e7cfc2712f5/test-venv/bin/python', '-c', "from riscv2x86_py.function_frame_analysis import *\nfrom riscv2x86_py.whole_function import *\nnodes=tuple(FunctionCfgNode(n,'c',None,True) for n in ('e','loop','x'))\nedges=tuple(FunctionCfgEdge(a,b,'flow',True) for a,b in [('e','loop'),('loop','loop'),('loop','x')])\ngraph=SourceFunctionControlFlowModel('e',nodes,edges,(FunctionExitBinding('x','x',FunctionExitKind.NORMAL_RETURN,True),),True)\nr=analyze_function_frame(cfg=graph,transfers=(FunctionBlockTransfer('e',0),FunctionBlockTransfer('loop',-16),FunctionBlockTransfer('x',0)),required_call_alignment=16)\nassert not r.complete and 'whole-function.stack-affine-nonconvergent' in r.missing_fact_codes\n"]' returned non-zero exit status 1.
+
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py:571: CalledProcessError
+=========================== short test summary info ============================
+SKIPPED [1] pytools/tests/test_native_l0_materialization.py:100: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_api_experiment.py:68: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_api_experiment.py:76: real RISC-V GCC, QEMU and native GCC/ar required
+SKIPPED [1] pytools/tests/test_native_entry_probe.py:111: ptrace unavailable; no coverage claim
+SKIPPED [1] pytools/tests/test_native_runtime_identity.py:160: ptrace unavailable; recorded failure, not a verified runtime identity
+SKIPPED [1] pytools/tests/test_project_native_input.py:259: real Clang required; mock protocol tests do not replace this integration
+SKIPPED [1] pytools/tests/test_project_native_input.py:269: real RISC-V GCC and Clang required for source-toolchain integration
+SKIPPED [1] pytools/tests/test_native_integer_translation.py:198: real Clang, RV64 GCC, frontend and x86 GCC required
+5 failed, 598 passed, 8 skipped in 457.16s (0:07:37)

@@ -15,6 +15,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='operation', required=True)
     create = sub.add_parser('create')
+    create.add_argument('--legacy-integer', action='store_true',
+        help='Explicitly use the historical restricted integer generator, not the original pipeline')
     for name in ('bundle', 'target-compiler', 'output'):
         create.add_argument('--'+name, required=True)
     replay = sub.add_parser('audit')
@@ -31,6 +33,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.operation == 'create':
+            if not args.legacy_integer:
+                raise ValueError('ORIGINAL_PIPELINE_REQUIRED: use experiment/run_native_original.py; '
+                                 '--legacy-integer is only for explicitly scoped historical experiments')
             result = acquire(args.bundle, args.target_compiler, args.output, timeout=args.timeout_seconds)
             print(json.dumps({k: result[k] for k in ('candidatePath', 'candidateIdentity',
                 'allBoundAsmOccurrencesTranslated', 'derivedTargetMaterializationComplete',

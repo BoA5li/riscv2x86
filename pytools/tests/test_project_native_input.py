@@ -137,6 +137,43 @@ def test_data_model_mismatch_rejected_before_ast(tmp_path, monkeypatch):
     assert not any('-ast-dump=json' in c for c, _ in calls)
 
 
+def test_failed_exact_cpp_parse_produces_capability_diagnostic_not_fake_types(tmp_path,monkeypatch):
+    context,calls,control=fixture(tmp_path,monkeypatch);control['failed']=7
+    with pytest.raises(StageFailure):module.acquire(context,sys.executable,tmp_path/'capture',target='x86_64')
+    report=json.loads((tmp_path/'capture/inspection-capability.json').read_text())
+    assert report['integerDataModelMatched'] and not report['exactNativeInputParsingComplete']
+    assert report['reasonCode']=='INSPECTION_FRONTEND_LANGUAGE_OR_TYPE_CAPABILITY_REQUIRED'
+    assert not report['semanticApproval']
+    command,data=next((c,b) for c,b in calls if '-ast-dump=json' in c)
+    assert report['inputDigest']==module.bytes_identity(data)
+    assert '-Werror' in command and not any(x.startswith('-D_Float') for x in command)
+
+
+def test_execution_uses_recorded_search_environment_without_shell_leak(tmp_path,monkeypatch):
+    context,calls,control=fixture(tmp_path,monkeypatch)
+    assert 'environment' not in context
+    monkeypatch.setenv('RV2X86_UNRECORDED_VARIABLE','must-not-leak')
+    observed=[];original=module.subprocess.run
+    def run(command,**kwargs):
+        observed.append(kwargs.get('env'));return original(command,**kwargs)
+    monkeypatch.setattr(module.subprocess,'run',run)
+    value=module.acquire(context,sys.executable,tmp_path/'capture',target='x86_64')
+    assert observed and all('RV2X86_UNRECORDED_VARIABLE' not in env for env in observed)
+    assert value['executionEnvironment']==module.execution_environment(context)
+    assert value['executionEnvironmentScope']=='captured-search-variables-only'
+
+
+def test_old_v1_receipt_replays_exact_input_without_claiming_historical_environment(tmp_path,monkeypatch):
+    context,_,_=fixture(tmp_path,monkeypatch)
+    value=module.acquire(context,sys.executable,tmp_path/'capture',target='x86_64')
+    value.pop('executionEnvironment');value.pop('executionEnvironmentScope')
+    value['nativeInputIdentity']=identity({k:v for k,v in value.items() if k!='nativeInputIdentity'})
+    result=module.replay(value,tmp_path/'replay')
+    assert result['nativeInputReplayComplete'] and not result['compilerEquivalenceVerified']
+    fresh=json.loads((tmp_path/'replay/native-input.json').read_text())
+    assert fresh['executionEnvironmentScope']=='captured-search-variables-only'
+
+
 def test_dependency_changed_during_capture_rejected(tmp_path, monkeypatch):
     context, _, control = fixture(tmp_path, monkeypatch)
     control['mutate'] = True

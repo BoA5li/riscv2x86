@@ -1,0 +1,38 @@
+{
+  "scope": "original translation/evaluation input reuse, conditional guard diagnostics and recoverable acquisition; not full GMP acceptance",
+  "baseRemoteCommit": "158b7714a96a30a0290d85fcb619972ae21ac64b",
+  "broadRegression": {
+    "passed": 604,
+    "skipped": 8,
+    "seconds": 464.49
+  },
+  "finalAcquisitionAndAdapterRegression": {
+    "passed": 44,
+    "skipped": 2,
+    "seconds": 63.78
+  },
+  "finalRequestAndOriginalFrameworkRegression": {
+    "passed": 49,
+    "skipped": 0,
+    "seconds": 8.45
+  },
+  "countsOverlap": true,
+  "initialBroadRun": {
+    "passed": 598,
+    "failed": 5,
+    "skipped": 8,
+    "cause": "test subprocesses did not inherit PYTHONPATH; full suite rerun with documented environment; assertions not weakened"
+  },
+  "realGmpExperimentExecutedHere": false,
+  "realOriginalGhidraTranslationExecutedHere": false,
+  "remaining": [
+    "original macro rewrite provenance",
+    "claim-scoped actual dependency/call closure",
+    "machine ABI fact production",
+    "internal object access/effect proof production",
+    "canonical instruction-instance coverage",
+    "native global-stage closure"
+  ],
+  "semanticApproval": false,
+  "productionAcceptanceComplete": false
+}
