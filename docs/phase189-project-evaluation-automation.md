@@ -43,19 +43,21 @@ or claimed by this architectural campaign. No approval flags are changed.
 
 Use a new worktree/output; old verifier-bound original-run receipts must be
 regenerated under the current verifier. Historical build records are recipe
-inputs and remain read-only. The two existing discovery JSONs supply paths only;
+inputs and remain read-only. Set the exports below in the current terminal; exports made inside a child
+`bash` do not propagate back to the next command block. The two existing discovery JSONs supply paths only;
 the automation reads/checks the underlying captured records and actual bytes.
 
 ```bash
-bash -e <<'VERIFY_PHASE189'
 : "${REPO:?}" "${PREP_ROOT:?}" "${PHASE188_ROOT:?}" "${PHASE185_BUNDLE:?}"
-git -C "$REPO" fetch origin phase189-project-evaluation-automation
 export PHASE189_TOOLING="$PREP_ROOT/tooling-phase189"
-git -C "$REPO" worktree add --detach "$PHASE189_TOOLING" origin/phase189-project-evaluation-automation
 export PYTHONPATH="$PHASE189_TOOLING/pytools"
 export PYTHONDONTWRITEBYTECODE=1
 export PHASE189_PARENT="$(mktemp -d "$PHASE188_ROOT/phase189-XXXXXX")"
 export PHASE189_CLI="$PHASE189_TOOLING/experiment/automate_native_project.py"
+bash -e <<'VERIFY_PHASE189'
+: "${REPO:?}" "${PHASE189_TOOLING:?}" "${PHASE189_PARENT:?}"
+git -C "$REPO" fetch origin phase189-project-evaluation-automation
+git -C "$REPO" worktree add --detach "$PHASE189_TOOLING" origin/phase189-project-evaluation-automation
 git -C "$PHASE189_TOOLING" rev-parse HEAD
 printf 'PHASE189_PARENT=%s\n' "$PHASE189_PARENT"
 python3 -m pytest -q -rs \

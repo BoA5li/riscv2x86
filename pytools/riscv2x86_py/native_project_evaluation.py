@@ -253,8 +253,9 @@ def expected_input_digest(spec, side):
 
 def build_side(spec_path, side, input_path, output):
     spec = check(spec_path); profile = spec['profiles'][side]
-    output = Path(output).resolve(); root = output.parent / (output.name + '.project')
-    if output.exists(): raise FileExistsError(str(output))
+    output = Path(output).absolute()
+    if output.exists() or output.is_symlink(): raise FileExistsError(str(output))
+    output = output.resolve(); root = output.parent / (output.name + '.project')
     root.mkdir(); inp = d.snapshot(input_path)
     expected = expected_input_digest(spec, side)
     if inp['digest'] != expected: raise ValueError('PROJECT_CURRENT_INPUT_BINDING_MISMATCH')
@@ -414,22 +415,22 @@ def factory(config):
     return validator
 
 
-def request(spec_path, output):
+def request_payload(spec_path, output):
     """Produce a real ORIGINAL EvaluationRequest; no manually fabricated template."""
     from .evaluation import EVALUATION_REQUEST_SCHEMA, evaluation_request_from_dict
-    from .translation_validation import load_validation_plan, load_target_environment
+    from .translation_validation import validation_plan_from_dict, target_environment_from_dict
     from .validation_runtime_registry import VALIDATION_RUNTIME_REGISTRY_SCHEMA
     spec = check(spec_path); run = route.check_run(spec['run']['path'])
-    root = Path(output).resolve(); root.mkdir()
+    root = Path(output).resolve()
     plan = root / 'validation-plan.json'; env = root / 'environment.json'
-    write(plan, {'schemaVersion': 'riscv2x86.validation-plan.v1', 'planId': spec['projectEvaluationIdentity'],
+    plan_value = {'schemaVersion': 'riscv2x86.validation-plan.v1', 'planId': spec['projectEvaluationIdentity'],
         'profile': 'architectural', 'sourceRunner': 'qemu', 'targetRunner': 'native', 'seed': 0,
         'timeoutSeconds': spec['timeoutSeconds'], 'runtimeRegistryVersion': 'original-project.v1',
-        'experimentContractId': ''})
+        'experimentContractId': ''}
     flags = spec['profiles']['source']['compile']['flags']
     source_isa = unique([a.split('=', 1)[1] for a in flags if a.startswith('-march=')], 'PROJECT_EXPLICIT_SOURCE_ISA_REQUIRED')
     source_abi = unique([a.split('=', 1)[1] for a in flags if a.startswith('-mabi=')], 'PROJECT_EXPLICIT_SOURCE_ABI_REQUIRED')
-    write(env, {'schemaVersion': 'riscv2x86.target-environment.v1', 'environmentId': spec['projectEvaluationIdentity'],
+    env_value = {'schemaVersion': 'riscv2x86.target-environment.v1', 'environmentId': spec['projectEvaluationIdentity'],
         'sourceIsa': source_isa, 'sourceAbi': source_abi, 'targetIsa': 'x86_64', 'targetAbi': 'sysv_amd64',
         'sourceRunnerCapabilities': ['qemu'], 'targetRunnerCapabilities': ['native'],
         'sanitizerCapabilities': ['asan', 'none', 'ubsan'],
@@ -437,7 +438,7 @@ def request(spec_path, output):
         # guest loader are separately pinned in the project context; their
         # identities must not be relabeled as the native target runtime.
         'runtimeIdentity': spec['projectEvaluationIdentity'],
-        'loaderIdentity': spec['targetLoader']['digest']})
+        'loaderIdentity': spec['targetLoader']['digest']}
     cli = Path(__file__).resolve().parents[2] / 'experiment' / 'automate_native_project.py'
     builders = {}
     for side in ('source', 'target'):
@@ -457,7 +458,28 @@ def request(spec_path, output):
            'translationArtifacts': {}, **builders, 'translationCommand': [],
            'comparisonPolicy': 'exit-code-stdout-stderr-exact-bytes.v1',
            'validationUnit': 'program', 'validationGroupId': '', 'selectedAttemptIds': []}
-    evaluation_request_from_dict(raw); load_validation_plan(plan); load_target_environment(env)
-    # Registry paths are resolved by the original evaluator, not here.
-    write(root / 'request.json', raw)
+    evaluation_request_from_dict(raw); validation_plan_from_dict(plan_value); target_environment_from_dict(env_value)
+    return {'validation-plan.json': plan_value, 'environment.json': env_value, 'request.json': raw}
+
+
+def request(spec_path, output):
+    payload = request_payload(spec_path, output)
+    root = Path(output).resolve(); root.mkdir()
+    for name, value in payload.items(): write(root / name, value)
+    check_request(root / 'request.json', spec_path)
     return root / 'request.json'
+
+
+def check_request(path, spec_path):
+    """Rederive all contracts without overwriting or executing anything."""
+    path = Path(path).resolve(strict=True)
+    if path.name != 'request.json': raise ValueError('PROJECT_REQUEST_NAME_INVALID')
+    expected = request_payload(spec_path, path.parent)
+    for name, value in expected.items():
+        # These are exclusively generated contracts, so their original byte
+        # representation is known. Do not lose companion-file mutations when
+        # only request.json is the scheduler's main checkpoint reference.
+        expected_bytes = (json.dumps(value, indent=2) + '\n').encode('utf-8')
+        if d.read(path.parent / name) != value or (path.parent / name).read_bytes() != expected_bytes:
+            raise ValueError('PROJECT_REQUEST_REDERIVATION_MISMATCH:' + name)
+    return [d.snapshot(path.parent / name) for name in expected]

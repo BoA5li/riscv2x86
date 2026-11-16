@@ -311,3 +311,31 @@ def test_project_contract_roundtrip_rederives_recipes_and_rejects_resealed_envir
     value['profiles']['target']['environment']['LC_ALL'] = 'changed'
     p.write(output, d.seal({k: v for k, v in value.items() if k != 'projectEvaluationIdentity'}, 'projectEvaluationIdentity'))
     with pytest.raises(ValueError, match='REDERIVATION_MISMATCH'): p.check(output)
+
+
+def test_build_output_does_not_follow_a_broken_symlink(toy_project):
+    root, _, _, _ = toy_project
+    alias = root / 'output-alias'; target = root / 'unexpected-output'
+    alias.symlink_to(target)
+    with pytest.raises(FileExistsError): p.build_side('fixture', 'target', root / 'unused', alias)
+    assert alias.is_symlink() and not target.exists()
+
+
+def test_request_companion_is_checked_without_rewriting_it(toy_project, monkeypatch):
+    root, _, spec, _ = toy_project
+    run = d.read(spec['run']['path']); translated = d.read(run['translation']['path'])
+    translated.update(report={'path': '/fixture/report.json'}, attemptArchive={'path': '/fixture/archive.json'})
+    p.write(run['translation']['path'], translated)
+    spec['profiles']['source']['compile']['flags'] += ['-march=rv64gc', '-mabi=lp64d']
+    spec['python'] = d.snapshot(__import__('sys').executable)
+    specfile = root / 'spec.json'; p.write(specfile, spec)
+    monkeypatch.setattr(p.route, 'check_run', lambda path: run)
+    request = p.request(specfile, root / 'request-contracts')
+    files = p.check_request(request, specfile)
+    assert len(files) == 3
+    companion = request.parent / 'environment.json'
+    companion.write_bytes(companion.read_bytes() + b' ')
+    changed = companion.read_bytes()
+    with pytest.raises(ValueError, match='REQUEST_REDERIVATION_MISMATCH'):
+        p.check_request(request, specfile)
+    assert companion.read_bytes() == changed
