@@ -134,11 +134,12 @@ def test_l1_automatically_collects_real_machine_facts_without_promotion(machine_
     from riscv2x86_py.validation_status import ValidationStatus
     root, specfile, _, _, builds = machine_project
     monkeypatch.setattr(app, 'check', lambda path: {'project': d.snapshot(specfile), 'facts': {'fixture': True}})
-    original_command = p.command
+    from riscv2x86_py import native_experiment_driver as driver
+    original_command = driver.command
     def command(argv, *args):
         if argv[:2] == ['/usr/bin/env', '-L']: argv = argv[3:]
         return original_command(argv, *args)
-    monkeypatch.setattr(p, 'command', command)
+    monkeypatch.setattr(driver, 'command', command)
     programs = {s: ProgramArtifact(s, r['program']['path'], 'executable', r['program']['digest']) for s, r in builds.items()}
     validator = p.factory({'specPath': str(specfile), 'level': 'L1', 'workDirectory': str(root / 'l1'),
                            'applicabilityPath': 'fixture-app'})

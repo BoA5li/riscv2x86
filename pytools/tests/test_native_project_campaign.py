@@ -223,3 +223,14 @@ def test_pause_after_applicability_does_not_run_matrix_or_evaluation(campaign):
     assert final['status'] == 'complete' and calls == list(c.STAGES)
     assert calls.count('original') == 1
     assert all(a['operationElapsedSeconds'] is not None for a in final['attempts'])
+
+
+def test_resuming_preparation_can_stop_before_any_evaluation(campaign):
+    root, plan, calls, fail, _, _ = campaign
+    fail['project'] = 1
+    with pytest.raises(RuntimeError): c.execute(plan, root / 'campaign', stop_after='applicability')
+    value = c.resume_campaign(root / 'campaign', stop_after='applicability')
+    assert value['status'] == 'paused' and calls.count('original') == 1
+    assert calls == ['original', 'project', 'project', 'applicability']
+    assert c.resume_campaign(root / 'campaign', stop_after='applicability') == value
+    assert 'request' not in calls and 'evaluation' not in calls

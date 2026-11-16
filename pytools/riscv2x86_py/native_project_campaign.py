@@ -157,7 +157,7 @@ def check_progress(path):
 
 
 def execute(plan, output, *, resume=False, stop_after=None):
-    if stop_after is not None and (resume or stop_after not in STAGES[:-1]):
+    if stop_after is not None and stop_after not in STAGES[:-1]:
         raise ValueError('PROJECT_STOP_AFTER_NEW_CAMPAIGN_STAGE_REQUIRED')
     validate_plan(plan)
     requested = Path(output).absolute()
@@ -184,7 +184,7 @@ def execute(plan, output, *, resume=False, stop_after=None):
                      'primaryFailure': None, 'evaluationStatus': None,
                      'semanticApproval': False, 'productionAcceptanceComplete': False}
             publish(progress, state)
-        if state['status'] == 'complete': return check_progress(progress)
+        if state['status'] == 'complete' or stop_after in state['checkpoints']: return check_progress(progress)
         state.update(status='running', primaryFailure=None)
         for stage in STAGES:
             if stage in state['checkpoints']: continue
@@ -235,10 +235,10 @@ def execute(plan, output, *, resume=False, stop_after=None):
         publish(progress, state); return check_progress(progress)
 
 
-def resume_campaign(output):
+def resume_campaign(output, *, stop_after=None):
     """Resume the pinned configuration; no hand reconstruction of CLI flags."""
     state = check_progress(Path(output).resolve() / 'progress.json')
-    return execute(d.read(state['plan']['path']), output, resume=True)
+    return execute(d.read(state['plan']['path']), output, resume=True, stop_after=stop_after)
 
 
 def facts(state):

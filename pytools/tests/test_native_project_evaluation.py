@@ -101,11 +101,12 @@ def test_l1_collects_both_processes_with_original_comparator_and_cannot_approve(
     root, _, spec, programs = toy_project
     # Exercise real native commands for both sides; QEMU route itself is not
     # available here. Do not change production source launcher requirements.
-    original_command = p.command
+    from riscv2x86_py import native_experiment_driver as driver
+    original_command = driver.command
     def command(argv, *args):
         if argv[:2] == ['/usr/bin/env', '-L']: argv = argv[3:]
         return original_command(argv, *args)
-    monkeypatch.setattr(p, 'command', command)
+    monkeypatch.setattr(driver, 'command', command)
     f = p.factory({'specPath': 'fixture', 'workDirectory': str(root / 'observed'), 'level': 'L1'})
     result = f(level=ValidationLevel.L1, source_program_artifact=programs['source'],
                target_program_artifact=programs['target'])
@@ -256,10 +257,11 @@ def test_declared_nonzero_exit_is_not_a_budget_failure(toy_project, monkeypatch)
     # Identical native baseline programs are a process-comparator fixture only.
     artifact = ProgramArtifact('baseline', str(build / 'test-program'), 'executable', d.digest(build / 'test-program'))
     spec['cases'][0]['expectedExitCodes'] = [3]
-    execute = p.command
+    from riscv2x86_py import native_experiment_driver as driver
+    execute = driver.command
     def native(argv, *args):
         return execute(argv[3:] if argv[:2] == ['/usr/bin/env', '-L'] else argv, *args)
-    monkeypatch.setattr(p, 'command', native)
+    monkeypatch.setattr(driver, 'command', native)
     output = root / 'nonzero'; output.mkdir()
     value = p.observe(spec, artifact, artifact, output)
     assert value['cases'][0]['sourceReturnCode'] == value['cases'][0]['targetReturnCode'] == 3
@@ -341,3 +343,23 @@ def test_request_companion_is_checked_without_rewriting_it(toy_project, monkeypa
     with pytest.raises(ValueError, match='REQUEST_REDERIVATION_MISMATCH'):
         p.check_request(request, specfile)
     assert companion.read_bytes() == changed
+
+
+def test_selected_observation_replays_original_comparator_and_rejects_changed_context(toy_project, monkeypatch):
+    from riscv2x86_py import native_experiment_driver as driver
+    root, _, spec, programs = toy_project
+    spec['cases'] = p.gmp_cases([42, 43], 10)
+    execute = driver.command
+    def native(argv, *args):
+        return execute(argv[3:] if argv[:2] == ['/usr/bin/env', '-L'] else argv, *args)
+    monkeypatch.setattr(driver, 'command', native)
+    output = root / 'selected'; output.mkdir()
+    result = p.observe(spec, programs['source'], programs['target'], output, case_indices=[1])
+    assert result['caseIndices'] == [1] and len(result['cases']) == 1 and not result['mismatches']
+    assert not (output / 'case-000000').exists()
+    assert p.rederive_observations(spec, programs['source'], programs['target'], output, [1]) == result
+    file = output / 'case-000001/source/execution.json'; row = d.read(file)
+    row['environment']['GMP_CHECK_RANDOMIZE'] = 'unrelated'; p.write(file, row)
+    with pytest.raises(ValueError, match='COMMAND_CONTEXT_MISMATCH'):
+        p.rederive_observations(spec, programs['source'], programs['target'], output, [1])
+    with pytest.raises(ValueError): p.observation_recipe(spec, programs['source'], programs['target'], [])

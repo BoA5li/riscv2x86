@@ -344,47 +344,76 @@ def build_record(program, spec, side):
     return value
 
 
-def observe(spec, source, target, root):
-    """Reuse the ORIGINAL process comparator; never claim full L1 eligibility."""
-    from .l1_differential import HarnessObservation, ProcessObservation, compare_l1_observations
-    from .validation_case import ComparisonContract
-    observations = []; all_mismatches = []; unavailable = False; exit_outside = False; loader_failed = False; loader_diagnostics = {}
+def observation_recipe(spec, source, target, case_indices=None):
+    indices = list(range(len(spec['cases']))) if case_indices is None else case_indices
+    if (not isinstance(indices, list) or not indices or any(type(i) is not int or not 0 <= i < len(spec['cases']) for i in indices)
+            or indices != sorted(set(indices))):
+        raise ValueError('PROJECT_OBSERVATION_CASE_SELECTION_INVALID')
+    rows = []
     for side, artifact in (('source', source), ('target', target)):
         profile = spec['profiles'][side]
-        argv = ([spec['qemu']['path'], '-L', spec['runtimePrefix']] if side == 'source' else [])
-        argv += [spec[side + 'Loader']['path'], '--list', artifact.artifact_path]
-        code, failure = command(argv, profile['entry']['directory'], profile['environment'],
-                                root / ('loader-list-' + side), spec['timeoutSeconds'])
-        loader_diagnostics[side] = {'returnCode': code, 'failureReason': failure,
-                                  'elapsedSeconds': d.read(root / ('loader-list-' + side) / 'execution.json')['elapsedSeconds']}
-        unavailable |= bool(failure)
-        loader_failed |= code != 0
-    for i, case in enumerate(spec['cases']):
-        rows = {}; durations = {}; case_root = root / ('case-%06d' % i); case_root.mkdir()
+        prefix = [spec['qemu']['path'], '-L', spec['runtimePrefix']] if side == 'source' else []
+        rows.append({'path': 'loader-list-' + side, 'arguments': [*prefix, spec[side + 'Loader']['path'], '--list', artifact.artifact_path],
+                     'directory': profile['entry']['directory'], 'environment': profile['environment']})
+    for index in indices:
+        case = spec['cases'][index]
         for side, artifact in (('source', source), ('target', target)):
             profile = spec['profiles'][side]
-            argv = ([spec['qemu']['path'], '-L', spec['runtimePrefix']] if side == 'source' else [])
-            argv += [artifact.artifact_path, *case['arguments']]
-            env = {**profile['environment'], **case['environmentOverrides']}
-            folder = case_root / side
-            code, failure = command(argv, profile['entry']['directory'], env, folder, spec['timeoutSeconds'])
-            durations[side] = d.read(folder / 'execution.json')['elapsedSeconds']
-            raw = [(folder / (s + '.log')).read_bytes() for s in ('stdout', 'stderr')]
-            rows[side] = ProcessObservation(HarnessObservation(None, (), (), (), ()), code,
-                    *(base64.b64encode(b).decode('ascii') for b in raw), ())
-            unavailable |= bool(failure)
-            exit_outside |= code not in case['expectedExitCodes']
-        mismatch = compare_l1_observations(rows['source'], rows['target'],
-                                           ComparisonContract(False, True, True, True, False, (), (), (), ()))
-        all_mismatches.extend(mismatch)
+            prefix = [spec['qemu']['path'], '-L', spec['runtimePrefix']] if side == 'source' else []
+            rows.append({'path': 'case-%06d/%s' % (index, side),
+                         'arguments': [*prefix, artifact.artifact_path, *case['arguments']],
+                         'directory': profile['entry']['directory'],
+                         'environment': {**profile['environment'], **case['environmentOverrides']}})
+    return indices, rows
+
+
+def rederive_observations(spec, source, target, root, case_indices=None):
+    """Recompute the ORIGINAL comparator from pinned command records and logs."""
+    from .l1_differential import HarnessObservation, ProcessObservation, compare_l1_observations
+    from .validation_case import ComparisonContract
+    root = Path(root); indices, recipe = observation_recipe(spec, source, target, case_indices)
+    records = {}
+    for item in recipe:
+        folder = root / item['path']; row = d.read(folder / 'execution.json'); validate_execution_record(row)
+        if any(row[k] != item[k] for k in ('arguments', 'directory', 'environment')):
+            raise ValueError('PROJECT_OBSERVATION_COMMAND_CONTEXT_MISMATCH')
+        records[item['path']] = row
+        for name in ('stdout.log', 'stderr.log'):
+            if not (folder / name).is_file(): raise ValueError('PROJECT_OBSERVATION_LOG_REQUIRED')
+        if sum((folder / name).stat().st_size for name in ('stdout.log', 'stderr.log')) > 16 * 1024 * 1024:
+            raise ValueError('PROJECT_OBSERVATION_RETAINED_LOG_BUDGET_INVALID')
+    loaders = {side: {k: records['loader-list-' + side][k] for k in ('returnCode', 'failureReason', 'elapsedSeconds')}
+               for side in ('source', 'target')}
+    unavailable = any(r['failureReason'] is not None for r in records.values())
+    observations = []; mismatches = []; outside = False
+    for index in indices:
+        case = spec['cases'][index]; pair = {}; durations = {}
+        for side in ('source', 'target'):
+            key = 'case-%06d/%s' % (index, side); row = records[key]
+            logs = [(root / key / name).read_bytes() for name in ('stdout.log', 'stderr.log')]
+            pair[side] = ProcessObservation(HarnessObservation(None, (), (), (), ()), row['returnCode'],
+                *(base64.b64encode(raw).decode('ascii') for raw in logs), ())
+            durations[side] = row['elapsedSeconds']; outside |= row['returnCode'] not in case['expectedExitCodes']
+        mismatch = compare_l1_observations(pair['source'], pair['target'],
+            ComparisonContract(False, True, True, True, False, (), (), (), ()))
+        mismatches.extend(mismatch)
         observations.append({'case': case, 'mismatches': list(mismatch), 'elapsedSeconds': durations,
-                              'sourceReturnCode': rows['source'].exit_code,
-                              'targetReturnCode': rows['target'].exit_code})
-    value = {'cases': observations, 'mismatches': list(all_mismatches), 'executionBudgetFailed': unavailable, 'exitOutsideDeclaredDomain': exit_outside,
-             'loaderListFailed': loader_failed,
-             'loaderListDiagnostics': loader_diagnostics, 'naturalRunImageIdentityVerified': False,
-             'scope': 'exact-process-output-and-exit-only', 'gaps': spec['gaps'],
-             'semanticApproval': False, 'productionAcceptanceComplete': False}
+                             'sourceReturnCode': pair['source'].exit_code, 'targetReturnCode': pair['target'].exit_code})
+    return {'cases': observations, 'caseIndices': indices, 'mismatches': list(mismatches),
+            'executionBudgetFailed': unavailable, 'exitOutsideDeclaredDomain': outside,
+            'loaderListFailed': any(r['returnCode'] != 0 for r in loaders.values()),
+            'loaderListDiagnostics': loaders, 'naturalRunImageIdentityVerified': False,
+            'scope': 'exact-process-output-and-exit-only', 'gaps': spec['gaps'],
+            'semanticApproval': False, 'productionAcceptanceComplete': False}
+
+
+def observe(spec, source, target, root, *, case_indices=None):
+    """Execute selected cases; the formal default still executes ALL cases."""
+    root = Path(root); _, recipe = observation_recipe(spec, source, target, case_indices)
+    for item in recipe:
+        folder = root / item['path']; folder.parent.mkdir(parents=True, exist_ok=True)
+        command(item['arguments'], item['directory'], item['environment'], folder, spec['timeoutSeconds'])
+    value = rederive_observations(spec, source, target, root, case_indices)
     write(root / 'observations.json', value)
     return value
 
