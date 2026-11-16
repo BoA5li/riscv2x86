@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import sys
 
+from .verification_session import measured
 from . import native_captured_deployment as d
 from . import native_original_pipeline as route
 from .native_external_providers import checked
@@ -209,6 +210,7 @@ def freeze(run_path, target_plan_path, source_records, output, *, qemu,
     return value
 
 
+@measured('native_project_evaluation.check')
 def check(path):
     value = d.read(path); checked(value, 'projectEvaluationIdentity'); compare(value['verifier'], current())
     if value['schemaVersion'] != SCHEMA or value['gaps'] != ['THREE_COMPILE_CONTEXT_REFINEMENT_REQUIRED', *GAPS]:
@@ -234,6 +236,7 @@ def check(path):
     return value
 
 
+@measured('native_project_evaluation.command')
 def command(argv, cwd, env, root, timeout):
     from .native_experiment_driver import command as execute
     root.mkdir()
@@ -305,6 +308,7 @@ def build_side(spec_path, side, input_path, output):
     return value
 
 
+@measured('native_project_evaluation.build_record')
 def build_record(program, spec, side):
     root = Path(program.artifact_path).parent / (Path(program.artifact_path).name + '.project')
     value = d.read(root / 'result.json'); checked(value, 'projectBuildIdentity')
@@ -367,6 +371,7 @@ def observation_recipe(spec, source, target, case_indices=None):
     return indices, rows
 
 
+@measured('native_project_evaluation.rederive_observations')
 def rederive_observations(spec, source, target, root, case_indices=None):
     """Recompute the ORIGINAL comparator from pinned command records and logs."""
     from .l1_differential import HarnessObservation, ProcessObservation, compare_l1_observations

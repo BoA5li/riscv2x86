@@ -7,6 +7,7 @@ elimination or canonical instruction execution.
 import json
 from pathlib import Path
 
+from .verification_session import measured
 from . import native_captured_deployment as d
 from . import native_original_pipeline as route
 from . import native_project_evaluation as project
@@ -22,6 +23,7 @@ SCHEMA = 'riscv2x86.original-source-applicability.v1'
 _UNSTRUCTURED = {'GotoStmt', 'IndirectGotoStmt', 'LabelStmt', 'SwitchStmt', 'CaseStmt', 'DefaultStmt'}
 
 
+@measured('native_original_applicability.context')
 def context(spec_path):
     spec = project.check(spec_path); run = route.check_run(spec['run']['path'])
     prepared = d.read(run['input']['path']); bundle = d.read(run['bundle']['path'])
@@ -111,6 +113,7 @@ def argv(profile, probe):
     return [profile['compiler']['path'], '-x', 'c', *flags[2:], '-Werror', '-fsyntax-only', str(probe)]
 
 
+@measured('native_original_applicability.derive')
 def derive(spec_path, root):
     spec, ast, records, raw, model = context(spec_path)
     _, _, queries = obligations(ast, records, raw, model); answers = []
@@ -154,6 +157,7 @@ def acquire(spec_path, output):
     return value
 
 
+@measured('native_original_applicability.check')
 def check(path):
     path = Path(path).resolve(strict=True); value = d.read(path); checked(value, 'sourceApplicabilityIdentity')
     compare(value['verifier'], current()); d.verify_snapshot(value['project'])

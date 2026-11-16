@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from .verification_session import measured
 from . import native_captured_deployment as d
 from . import project_native_binding as binding
 from . import project_native_input as native
@@ -88,6 +89,7 @@ def check_command(row):
     if type(row['returnCode']) is not int:raise ValueError('ORIGINAL_PIPELINE_COMMAND_STATUS_INVALID')
 
 
+@measured('native_original_pipeline.check_input')
 def check_input(path):
     value=d.read(path);checked(value,'originalInputIdentity')
     if value['schemaVersion']!=PREPARED:raise ValueError('ORIGINAL_INPUT_SCHEMA_INVALID')
@@ -189,6 +191,7 @@ def translate(input_path,output,*,ghidra_install_dir=None,ghidra_language_id=Non
         runner.failure(runner.state['currentStage'],exc);raise
 
 
+@measured('native_original_pipeline.check_translation')
 def check_translation(path):
     value=d.read(path);checked(value,'originalTranslationIdentity')
     if value['schemaVersion']!=TRANSLATED:raise ValueError('ORIGINAL_TRANSLATION_SCHEMA_INVALID')
@@ -219,6 +222,7 @@ def check_translation(path):
     return value
 
 
+@measured('native_original_pipeline.audit')
 def audit(translation_path,output):
     """Re-run the ORIGINAL backend and materializer, not the legacy generator."""
     old=check_translation(translation_path)
@@ -253,6 +257,7 @@ def audit(translation_path,output):
     publish_checked(root/'result.json',value,check_replay);return value
 
 
+@measured('native_original_pipeline.check_replay')
 def check_replay(path):
     value=d.read(path);checked(value,'originalReplayIdentity')
     if value['schemaVersion']!='riscv2x86.native-original-replay.v1':raise ValueError('ORIGINAL_REPLAY_SCHEMA_INVALID')
@@ -359,6 +364,7 @@ def translation_complete(value):
             and all(x in ('emitted','keep') for x in value['attemptOutcomes']))
 
 
+@measured('native_original_pipeline.check_run')
 def check_run(path):
     from . import ghidra_preflight
     value=d.read(path);checked(value,'originalRunIdentity');compare_verifier(value['verifier'],verifier())

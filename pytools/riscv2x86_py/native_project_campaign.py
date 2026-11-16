@@ -8,6 +8,7 @@ from pathlib import Path
 import math
 import time
 
+from .verification_session import measured
 from . import native_captured_deployment as d
 from . import native_original_pipeline as route
 from . import native_original_evaluation as evaluation
@@ -67,6 +68,43 @@ def validate_plan(plan):
     return plan
 
 
+def replan_configuration(path):
+    """Create a NEW campaign from historical configuration, never its proofs.
+
+    Verifier/CLI identities intentionally refresh; every other frozen input,
+    case and tool reference must remain exact. Old checkpoints are not consumed.
+    """
+    reference = d.snapshot(path)
+    old = d.read(path)
+    from . import native_project_diagnostic as diagnostic
+    diagnostic_plan = old.get('schemaVersion') == diagnostic.PLAN
+    selected = None
+    if diagnostic_plan:
+        checked(old, 'diagnosticPlanIdentity')
+        if (set(old) != {'schemaVersion', 'basePlan', 'caseIndices', 'scope',
+                         'semanticApproval', 'productionAcceptanceComplete', 'diagnosticPlanIdentity'}
+                or old['scope'] != 'diagnostic-acquisition-not-formal-validation'
+                or old['semanticApproval'] is not False or old['productionAcceptanceComplete'] is not False):
+            raise ValueError('PROJECT_REPLAN_DIAGNOSTIC_CONFIGURATION_INVALID')
+        selected = old['caseIndices']
+        old = old['basePlan']
+    checked(old, 'campaignPlanIdentity')
+    if old.get('schemaVersion') != PLAN:
+        raise ValueError('PROJECT_REPLAN_CAMPAIGN_CONFIGURATION_REQUIRED')
+    checked(old['verifier'], 'verifierIdentity')
+    fresh = make_plan(old['bundle']['path'], old['targetPlan']['path'],
+                      [row['path'] for row in old['sourceRecords']],
+                      qemu=old['qemu']['path'], runtime_prefix=old['runtimePrefix'],
+                      cases=old['cases'], source_entry_action=old['sourceEntryAction'],
+                      ghidra_install_dir=old['ghidraInstallDir'], timeout=old['timeoutSeconds'])
+    refreshed = {'verifier', 'cli', 'campaignPlanIdentity'}
+    if ({k: v for k, v in old.items() if k not in refreshed}
+            != {k: v for k, v in fresh.items() if k not in refreshed}):
+        raise ValueError('PROJECT_REPLAN_FROZEN_CONFIGURATION_CHANGED')
+    d.verify_snapshot(reference)
+    return ('diagnostic', diagnostic.make_plan(fresh, selected), reference) if diagnostic_plan else ('formal', fresh, reference)
+
+
 def project_configuration(plan, run_path):
     return {'run_path': run_path, 'target_plan_path': plan['targetPlan']['resolvedPath'],
             'source_records': [r['path'] for r in plan['sourceRecords']], 'qemu': plan['qemu']['resolvedPath'],
@@ -74,6 +112,7 @@ def project_configuration(plan, run_path):
             'source_entry_action': plan['sourceEntryAction'], 'timeout': plan['timeoutSeconds']}
 
 
+@measured('native_project_campaign.check_progress')
 def check_progress(path):
     path = Path(path).resolve(strict=True); root = path.parent
     state = d.read(path); checked(state, 'stateIdentity')
@@ -217,11 +256,14 @@ def execute(plan, output, *, resume=False, stop_after=None):
                 validate_plan(plan)
                 cp[stage] = d.snapshot(result); attempt['status'] = 'complete'
                 attempt['operationElapsedSeconds'] = time.monotonic() - started
-                publish(progress, state)
-                check_progress(progress)
+                # Pausing changes only the control status. Publish it before
+                # the same full check, instead of recursively checking twice.
                 if stage == stop_after:
-                    state.update(status='paused'); publish(progress, state)
-                    return check_progress(progress)
+                    state.update(status='paused')
+                publish(progress, state)
+                checked_state = check_progress(progress)
+                if stage == stop_after:
+                    return checked_state
             except Exception as exc:
                 # Failed acquisition cannot advance the checkpoint frontier.
                 cp.pop(stage, None)

@@ -16,6 +16,7 @@ from .project_build_contract import source_arguments
 from .project_build_records import identity
 from .project_compile_context import validate as validate_context, digest, PAIRS
 from .project_tool_resolution import resolve_executable
+from .verification_session import measured, pure
 
 SCHEMA = 'riscv2x86.native-analysis-input.v1'
 AST_POLICY = 'clang-json-reference-graph-alpha-renaming.v1'
@@ -50,6 +51,7 @@ def analysis_arguments(arguments):
     return result
 
 
+@measured('native-input.canonical_ast')
 def canonical_ast(ast):
     """Retain all JSON fields and reference relationships, not pointer values.
 
@@ -93,6 +95,7 @@ def data_model(text):
     return model
 
 
+@measured('native-input.ast_inventory')
 def ast_inventory(ast, input_identity):
     """Whole emitted tree, with physical CPP locations; no source edit ranges."""
     rows = []; attributes = []
@@ -282,6 +285,24 @@ def bytes_identity(raw):
     return 'sha256:' + sha256(raw).hexdigest()
 
 
+@measured('native-input._native_graph')
+def _native_graph(ast_bytes, analysis_identity):
+    def derive_graph():
+        canonical = canonical_ast(json.loads(ast_bytes.decode('utf-8')))
+        inventory = ast_inventory(canonical, analysis_identity)
+        return {'canonicalAst': canonical, 'canonicalIdentity': identity(canonical),
+                'inventory': inventory, 'inventoryBodyIdentity': identity(inventory)}
+    return pure('native-canonical-graph-and-inventory.v1',
+                (ast_bytes, analysis_identity), derive_graph)
+
+
+@measured('native-input._json_identity')
+def _json_identity(raw):
+    return pure('native-json-value-identity.v1', (raw,),
+                lambda: identity(json.loads(raw.decode('utf-8'))))
+
+
+@measured('native-input.validate-artifacts')
 def validate_artifacts(receipt):
     """Rebuild derived evidence from stored bytes; not independent acquisition."""
     if (not isinstance(receipt, dict) or receipt.get('schemaVersion') != SCHEMA
@@ -304,18 +325,28 @@ def validate_artifacts(receipt):
     stages = {row['stage']: row for row in receipt['commands']}
     if len(stages) != len(receipt['commands']):
         raise ValueError('NATIVE_INPUT_DUPLICATE_STAGE')
-    raw_ast = json.loads(Path(stages['inspection-native-input']['stdoutPath']).read_text())
-    canonical = canonical_ast(raw_ast)
+    # All bytes and receipt/tool/dependency checks remain live on every call.
+    # Only canonicalization and inventory calculation share a pure result.
+    ast_bytes = Path(stages['inspection-native-input']['stdoutPath']).read_bytes()
+    if bytes_identity(ast_bytes) != stages['inspection-native-input']['stdoutDigest']:
+        raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
+    graph = _native_graph(ast_bytes, receipt['analysisInputIdentity'])
+    canonical = graph['canonicalAst']
     raw_input = Path(stages['native-expanded']['stdoutPath']).read_bytes()
+    canonical_bytes = Path(receipt['canonicalAstPath']).read_bytes()
+    inventory_bytes = Path(receipt['inventoryPath']).read_bytes()
+    if (bytes_identity(canonical_bytes) != receipt['canonicalAstDigest']
+            or bytes_identity(inventory_bytes) != receipt['inventoryDigest']):
+        raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
     if (identity(receipt['analysisInput']) != receipt['analysisInputIdentity']
             or bytes_identity(raw_input) != receipt['analysisInput']['nativeInputDigest']
             or stages['inspection-native-input']['stdinIdentity'] != bytes_identity(raw_input)
-            or identity(canonical) != receipt['canonicalAstIdentity']
-            or identity(json.loads(Path(receipt['canonicalAstPath']).read_text())) != identity(canonical)):
+            or graph['canonicalIdentity'] != receipt['canonicalAstIdentity']
+            or _json_identity(canonical_bytes) != graph['canonicalIdentity']):
         raise ValueError('NATIVE_INPUT_ARTIFACT_BINDING_INVALID')
-    inventory = ast_inventory(canonical, receipt['analysisInputIdentity'])
+    inventory = graph['inventory']
     if (inventory['inventoryIdentity'] != receipt['inventoryIdentity']
-            or identity(json.loads(Path(receipt['inventoryPath']).read_text())) != identity(inventory)):
+            or _json_identity(inventory_bytes) != graph['inventoryBodyIdentity']):
         raise ValueError('NATIVE_INPUT_INVENTORY_BINDING_INVALID')
     return {'canonicalAst': canonical, 'inputBytes': raw_input,
             'inventory': inventory, 'stages': stages}

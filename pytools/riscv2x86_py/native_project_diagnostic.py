@@ -8,6 +8,7 @@ from pathlib import Path
 import math
 import time
 
+from .verification_session import measured
 from . import native_captured_deployment as d
 from . import native_project_campaign as campaign
 from . import native_project_evaluation as project
@@ -73,6 +74,7 @@ class Context:
         self.spec = project.check(self.spec_path)
 
 
+@measured('native_project_diagnostic.node_facts')
 def node_facts(stage, folder, ctx):
     if stage == 'preparation':
         if ctx.prefix is None: raise ValueError('DIAGNOSTIC_PREFIX_REQUIRED')
@@ -107,6 +109,7 @@ def node_value(stage, folder, ctx):
                    'semanticApproval': False, 'productionAcceptanceComplete': False}, 'diagnosticNodeIdentity')
 
 
+@measured('native_project_diagnostic.check_node')
 def check_node(path, stage, ctx):
     value = d.read(path); checked(value, 'diagnosticNodeIdentity')
     if value != node_value(stage, Path(path).parent, ctx): raise ValueError('DIAGNOSTIC_NODE_REDERIVATION_MISMATCH')
@@ -172,6 +175,7 @@ def _checked_progress(path):
     return state, ctx
 
 
+@measured('native_project_diagnostic.check_progress')
 def check_progress(path):
     return _checked_progress(path)[0]
 

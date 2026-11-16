@@ -234,3 +234,42 @@ def test_resuming_preparation_can_stop_before_any_evaluation(campaign):
     assert calls == ['original', 'project', 'project', 'applicability']
     assert c.resume_campaign(root / 'campaign', stop_after='applicability') == value
     assert 'request' not in calls and 'evaluation' not in calls
+
+
+def test_pause_publishes_final_control_state_before_one_full_check(campaign, monkeypatch):
+    root, plan, _, _, _, _ = campaign
+    original = c.check_progress
+    observed = []
+    def check(path):
+        row = d.read(path)
+        observed.append((row['status'], row['currentStage']))
+        return original(path)
+    monkeypatch.setattr(c, 'check_progress', check)
+    state = c.execute(plan, root / 'single-check-pause', stop_after='original')
+    assert state['status'] == 'paused'
+    assert observed == [('paused', 'original')]
+
+
+def test_replan_refreshes_only_cli_verifier_and_creates_no_checkpoint(campaign):
+    root, plan, calls, _, _, _ = campaign
+    old = deepcopy(plan)
+    old['cli'] = {'path': '/historical/cli.py', 'resolvedPath': '/historical/cli.py', 'digest': 'sha256:historical'}
+    old['verifier'] = d.seal({**{k: v for k, v in old['verifier'].items() if k != 'verifierIdentity'},
+                              'files': {'historical.py': 'sha256:historical'}}, 'verifierIdentity')
+    old = d.seal({k: v for k, v in old.items() if k != 'campaignPlanIdentity'}, 'campaignPlanIdentity')
+    path = root / 'old-plan.json'; p.write(path, old)
+    mode, fresh, reference = c.replan_configuration(path)
+    assert mode == 'formal' and fresh == plan and reference == d.snapshot(path)
+    assert not calls and not (root / 'progress.json').exists()
+
+
+def test_replan_preserves_diagnostic_selection_and_rejects_changed_frozen_input(campaign):
+    from riscv2x86_py import native_project_diagnostic as diagnostic
+    root, plan, calls, _, _, _ = campaign
+    path = root / 'old-diagnostic-plan.json'; old = diagnostic.make_plan(plan, [0]); p.write(path, old)
+    mode, fresh, _ = c.replan_configuration(path)
+    assert mode == 'diagnostic' and fresh == old and fresh['caseIndices'] == [0]
+    Path(plan['bundle']['path']).write_text('changed after old plan')
+    with pytest.raises(ValueError, match='FROZEN_CONFIGURATION_CHANGED'):
+        c.replan_configuration(path)
+    assert not calls

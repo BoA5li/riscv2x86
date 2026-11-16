@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 
+from .verification_session import measured
 from .native_audit_evidence import strict_json
 from .native_dependency_inventory import checked_records
 from .native_elf_runtime import parse
@@ -22,6 +23,7 @@ PLAN = 'riscv2x86.captured-deployment-plan.v1'
 RESULT = 'riscv2x86.captured-deployment-result.v1'
 
 
+@measured('deployment.read')
 def read(path):
     return strict_json(Path(path).read_bytes())
 
@@ -30,6 +32,7 @@ def seal(body, key):
     return dict(body, **{key: identity(body)})
 
 
+@measured('deployment.snapshot')
 def snapshot(path, cwd=None):
     p = Path(path)
     if not p.is_absolute():
@@ -38,6 +41,7 @@ def snapshot(path, cwd=None):
     return {'path': str(p), 'resolvedPath': str(p.resolve(strict=True)), 'digest': digest(p)}
 
 
+@measured('deployment.verify_snapshot')
 def verify_snapshot(row):
     if snapshot(row['path']) != row:
         raise ValueError('DEPLOYMENT_INPUT_CHANGED:'+row['path'])
@@ -48,6 +52,7 @@ def definitions(elf):
                   for s in elf['staticSymbols'] if s['name'] and s['defined'] and s['binding'] != 0)
 
 
+@measured('deployment.captured_link')
 def captured_link(action):
     """Parse the supported driver language; do not remove unknown switches."""
     checked(action, 'actionIdentity')

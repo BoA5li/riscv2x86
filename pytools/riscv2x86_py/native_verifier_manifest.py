@@ -8,6 +8,7 @@ external candidate tools retain their existing artifact-bound checks.
 from pathlib import Path
 import sys
 
+from .verification_session import measured
 from .project_compile_context import digest
 from .project_build_records import identity
 from .native_external_providers import checked
@@ -16,6 +17,7 @@ SCHEMA = 'riscv2x86.native-verifier-manifest.v1'
 POLICY = 'complete-package-python-source-inventory.v1'
 
 
+@measured('native_verifier_manifest.capture')
 def capture(package_root):
     root = Path(package_root).resolve(strict=True)
     files = {}
@@ -34,6 +36,7 @@ def capture(package_root):
     return dict(body, verifierIdentity=identity(body))
 
 
+@measured('native_verifier_manifest.current')
 def current():
     root = Path(__file__).resolve(strict=True).parent
     # Avoid declaring the current tree while already imported helpers come

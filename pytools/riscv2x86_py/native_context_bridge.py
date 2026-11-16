@@ -7,6 +7,7 @@ All conclusions are rederived; input JSON approval booleans are never imported.
 import json
 from pathlib import Path
 
+from .verification_session import measured
 from . import native_captured_deployment as deployment
 from . import project_native_input as native
 from . import project_native_binding as binding
@@ -57,6 +58,7 @@ def dependency_changes(source, target):
             for p in sorted(left.keys() | right.keys()) if left.get(p) != right.get(p)]
 
 
+@measured('native_context_bridge.validated_input')
 def validated_input(receipt):
     artifacts = native.validate_artifacts(receipt)
     validate_context(receipt['context'])

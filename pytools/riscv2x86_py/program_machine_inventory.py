@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 import struct
 
+from .verification_session import measured
 from . import native_captured_deployment as d
 
 LANGUAGES = {62: 'x86:LE:64:default', 243: 'RISCV:LE:64:RV64GC'}
@@ -45,6 +46,7 @@ def function_region(raw, symbol):
     return elf, address, raw[start:start + size]
 
 
+@measured('program_machine_inventory.derive')
 def derive(raw, symbol):
     import pypcode
     elf, address, code = function_region(raw, symbol)
@@ -102,6 +104,7 @@ def derive(raw, symbol):
             'scope': 'linear-sized-function-bytes-and-decoder-pcode-not-reachability-or-program-proof'}
 
 
+@measured('program_machine_inventory.project_facts')
 def project_facts(spec_path, builds):
     """Select symbols from compiler AST owners of exact ORIGINAL edits."""
     from . import native_original_applicability as applicability
@@ -178,6 +181,7 @@ def acquire(spec_path, builds, output):
     return value
 
 
+@measured('program_machine_inventory.check')
 def check(path):
     from .native_verifier_manifest import current, compare
     from .native_external_providers import checked

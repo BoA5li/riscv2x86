@@ -10,6 +10,8 @@ from riscv2x86_py import native_project_evaluation as project
 from riscv2x86_py import native_original_evaluation as evaluation
 from riscv2x86_py import native_project_campaign as campaign
 from riscv2x86_py import native_project_diagnostic as diagnostic
+from riscv2x86_py.verification_session import session
+from riscv2x86_py import project_evidence_ledger as ledger
 
 
 def main(argv=None):
@@ -38,8 +40,53 @@ def main(argv=None):
     build.add_argument('--input', required=True); build.add_argument('--output', required=True)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
     timings = sub.add_parser('timings'); timings.add_argument('--input', required=True)
+    evidence = sub.add_parser('ledger'); evidence.add_argument('--input', required=True)
+    replan = sub.add_parser('replan')
+    replan.add_argument('--configuration', required=True, help='historical plan used only as pinned configuration')
+    replan.add_argument('--output', required=True)
+    replan.add_argument('--stop-after', metavar='STAGE')
+    for command in (run, resume, formal, build, check, timings, evidence, replan):
+        command.add_argument('--profile-output', help='new diagnostic JSON file outside the evidence output directory')
+        command.add_argument('--verification-cache-mib', type=int, default=256,
+                             help='operation-local pure-derivation budget; 0 disables reuse')
     args = parser.parse_args(argv)
+    if not 0 <= args.verification_cache_mib <= 1024:
+        parser.error('--verification-cache-mib must be between 0 and 1024')
+    profile = Path(args.profile_output).resolve() if args.profile_output else None
+    if profile is not None:
+        if profile.exists() or profile.is_symlink() or not profile.parent.is_dir():
+            parser.error('--profile-output must name a new file in an existing directory')
+        output = getattr(args, 'output', None)
+        if output and profile.is_relative_to(Path(output).resolve()):
+            parser.error('--profile-output must be outside the evidence output directory')
+        if getattr(args, 'input', None) and profile.is_relative_to(Path(args.input).resolve().parent):
+            parser.error('--profile-output must be outside the checked evidence directory')
+    with session(args.verification_cache_mib * 1024 * 1024) as verification:
+        result = execute(args)
+    if profile is not None:
+        try:
+            with profile.open('x', encoding='utf-8') as stream:
+                json.dump(verification.profile(), stream, indent=2)
+                stream.write('\n')
+        except Exception as exc:
+            print(json.dumps({'error': 'PROFILE_PUBLICATION_FAILED', 'detail': str(exc)}), file=sys.stderr)
+            return 2
+    return result
+
+
+def execute(args):
     try:
+        if args.operation == 'replan':
+            mode, plan, reference = campaign.replan_configuration(args.configuration)
+            if mode == 'diagnostic':
+                value = diagnostic.execute(plan, args.output, stop_after=args.stop_after)
+                print(json.dumps({'configurationSource': reference, **diagnostic.facts(value)}))
+                return 2 if value['status'] == 'failed' else 1
+            value = campaign.execute(plan, args.output, stop_after=args.stop_after)
+            print(json.dumps({'configurationSource': reference, **campaign.facts(value)}))
+            return 0 if value['evaluationStatus'] == 'verified' else 1
+        if args.operation == 'ledger':
+            print(json.dumps(ledger.inspect(args.input))); return 0
         if args.operation == 'formal':
             value = diagnostic.continue_formal(args.output)
             print(json.dumps({'formalProgressPath': str(Path(args.output).resolve() / 'preparation/progress.json'), **campaign.facts(value)}))

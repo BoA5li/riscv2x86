@@ -150,6 +150,45 @@ def project_assessment(spec, observation=None, applicability=None):
             'productionAcceptanceComplete': False}
 
 
+def l2_function_binding_diagnostic(finding, functions):
+    """Explain the original name join without manufacturing compiler facts.
+
+    Counts identify an acquisition/propagation gap; names alone never authorize
+    an L2 function boundary or establish a declaration/instance/value-flow join.
+    """
+    fragment = finding.get('fragment') or {}
+    name = fragment.get('enclosingFunction')
+    if not isinstance(functions, list):
+        raise ValueError('PROGRAM_L2_FUNCTION_TABLE_INVALID')
+    matches = [row for row in functions if isinstance(row, dict) and row.get('name') == name]
+    if not isinstance(name, str) or not name:
+        disposition = 'enclosing-function-name-missing'
+    elif not matches:
+        disposition = 'function-record-not-found'
+    elif len(matches) > 1:
+        disposition = 'multiple-function-records'
+    else:
+        disposition = 'one-name-match-not-a-proof'
+    approval = finding.get('approvalArtifact')
+    approval = approval if isinstance(approval, dict) else {}
+    return {
+        'enclosingFunction': name,
+        'functionRecordCount': len(functions),
+        'nameMatchCount': len(matches),
+        'disposition': disposition,
+        'matches': [{
+            'recordIndex': i,
+            'recordedIdentities': {key: row[key] for key in (
+                'id', 'declarationIdentity', 'functionIdentity', 'mangledName',
+                'qualifiedName') if key in row},
+            'operandBoundaryPresent': isinstance(row.get('l2OperandBoundary'), dict),
+        } for i, row in enumerate(functions) if isinstance(row, dict) and row.get('name') == name],
+        'fragmentBoundaryPresent': isinstance(approval.get('l2FragmentOperandBoundary'), dict),
+        'scalarAuthorityDecisionPresent': isinstance(approval.get('l2ScalarAuthorityDecision'), dict),
+        'scope': 'original-name-join-diagnosis-not-compiler-declaration-authority',
+    }
+
+
 def original_layer_readiness(spec):
     """Ask original L2 authority consumer about original artifacts; no stubs."""
     from . import native_original_pipeline as route
@@ -170,12 +209,15 @@ def original_layer_readiness(spec):
         attempt = attempts.get(finding_id)
         if attempt is None or attempt.fragment_id != fragment_id:
             raise ValueError('PROGRAM_L2_ATTEMPT_BINDING_REQUIRED')
+        binding_diagnostic = l2_function_binding_diagnostic(finding, report.get('functions', []))
+        binding_diagnostic['reportFunctionTablePresent'] = 'functions' in report
         authority, reason = _authority(finding, report.get('functions', []), artifact)
         rows.append({'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
                      'originalProvider': 'automatic-l2-operand-differential',
                      'authorityConsumerReady': authority is not None,
                      'authorityComplete': artifact.l2_authority_complete,
-                     'reasonCode': reason, 'canonicalExecutionCoverageVerified': False,
+                     'reasonCode': reason, 'functionBindingDiagnostic': binding_diagnostic,
+                     'canonicalExecutionCoverageVerified': False,
                      'l3IntentReceiptPresent': bool(finding.get('l3IntentReceipt')),
                      'l3Applicability': 'requires-original-intent-validation'})
     return {'scope': 'original-authority-consumer-readiness-not-L2-or-L3-validation', 'instances': rows}
