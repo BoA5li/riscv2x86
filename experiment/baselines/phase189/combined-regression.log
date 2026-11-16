@@ -1,0 +1,7 @@
+...................................................................ss... [ 73%]
+.........................s                                               [100%]
+=========================== short test summary info ============================
+SKIPPED [1] pytools/tests/test_project_native_input.py:270: real Clang required; mock protocol tests do not replace this integration
+SKIPPED [1] pytools/tests/test_project_native_input.py:280: real RISC-V GCC and Clang required for source-toolchain integration
+SKIPPED [1] pytools/tests/test_native_l0_materialization.py:100: real RISC-V GCC, QEMU and native GCC/ar required
+95 passed, 3 skipped in 249.64s (0:04:09)

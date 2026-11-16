@@ -41,7 +41,9 @@ def absolute(path, cwd):
     return (Path(path) if Path(path).is_absolute() else cwd / path).resolve()
 
 
-def derive(action):
+def derive(action, *, environment=None):
+    # Explicit replay environments must not depend on (or mutate) the shell.
+    environment = os.environ if environment is None else environment
     if action.get('actionIdentity') != identity({k:v for k,v in action.items() if k != 'actionIdentity'}):
         raise ValueError('PROJECT_ACTION_IDENTITY_INVALID')
     if type(action.get('exitStatusObserved')) is not bool:
@@ -105,7 +107,7 @@ def derive(action):
         current={'sourcePath':str(source) if source else None,
             'sourceDigest':digest(source) if source and source.is_file() else None,
             'nativeCompilerDigest':digest(compiler) if compiler and compiler.is_file() else None,
-            'searchEnvironment':{k:os.environ.get(k,'') for k in ENV_KEYS}}
+            'searchEnvironment':{k:environment.get(k,'') for k in ENV_KEYS}}
         if not isinstance(observed,dict) or not observed.get('sourceDigest'):
             reasons.append('PROJECT_CAPTURE_SOURCE_CONTEXT_UNBOUND')
         elif identity(observed)!=identity(current):
@@ -118,7 +120,7 @@ def derive(action):
         'sourceDigest':digest(source) if source and source.is_file() else None,
         'outputPath':str(absolute(outputs[0], cwd)) if len(outputs)==1 else None,
         'inspectionArguments':projected, 'projectionExclusions':excluded,
-        'searchEnvironment':{k:os.environ.get(k, '') for k in ENV_KEYS},
+        'searchEnvironment':{k:environment.get(k, '') for k in ENV_KEYS},
         'blockers':sorted(set(reasons)), 'inspectionReady':not reasons,
         'compilerEquivalenceVerified':False, 'nativeBuildReplayed':False,
         'semanticApproval':False, 'productionAcceptanceComplete':False}

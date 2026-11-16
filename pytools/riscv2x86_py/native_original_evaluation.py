@@ -25,6 +25,8 @@ def contracts(request_path):
     by its original provider, not guessed from names of strings in a template.
     Require absolute paths so running/resuming in another cwd is unambiguous.
     """
+    if not request_path or not Path(request_path).is_file():
+        raise ValueError('ORIGINAL_EVALUATION_REQUEST_REGULAR_FILE_REQUIRED')
     request = original.load_evaluation_request(request_path)
     refs = {}
     for key, path in (('validationPlan', request.validation_plan),
@@ -34,6 +36,17 @@ def contracts(request_path):
         refs[key] = d.snapshot(path)
     plan = load_validation_plan(request.validation_plan)
     load_target_environment(request.target_environment)
+    # This provider's project specification lives outside the evaluation work
+    # tree. Pin it as an input too: hashing retained logs alone cannot detect a
+    # later change to its case list, environments or captured build recipes.
+    for level, descriptor in request.runtime_registry_template.get('validators', {}).items():
+        if isinstance(descriptor, dict) and descriptor.get('type') == 'original-captured-project':
+            from . import native_project_evaluation as project
+            path = descriptor['config']['specPath']
+            if not Path(path).is_absolute():
+                raise ValueError('ORIGINAL_PROJECT_ABSOLUTE_SPEC_PATH_REQUIRED')
+            project.check(path)
+            refs['projectSpec:' + level] = d.snapshot(path)
     return refs, plan
 
 

@@ -202,6 +202,8 @@ def _l3_experiment_contract_factory(config: Mapping[str, object]) -> LayerValida
 
 
 _BUILTIN_FACTORIES: Mapping[str, ValidatorFactory] = {
+    "original-captured-project": lambda config: __import__(
+        "riscv2x86_py.native_project_evaluation", fromlist=["factory"]).factory(config),
     "automatic-l0-build-matrix": _automatic_l0_factory,
     "automatic-l1-functional-differential": _automatic_l1_factory,
     "automatic-l2-operand-differential": _automatic_l2_operand_factory,
