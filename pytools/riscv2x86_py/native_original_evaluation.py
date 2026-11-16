@@ -95,12 +95,14 @@ def summary(result):
         layers = [] if validation is None else validation['layers']
         if validation is not None:
             translation_validation_result_from_dict(validation)
-        assessment = None
+        assessment = None; machine_inventory = None
         for layer in layers:
             if layer['level'] == 'L1':
-                try: assessment = json.loads(layer['detail']).get('obligationAssessment')
+                try:
+                    detail = json.loads(layer['detail'])
+                    assessment = detail.get('obligationAssessment'); machine_inventory = detail.get('machineInventory')
                 except (ValueError, TypeError, AttributeError): pass
-        rows.append({'obligationAssessment': assessment, 'attemptArtifactId': attempt['attemptArtifactId'],
+        rows.append({'machineInventory': machine_inventory, 'obligationAssessment': assessment, 'attemptArtifactId': attempt['attemptArtifactId'],
                      'fragmentId': attempt['fragmentId'],
                      'translationOutcome': attempt['translationOutcome'],
                      'status': attempt['status'], 'reasonCodes': attempt['reasonCodes'],
@@ -147,6 +149,31 @@ def check_original_result(result, request, work):
         if artifact is not None and d.digest(artifact['artifact_path']) != artifact['artifact_digest']:
             raise ValueError('ORIGINAL_EVALUATION_PROGRAM_CHANGED:' + side)
     summary(result)
+    check_project_machine_inventory(result, request, work)
+
+
+def check_project_machine_inventory(result, request, work):
+    """Re-derive machine receipts bound to this request and both current builds."""
+    descriptor = request.runtime_registry_template.get('validators', {}).get('L1', {})
+    if descriptor.get('type') == 'original-captured-project' and descriptor.get('config', {}).get('applicabilityPath'):
+        from .program_machine_inventory import check as check_machine_inventory
+        for attempt in result['attempts']:
+            for layer in (attempt.get('validation') or {}).get('layers', []):
+                if layer['level'] != 'L1': continue
+                detail = json.loads(layer['detail']); ref = detail.get('machineInventory')
+                if not isinstance(ref, dict): raise ValueError('ORIGINAL_MACHINE_INVENTORY_REQUIRED')
+                d.verify_snapshot(ref)
+                if not Path(ref['path']).resolve().is_relative_to(Path(work).resolve()):
+                    raise ValueError('ORIGINAL_MACHINE_INVENTORY_PATH_INVALID')
+                evidence = check_machine_inventory(ref['path'])
+                if evidence['project'] != d.snapshot(descriptor['config']['specPath']):
+                    raise ValueError('ORIGINAL_MACHINE_INVENTORY_PROJECT_MISMATCH')
+                for side in ('source', 'target'):
+                    build = d.read(evidence['builds'][side]['path'])
+                    program = result[side + 'ProgramArtifact']
+                    if (build['program']['path'] != program['artifact_path']
+                            or build['program']['digest'] != program['artifact_digest']):
+                        raise ValueError('ORIGINAL_MACHINE_INVENTORY_PROGRAM_MISMATCH')
 
 
 def acquire(run_path, request_path, output):

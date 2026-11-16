@@ -441,14 +441,21 @@ def factory(config):
             applicability = check_applicability(config['applicabilityPath'])
             if applicability['project'] != d.snapshot(config['specPath']):
                 raise ValueError('PROJECT_APPLICABILITY_BINDING_MISMATCH')
+        machine_inventory = None; machine_seconds = 0.0
+        if applicability is not None:
+            from . import program_machine_inventory as machines
+            machine_started = time.monotonic()
+            machines.acquire(config['specPath'], {'source': src, 'target': tgt}, root / 'machine-inventory.json')
+            machine_seconds = time.monotonic() - machine_started
+            machine_inventory = d.snapshot(root / 'machine-inventory.json')
         assessment = project_assessment(spec, value, applicability)
         write(root / 'obligation-assessment.json', assessment)
         write(root / 'phase-timings.json', {'schemaVersion': 'riscv2x86.project-layer-timing.v1',
-            'level': 'L1', 'observationSeconds': observation_seconds,
+            'level': 'L1', 'observationSeconds': observation_seconds, 'machineInventorySeconds': machine_seconds,
             'layerElapsedSeconds': time.monotonic() - started})
         return ValidationLayerResult(level, ValidationStatus(assessment['l1Status']),
             d.digest(root / 'obligation-assessment.json'), json.dumps({'reasonCodes': assessment['l1ReasonCodes'],
-                'observations': value, 'obligationAssessment': assessment}))
+                'observations': value, 'obligationAssessment': assessment, 'machineInventory': machine_inventory}))
     return validator
 
 
