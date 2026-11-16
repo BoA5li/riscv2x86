@@ -24,11 +24,15 @@ def binary(tmp_path):
     if not cc: pytest.skip('native GCC required')
     source = tmp_path / 'machine.S'
     source.write_text('.text\n.globl sample\n.type sample,@function\nsample:\n'
-        'test %rdi,%rdi\nje 1f\ncall helper\nmov (%rdi),%rax\n1: ret\n.rept 20\nnop\n.endr\n.size sample,.-sample\n'
+        'test %rdi,%rdi\nje 1f\nsub $8,%rsp\ncall helper@PLT\nadd $8,%rsp\n'
+        'mov (%rdi),%rax\n1: ret\n.rept 20\nnop\n.endr\n.size sample,.-sample\n'
         '.globl helper\n.type helper,@function\nhelper: mov %rdi,%rax\nret\n.size helper,.-helper\n'
         '.section .note.GNU-stack,"",@progbits\n')
-    result = tmp_path / 'machine.so'
-    subprocess.run([cc, '-shared', '-fPIC', str(source), '-o', str(result)], check=True, capture_output=True)
+    # A raw .S call is not rewritten by -fPIC. Spell the preemptible
+    # shared-library call explicitly, including on older GNU assemblers.
+    obj = tmp_path / 'machine.o'; result = tmp_path / 'machine.so'
+    subprocess.run([cc, '-fPIC', '-c', str(source), '-o', str(obj)], check=True, capture_output=True)
+    subprocess.run([cc, '-shared', '-fPIC', str(obj), '-o', str(result)], check=True, capture_output=True)
     return result
 
 
@@ -183,3 +187,74 @@ def test_decoder_windows_are_bounded_without_losing_function_bytes(binary, monke
     assert value['byteSize'] > 16 and value['linearByteDecodeComplete']
     assert max(lengths) <= 16
     assert sum(row['size'] for row in value['instructions']) == value['byteSize']
+
+
+def executable_window(raw, address):
+    """ELF PT_LOAD address mapping for this test's actual linked call target."""
+    phoff = struct.unpack_from('<Q', raw, 32)[0]
+    stride, count = struct.unpack_from('<HH', raw, 54)
+    matches = []
+    for index in range(count):
+        kind, flags, offset, vaddr, _, filesz, _, _ = struct.unpack_from('<IIQQQQQQ', raw, phoff + index * stride)
+        if kind == 1 and flags & 1 and vaddr <= address < vaddr + filesz:
+            start = offset + address - vaddr
+            matches.append(raw[start:start + min(16, vaddr + filesz - address)])
+    assert len(matches) == 1, 'unique executable file-backed PLT target required'
+    return matches[0]
+
+
+def test_shared_call_explicitly_uses_plt_relocation_and_linked_got_target(binary):
+    import pypcode
+    obj = d.parse(binary.with_suffix('.o').read_bytes())
+    raw = binary.read_bytes(); elf = d.parse(raw)
+    # Check actual object metadata, not assembler output text or a flag alone.
+    refs = [r for r in obj['relocations'] if r['symbol'] == 'helper']
+    assert len(refs) == 1 and refs[0]['type'] == 4 and refs[0]['addend'] == -4  # R_X86_64_PLT32
+    for image in (obj, elf):
+        definitions = [s for s in image['staticSymbols'] if s['name'] == 'helper' and s['defined']]
+        assert len(definitions) == 1
+        assert definitions[0]['binding'] == 1 and definitions[0]['visibility'] == 0  # global/default
+    slots = [r for r in elf['relocations'] if r['symbol'] == 'helper']
+    assert len(slots) == 1 and slots[0]['type'] == 7  # R_X86_64_JUMP_SLOT
+    calls = [op for op in m.derive(raw, 'sample')['controlOperations'] if op['opcode'] == 'CALL']
+    assert len(calls) == 1 and calls[0]['inputs'][0]['space'] == 'ram'
+    target = calls[0]['inputs'][0]['offset']; ctx = pypcode.Context('x86:LE:64:default')
+    # Accept a short landing pad before the indirect PLT transfer, and follow
+    # either a direct RAM varnode or an explicit LOAD in the decoder model.
+    for _ in range(4):
+        ops = list(ctx.translate(executable_window(raw, target), base_address=target, max_instructions=1).ops)
+        marks = [op for op in ops if op.opcode.name == 'IMARK']
+        assert len(marks) == 1 and len(marks[0].inputs) == 1
+        jumps = [op for op in ops if op.opcode.name == 'BRANCHIND']
+        if jumps:
+            assert len(jumps) == 1 and len(jumps[0].inputs) == 1
+            value = jumps[0].inputs[0]
+            direct = value.space.name == 'ram' and value.offset == slots[0]['offset']
+            loads = [op for op in ops if op.opcode.name == 'LOAD' and op.output is not None
+                     and op.output.space.name == value.space.name and op.output.offset == value.offset
+                     and op.output.size == value.size and op.inputs[0].getSpaceFromConst().name == 'ram'
+                     and op.inputs[1].space.name == 'const' and op.inputs[1].offset == slots[0]['offset']]
+            assert direct or len(loads) == 1
+            break
+        assert not any(op.opcode.name in ('BRANCH', 'CBRANCH', 'CALL', 'CALLIND', 'RETURN') for op in ops)
+        target += marks[0].inputs[0].size
+    else:
+        pytest.fail('linked call does not reach the helper JUMP_SLOT through the PLT')
+
+
+def test_legacy_pc32_preemptible_call_is_reproduced_and_rejected(tmp_path):
+    cc = shutil.which('gcc')
+    if not cc: pytest.skip('native GCC required')
+    source = tmp_path / 'legacy.S'; obj = tmp_path / 'legacy.o'; library = tmp_path / 'legacy.so'
+    # Encode the old assembler's PC32 choice explicitly so this counterexample
+    # also runs on new assemblers whose plain CALL defaults to PLT32.
+    source.write_text('.text\n.globl sample\n.type sample,@function\nsample:\n'
+                      '.byte 0xe8\n.LcallDisp: .long 0\n.reloc .LcallDisp,R_X86_64_PC32,helper-4\nret\n.size sample,.-sample\n'
+                      '.globl helper\n.type helper,@function\nhelper: ret\n.size helper,.-helper\n'
+                      '.section .note.GNU-stack,"",@progbits\n')
+    subprocess.run([cc, '-fPIC', '-c', str(source), '-o', str(obj)], check=True, capture_output=True)
+    refs = [r for r in d.parse(obj.read_bytes())['relocations'] if r['symbol'] == 'helper']
+    assert len(refs) == 1 and refs[0]['type'] == 2  # R_X86_64_PC32
+    linked = subprocess.run([cc, '-shared', '-fPIC', str(obj), '-o', str(library)], capture_output=True)
+    assert linked.returncode != 0, 'preemptible PC32 reference must not be accepted as this DSO contract'
+    (tmp_path / 'link.stderr').write_bytes(linked.stderr)
