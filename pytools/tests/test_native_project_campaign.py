@@ -37,12 +37,16 @@ def campaign(tmp_path, monkeypatch):
     def freeze(*, output, **kwargs):
         attempt('project')
         p.write(output, {'run': d.snapshot(kwargs['run_path']), 'configuration': kwargs})
-    def request(spec, output):
+    def app(spec, output):
+        attempt('applicability'); output.mkdir()
+        p.write(output / 'result.json', {'project': d.snapshot(spec),
+                                      'facts': {'editedInstanceCount': 1, 'canonicalInstructionCoverageVerified': False}})
+    def request(spec, output, app_path=None):
         attempt('request'); output.mkdir()
-        p.write(output / 'request.json', {'spec': d.snapshot(spec)})
+        p.write(output / 'request.json', {'spec': d.snapshot(spec), 'app': d.snapshot(app_path)})
         return output / 'request.json'
-    def check_request(path, spec):
-        if d.read(path) != {'spec': d.snapshot(spec)}: raise ValueError('fixture request binding changed')
+    def check_request(path, spec, app_path=None):
+        if d.read(path) != {'spec': d.snapshot(spec), 'app': d.snapshot(app_path)}: raise ValueError('fixture request binding changed')
     def evaluate(run, request, output):
         attempt('evaluation'); output.mkdir()
         value = {'inputs': {'run': d.snapshot(run), 'requestTemplate': d.snapshot(request)},
@@ -52,6 +56,8 @@ def campaign(tmp_path, monkeypatch):
     monkeypatch.setattr(c.route, 'check_run', lambda path: d.read(path))
     monkeypatch.setattr(c.project, 'freeze', freeze)
     monkeypatch.setattr(c.project, 'check', lambda path: d.read(path))
+    monkeypatch.setattr(c.applicability, 'acquire', app)
+    monkeypatch.setattr(c.applicability, 'check', lambda path: d.read(path))
     monkeypatch.setattr(c.project, 'request', request)
     monkeypatch.setattr(c.project, 'check_request', check_request)
     monkeypatch.setattr(c.evaluation, 'acquire', evaluate)
@@ -70,7 +76,7 @@ def test_complete_inconclusive_campaign_is_a_terminal_observation_not_approval(c
     assert calls == list(c.STAGES)
 
 
-@pytest.mark.parametrize('stage', ['project', 'request', 'evaluation'])
+@pytest.mark.parametrize('stage', ['project', 'applicability', 'request', 'evaluation'])
 def test_resume_reuses_only_committed_checked_prefix_and_preserves_failed_attempt(campaign, stage):
     root, plan, calls, fail, _, _ = campaign
     fail[stage] = 1
@@ -206,3 +212,14 @@ def test_changed_launcher_cannot_be_reused(campaign):
     Path(plan['launcher']['path']).write_text('#!/bin/sh\nexit 2\n')
     with pytest.raises(ValueError): c.resume_campaign(root / 'campaign')
     assert calls == list(c.STAGES)
+
+
+def test_pause_after_applicability_does_not_run_matrix_or_evaluation(campaign):
+    root, plan, calls, _, _, _ = campaign
+    state = c.execute(plan, root / 'campaign', stop_after='applicability')
+    assert state['status'] == 'paused' and state['evaluationStatus'] is None
+    assert calls == ['original', 'project', 'applicability']
+    final = c.resume_campaign(root / 'campaign')
+    assert final['status'] == 'complete' and calls == list(c.STAGES)
+    assert calls.count('original') == 1
+    assert all(a['operationElapsedSeconds'] is not None for a in final['attempts'])

@@ -68,7 +68,7 @@ def toy_project(captured, monkeypatch):
             'sourceLoader': d.snapshot(d.parse((build / 'test-program').read_bytes())['interpreter']),
             'targetLoader': d.snapshot(d.parse((build / 'test-program').read_bytes())['interpreter']),
             'cases': [{'caseId': 'default', 'arguments': [], 'expectedExitCodes': [0], 'environmentOverrides': {}}],
-            'timeoutSeconds': 30, 'gaps': list(p.GAPS)}
+            'timeoutSeconds': 30, 'gaps': ['THREE_COMPILE_CONTEXT_REFINEMENT_REQUIRED', *p.GAPS]}
     monkeypatch.setattr(p, 'check', lambda path: spec)
     output = root / 'artifacts'; output.mkdir()
     records = {}
@@ -112,7 +112,9 @@ def test_l1_collects_both_processes_with_original_comparator_and_cannot_approve(
     assert result.status is ValidationStatus.INCONCLUSIVE
     detail = json.loads(result.detail)
     assert not detail['observations']['mismatches']
-    assert detail['reasonCodes'] == list(p.GAPS)
+    assert set(detail['reasonCodes']) == set(spec['gaps']) - {'CANONICAL_INSTANCE_INSTRUCTION_COVERAGE_REQUIRED', 'PROGRAM_L2_AUTHORITY_REQUIRED', 'INDEPENDENT_PROGRAM_AUDIT_REQUIRED'}
+    assert detail['obligationAssessment']['boundedProcessObservableStatus'] == 'observed-match'
+    assert len(detail['obligationAssessment']['obligations']) == len(spec['gaps'])
     assert not detail['observations']['semanticApproval']
     assert (root / 'observed/case-000000/source/stdout.log').is_file()
     assert (root / 'observed/case-000000/target/stderr.log').is_file()

@@ -25,16 +25,19 @@ def main(argv=None):
     run.add_argument('--runtime-prefix', required=True)
     cases = run.add_mutually_exclusive_group(required=True)
     cases.add_argument('--cases'); cases.add_argument('--gmp-seeds')
-    run.add_argument('--repetitions', type=int, default=1000)
+    run.add_argument('--repetitions', type=int, default=10)
     run.add_argument('--ghidra-install-dir'); run.add_argument('--timeout-seconds', type=int, default=600)
-    run.add_argument('--output', required=True); run.add_argument('--resume', action='store_true')
+    run.add_argument('--stop-after', choices=campaign.STAGES[:-1]); run.add_argument('--output', required=True); run.add_argument('--resume', action='store_true')
     resume = sub.add_parser('resume'); resume.add_argument('--output', required=True)
     build = sub.add_parser('build-side'); build.add_argument('--spec', required=True)
     build.add_argument('--side', choices=('source', 'target'), required=True)
     build.add_argument('--input', required=True); build.add_argument('--output', required=True)
     check = sub.add_parser('check'); check.add_argument('--input', required=True)
+    timings = sub.add_parser('timings'); timings.add_argument('--input', required=True)
     args = parser.parse_args(argv)
     try:
+        if args.operation == 'timings':
+            print(json.dumps(campaign.timing_report(args.input))); return 0
         if args.operation == 'resume':
             value = campaign.resume_campaign(args.output)
             print(json.dumps({'progressPath': str(Path(args.output).resolve() / 'progress.json'),
@@ -64,7 +67,7 @@ def main(argv=None):
                     runtime_prefix=args.runtime_prefix, cases=cases,
                     source_entry_action=args.source_entry_action, ghidra_install_dir=args.ghidra_install_dir,
                     timeout=args.timeout_seconds)
-        value = campaign.execute(frozen, args.output, resume=args.resume)
+        value = campaign.execute(frozen, args.output, resume=args.resume, stop_after=args.stop_after)
         print(json.dumps({'progressPath': str(Path(args.output).resolve() / 'progress.json'),
                           **campaign.facts(value)}))
         return 0 if value['evaluationStatus'] == 'verified' else 1

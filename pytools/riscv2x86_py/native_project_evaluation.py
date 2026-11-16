@@ -6,6 +6,8 @@ until ABI, input relation, object legality and canonical coverage are discharged
 """
 import base64
 import json
+import math
+import time
 from pathlib import Path
 import shutil
 import sys
@@ -235,10 +237,21 @@ def check(path):
 def command(argv, cwd, env, root, timeout):
     from .native_experiment_driver import command as execute
     root.mkdir()
+    started = time.monotonic()
     code, failure = execute(list(argv), cwd, env, root, timeout, 16 * 1024 * 1024)
     write(root / 'execution.json', {'arguments': list(argv), 'directory': str(cwd),
-          'environment': env, 'returnCode': code, 'failureReason': failure})
+          'environment': env, 'returnCode': code, 'failureReason': failure, 'elapsedSeconds': time.monotonic() - started})
     return code, failure
+
+
+def validate_execution_record(row):
+    if (set(row) != {'arguments', 'directory', 'environment', 'returnCode', 'failureReason', 'elapsedSeconds'}
+            or type(row['returnCode']) is not int
+            or row['failureReason'] not in (None, 'TIMEOUT', 'LOG_BUDGET_EXCEEDED')
+            or type(row['elapsedSeconds']) not in (int, float)
+            or not math.isfinite(row['elapsedSeconds']) or row['elapsedSeconds'] < 0):
+        raise ValueError('PROJECT_EXECUTION_RECORD_INVALID')
+    return row
 
 
 def expected_input_digest(spec, side):
@@ -324,7 +337,8 @@ def build_record(program, spec, side):
     }
     for stage, (argv, cwd, env) in expected_commands.items():
         recorded = d.read(root / stage / 'execution.json')
-        if recorded != {'arguments': argv, 'directory': cwd, 'environment': env,
+        validate_execution_record(recorded)
+        if {k: v for k, v in recorded.items() if k != 'elapsedSeconds'} != {'arguments': argv, 'directory': cwd, 'environment': env,
                         'returnCode': 0, 'failureReason': None}:
             raise ValueError('PROJECT_BUILD_EXECUTION_MISMATCH:' + stage)
     return value
@@ -341,11 +355,12 @@ def observe(spec, source, target, root):
         argv += [spec[side + 'Loader']['path'], '--list', artifact.artifact_path]
         code, failure = command(argv, profile['entry']['directory'], profile['environment'],
                                 root / ('loader-list-' + side), spec['timeoutSeconds'])
-        loader_diagnostics[side] = {'returnCode': code, 'failureReason': failure}
+        loader_diagnostics[side] = {'returnCode': code, 'failureReason': failure,
+                                  'elapsedSeconds': d.read(root / ('loader-list-' + side) / 'execution.json')['elapsedSeconds']}
         unavailable |= bool(failure)
         loader_failed |= code != 0
     for i, case in enumerate(spec['cases']):
-        rows = {}; case_root = root / ('case-%06d' % i); case_root.mkdir()
+        rows = {}; durations = {}; case_root = root / ('case-%06d' % i); case_root.mkdir()
         for side, artifact in (('source', source), ('target', target)):
             profile = spec['profiles'][side]
             argv = ([spec['qemu']['path'], '-L', spec['runtimePrefix']] if side == 'source' else [])
@@ -353,6 +368,7 @@ def observe(spec, source, target, root):
             env = {**profile['environment'], **case['environmentOverrides']}
             folder = case_root / side
             code, failure = command(argv, profile['entry']['directory'], env, folder, spec['timeoutSeconds'])
+            durations[side] = d.read(folder / 'execution.json')['elapsedSeconds']
             raw = [(folder / (s + '.log')).read_bytes() for s in ('stdout', 'stderr')]
             rows[side] = ProcessObservation(HarnessObservation(None, (), (), (), ()), code,
                     *(base64.b64encode(b).decode('ascii') for b in raw), ())
@@ -361,7 +377,7 @@ def observe(spec, source, target, root):
         mismatch = compare_l1_observations(rows['source'], rows['target'],
                                            ComparisonContract(False, True, True, True, False, (), (), (), ()))
         all_mismatches.extend(mismatch)
-        observations.append({'case': case, 'mismatches': list(mismatch),
+        observations.append({'case': case, 'mismatches': list(mismatch), 'elapsedSeconds': durations,
                               'sourceReturnCode': rows['source'].exit_code,
                               'targetReturnCode': rows['target'].exit_code})
     value = {'cases': observations, 'mismatches': list(all_mismatches), 'executionBudgetFailed': unavailable, 'exitOutsideDeclaredDomain': exit_outside,
@@ -374,10 +390,11 @@ def observe(spec, source, target, root):
 
 
 def factory(config):
-    if set(config) != {'specPath', 'workDirectory', 'level'}: raise ValueError('PROJECT_VALIDATOR_CONFIG_INVALID')
+    if set(config) not in ({'specPath', 'workDirectory', 'level'}, {'specPath', 'workDirectory', 'level', 'applicabilityPath'}): raise ValueError('PROJECT_VALIDATOR_CONFIG_INVALID')
     level = ValidationLevel(config['level'])
     def validator(**kwargs):
         if kwargs.get('level') is not level: raise ValueError('PROJECT_VALIDATOR_LEVEL_MISMATCH')
+        started = time.monotonic()
         spec = check(config['specPath']); root = Path(config['workDirectory']); root.mkdir(parents=True, exist_ok=True)
         source = kwargs['source_program_artifact']; target = kwargs['target_program_artifact']
         src = build_record(source, spec, 'source'); tgt = build_record(target, spec, 'target')
@@ -392,6 +409,7 @@ def factory(config):
             # Full mandatory original 2 x 3 x 3 matrix; no SDK fallback.
             with operation(profile['environment'], {spec['profiles']['source']['compile']['compiler']['path']:
                                                     spec['profiles']['source']['compile']['environment']}):
+                reference_started = time.monotonic()
                 matrix, refsource, reftarget = build_l0_reference_manifest(
                     source_path=Path(src['input']['path']), target_path=Path(tgt['input']['path']),
                     output_directory=root / 'reference', translation=kwargs['translation_artifact'],
@@ -400,22 +418,41 @@ def factory(config):
                     source_flags_override=spec['profiles']['source']['compile']['flags'],
                     target_flags_override=[a for a in profile['compile']['flags'] if not a.startswith('-O')],
                     target_link_arguments=args)
+                reference_seconds = time.monotonic() - reference_started
+                verify_started = time.monotonic()
                 result = run_l0_build_matrix(matrix, kwargs['translation_artifact'], refsource, reftarget,
                                              target_environment=kwargs.get('target_environment'),
                                              tool_available=lambda name: bool(shutil.which(name, path=profile['environment']['PATH'])))
+                verify_seconds = time.monotonic() - verify_started
             check(config['specPath'])
+            write(root / 'phase-timings.json', {'schemaVersion': 'riscv2x86.project-layer-timing.v1',
+                'level': 'L0', 'referenceBuildSeconds': reference_seconds, 'matrixVerificationSeconds': verify_seconds,
+                'layerElapsedSeconds': time.monotonic() - started})
             return result
         if level is not ValidationLevel.L1: raise ValueError('PROJECT_VALIDATOR_UNSUPPORTED_LEVEL')
+        observation_started = time.monotonic()
         value = observe(spec, source, target, root)
+        observation_seconds = time.monotonic() - observation_started
         build_record(source, spec, 'source'); build_record(target, spec, 'target'); check(config['specPath'])
-        # An observation mismatch is retained. Without the input relation, even
-        # a mismatch is not yet a proved translation counterexample.
-        return ValidationLayerResult(level, ValidationStatus.INCONCLUSIVE, d.digest(root / 'observations.json'),
-                                     json.dumps({'reasonCodes': spec['gaps'], 'observations': value}))
+        from .program_validation_obligations import project_assessment
+        applicability = None
+        if config.get('applicabilityPath'):
+            from .native_original_applicability import check as check_applicability
+            applicability = check_applicability(config['applicabilityPath'])
+            if applicability['project'] != d.snapshot(config['specPath']):
+                raise ValueError('PROJECT_APPLICABILITY_BINDING_MISMATCH')
+        assessment = project_assessment(spec, value, applicability)
+        write(root / 'obligation-assessment.json', assessment)
+        write(root / 'phase-timings.json', {'schemaVersion': 'riscv2x86.project-layer-timing.v1',
+            'level': 'L1', 'observationSeconds': observation_seconds,
+            'layerElapsedSeconds': time.monotonic() - started})
+        return ValidationLayerResult(level, ValidationStatus(assessment['l1Status']),
+            d.digest(root / 'obligation-assessment.json'), json.dumps({'reasonCodes': assessment['l1ReasonCodes'],
+                'observations': value, 'obligationAssessment': assessment}))
     return validator
 
 
-def request_payload(spec_path, output):
+def request_payload(spec_path, output, applicability_path=None):
     """Produce a real ORIGINAL EvaluationRequest; no manually fabricated template."""
     from .evaluation import EVALUATION_REQUEST_SCHEMA, evaluation_request_from_dict
     from .translation_validation import validation_plan_from_dict, target_environment_from_dict
@@ -458,23 +495,29 @@ def request_payload(spec_path, output):
            'translationArtifacts': {}, **builders, 'translationCommand': [],
            'comparisonPolicy': 'exit-code-stdout-stderr-exact-bytes.v1',
            'validationUnit': 'program', 'validationGroupId': '', 'selectedAttemptIds': []}
+    if applicability_path is not None:
+        from .native_original_applicability import check as check_applicability
+        app = check_applicability(applicability_path)
+        if app['project'] != d.snapshot(spec_path): raise ValueError('PROJECT_APPLICABILITY_BINDING_MISMATCH')
+        for descriptor in raw['runtimeRegistryTemplate']['validators'].values():
+            descriptor['config']['applicabilityPath'] = str(Path(applicability_path).resolve())
     evaluation_request_from_dict(raw); validation_plan_from_dict(plan_value); target_environment_from_dict(env_value)
     return {'validation-plan.json': plan_value, 'environment.json': env_value, 'request.json': raw}
 
 
-def request(spec_path, output):
-    payload = request_payload(spec_path, output)
+def request(spec_path, output, applicability_path=None):
+    payload = request_payload(spec_path, output, applicability_path)
     root = Path(output).resolve(); root.mkdir()
     for name, value in payload.items(): write(root / name, value)
-    check_request(root / 'request.json', spec_path)
+    check_request(root / 'request.json', spec_path, applicability_path)
     return root / 'request.json'
 
 
-def check_request(path, spec_path):
+def check_request(path, spec_path, applicability_path=None):
     """Rederive all contracts without overwriting or executing anything."""
     path = Path(path).resolve(strict=True)
     if path.name != 'request.json': raise ValueError('PROJECT_REQUEST_NAME_INVALID')
-    expected = request_payload(spec_path, path.parent)
+    expected = request_payload(spec_path, path.parent, applicability_path)
     for name, value in expected.items():
         # These are exclusively generated contracts, so their original byte
         # representation is known. Do not lose companion-file mutations when

@@ -90,3 +90,92 @@ def check(path):
             or value['semanticApproval'] is not False or value['productionAcceptanceComplete'] is not False):
         raise ValueError('PROGRAM_OBLIGATIONS_REDERIVATION_MISMATCH')
     return value
+
+
+# Obligations for the existing captured-project adapter. These identify the
+# consumer phase; they do not remove final program requirements or grant facts.
+_PROJECT_PHASES = {
+    'THREE_COMPILE_CONTEXT_REFINEMENT_REQUIRED': 'before-L1',
+    'ACTUAL_MACHINE_ABI_REQUIRED': 'before-L1',
+    'INTERNAL_OBJECT_ACCESS_PROOF_REQUIRED': 'before-L1',
+    'DEPENDENCY_CALL_AND_EFFECT_CLOSURE_REQUIRED': 'before-L1',
+    'SOURCE_TARGET_TEST_INPUT_RELATION_REQUIRED': 'before-L1',
+    'NATURAL_RUN_IMAGE_IDENTITY_REQUIRED': 'before-L1',
+    'OUTPUT_AND_TERMINATION_RELATION_REQUIRED': 'after-L1',
+    'CANONICAL_INSTANCE_INSTRUCTION_COVERAGE_REQUIRED': 'before-or-during-L2',
+    'PROGRAM_L2_AUTHORITY_REQUIRED': 'before-or-during-L2',
+    'INDEPENDENT_PROGRAM_AUDIT_REQUIRED': 'after-required-levels',
+}
+
+
+def project_assessment(spec, observation=None, applicability=None):
+    """Classify actual obligations; process agreement is a bounded subgoal.
+
+    Full preconditions do not currently have connected proof producers. Nothing
+    accepts a caller-supplied Boolean as a discharge certificate.
+    """
+    if (not isinstance(spec.get('gaps'), list) or len(spec['gaps']) != len(_PROJECT_PHASES)
+            or set(spec['gaps']) != set(_PROJECT_PHASES)):
+        raise ValueError('PROGRAM_FULL_OBLIGATION_POLICY_REQUIRED')
+    rows = []
+    for reason in spec['gaps']:
+        if reason not in _PROJECT_PHASES: raise ValueError('PROGRAM_OBLIGATION_PHASE_UNREGISTERED:' + reason)
+        body = {'reasonCode': reason, 'phase': _PROJECT_PHASES[reason],
+                'status': 'evidence-production-required',
+                'projectEvaluationIdentity': spec['projectEvaluationIdentity']}
+        rows.append(dict(body, obligationIdentity=d.identity(body)))
+    observable = 'not-observed'
+    if observation is not None:
+        if observation['executionBudgetFailed'] or observation['loaderListFailed']:
+            observable = 'execution-unavailable'
+        elif observation['exitOutsideDeclaredDomain']:
+            observable = 'outside-declared-exit-domain'
+        elif observation['mismatches']:
+            observable = 'observed-mismatch'
+        else:
+            observable = 'observed-match'
+    l1_pending = [r['reasonCode'] for r in rows if r['phase'] in ('before-L1', 'after-L1')
+                  and r['status'] != 'verified']
+    from .validation_status import ValidationStatus
+    # Real checked producers must discharge these before bounded observation
+    # can support a complete L1 result. L2/audit obligations are kept separately.
+    status = (ValidationStatus.INCONCLUSIVE if l1_pending or observable in
+              ('not-observed', 'execution-unavailable', 'outside-declared-exit-domain') else
+              ValidationStatus.FAILED if observable == 'observed-mismatch' else ValidationStatus.VERIFIED)
+    return {'schemaVersion': 'riscv2x86.project-obligation-assessment.v1',
+            'obligations': rows, 'l1Status': status.value, 'l1ReasonCodes': l1_pending,
+            'boundedProcessObservableStatus': observable,
+            'applicability': applicability['facts'] if applicability else None,
+            'programRequirementsComplete': False, 'semanticApproval': False,
+            'productionAcceptanceComplete': False}
+
+
+def original_layer_readiness(spec):
+    """Ask original L2 authority consumer about original artifacts; no stubs."""
+    from . import native_original_pipeline as route
+    from .translation_attempt import load_translation_attempt_archive
+    from .translation_artifact_binding import artifacts_from_report
+    from .automatic_l2_operand import _authority
+    run = route.check_run(spec['run']['path']); translation = d.read(run['translation']['path'])
+    report = d.read(translation['report']['path']); findings = report['findings']
+    archive = load_translation_attempt_archive(translation['attemptArchive']['path'])
+    artifacts = artifacts_from_report(Path(translation['report']['path']), archive)
+    rows = []
+    attempts = {a.finding_id: a for a in archive.attempts}
+    for index, finding in enumerate(findings):
+        fragment = finding.get('fragment') or {}; fragment_id = fragment.get('id', '')
+        finding_id = f'finding:{index}:{fragment_id}'
+        artifact = artifacts.get(finding_id)
+        if artifact is None: continue
+        attempt = attempts.get(finding_id)
+        if attempt is None or attempt.fragment_id != fragment_id:
+            raise ValueError('PROGRAM_L2_ATTEMPT_BINDING_REQUIRED')
+        authority, reason = _authority(finding, report.get('functions', []), artifact)
+        rows.append({'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
+                     'originalProvider': 'automatic-l2-operand-differential',
+                     'authorityConsumerReady': authority is not None,
+                     'authorityComplete': artifact.l2_authority_complete,
+                     'reasonCode': reason, 'canonicalExecutionCoverageVerified': False,
+                     'l3IntentReceiptPresent': bool(finding.get('l3IntentReceipt')),
+                     'l3Applicability': 'requires-original-intent-validation'})
+    return {'scope': 'original-authority-consumer-readiness-not-L2-or-L3-validation', 'instances': rows}

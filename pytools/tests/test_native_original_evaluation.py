@@ -200,3 +200,16 @@ def test_cli_preserves_nonzero_for_inconclusive_but_check_means_integrity(origin
     assert cli.main(['inspect', '--run', str(run)]) == 2
     assert cli.main(['evaluate', '--run', str(run), '--request', str(template), '--output', str(root / 'ev')]) == 1
     assert cli.main(['check', '--input', str(root / 'ev/result.json')]) == 0
+
+
+def test_original_readiness_uses_real_artifact_and_authority_consumer(original_run):
+    from riscv2x86_py.program_validation_obligations import original_layer_readiness
+    _, run, _ = original_run
+    value = original_layer_readiness({'run': {'path': str(run)}})
+    assert len(value['instances']) == 1
+    row = value['instances'][0]
+    assert row['originalProvider'] == 'automatic-l2-operand-differential'
+    assert not row['authorityComplete'] and not row['authorityConsumerReady']
+    assert row['reasonCode']
+    assert not row['canonicalExecutionCoverageVerified']
+    assert row['l3Applicability'] == 'requires-original-intent-validation'

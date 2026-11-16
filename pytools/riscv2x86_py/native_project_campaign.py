@@ -5,20 +5,23 @@ is retained as a terminal result, never retried until it happens to pass.
 """
 from copy import deepcopy
 from pathlib import Path
+import math
+import time
 
 from . import native_captured_deployment as d
 from . import native_original_pipeline as route
 from . import native_original_evaluation as evaluation
 from . import native_project_evaluation as project
+from . import native_original_applicability as applicability
 from .native_original_corpus import lock
 from .native_external_providers import checked
 from .native_verifier_manifest import current, compare
 from .ghidra_configuration import resolve_install_dir
 from .project_acquisition import publish, publish_checked
 
-PLAN = 'riscv2x86.original-project-campaign-plan.v1'
-PROGRESS = 'riscv2x86.original-project-campaign-progress.v1'
-STAGES = ('original', 'project', 'request', 'evaluation')
+PLAN = 'riscv2x86.original-project-campaign-plan.v2'
+PROGRESS = 'riscv2x86.original-project-campaign-progress.v2'
+STAGES = ('original', 'project', 'applicability', 'request', 'evaluation')
 
 
 def make_plan(bundle, target_plan, records, *, qemu, runtime_prefix, cases,
@@ -77,7 +80,7 @@ def check_progress(path):
     if (set(state) != {'schemaVersion', 'plan', 'checkpoints', 'attempts', 'status', 'currentStage',
                       'primaryFailure', 'evaluationStatus', 'semanticApproval',
                       'productionAcceptanceComplete', 'stateIdentity'}
-            or state['schemaVersion'] != PROGRESS or state['status'] not in ('running', 'failed', 'complete')
+            or state['schemaVersion'] != PROGRESS or state['status'] not in ('running', 'failed', 'paused', 'complete')
             or state['semanticApproval'] is not False or state['productionAcceptanceComplete'] is not False
             or not isinstance(state['checkpoints'], dict) or not isinstance(state['attempts'], list)):
         raise ValueError('PROJECT_CAMPAIGN_PROGRESS_INVALID')
@@ -87,11 +90,15 @@ def check_progress(path):
     cp = state['checkpoints']
     if set(cp) != set(STAGES[:len(cp)]): raise ValueError('PROJECT_CAMPAIGN_CHECKPOINT_ORDER_INVALID')
     for i, attempt in enumerate(state['attempts']):
-        if (set(attempt) != {'index', 'stage', 'directory', 'status', 'failure'}
+        if (set(attempt) != {'index', 'stage', 'directory', 'status', 'failure', 'operationElapsedSeconds'}
                 or attempt['index'] != i or attempt['stage'] not in STAGES
                 or attempt['status'] not in ('running', 'complete', 'failed', 'interrupted')
                 or attempt['directory'] != str(root / 'attempts' / ('%06d-%s' % (i, attempt['stage'])))):
             raise ValueError('PROJECT_CAMPAIGN_ATTEMPT_INVALID')
+        elapsed = attempt['operationElapsedSeconds']
+        if (elapsed is not None and (type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0)
+                or attempt['status'] in ('complete', 'failed') and elapsed is None):
+            raise ValueError('PROJECT_CAMPAIGN_TIMING_INVALID')
         failure = attempt['failure']
         if attempt['status'] == 'failed':
             if (not isinstance(failure, dict) or set(failure) != {'stage', 'type', 'detail'}
@@ -111,7 +118,7 @@ def check_progress(path):
     if state['currentStage'] != expected_stage:
         raise ValueError('PROJECT_CAMPAIGN_CURRENT_STAGE_MISMATCH')
     stage_files = {'original': 'work/result.json', 'project': 'project.json',
-                   'request': 'contracts/request.json', 'evaluation': 'work/result.json'}
+                   'applicability': 'work/result.json', 'request': 'contracts/request.json', 'evaluation': 'work/result.json'}
     for attempt in state['attempts']:
         if attempt['status'] == 'complete':
             ref = cp.get(attempt['stage'])
@@ -132,8 +139,11 @@ def check_progress(path):
         if (spec['run'] != cp['original']
                 or spec['configuration'] != project_configuration(plan, cp['original']['path'])):
             raise ValueError('PROJECT_CAMPAIGN_PROJECT_BINDING_MISMATCH')
+    if 'applicability' in cp:
+        app = applicability.check(cp['applicability']['path'])
+        if app['project'] != cp['project']: raise ValueError('PROJECT_CAMPAIGN_APPLICABILITY_BINDING_MISMATCH')
     if 'request' in cp:
-        project.check_request(cp['request']['path'], cp['project']['path'])
+        project.check_request(cp['request']['path'], cp['project']['path'], cp['applicability']['path'])
     if 'evaluation' in cp:
         result = evaluation.check(cp['evaluation']['path'])
         if (result['inputs']['run'] != cp['original'] or result['inputs']['requestTemplate'] != cp['request']
@@ -146,7 +156,9 @@ def check_progress(path):
     return state
 
 
-def execute(plan, output, *, resume=False):
+def execute(plan, output, *, resume=False, stop_after=None):
+    if stop_after is not None and (resume or stop_after not in STAGES[:-1]):
+        raise ValueError('PROJECT_STOP_AFTER_NEW_CAMPAIGN_STAGE_REQUIRED')
     validate_plan(plan)
     requested = Path(output).absolute()
     if requested.is_symlink(): raise ValueError('PROJECT_CAMPAIGN_OUTPUT_LINK_UNSUPPORTED')
@@ -178,9 +190,10 @@ def execute(plan, output, *, resume=False):
             if stage in state['checkpoints']: continue
             index = len(state['attempts']); folder = root / 'attempts' / ('%06d-%s' % (index, stage))
             folder.mkdir()
-            attempt = {'index': index, 'stage': stage, 'directory': str(folder), 'status': 'running', 'failure': None}
+            attempt = {'index': index, 'stage': stage, 'directory': str(folder), 'status': 'running', 'failure': None, 'operationElapsedSeconds': None}
             state['attempts'].append(attempt); state['currentStage'] = stage; publish(progress, state)
             cp = state['checkpoints']
+            started = time.monotonic()
             try:
                 validate_plan(plan)
                 if stage == 'original':
@@ -191,23 +204,30 @@ def execute(plan, output, *, resume=False):
                 elif stage == 'project':
                     result = folder / 'project.json'
                     project.freeze(output=result, **project_configuration(plan, cp['original']['path']))
+                elif stage == 'applicability':
+                    applicability.acquire(cp['project']['path'], folder / 'work')
+                    result = folder / 'work/result.json'
                 elif stage == 'request':
-                    result = project.request(cp['project']['path'], folder / 'contracts')
-                    project.check_request(result, cp['project']['path'])
+                    result = project.request(cp['project']['path'], folder / 'contracts', cp['applicability']['path'])
+                    project.check_request(result, cp['project']['path'], cp['applicability']['path'])
                 else:
                     value = evaluation.acquire(cp['original']['path'], cp['request']['path'], folder / 'work')
                     result = folder / 'work/result.json'
                     state['evaluationStatus'] = value['facts']['evaluationStatus']
                 validate_plan(plan)
                 cp[stage] = d.snapshot(result); attempt['status'] = 'complete'
+                attempt['operationElapsedSeconds'] = time.monotonic() - started
                 publish(progress, state)
                 check_progress(progress)
+                if stage == stop_after:
+                    state.update(status='paused'); publish(progress, state)
+                    return check_progress(progress)
             except Exception as exc:
                 # Failed acquisition cannot advance the checkpoint frontier.
                 cp.pop(stage, None)
                 if stage == 'evaluation': state['evaluationStatus'] = None
                 failure = {'stage': stage, 'type': type(exc).__name__, 'detail': str(exc)}
-                attempt.update(status='failed', failure=failure)
+                attempt.update(status='failed', failure=failure, operationElapsedSeconds=time.monotonic() - started)
                 state.update(status='failed', primaryFailure=failure)
                 publish(progress, state)
                 raise
@@ -230,5 +250,31 @@ def facts(state):
             'evaluationStatus': state['evaluationStatus'], 'primaryFailure': state['primaryFailure'],
             'resultPaths': {s: r['path'] for s, r in state['checkpoints'].items()},
             'originalEvaluation': original_facts,
+            'operationTimings': [{k: a[k] for k in ('index', 'stage', 'status', 'operationElapsedSeconds')}
+                                 for a in state['attempts']],
+            'applicability': d.read(state['checkpoints']['applicability']['path'])['facts']
+                             if 'applicability' in state['checkpoints'] else None,
             'attemptCount': len(state['attempts']), 'semanticApproval': False,
             'productionAcceptanceComplete': False}
+
+
+def timing_report(path):
+    """Read checked measurements. Overlapping scopes are not added together."""
+    state = check_progress(path); result = {'operations': facts(state)['operationTimings'],
+        'layers': [], 'commands': [],
+        'scope': 'monotonic-wall-measurements-with-overlapping-scopes-not-sum-of-all-rows'}
+    if 'evaluation' in state['checkpoints']:
+        ref = state['checkpoints']['evaluation']; value = evaluation.check(ref['path'])
+        for item in value['evaluationFiles']:
+            name = Path(item['path']).name
+            if name == 'phase-timings.json':
+                measurement = d.read(item['path'])
+                if measurement.get('schemaVersion') == 'riscv2x86.project-layer-timing.v1':
+                    result['layers'].append({'path': item['path'], **measurement})
+            elif name == 'execution.json':
+                measurement = d.read(item['path'])
+                if 'elapsedSeconds' in measurement:
+                    project.validate_execution_record(measurement)
+                    result['commands'].append({'path': item['path'], 'elapsedSeconds': measurement['elapsedSeconds'],
+                        'returnCode': measurement['returnCode'], 'failureReason': measurement['failureReason']})
+    return result

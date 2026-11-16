@@ -39,14 +39,27 @@ def contracts(request_path):
     # This provider's project specification lives outside the evaluation work
     # tree. Pin it as an input too: hashing retained logs alone cannot detect a
     # later change to its case list, environments or captured build recipes.
+    checked_specs = {}; checked_apps = {}
     for level, descriptor in request.runtime_registry_template.get('validators', {}).items():
         if isinstance(descriptor, dict) and descriptor.get('type') == 'original-captured-project':
             from . import native_project_evaluation as project
             path = descriptor['config']['specPath']
             if not Path(path).is_absolute():
                 raise ValueError('ORIGINAL_PROJECT_ABSOLUTE_SPEC_PATH_REQUIRED')
-            project.check(path)
-            refs['projectSpec:' + level] = d.snapshot(path)
+            if path not in checked_specs:
+                project.check(path); checked_specs[path] = d.snapshot(path)
+            d.verify_snapshot(checked_specs[path])
+            refs['projectSpec:' + level] = checked_specs[path]
+            app_path = descriptor['config'].get('applicabilityPath')
+            if app_path is not None:
+                from .native_original_applicability import check as check_applicability
+                if not Path(app_path).is_absolute(): raise ValueError('ORIGINAL_APPLICABILITY_ABSOLUTE_PATH_REQUIRED')
+                if app_path not in checked_apps:
+                    checked_apps[app_path] = (check_applicability(app_path), d.snapshot(app_path))
+                app, app_snapshot = checked_apps[app_path]
+                d.verify_snapshot(app_snapshot)
+                if app['project'] != d.snapshot(path): raise ValueError('ORIGINAL_APPLICABILITY_PROJECT_MISMATCH')
+                refs['applicability:' + level] = app_snapshot
     return refs, plan
 
 
@@ -82,7 +95,12 @@ def summary(result):
         layers = [] if validation is None else validation['layers']
         if validation is not None:
             translation_validation_result_from_dict(validation)
-        rows.append({'attemptArtifactId': attempt['attemptArtifactId'],
+        assessment = None
+        for layer in layers:
+            if layer['level'] == 'L1':
+                try: assessment = json.loads(layer['detail']).get('obligationAssessment')
+                except (ValueError, TypeError, AttributeError): pass
+        rows.append({'obligationAssessment': assessment, 'attemptArtifactId': attempt['attemptArtifactId'],
                      'fragmentId': attempt['fragmentId'],
                      'translationOutcome': attempt['translationOutcome'],
                      'status': attempt['status'], 'reasonCodes': attempt['reasonCodes'],
