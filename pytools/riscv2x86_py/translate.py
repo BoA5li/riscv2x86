@@ -4013,6 +4013,11 @@ def _translate_phase6_proof_pipeline(
         artifact["rendererContractIdentity"] = \
             proof.l2_effect_proof_facts.renderer_contract_identity
         artifact["l2EffectProofFacts"] = proof.l2_effect_proof_facts.to_dict()
+    from .operand_permutation_proof import export as export_permutation_proof, FIELD as PERMUTATION_PROOF_FIELD
+    permutation_proof = export_permutation_proof(
+        source_model, selection.selected_plan, context.fragment, artifact)
+    if permutation_proof is not None:
+        artifact[PERMUTATION_PROOF_FIELD] = permutation_proof
     if rendered.kind in {
         RenderedReplacementKind.PRIVILEGED_RUNTIME_ADAPTER,
         RenderedReplacementKind.PRIVILEGED_FUNCTIONAL_FALLBACK,

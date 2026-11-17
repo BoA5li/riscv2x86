@@ -133,7 +133,6 @@ def assess_scalar_authority_materializability(
         fragment_id = "unbound-fragment"
     reasons: set[str] = set()
     # Structural expression joins do not prove GNU-permitted permutations.
-    # The original scalar harness has no permutation-proof consumer yet.
     if isinstance(fragment, Mapping):
         from .gnu_operand_relations import derive as derive_relation
         try:
@@ -141,7 +140,15 @@ def assess_scalar_authority_materializability(
                 [x['constraint'] for x in fragment.get('outputs', [])],
                 [x['constraint'] for x in fragment.get('inputs', [])])
             if relation['semanticCommutativityProofRequired']:
-                reasons.add('L2_SCALAR_OPERAND_PERMUTATION_PROOF_REQUIRED')
+                from .operand_permutation_proof import consume, FIELD
+                raw_proof = approval.get(FIELD) if isinstance(approval, Mapping) else None
+                if raw_proof is None:
+                    reasons.add('L2_SCALAR_OPERAND_PERMUTATION_PROOF_REQUIRED')
+                else:
+                    try:
+                        consume(raw_proof, fragment, approval)
+                    except (KeyError, TypeError, ValueError):
+                        reasons.add('L2_SCALAR_OPERAND_PERMUTATION_PROOF_INVALID')
         except (KeyError, TypeError, ValueError):
             reasons.add('L2_SCALAR_GNU_OPERAND_RELATION_INVALID')
     boundary_identity = ""

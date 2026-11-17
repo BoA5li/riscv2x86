@@ -64,13 +64,28 @@ def test_invalid_capability_metadata_is_rejected(tmp_path,mutation):
 
 
 @pytest.mark.parametrize('kind',['exit','timeout'])
-def test_process_failure_keeps_query_evidence_without_complete_result(tmp_path,kind):
+def test_process_failure_keeps_query_evidence_without_complete_result(tmp_path,kind,monkeypatch):
+    from riscv2x86_py import native_experiment_driver as driver
+    execute = driver.command
+    imports = []
+    def query_isolated(argv,cwd,env,output,timeout,max_bytes):
+        # This test targets the real query subprocess's exit/timeout. Import
+        # success/failure is tested separately; cold imports must not consume
+        # this query's one-second budget and prevent reaching the assertion.
+        if argv[1:] == ['-m','riscv2x86_py.cli','--help']:
+            imports.append(argv)
+            for name in ('stdout.log','stderr.log'):
+                (Path(output)/name).write_bytes(b'')
+            return 0,None
+        return execute(argv,cwd,env,output,timeout,max_bytes)
+    monkeypatch.setattr(driver,'command',query_isolated)
     install=launcher(tmp_path/'install',exit_code=7 if kind=='exit' else 0,sleep=3 if kind=='timeout' else 0)
     with pytest.raises(bridge.GhidraPythonRunError):
         module.acquire(tmp_path/'evidence',ghidra_install_dir=str(install),timeout=1)
     assert not (tmp_path/'evidence/result.json').exists()
     query=d.read(tmp_path/'evidence/query/query.json')
     assert query['returnCode']==7 if kind=='exit' else query['failureReason']=='TIMEOUT'
+    assert len(imports)==1
 
 
 def test_invalid_path_creates_no_evidence_directory(tmp_path):
@@ -97,7 +112,8 @@ def test_real_ghidra_installation_when_explicitly_available(tmp_path):
     assert module.check(tmp_path/'real/result.json')==result
 
 
-def test_public_cli_import_failure_stops_before_query(tmp_path,monkeypatch):
+@pytest.mark.parametrize('code,reason', [(7,None), (None,'TIMEOUT')])
+def test_public_cli_import_failure_stops_before_query(tmp_path,monkeypatch,code,reason):
     from riscv2x86_py import native_experiment_driver as driver
     install=launcher(tmp_path/'install')
     calls=[]
@@ -107,16 +123,17 @@ def test_public_cli_import_failure_stops_before_query(tmp_path,monkeypatch):
         folder=Path(output)
         (folder/'stdout.log').write_text('')
         (folder/'stderr.log').write_text('simulated missing backend dependency\n')
-        return 7,None
+        return code,reason
     monkeypatch.setattr(driver,'command',failed_import)
-    with pytest.raises(ValueError,match='ORIGINAL_BACKEND_IMPORT_FAILED:7'):
+    with pytest.raises(ValueError,match='ORIGINAL_BACKEND_IMPORT_FAILED:'+str(reason or code)):
         module.acquire(tmp_path/'evidence',ghidra_install_dir=str(install))
     assert len(calls)==1
     assert not (tmp_path/'evidence/query').exists()
     assert not (tmp_path/'evidence/result.json').exists()
     state=d.read(tmp_path/'evidence/run-status.json')
     assert state['status']=='failed' and state['currentStage']=='original-backend-import'
-    assert d.read(tmp_path/'evidence/backend-import/command.json')['returnCode']==7
+    command=d.read(tmp_path/'evidence/backend-import/command.json')
+    assert command['returnCode']==code and command['failureReason']==reason
 
 
 def test_python_invocation_normalizes_parent_components_without_resolving_venv(tmp_path, monkeypatch):

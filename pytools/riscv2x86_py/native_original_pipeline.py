@@ -194,7 +194,7 @@ def check_input(path):
             or row['directory']!=receipt['context']['workingDirectory']
             or row['environment']!=environment(receipt['context'])):
         raise ValueError('ORIGINAL_INPUT_EXPORT_RECIPE_MISMATCH')
-    bindings=binding.derive(artifacts['canonicalAst'],d.read(value['rawFrontendReport']['path']),
+    bindings=binding._derive_checked(artifacts,d.read(value['rawFrontendReport']['path']),
                             source.read_bytes(),receipt['analysisInputIdentity'])
     if (d.read(value['bindings']['path'])!=bindings or type(value['expandedInstanceCount']) is not int
             or value['expandedInstanceCount']<1 or value['expandedInstanceCount']!=bindings['occurrenceCount']):
@@ -347,6 +347,7 @@ def audit(translation_path,output):
     if (old['command']['returnCode']!=fresh['command']['returnCode']
             or old['attemptOutcomes']!=fresh['attemptOutcomes']
             or old_attempts!=new_attempts
+            or _permutation_projection_snapshot(old)!=_permutation_projection_snapshot(fresh)
             or old_manifest.target_tree_digest!=new_manifest.target_tree_digest):
         raise ValueError('ORIGINAL_BACKEND_INDEPENDENT_REPLAY_MISMATCH')
     value=d.seal({'schemaVersion':'riscv2x86.native-original-replay.v1',
@@ -355,6 +356,26 @@ def audit(translation_path,output):
         'originalBackendReplayComplete':True,'semanticApproval':False,
         'productionAcceptanceComplete':False},'originalReplayIdentity')
     publish_checked(root/'result.json',value,check_replay);return value
+
+
+def _permutation_projection_snapshot(translation):
+    """Bind added proof projections to the independently replayed backend.
+
+    The original attempt proof identity intentionally stays the original proof
+    identity. Therefore compare these additive structured projections too;
+    a self-rehashed extra record cannot escape the existing replay audit.
+    """
+    from .operand_permutation_proof import consume, FIELD
+    d.verify_snapshot(translation['report'])
+    rows=[]
+    for index, finding in enumerate(d.read(translation['report']['path'])['findings']):
+        approval=finding.get('approvalArtifact') or {}
+        if FIELD not in approval:
+            continue
+        consume(approval[FIELD], finding['fragment'], approval)
+        rows.append({'findingIndex':index, 'fragmentId':finding['fragment']['id'],
+                     'projection':approval[FIELD]})
+    return rows
 
 
 @measured('native_original_pipeline.check_replay')
@@ -378,6 +399,7 @@ def check_replay(path):
             or old['command']['returnCode']!=fresh['command']['returnCode']
             or a.target_tree_digest!=b.target_tree_digest
             or load_translation_attempt_archive(old['attemptArchive']['path'])!=load_translation_attempt_archive(fresh['attemptArchive']['path'])
+            or _permutation_projection_snapshot(old)!=_permutation_projection_snapshot(fresh)
             or value['originalBackendReplayComplete'] is not True
             or value['semanticApproval'] is not False or value['productionAcceptanceComplete'] is not False):
         raise ValueError('ORIGINAL_REPLAY_REDERIVATION_MISMATCH')

@@ -222,11 +222,26 @@ def original_layer_readiness(spec):
         binding_diagnostic = l2_function_binding_diagnostic(finding, report.get('functions', []))
         binding_diagnostic['reportFunctionTablePresent'] = 'functions' in report
         authority, reason = _authority(finding, report.get('functions', []), artifact)
+        matches = [fn for fn in report.get('functions', [])
+                   if fn.get('name') == fragment.get('enclosingFunction')]
+        from .l2_execution_requirements import plan as execution_plan
+        execution_requirements = execution_plan(matches[0], fragment_id) if len(matches) == 1 else None
+        from .operand_permutation_proof import consume as consume_permutations, FIELD
+        approval = finding.get('approvalArtifact') or {}
+        permutation = {'status': 'not-supplied', 'scope': 'registered-local-proof-not-program-authority'}
+        if FIELD in approval:
+            try:
+                permutation.update(status='verified-within-registered-contract',
+                    binding=consume_permutations(approval[FIELD], fragment, approval))
+            except (KeyError, TypeError, ValueError) as exc:
+                permutation.update(status='invalid', detail=str(exc))
         rows.append({'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
                      'originalProvider': 'automatic-l2-operand-differential',
                      'authorityConsumerReady': authority is not None,
                      'authorityComplete': artifact.l2_authority_complete,
                      'reasonCode': reason, 'functionBindingDiagnostic': binding_diagnostic,
+                     'executionRequirements': execution_requirements,
+                     'permutationProofConsumption': permutation,
                      'scalarAuthorityReasonCodes': ((finding.get('approvalArtifact') or {})
                          .get('l2ScalarAuthorityDecision') or {}).get('reasonCodes', []),
                      'fragmentBoundaryReasonCodes': ((finding.get('approvalArtifact') or {})

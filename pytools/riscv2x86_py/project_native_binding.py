@@ -13,8 +13,27 @@ from .project_build_records import identity
 from .project_compile_context import digest, validate as validate_context
 from .project_tool_resolution import resolve_executable
 from . import project_native_input as native_input
+from .verification_session import ContentBytes, ReadOnlyDict, measured, pure
 
 SCHEMA = 'riscv2x86.native-instance-binding-bundle.v1'
+
+
+@measured('native-binding.checked-pure-derivation')
+def _derive_checked(artifacts, report, raw, analysis_identity):
+    """Internal pure reuse AFTER current artifact validation, never a checker.
+
+    canonicalAstIdentity here is the actual graph derivation result returned by
+    validate_artifacts, not a claimed receipt hash. The report and source key
+    are computed from their current values. Return owned mutable bindings, as
+    before; callers cannot mutate the memoized value through the public result.
+    """
+    canonical = artifacts.get('canonicalAstIdentity')
+    if canonical is None or not isinstance(artifacts['canonicalAst'], ReadOnlyDict):
+        # Old/isolated adapters without a validated graph token get no reuse.
+        return derive(artifacts['canonicalAst'], report, raw, analysis_identity)
+    return pure('native-compiler-instance-bindings.v1',
+        (canonical, identity(report), ContentBytes(raw), analysis_identity),
+        lambda: derive(artifacts['canonicalAst'], report, raw, analysis_identity))
 
 
 def read(path):
@@ -146,7 +165,7 @@ def validate_artifacts(bundle):
     if identity(bundle['nativeInputReplay']) != identity(expected_replay):
         raise ValueError('NATIVE_BINDING_INPUT_REPLAY_RECEIPT_INVALID')
     report = read(bundle['frontendReportPath'])
-    bindings = derive(artifacts['canonicalAst'], report, artifacts['inputBytes'], receipt['analysisInputIdentity'])
+    bindings = _derive_checked(artifacts, report, artifacts['inputBytes'], receipt['analysisInputIdentity'])
     stored_contexts = read(bundle['contextsPath'])
     contexts = call_contexts(artifacts['canonicalAst'], bindings, receipt['analysisInputIdentity'],
         schema=stored_contexts.get('schemaVersion'))

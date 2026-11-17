@@ -828,6 +828,9 @@ def entry_points_from_ast(root, source, *, project_contract=None,
                 source_file=str(source.resolve()),
                 source_bytes=source_bytes,type_resolver=resolve_compiler_type)
             from .compiler_integer_signature import export as integer_signature
+            from .l2_execution_requirements import export_signature
+            function['compilerExecutionSignature'] = export_signature(
+                function, node, resolve_compiler_type)
             call=integer_signature(function,param_types,return_type,resolve_compiler_type)
             if call is not None:function['compilerIntegerCallSignature']=call
             from .compiler_memory_signature import export as memory_signature

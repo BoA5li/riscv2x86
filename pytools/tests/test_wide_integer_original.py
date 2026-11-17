@@ -138,6 +138,9 @@ def test_original_pipeline_reaches_emitted_archive_with_real_lifter(tmp_path,mon
     assert value['sourceModelDiagnostics']['valueOperationKind']=='unsigned_multiply_high'
     assert value['sourceModelDiagnostics']['missingSourceFacts']==[]
     assert value['validationOutcome']=='not_verified' and value['publicationOutcome']=='withheld'
+    from riscv2x86_py.operand_permutation_proof import consume, FIELD
+    approval = value['approvalArtifact']
+    assert consume(approval[FIELD], value['fragment'], approval)['proofIdentity'] == approval['proofIdentity']
 
 
 def test_physical_adapter_real_pipeline_materializer_and_replay_join(adapted,monkeypatch):

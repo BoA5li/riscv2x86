@@ -156,7 +156,7 @@ def protocol(tmp_path, monkeypatch, failure=0):
             'productionAcceptanceComplete': False}
         return dict(body, replayIdentity=identity(body))
     monkeypatch.setattr(acquisition.native_input, 'replay', replay_input)
-    monkeypatch.setattr(acquisition.native_input, 'validate_artifacts', lambda _: {
+    monkeypatch.setattr(acquisition.native_input, 'validate_artifacts', lambda _, *, readonly=False: {
         'inputBytes': raw, 'canonicalAst': ast, 'stages': {'native-expanded': {'stdoutPath': str(input_path)}}})
     calls = []
     def run(command, **kwargs):

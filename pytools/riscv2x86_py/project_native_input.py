@@ -363,6 +363,7 @@ def validate_artifacts(receipt, *, readonly=False):
             or _json_identity(inventory_bytes) != graph['inventoryBodyIdentity']):
         raise ValueError('NATIVE_INPUT_INVENTORY_BINDING_INVALID')
     return {'canonicalAst': canonical, 'inputBytes': raw_input,
+            'canonicalAstIdentity': graph['canonicalIdentity'],
             'inventory': inventory, 'stages': stages}
 
 

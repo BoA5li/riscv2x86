@@ -221,18 +221,12 @@ def check(path):
         raise ValueError('PROJECT_EVALUATION_REDERIVATION_MISMATCH')
     validate_cases(value['cases'])
     for ref in value['references']: d.verify_snapshot(ref)
-    route.check_run(value['run']['path'])
-    for side, profile in value['profiles'].items():
-        for key in ('library', 'entry'):
-            if d.captured_link(profile[key]['action']) != profile[key]:
-                raise ValueError('PROJECT_CAPTURED_LINK_CHANGED:' + side)
-        if compile_profile(profile['compile']['action']) != profile['compile']:
-            raise ValueError('PROJECT_COMPILE_PROFILE_CHANGED:' + side)
-        # Link inputs and duplicate positions remain ordered, never sets.
-        expected = [i['argumentIndex'] for i in profile['entry']['inputs']
-                    if inputs_equal(i, profile['library']['originalOutput'])]
-        if expected != profile['entryLibraryPositions']:
-            raise ValueError('PROJECT_LIBRARY_POSITION_CHANGED')
+    # freeze(output=None) above already checks the original run, captures all
+    # ordered link inputs/compile profiles and rederives library positions.
+    # Equality with the entire stored value closes those same obligations;
+    # repeating the complete run graph here supplied no independent evidence.
+    # Reference snapshots stay live after rederivation. No validator result is
+    # cached and a new public check or audit starts from current inputs again.
     return value
 
 

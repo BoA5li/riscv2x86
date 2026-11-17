@@ -300,7 +300,8 @@ def test_project_contract_roundtrip_rederives_recipes_and_rejects_resealed_envir
     p.write(receipt, {'context': context})
     bundle = root / 'bundle.json'; p.write(bundle, {'nativeInputReceiptPath': str(receipt)})
     run = root / 'run.json'; p.write(run, {})
-    monkeypatch.setattr(p.route, 'check_run', lambda path: {'bundle': d.snapshot(bundle)})
+    run_checks = []
+    monkeypatch.setattr(p.route, 'check_run', lambda path: run_checks.append(path) or {'bundle': d.snapshot(bundle)})
     prefix = root / 'guest'; loader = prefix / parse(Path(source_plan['entry']['originalOutput']['path']).read_bytes())['interpreter'].lstrip('/')
     loader.parent.mkdir(parents=True); loader.write_bytes(Path(source_plan['library']['originalOutput']['path']).read_bytes())
     which = shutil.which
@@ -309,7 +310,12 @@ def test_project_contract_roundtrip_rederives_recipes_and_rejects_resealed_envir
     output = root / 'project.json'
     value = p.freeze(run, plan, record_paths, output, qemu=sys.executable,
                      runtime_prefix=prefix, cases=p.gmp_cases([42], 1))
+    run_checks.clear()
     assert p.check(output) == value
+    assert len(run_checks) == 1
+    run_checks.clear()
+    assert p.check(output) == value
+    assert len(run_checks) == 1  # Fresh public checks never reuse a passed validator.
     assert value['profiles']['target']['entryLibraryPositions'] == target_plan['entryLibraryPositions']
     assert not value['semanticApproval']
     value['profiles']['target']['environment']['LC_ALL'] = 'changed'
