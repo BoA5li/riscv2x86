@@ -16,7 +16,7 @@ from .project_build_contract import source_arguments
 from .project_build_records import identity
 from .project_compile_context import validate as validate_context, digest, PAIRS
 from .project_tool_resolution import resolve_executable
-from .verification_session import measured, pure, span
+from .verification_session import ContentBytes, measured, pure, span
 
 SCHEMA = 'riscv2x86.native-analysis-input.v1'
 AST_POLICY = 'clang-json-reference-graph-alpha-renaming.v1'
@@ -287,19 +287,21 @@ def bytes_identity(raw):
 
 @measured('native-input._native_graph')
 def _native_graph(ast_bytes, analysis_identity):
+    content = ast_bytes if type(ast_bytes) is ContentBytes else ContentBytes(ast_bytes)
     def derive_graph():
-        canonical = canonical_ast(json.loads(ast_bytes.decode('utf-8')))
+        canonical = canonical_ast(json.loads(content.raw.decode('utf-8')))
         inventory = ast_inventory(canonical, analysis_identity)
         return {'canonicalAst': canonical, 'canonicalIdentity': identity(canonical),
                 'inventory': inventory, 'inventoryBodyIdentity': identity(inventory)}
     return pure('native-canonical-graph-and-inventory.v1',
-                (ast_bytes, analysis_identity), derive_graph, readonly=True)
+                (content, analysis_identity), derive_graph, readonly=True)
 
 
 @measured('native-input._json_identity')
 def _json_identity(raw):
-    return pure('native-json-value-identity.v1', (raw,),
-                lambda: identity(json.loads(raw.decode('utf-8'))))
+    content = raw if type(raw) is ContentBytes else ContentBytes(raw)
+    return pure('native-json-value-identity.v1', (content,),
+                lambda: identity(json.loads(content.raw.decode('utf-8'))))
 
 
 @measured('native-input.validate-artifacts')
@@ -317,32 +319,39 @@ def validate_artifacts(receipt, *, readonly=False):
         if (receipt.get('executionEnvironment')!=execution_environment(receipt['context'])
                 or receipt.get('executionEnvironmentScope')!=scope):
             raise ValueError('NATIVE_INPUT_EXECUTION_ENVIRONMENT_MISMATCH')
+    # One current byte snapshot per path in this call. Every expected digest
+    # is checked, even when two receipt fields refer to the same path.
+    # No file-validity decision survives this invocation.
+    contents = {}
+    def read_checked(path, expected):
+        key = str(Path(path))
+        if key not in contents:
+            contents[key] = ContentBytes(Path(path).read_bytes())
+        content = contents[key]
+        if 'sha256:' + content.digest.hex() != expected:
+            raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
+        return content
     for row in receipt['commands']:
         for key in ('stdout', 'stderr'):
-            if digest(row[key + 'Path']) != row[key + 'Digest']:
-                raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
+            read_checked(row[key + 'Path'], row[key + 'Digest'])
     for prefix in ('canonicalAst', 'inventory'):
-        if digest(receipt[prefix + 'Path']) != receipt[prefix + 'Digest']:
-            raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
+        read_checked(receipt[prefix + 'Path'], receipt[prefix + 'Digest'])
     stages = {row['stage']: row for row in receipt['commands']}
     if len(stages) != len(receipt['commands']):
         raise ValueError('NATIVE_INPUT_DUPLICATE_STAGE')
     # All bytes and receipt/tool/dependency checks remain live on every call.
     # Only canonicalization and inventory calculation share a pure result.
-    ast_bytes = Path(stages['inspection-native-input']['stdoutPath']).read_bytes()
-    if bytes_identity(ast_bytes) != stages['inspection-native-input']['stdoutDigest']:
-        raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
+    ast_bytes = read_checked(stages['inspection-native-input']['stdoutPath'],
+                             stages['inspection-native-input']['stdoutDigest'])
     graph = _native_graph(ast_bytes, receipt['analysisInputIdentity'])
     if not readonly:
         with span('native-input.mutable-result-copy'):
             graph = deepcopy(graph)
     canonical = graph['canonicalAst']
-    raw_input = Path(stages['native-expanded']['stdoutPath']).read_bytes()
-    canonical_bytes = Path(receipt['canonicalAstPath']).read_bytes()
-    inventory_bytes = Path(receipt['inventoryPath']).read_bytes()
-    if (bytes_identity(canonical_bytes) != receipt['canonicalAstDigest']
-            or bytes_identity(inventory_bytes) != receipt['inventoryDigest']):
-        raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
+    raw_input = read_checked(stages['native-expanded']['stdoutPath'],
+                             stages['native-expanded']['stdoutDigest']).raw
+    canonical_bytes = read_checked(receipt['canonicalAstPath'], receipt['canonicalAstDigest'])
+    inventory_bytes = read_checked(receipt['inventoryPath'], receipt['inventoryDigest'])
     if (identity(receipt['analysisInput']) != receipt['analysisInputIdentity']
             or bytes_identity(raw_input) != receipt['analysisInput']['nativeInputDigest']
             or stages['inspection-native-input']['stdinIdentity'] != bytes_identity(raw_input)

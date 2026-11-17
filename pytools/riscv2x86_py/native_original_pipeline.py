@@ -300,12 +300,12 @@ def check_translation(path):
     env=backend_environment(receipt,value['ghidraInstallDir'],runtime_env=value['backendRuntimeEnvironment'])
     if (value['command']['command']!=command or value['command']['directory']!=str(root)
             or value['command']['environment']!=env):raise ValueError('ORIGINAL_TRANSLATION_RECIPE_MISMATCH')
-    from .physical_edit_binding import validate_report
-    validate_report(prepared,value['report']['path'])
+    from .physical_edit_binding import _validate_report_checked
+    _validate_report_checked(prepared,value['report']['path'])
     d.verify_snapshot(value['backendReport'])
     if value['backendReport']['path'] != str(root/'backend-report.json'):
         raise ValueError('ORIGINAL_BACKEND_REPORT_LOCATION_MISMATCH')
-    validate_report(prepared, value['backendReport']['path'])
+    _validate_report_checked(prepared, value['backendReport']['path'])
     functions = d.read(prepared['frontendReport']['path'])['functions']
     if d.read(value['report']['path']) != authority_report(d.read(value['backendReport']['path']), functions, bundle['frontend']):
         raise ValueError('ORIGINAL_COMPILER_AUTHORITY_REDERIVATION_MISMATCH')

@@ -32,14 +32,25 @@ def project(report,bindings,source,prepared_path):
 
 
 def source_path(finding,root):
-    from . import native_captured_deployment as d
     from .native_original_pipeline import check_input
-    from .schema import load_report
-    b=finding.physicalEditBinding
+    b = finding.physicalEditBinding
+    _check_binding(b)
+    return _source_path_checked(finding, root, check_input(b['preparedInputPath']))
+
+
+def _check_binding(b):
     if (not isinstance(b,dict) or b.get('schemaVersion')!=SCHEMA
             or b.get('physicalEditBindingIdentity')!=identity({k:v for k,v in b.items() if k!='physicalEditBindingIdentity'})):
         raise ValueError('PHYSICAL_EDIT_BINDING_INVALID')
-    prepared=check_input(b['preparedInputPath'])
+
+
+def _source_path_checked(finding, root, prepared):
+    """Internal to a caller that just completed check_input; never memoized."""
+    from . import native_captured_deployment as d
+    from .schema import load_report
+    b=finding.physicalEditBinding
+    _check_binding(b)
+    d.verify_snapshot(prepared['frontendReport'])
     index=b['findingIndex']
     if type(index) is not int or index<0:raise ValueError('PHYSICAL_EDIT_FINDING_INDEX_INVALID')
     originals=load_report(prepared['frontendReport']['path'])
@@ -66,6 +77,21 @@ def source_path(finding,root):
 
 
 def validate_report(prepared,report_path):
+    return _validate_report(prepared, report_path, source_path)
+
+
+def _validate_report_checked(prepared, report_path):
+    """Use only immediately after check_input in the same synchronous check.
+
+    Avoid recursive acquisition of the same context for each finding. All
+    range/source/fragment comparisons and current source digests remain live.
+    Public source_path and independent audit still acquire their own context.
+    """
+    return _validate_report(prepared, report_path,
+        lambda finding, root: _source_path_checked(finding, root, prepared))
+
+
+def _validate_report(prepared, report_path, resolve_source):
     from .schema import load_report
     expected=load_report(prepared['frontendReport']['path'])
     actual=load_report(str(report_path))
@@ -77,4 +103,4 @@ def validate_report(prepared,report_path):
             continue
         if not a.physicalEditBinding or a.physicalEditBinding!=b.physicalEditBinding:
             raise ValueError('PHYSICAL_EDIT_REPORT_BINDING_MISMATCH')
-        source_path(a,Path(prepared['source']['path']).parent)
+        resolve_source(a,Path(prepared['source']['path']).parent)

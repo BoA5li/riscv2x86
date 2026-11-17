@@ -202,6 +202,14 @@ def bind_expression_operands(candidate, fragment, *, source_digest, function_ide
             or any(not isinstance(x, Mapping) for x in outputs + inputs)):
         _reject("COMPILER_EXPRESSION_FRONTEND_OPERANDS_INVALID", "Frontend GNU operand partition is malformed")
     operands = outputs + inputs
+    # '%' relates two inputs. It cannot be interpreted by parsing one slot
+    # in isolation. Preserve the validated whole relation for proof consumers.
+    from .gnu_operand_relations import derive as derive_relation
+    try:
+        relation = derive_relation([x.get('constraint') for x in outputs],
+                                   [x.get('constraint') for x in inputs])
+    except ValueError as exc:
+        _reject('COMPILER_EXPRESSION_CONSTRAINT_CONTRACT_REQUIRED', str(exc))
     facts = candidate.get("compilerExpressionFacts")
     validate_expression_slots(facts, source_digest=source_digest,
         function_identity=function_identity, candidate_identity=candidate.get("candidateIdentity"),
@@ -233,7 +241,7 @@ def bind_expression_operands(candidate, fragment, *, source_digest, function_ide
             _reject("COMPILER_EXPRESSION_OUTPUT_NOT_MODIFIABLE", "Output expression is not a modifiable lvalue")
         # This is the compiler operand constraint, not an asm-template match.
         from .gnu_operand_contract import parse_riscv_operand
-        try:contract=parse_riscv_operand(constraint,output=output)
+        try:contract=parse_riscv_operand(relation['operands'][index]['constraintBody'],output=output)
         except ValueError as exc:
             _reject('COMPILER_EXPRESSION_CONSTRAINT_CONTRACT_REQUIRED',
                 str(exc)+' at operand '+str(index)+' constraint '+repr(constraint))
@@ -255,6 +263,7 @@ def bind_expression_operands(candidate, fragment, *, source_digest, function_ide
         "candidateIdentity": candidate["candidateIdentity"],
         "fragmentId": fragment.get("fragmentId") or fragment.get("id"),
         "expressionFactsIdentity": facts["factsIdentity"], "operands": bound,
+        "gnuOperandRelation": relation,
         "complete": True, "semanticRouteApproved": False}
     result["joinIdentity"] = identity(result)
     return result

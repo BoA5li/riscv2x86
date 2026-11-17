@@ -188,7 +188,9 @@ def l2_function_binding_diagnostic(finding, functions):
             'recordIndex': i,
             'recordedIdentities': {key: row[key] for key in (
                 'id', 'declarationIdentity', 'functionIdentity', 'mangledName',
-                'qualifiedName') if key in row},
+                'qualifiedName', 'functionId', 'nativeCompilerDeclarationId') if key in row},
+            'arity': row.get('arity'),
+            'compilerHarnessSignatureSupported': row.get('compilerHarnessSignatureSupported'),
             'operandBoundaryPresent': isinstance(row.get('l2OperandBoundary'), dict),
         } for i, row in enumerate(functions) if isinstance(row, dict) and row.get('name') == name],
         'fragmentBoundaryPresent': isinstance(approval.get('l2FragmentOperandBoundary'), dict),
@@ -225,6 +227,10 @@ def original_layer_readiness(spec):
                      'authorityConsumerReady': authority is not None,
                      'authorityComplete': artifact.l2_authority_complete,
                      'reasonCode': reason, 'functionBindingDiagnostic': binding_diagnostic,
+                     'scalarAuthorityReasonCodes': ((finding.get('approvalArtifact') or {})
+                         .get('l2ScalarAuthorityDecision') or {}).get('reasonCodes', []),
+                     'fragmentBoundaryReasonCodes': ((finding.get('approvalArtifact') or {})
+                         .get('l2FragmentOperandBoundary') or {}).get('reasonCodes', []),
                      'canonicalExecutionCoverageVerified': False,
                      'l3IntentReceiptPresent': bool(finding.get('l3IntentReceipt')),
                      'l3Applicability': 'requires-original-intent-validation'})

@@ -286,6 +286,9 @@ def _l2_operand_boundary_facts(
             "name": str(item.get("name") or ""),
             "type": str(item.get("type", {}).get("qualType", ""))
             if isinstance(item.get("type"), Mapping) else "",
+            "canonicalType": str(item.get("type", {}).get("desugaredQualType")
+                                 or item.get("type", {}).get("qualType", ""))
+            if isinstance(item.get("type"), Mapping) else "",
         }
         for item in declaration_nodes
         if stable_declaration(str(item.get("id") or item.get("name") or ""))
@@ -419,8 +422,10 @@ def _l2_operand_boundary_facts(
         for operand_index, (child, declaration_id) in enumerate(zip(
                 operand_children, candidate_ids)):
             declaration = declarations.get(declaration_id)
-            type_name = str(declaration.get("type") or "") \
+            type_name = str(declaration.get("canonicalType") or "") \
                 if isinstance(declaration, Mapping) else ""
+            if type_resolver is not None:
+                type_name = type_resolver(type_name)
             carrier_kind, width, signedness, address_space = (
                 _operand_carrier_type(type_name, pointer_width_bits=64))
             constraint = (str(output_constraints[operand_index])
@@ -442,6 +447,15 @@ def _l2_operand_boundary_facts(
                 "signedness": signedness,
             })
             try:
+                expression_slot = expression_records[operand_index]
+                if expression_slot['complete']:
+                    from .compiler_expression import direct_declaration_carrier
+                    expression = expression_slot['expression']
+                    if (direct_declaration_carrier(expression) != declaration_id
+                            or _operand_carrier_type(expression['canonicalType'],
+                                pointer_width_bits=64) !=
+                                (carrier_kind, width, signedness, address_space)):
+                        raise ValueError('COMPILER_OPERAND_DECLARATION_TYPE_MISMATCH')
                 value_node = CompilerValueNode(
                     node_id, declaration_id, ast_id, candidate_identity,
                     type_id, width, signedness, True)

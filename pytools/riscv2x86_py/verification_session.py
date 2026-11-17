@@ -18,6 +18,26 @@ _ACTIVE = ContextVar('rv2x86_verification_session', default=None)
 _STACK = ContextVar('rv2x86_verification_spans', default=())
 
 
+class ContentBytes:
+    """An owned immutable byte value with a digest computed from its bytes.
+
+    This is not a file-validity token. Construct it from freshly read bytes on
+    every verification; no expected receipt digest or stat metadata is accepted.
+    """
+    __slots__ = ('raw', 'digest')
+    def __init__(self, raw):
+        if hasattr(self, 'raw'):
+            raise TypeError('VERIFICATION_IMMUTABLE_CONTENT')
+        if type(raw) is not bytes:
+            raise TypeError('VERIFICATION_CONTENT_BYTES_REQUIRED')
+        object.__setattr__(self, 'raw', raw)
+        object.__setattr__(self, 'digest', hashlib.sha256(raw).digest())
+    def __setattr__(self, name, value):
+        raise TypeError('VERIFICATION_IMMUTABLE_CONTENT')
+    def __delattr__(self, name):
+        raise TypeError('VERIFICATION_IMMUTABLE_CONTENT')
+
+
 class ReadOnlyDict(dict):
     """Internal JSON view; normal mutation rejects, deepcopy makes an owned copy."""
     __slots__ = ('_sealed',)
@@ -184,6 +204,11 @@ def pure(namespace, inputs, produce, *, readonly=False):
     key = hashlib.sha256(namespace.encode('utf-8'))
     with span('pure.key.' + namespace):
         for part in inputs:
+            if type(part) is ContentBytes:
+                key.update(b'h')
+                key.update(len(part.raw).to_bytes(8, 'big'))
+                key.update(part.digest)
+                continue
             if not isinstance(part, (bytes, str)):
                 raise ValueError('VERIFICATION_PURE_INPUT_BYTES_OR_STRING_REQUIRED')
             raw = part.encode('utf-8') if isinstance(part, str) else part
