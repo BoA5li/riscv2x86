@@ -60,7 +60,7 @@ def dependency_changes(source, target):
 
 @measured('native_context_bridge.validated_input')
 def validated_input(receipt):
-    artifacts = native.validate_artifacts(receipt)
+    artifacts = native.validate_artifacts(receipt, readonly=True)
     validate_context(receipt['context'])
     analysis = receipt['analysisInput']
     if (analysis['contextIdentity'] != receipt['context']['contextIdentity']

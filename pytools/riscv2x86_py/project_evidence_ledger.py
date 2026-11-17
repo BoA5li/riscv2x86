@@ -90,13 +90,21 @@ def _derive(state, facts):
     readiness = facts.get('originalLayerReadiness')
     if readiness and any(not row['authorityConsumerReady'] for row in readiness.get('instances', [])):
         actions.append('repair-original-L2-compiler-instance-and-value-flow-binding-from-diagnostics')
+    from .program_claim_consumption import consume
+    consumption = consume(project_identity, {**facts, 'completedStages': list(cp)})
+    by_reason = {r['reasonCode']: r for r in consumption['obligations']}
+    for row in rows:
+        derived = by_reason[row['reasonCode']]
+        row.update(status=derived['status'], fullObligationDischarged=derived['fullObligationDischarged'],
+                   checkedSubclaims=derived['checkedSubclaims'], missingProofFacts=derived['missingProofFacts'])
     return {
         'schemaVersion': 'riscv2x86.checked-project-evidence-ledger.v1',
         'projectEvaluationIdentity': project_identity,
-        'evidenceReferences': references, 'checkedSubgoals': subgoals,
+        'evidenceReferences': references, 'checkedSubgoals': subgoals, 'claimConsumption': consumption,
         'obligations': rows,
         'stageCoverage': {stage: {
-            'status': 'inconclusive', 'unresolvedObligations': list(required),
+            'status': 'inconclusive' if any(not by_reason[r]['fullObligationDischarged'] for r in required) else 'verified',
+            'unresolvedObligations': [r for r in required if not by_reason[r]['fullObligationDischarged']],
         } for stage, required in _STAGE_OBLIGATIONS.items()},
         'plannedCaseCount': facts['plannedCaseCount'],
         'selectedCaseIndices': facts['selectedCaseIndices'],

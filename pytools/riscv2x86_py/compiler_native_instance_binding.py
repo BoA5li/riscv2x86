@@ -7,6 +7,7 @@ does not grant semantic, edit, call-effect, ABI or production authority.
 """
 from copy import deepcopy
 
+from .verification_session import measured
 from .project_build_records import identity
 from .project_native_input import bytes_identity
 from .gnu_operand_relations import derive as operand_relations
@@ -57,6 +58,7 @@ def _references(node):
     return found
 
 
+@measured('compiler_native_instance_binding.derive')
 def derive(ast, frontend_report, raw, analysis_input_identity):
     if ast.get('kind') != 'TranslationUnitDecl' or not isinstance(raw, bytes):
         raise ValueError('NATIVE_BINDING_TRANSLATION_UNIT_REQUIRED')

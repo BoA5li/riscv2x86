@@ -77,15 +77,11 @@ def _inject_atomic_authority(raw_report: Path, source: Path, sidecar: Path) -> N
                           encoding="utf-8")
 
 
-def _inject_compiler_fragment_authority(
-    raw_report: Path, source: Path, functions: tuple[dict[str, object], ...],
-) -> None:
-    """Bind Clang AST fragment/object facts to exact frontend fragments.
-
-    This payload does not assert an atomic operation.  Phase 5 may consume it
-    only after the decoder independently reports a typed AMO operation.
-    """
-    report = json.loads(raw_report.read_text(encoding="utf-8"))
+def compiler_authority_report(report, source, functions, *, source_bytes=None):
+    """Shared original compiler join over owned input; no compiler invocation."""
+    from copy import deepcopy
+    report = deepcopy(report)
+    source_bytes = source.read_bytes() if source_bytes is None else source_bytes
     findings = report if isinstance(report, list) else report.get("findings")
     if not isinstance(findings, list):
         raise ValueError("frontend report has no findings")
@@ -175,7 +171,7 @@ def _inject_compiler_fragment_authority(
             from .fragment_source_range import bind_fragment_source_range, FragmentRangeError, AUTHORITY_SCHEMA
             try:
                 payload["sourceRangeBinding"] = bind_fragment_source_range(
-                    fragment, candidate["fragmentBindingKey"], source.read_bytes())
+                    fragment, candidate["fragmentBindingKey"], source_bytes)
             except FragmentRangeError as exc:
                 record = {"fragmentId": fragment_id, "disposition": "rejected",
                     "reasonCode": exc.reason_code, "detail": str(exc),
@@ -198,10 +194,15 @@ def _inject_compiler_fragment_authority(
                   "closureIdentity": closed["closureIdentity"]}
         fragment["compilerFragmentJoin"] = record
         joins.append(record)
-    atomic_json(raw_report.with_name("compiler-fragment-joins.json"), {
-        "schemaVersion": "riscv2x86.compiler-fragment-joins.v1", "joins": joins})
-    raw_report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
-                          encoding="utf-8")
+    return report, joins
+
+
+def _inject_compiler_fragment_authority(raw_report, source, functions):
+    report, joins = compiler_authority_report(
+        json.loads(raw_report.read_text(encoding='utf-8')), source, functions)
+    atomic_json(raw_report.with_name('compiler-fragment-joins.json'), {
+        'schemaVersion': 'riscv2x86.compiler-fragment-joins.v1', 'joins': joins})
+    atomic_json(raw_report, report)
 
 
 def _inject_csr_authority(raw_report: Path, source: Path, sidecar: Path) -> None:

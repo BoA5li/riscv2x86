@@ -692,24 +692,47 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
         if result.returncode:
             raise ValueError("entry-point AST inspection failed: " + result.stderr.strip())
         root = json.loads(result.stdout)
+    result = entry_points_from_ast(root, source, project_contract=project_contract,
+                                   project_dependency_identity=project_dependency_identity)
+    if project_contract is not None:
+        from .project_build_contract import validate as validate_project
+        validate_project(project_contract)
+        from .compiler_call_dependencies import validate as validate_dependencies
+        validate_dependencies(acquisition['dependencyManifest'])
+    return result
+
+
+def entry_points_from_ast(root, source, *, project_contract=None,
+                          project_dependency_identity=None, owning_nodes=None, source_bytes=None):
+    """Shared ORIGINAL compiler-fact exporter over an already acquired AST.
+
+    Native callers supply exact physical asm owners, including unsupported
+    harness signatures. Such records describe facts, never harness admission.
+    """
+    source = Path(source)
+    source_bytes = source.read_bytes() if source_bytes is None else source_bytes
+    if not isinstance(source_bytes, bytes):
+        raise ValueError('COMPILER_SOURCE_BYTES_REQUIRED')
     functions = []
     resolve_compiler_type=_compiler_type_alias_resolver(root)
     has_main = False
-    for node in _walk_ast(root):
+    for node in (_walk_ast(root) if owning_nodes is None else owning_nodes):
         if node.get("kind") != "FunctionDecl" or not any(
                 isinstance(child, Mapping) and child.get("kind") == "CompoundStmt"
                 for child in node.get("inner", [])):
             continue
         location = node.get("loc", {})
         file_name = location.get("file", "") if isinstance(location, Mapping) else ""
-        if isinstance(location, Mapping) and location.get("includedFrom"):
+        if owning_nodes is None and isinstance(location, Mapping) and location.get("includedFrom"):
             continue
-        if file_name and Path(str(file_name)).resolve() != source.resolve():
+        if owning_nodes is None and file_name and Path(str(file_name)).resolve() != source.resolve():
             continue
         name = node.get("name")
         if name == "main":
-            has_main = True; continue
-        if not isinstance(name, str) or node.get("storageClass") == "static":
+            has_main = True
+            if owning_nodes is None:
+                continue
+        if not isinstance(name, str) or (owning_nodes is None and node.get("storageClass") == "static"):
             continue
         qualified = node.get("type", {}).get("qualType", "") if isinstance(node.get("type"), Mapping) else ""
         return_type = str(qualified).split(" (", 1)[0]
@@ -738,8 +761,8 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             )
         )
         safe_void_call = return_type == "void" and not params
-        if safe_scalar or safe_memory_object or safe_void_call:
-            source_digest = _digest(source)
+        if owning_nodes is not None or safe_scalar or safe_memory_object or safe_void_call:
+            source_digest = "sha256:" + sha256(source_bytes).hexdigest()
             function_identity = value_flow_identity({
                 "schemaVersion": "riscv2x86.compiler-function-identity.v1",
                 "sourceDigest": source_digest, "name": name,
@@ -748,13 +771,16 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                 **({'projectBuildContractIdentity':project_contract['contractIdentity'],
                     'compilerDependencyIdentity':project_dependency_identity} if project_contract is not None else {}),
             })
-            function = {"name": name,
+            function = {"compilerHarnessSignatureSupported": bool(safe_scalar or safe_memory_object or safe_void_call),
+                        "name": name,
                         "functionId": function_identity,
                         "sourceDigest": source_digest,
                         "sourceFile": str(source.resolve()),
                         "arity": len(params),
                         "returnType": return_type, "parameterTypes": param_types,
                         "pointerParameters": pointer_parameters}
+            if owning_nodes is not None:
+                function['nativeCompilerDeclarationId'] = node.get('id')
             if project_contract is not None:
                 function['projectBuildContractIdentity']=project_contract['contractIdentity']
                 function['compilerDependencyIdentity']=project_dependency_identity
@@ -786,7 +812,7 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
                 node, source_digest=source_digest,
                 function_identity=function_identity,
                 source_file=str(source.resolve()),
-                source_bytes=source.read_bytes(),type_resolver=resolve_compiler_type)
+                source_bytes=source_bytes,type_resolver=resolve_compiler_type)
             from .compiler_integer_signature import export as integer_signature
             call=integer_signature(function,param_types,return_type,resolve_compiler_type)
             if call is not None:function['compilerIntegerCallSignature']=call
@@ -800,13 +826,8 @@ def inspect_entry_points(source: Path, clang: str = "clang", *, target_isa: str 
             joint=joint_scope(node,source_digest=source_digest,function_identity=function_identity,source_range=_source_range,resolve=resolve_compiler_type)
             if joint is not None:function['compilerJointScope']=joint
             functions.append(function)
-    if not has_main and not functions:
+    if owning_nodes is None and not has_main and not functions:
         raise ValueError("no main and no safe externally visible scalar-integer function for L1 harness")
-    if project_contract is not None:
-        from .project_build_contract import validate as validate_project
-        validate_project(project_contract)
-        from .compiler_call_dependencies import validate as validate_dependencies
-        validate_dependencies(acquisition['dependencyManifest'])
     return has_main, tuple(sorted(functions, key=lambda item: str(item["name"])))
 
 

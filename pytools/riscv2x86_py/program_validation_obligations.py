@@ -117,11 +117,19 @@ def project_assessment(spec, observation=None, applicability=None):
     if (not isinstance(spec.get('gaps'), list) or len(spec['gaps']) != len(_PROJECT_PHASES)
             or set(spec['gaps']) != set(_PROJECT_PHASES)):
         raise ValueError('PROGRAM_FULL_OBLIGATION_POLICY_REQUIRED')
+    from .program_claim_consumption import consume
+    consumption = consume(spec['projectEvaluationIdentity'], {
+        'observations': [observation] if observation is not None else [],
+        'selectedCaseIndices': observation.get('caseIndices', []) if observation is not None else [],
+        'plannedCaseCount': len(spec.get('cases', []))})
+    derived = {r['reasonCode']: r for r in consumption['obligations']}
     rows = []
     for reason in spec['gaps']:
         if reason not in _PROJECT_PHASES: raise ValueError('PROGRAM_OBLIGATION_PHASE_UNREGISTERED:' + reason)
         body = {'reasonCode': reason, 'phase': _PROJECT_PHASES[reason],
-                'status': 'evidence-production-required',
+                'status': derived[reason]['status'],
+                'missingProofFacts': derived[reason]['missingProofFacts'],
+                'checkedSubclaims': derived[reason]['checkedSubclaims'],
                 'projectEvaluationIdentity': spec['projectEvaluationIdentity']}
         rows.append(dict(body, obligationIdentity=d.identity(body)))
     observable = 'not-observed'
@@ -144,7 +152,7 @@ def project_assessment(spec, observation=None, applicability=None):
               ValidationStatus.FAILED if observable == 'observed-mismatch' else ValidationStatus.VERIFIED)
     return {'schemaVersion': 'riscv2x86.project-obligation-assessment.v1',
             'obligations': rows, 'l1Status': status.value, 'l1ReasonCodes': l1_pending,
-            'boundedProcessObservableStatus': observable,
+            'boundedProcessObservableStatus': observable, 'claimConsumption': consumption,
             'applicability': applicability['facts'] if applicability else None,
             'programRequirementsComplete': False, 'semanticApproval': False,
             'productionAcceptanceComplete': False}

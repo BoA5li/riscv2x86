@@ -42,7 +42,7 @@ def acquire(receipt_path, frontend, output, *, timeout=300, context_schema=None)
         receipt = read(path)
         runner.state['currentStage'] = 'native-input-independent-replay'; runner.save()
         replayed = native_input.replay(receipt, runner.output/'native-input-replay', timeout=timeout)
-        artifacts = native_input.validate_artifacts(receipt)
+        artifacts = native_input.validate_artifacts(receipt, readonly=True)
         raw = artifacts['inputBytes']; ast = artifacts['canonicalAst']
         context = receipt['context']; cwd = Path(context['workingDirectory'])
         binary = str(resolve_executable(frontend, cwd)); tool_digest = digest(binary)
@@ -74,7 +74,7 @@ def acquire(receipt_path, frontend, output, *, timeout=300, context_schema=None)
         if (digest(path) != expected or digest(binary) != tool_digest
                 or input_path.read_bytes() != raw):
             raise ValueError('NATIVE_BINDING_INPUT_CHANGED')
-        native_input.validate_artifacts(receipt)
+        native_input.validate_artifacts(receipt, readonly=True)
         body = {'schemaVersion': SCHEMA, 'nativeInputReceiptPath': str(path),
             'nativeInputReceiptDigest': expected, 'nativeInputIdentity': receipt['nativeInputIdentity'],
             'analysisInputIdentity': receipt['analysisInputIdentity'], 'frontend': binary,
@@ -123,7 +123,7 @@ def validate_artifacts(bundle):
         if digest(bundle['command'][key+'Path']) != bundle['command'][key+'Digest']:
             raise ValueError('NATIVE_BINDING_ARTIFACT_CHANGED:' + key)
     receipt = read(bundle['nativeInputReceiptPath'])
-    artifacts = native_input.validate_artifacts(receipt)
+    artifacts = native_input.validate_artifacts(receipt, readonly=True)
     report_path = Path(bundle['frontendReportPath'])
     input_path = Path(artifacts['stages']['native-expanded']['stdoutPath']).resolve(strict=True)
     expected_command = export_command(receipt, bundle['frontend'], input_path, report_path, report_path.parent)
@@ -132,7 +132,7 @@ def validate_artifacts(bundle):
             or type(bundle['command']['returnCode']) is not int or bundle['command']['returnCode'] != 0):
         raise ValueError('NATIVE_BINDING_EXPORT_COMMAND_MISMATCH')
     fresh_receipt = read(bundle['freshNativeInputReceiptPath'])
-    native_input.validate_artifacts(fresh_receipt)
+    native_input.validate_artifacts(fresh_receipt, readonly=True)
     if identity(native_input.replay_projection(receipt)) != identity(native_input.replay_projection(fresh_receipt)):
         raise ValueError('NATIVE_BINDING_STORED_INPUT_REPLAY_MISMATCH')
     replay_body = {'schemaVersion': 'riscv2x86.native-analysis-input-replay.v1',

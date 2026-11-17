@@ -117,3 +117,15 @@ def test_public_cli_import_failure_stops_before_query(tmp_path,monkeypatch):
     state=d.read(tmp_path/'evidence/run-status.json')
     assert state['status']=='failed' and state['currentStage']=='original-backend-import'
     assert d.read(tmp_path/'evidence/backend-import/command.json')['returnCode']==7
+
+
+def test_python_invocation_normalizes_parent_components_without_resolving_venv(tmp_path, monkeypatch):
+    install = launcher(tmp_path/'install')
+    executable = Path(sys.executable)
+    alias = executable.parent/'..'/executable.parent.name/executable.name
+    monkeypatch.setattr(module.sys, 'executable', str(alias))
+    result = module.acquire(tmp_path/'evidence', ghidra_install_dir=str(install))
+    command = d.read(result['backendImport']['path'])['command']
+    assert command[0] == result['python']['path']
+    assert command[0] == os.path.abspath(str(alias))
+    assert module.check(tmp_path/'evidence/result.json') == result

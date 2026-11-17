@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from .verification_session import measured
+from .verification_session import measured, pure
 from . import native_captured_deployment as d
 from . import project_native_binding as binding
 from . import project_native_input as native
@@ -44,6 +44,91 @@ def execute(runner, stage, command, cwd, env, timeout):
     return row
 
 
+def compiler_ast_with_operands(ast, bindings):
+    """Join checked Clang-Tooling GNU operands into a derived AST view.
+
+    Clang JSON may omit the output/input partition. Only exact, previously
+    checked physical AST paths and compiler operand exports supply it. The
+    receipt AST is never modified; explicit conflicting compiler facts reject.
+    """
+    root = ast
+    for record in bindings['records']:
+        path = record['astPath']
+        def updated(node, depth):
+            result = dict(node)
+            if depth < len(path):
+                children = list(node.get('inner', []))
+                children[path[depth]] = updated(children[path[depth]], depth + 1)
+                result['inner'] = children
+                return result
+            if node.get('kind') != 'GCCAsmStmt':
+                return result
+            exported = record['frontendFragment']
+            fields = {'numOutputs': len(exported['outputs']), 'numInputs': len(exported['inputs']),
+                      'outputConstraints': [o['constraint'] for o in exported['outputs']],
+                      'inputConstraints': [o['constraint'] for o in exported['inputs']]}
+            for key, value in fields.items():
+                if key in node and node[key] != value:
+                    raise ValueError('ORIGINAL_COMPILER_GNU_OPERAND_FACT_CONFLICT:' + key)
+                result[key] = value
+            return result
+        root = updated(root, 0)
+    return root
+
+
+@measured('native-original.frontend-projection')
+def frontend_projection(raw_report, bindings, source, prepared_path, artifacts, receipt):
+    from .physical_edit_binding import project
+    from .automatic_translation_command import compiler_authority_report
+    projected = project(raw_report, bindings, source, prepared_path)
+    from .automatic_batch_cli import entry_points_from_ast
+    from .compiler_native_instance_binding import _nodes
+    ast = compiler_ast_with_operands(artifacts['canonicalAst'], bindings)
+    nodes = {tuple(path): node for node, path, _ in _nodes(ast)}
+    paths = sorted({tuple(row['functionAstPath']) for row in bindings['records'] if row['functionAstPath'] is not None})
+    raw = source.read_bytes()
+    if raw != artifacts['inputBytes']:
+        raise ValueError('ORIGINAL_COMPILER_FUNCTION_INPUT_CHANGED')
+    ast_identity = receipt.get('canonicalAstIdentity') or d.identity(artifacts['canonicalAst'])
+    # Native receipt validation checked this AST identity and current source
+    # bytes before entering here. Only the deterministic exporter is memoized.
+    functions = pure('original-compiler-functions.v1',
+        (ast_identity, raw, str(source.resolve()), d.identity(bindings)),
+        lambda: list(entry_points_from_ast(ast, source,
+            owning_nodes=[nodes[p] for p in paths], source_bytes=raw)[1]), readonly=True)
+    for finding in projected['findings']:
+        binding = finding.get('physicalEditBinding')
+        if binding is None:
+            continue
+        record = next(row for row in bindings['records'] if row['instanceBindingIdentity'] == binding['instanceBindingIdentity'])
+        owner = nodes.get(tuple(record['functionAstPath'] or ()))
+        if owner is None:
+            continue
+        if not isinstance(owner.get('id'), str) or not owner['id']:
+            raise ValueError('ORIGINAL_COMPILER_FUNCTION_DECLARATION_ID_REQUIRED')
+        owned = [fn for fn in functions if fn.get('nativeCompilerDeclarationId') == owner['id']]
+        candidates = [candidate for fn in owned for candidate in fn['l2OperandBoundary'].get('fragmentCandidates', [])
+                      if candidate['fragmentBindingKey'].get('beginOffset') == record['physicalAstRange'][0]
+                      and candidate['fragmentBindingKey'].get('endOffset') == record['physicalAstRange'][1]]
+        if len(candidates) > 1:
+            raise ValueError('ORIGINAL_PHYSICAL_COMPILER_CANDIDATE_AMBIGUOUS')
+        if len(candidates) == 1:
+            finding['fragment']['compilerFragmentBinding'] = {'candidateIdentity': candidates[0]['candidateIdentity']}
+    projected, _ = compiler_authority_report(projected, source, tuple(functions), source_bytes=raw)
+    projected['functions'] = functions
+    return projected
+
+
+def authority_report(raw_report, functions, frontend):
+    """Use the same original materializer as automatic_translation_command."""
+    from copy import deepcopy
+    from .automatic_l2_authority import materialize_automatic_l2_authority
+    value = deepcopy(raw_report)
+    value['functions'] = functions
+    materialize_automatic_l2_authority(value, tuple(functions), frontend)
+    return value
+
+
 def prepare(bundle_path, output, *, timeout=300):
     """Re-export from an isolated, byte-identical CPP file; never edit AST facts."""
     if type(timeout) is not int or not 1<=timeout<=86400:raise ValueError('ORIGINAL_INPUT_TIMEOUT_INVALID')
@@ -65,8 +150,7 @@ def prepare(bundle_path, output, *, timeout=300):
         bindings=binding.derive(artifacts['canonicalAst'],d.read(raw_report),file.read_bytes(),receipt['analysisInputIdentity'])
         if bindings['occurrenceCount']<1:raise ValueError('ORIGINAL_INPUT_INLINE_ASM_INSTANCE_REQUIRED')
         inventory=runner.output/'instance-bindings.json';inventory.write_text(json.dumps(bindings,indent=2)+'\n')
-        from .physical_edit_binding import project
-        report.write_text(json.dumps(project(d.read(raw_report),bindings,file,runner.output/'result.json'),indent=2)+'\n')
+        report.write_text(json.dumps(frontend_projection(d.read(raw_report),bindings,file,runner.output/'result.json',artifacts,receipt),indent=2)+'\n')
         value=d.seal({'schemaVersion':PREPARED,'bundle':d.snapshot(bundle_path),
             'adapterVerifier':verifier(), 'python':d.snapshot(sys.executable),
             'frontend':d.snapshot(bundle['frontend']),'source':d.snapshot(file),
@@ -116,7 +200,7 @@ def check_input(path):
             or value['expandedInstanceCount']<1 or value['expandedInstanceCount']!=bindings['occurrenceCount']):
         raise ValueError('ORIGINAL_INPUT_BINDING_REDERIVATION_MISMATCH')
     from .physical_edit_binding import project
-    if d.read(value['frontendReport']['path'])!=project(d.read(value['rawFrontendReport']['path']),bindings,source,root/'result.json'):
+    if d.read(value['frontendReport']['path'])!=frontend_projection(d.read(value['rawFrontendReport']['path']),bindings,source,root/'result.json',artifacts,receipt):
         raise ValueError('ORIGINAL_INPUT_PHYSICAL_PROJECTION_MISMATCH')
     if (value['artifactDomain']!='frozen-preprocessed-translation-unit'
             or value['sourceLocationCount'] is not None or value['dependencyCompileContextCount'] is not None
@@ -168,13 +252,22 @@ def translate(input_path,output,*,ghidra_install_dir=None,ghidra_language_id=Non
             raise StageFailure('original-backend',row['returnCode'] or 2)
         from .physical_edit_binding import validate_report
         validate_report(prepared,report)
+        backend_report = runner.output/'backend-report.json'
+        backend_report.write_bytes(report.read_bytes())
+        functions = d.read(prepared['frontendReport']['path'])['functions']
+        enriched = authority_report(d.read(backend_report), functions, bundle['frontend'])
+        report.write_text(json.dumps(enriched, indent=2)+'\n')
+        from .schema import load_report
+        from .translation_attempt import terminal_attempt_from_finding, save_translation_attempt_archive
+        save_translation_attempt_archive(tuple(terminal_attempt_from_finding(f, i)
+            for i, f in enumerate(load_report(str(report)))), archive)
         attempts=load_translation_attempt_archive(archive)
         manifest=materialize_candidate_tree(source_root=Path(prepared['source']['path']).parent,
             staging_root=runner.output/'candidate-staging',translated_report=report,
             attempt_archive=archive,manifest_output=runner.output/'candidate-manifest.json')
         value=d.seal({'schemaVersion':TRANSLATED,'input':d.snapshot(input_path),
             'adapterVerifier':verifier(),'python':d.snapshot(sys.executable),
-            'report':d.snapshot(report),'attemptArchive':d.snapshot(archive),
+            'report':d.snapshot(report),'backendReport':d.snapshot(backend_report),'attemptArchive':d.snapshot(archive),
             'candidateManifest':d.snapshot(runner.output/'candidate-manifest.json'),
             'candidateManifestIdentity':manifest.manifest_id,'command':row,
             'ghidraInstallDir':ghidra_install_dir,'ghidraLanguageId':ghidra_language_id,
@@ -209,6 +302,13 @@ def check_translation(path):
             or value['command']['environment']!=env):raise ValueError('ORIGINAL_TRANSLATION_RECIPE_MISMATCH')
     from .physical_edit_binding import validate_report
     validate_report(prepared,value['report']['path'])
+    d.verify_snapshot(value['backendReport'])
+    if value['backendReport']['path'] != str(root/'backend-report.json'):
+        raise ValueError('ORIGINAL_BACKEND_REPORT_LOCATION_MISMATCH')
+    validate_report(prepared, value['backendReport']['path'])
+    functions = d.read(prepared['frontendReport']['path'])['functions']
+    if d.read(value['report']['path']) != authority_report(d.read(value['backendReport']['path']), functions, bundle['frontend']):
+        raise ValueError('ORIGINAL_COMPILER_AUTHORITY_REDERIVATION_MISMATCH')
     manifest=load_candidate_artifact_manifest(value['candidateManifest']['path'])
     verify_candidate_artifact_manifest(manifest,source_root=Path(prepared['source']['path']).parent,
         staging_root=root/'candidate-staging',translated_report=value['report']['path'],

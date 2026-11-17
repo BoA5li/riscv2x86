@@ -6,11 +6,13 @@ it cannot authorize changing an original header or macro definition.
 """
 from copy import deepcopy
 from pathlib import Path
+from .verification_session import measured
 from .project_build_records import identity
 
 SCHEMA='riscv2x86.frozen-physical-edit-binding.v1'
 
 
+@measured('physical_edit_binding.project')
 def project(report,bindings,source,prepared_path):
     from . import native_captured_deployment as d
     result=deepcopy(report);by_range={tuple(r['physicalStatementRange']):r for r in bindings['records']}

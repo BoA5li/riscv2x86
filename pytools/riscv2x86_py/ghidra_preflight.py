@@ -51,7 +51,7 @@ def acquire(output,*,ghidra_install_dir=None,environment=None,timeout=60):
         from .native_experiment_driver import command as bounded_command
         runner.state['currentStage']='original-backend-import';runner.save()
         folder=runner.output/'backend-import';folder.mkdir()
-        argv=[sys.executable,'-m','riscv2x86_py.cli','--help']
+        argv=[d.snapshot(sys.executable)['path'],'-m','riscv2x86_py.cli','--help']
         code,reason=bounded_command(argv,runner.output,env,folder,timeout,8*1024*1024)
         imported={'command':argv,'environment':env,'directory':str(runner.output),
             'returnCode':code,'failureReason':reason,

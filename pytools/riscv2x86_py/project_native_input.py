@@ -16,7 +16,7 @@ from .project_build_contract import source_arguments
 from .project_build_records import identity
 from .project_compile_context import validate as validate_context, digest, PAIRS
 from .project_tool_resolution import resolve_executable
-from .verification_session import measured, pure
+from .verification_session import measured, pure, span
 
 SCHEMA = 'riscv2x86.native-analysis-input.v1'
 AST_POLICY = 'clang-json-reference-graph-alpha-renaming.v1'
@@ -293,7 +293,7 @@ def _native_graph(ast_bytes, analysis_identity):
         return {'canonicalAst': canonical, 'canonicalIdentity': identity(canonical),
                 'inventory': inventory, 'inventoryBodyIdentity': identity(inventory)}
     return pure('native-canonical-graph-and-inventory.v1',
-                (ast_bytes, analysis_identity), derive_graph)
+                (ast_bytes, analysis_identity), derive_graph, readonly=True)
 
 
 @measured('native-input._json_identity')
@@ -303,8 +303,10 @@ def _json_identity(raw):
 
 
 @measured('native-input.validate-artifacts')
-def validate_artifacts(receipt):
+def validate_artifacts(receipt, *, readonly=False):
     """Rebuild derived evidence from stored bytes; not independent acquisition."""
+    if type(readonly) is not bool:
+        raise ValueError('NATIVE_INPUT_READ_ONLY_POLICY_INVALID')
     if (not isinstance(receipt, dict) or receipt.get('schemaVersion') != SCHEMA
             or receipt.get('nativeInputIdentity') != identity({
                 k: v for k, v in receipt.items() if k != 'nativeInputIdentity'})):
@@ -331,6 +333,9 @@ def validate_artifacts(receipt):
     if bytes_identity(ast_bytes) != stages['inspection-native-input']['stdoutDigest']:
         raise ValueError('NATIVE_INPUT_ARTIFACT_CHANGED')
     graph = _native_graph(ast_bytes, receipt['analysisInputIdentity'])
+    if not readonly:
+        with span('native-input.mutable-result-copy'):
+            graph = deepcopy(graph)
     canonical = graph['canonicalAst']
     raw_input = Path(stages['native-expanded']['stdoutPath']).read_bytes()
     canonical_bytes = Path(receipt['canonicalAstPath']).read_bytes()
@@ -353,7 +358,7 @@ def validate_artifacts(receipt):
 
 
 def replay(receipt, output, *, timeout=120):
-    validate_artifacts(receipt)
+    validate_artifacts(receipt, readonly=True)
     fresh = acquire(receipt['context'], receipt['inspectionCompiler'], output,
         target=receipt['target'], timeout=timeout)
     if identity(replay_projection(receipt)) != identity(replay_projection(fresh)):
