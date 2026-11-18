@@ -631,7 +631,12 @@ def _l2_operand_boundary_facts(
         function, asm_nodes, source=source_bytes, source_digest=source_digest,
         function_identity=function_identity, candidate_ids=candidate_by_asm_id,
         source_range=_source_range, walk=_walk_ast)
+    from .l2_local_observation import compiler_boundary as local_boundary
+    local = local_boundary(function, asm_nodes, source=source_bytes, source_digest=source_digest,
+        function_identity=function_identity, candidate_ids=candidate_by_asm_id,
+        source_range=_source_range, walk=_walk_ast, declaration_identity=stable_declaration)
     return {
+        'localObserverBoundary': local,
         "scalarObserverBoundary": observer_boundary,
         "schemaVersion": "riscv2x86.compiler-operand-boundary.v2",
         "complete": complete,

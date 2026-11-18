@@ -13,7 +13,7 @@ from .l2_authority import l2_authority_sidecar_from_dict
 from .l2_fragment_execution import identity
 
 SCHEMA = 'riscv2x86.observer-shell-compatibility.v1'
-RULE = 'scalar-register-whole-statement-normal-call-v1'
+RULE = 'scalar-register-whole-statement-normal-call-v2'
 _SHA = re.compile(r'sha256:[0-9a-f]{64}')
 
 
@@ -86,8 +86,14 @@ def assess_observer_shell(finding, compiler_boundary, boundary, graph, statement
     outputs, inputs = fragment.get('outputs'), fragment.get('inputs')
     if (not isinstance(outputs, list) or not isinstance(inputs, list)
             or any(not isinstance(x, Mapping) or x.get('constraint') not in
-                   {'=r', '+r', 'r', '=&r', '+&r'} for x in (outputs or []) + (inputs or []))):
+                   {'=r', '+r', 'r', '%r', '=&r', '+&r'} for x in (outputs or []) + (inputs or []))):
         reasons.add('L2_OBSERVER_OPERAND_CONSTRAINT_UNSUPPORTED')
+    if any('%' in str(x.get('constraint', '')) for x in (outputs or []) + (inputs or []) if isinstance(x, Mapping)):
+        try:
+            from .operand_permutation_proof import consume, FIELD
+            consume(approval[FIELD], fragment, approval)
+        except (KeyError, TypeError, ValueError):
+            reasons.add('L2_OBSERVER_OPERAND_PERMUTATION_PROOF_REQUIRED')
     expected_proof = identity({key: approval.get(key, '') for key in (
         'sourceModelId', 'preservationDecisionId', 'planId', 'constraintsId',
         'proofStatus', 'targetEnvironmentId', 'targetCatalogVersion')})

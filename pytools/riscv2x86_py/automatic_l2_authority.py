@@ -278,7 +278,31 @@ def _csr_runtime_authority(finding, functions, producer_digest):
         return None
 
 
-def _scalar_authority(
+class ScalarAuthorityFailure(ValueError):
+    def __init__(self, stage, detail):
+        super().__init__(detail)
+        self.stage = stage
+
+
+def _scalar_authority(finding, functions, producer_digest, *, failure_details=None):
+    """Retain producer failures; no absence is relabeled as a missing proof."""
+    try:
+        result = _scalar_authority_checked(finding, functions, producer_digest)
+        if result is not None: return result
+        raise ScalarAuthorityFailure('producer_prerequisites', 'scalar producer prerequisites are not satisfied')
+    except (KeyError, TypeError, ValueError) as exc:
+        if failure_details is not None:
+            body = {'schemaVersion': 'riscv2x86.scalar-authority-failure.v1',
+                'fragmentId': (finding.get('fragment') or {}).get('id', ''),
+                'failureStage': getattr(exc, 'stage', 'producer_prerequisites'),
+                'reasonCode': 'L2_SCALAR_AUTHORITY_PRODUCTION_REJECTED',
+                'exceptionType': type(exc).__name__, 'detail': str(exc),
+                'evidenceProductionDisposition': 'not_produced'}
+            failure_details.append(dict(body, failureIdentity=_identity(body)))
+        return None
+
+
+def _scalar_authority_checked(
     finding: Mapping[str, object], functions: Sequence[Mapping[str, object]],
     producer_digest: str,
 ) -> L2AuthoritySidecar | None:
@@ -347,8 +371,8 @@ def _scalar_authority(
             approval["l2CanonicalOperandBindings"] = \
                 canonical_l2_operand_binding_set(
                     canonical, proof_identity=str(approval["proofIdentity"]))
-    except (KeyError, TypeError, ValueError):
-        return None
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ScalarAuthorityFailure('canonical_operand_binding', str(exc)) from exc
     output_ids = [item.declaration_id for item in operands
                   if item.access_mode in {"output", "read_write"}]
     arity = function.get("arity")
@@ -435,18 +459,33 @@ def _scalar_authority(
             graph = fragment_dependency_graph_from_dict(
                 approval["l2FragmentDependencyGraph"],
                 expected_fragment_id=fragment_id)
-            observation_authority = materialize_operand_observation_authority(
-                parsed_boundary,
-                operand_ids={item.operand_index: item.operand_id for item in canonical},
-                parameter_indices={item.operand_index: item.parameter_index for item in canonical},
-                proof_identity=str(approval["proofIdentity"]),
-                dependency_graph_identity=graph.graph_identity,
-                dependency_edges=graph.edges,
-                instrumentation_plan_identity=instrumentation_plan_identity,
-                canonical_bindings=canonical,
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
+            try:
+                observation_authority = materialize_operand_observation_authority(
+                    parsed_boundary,
+                    operand_ids={item.operand_index: item.operand_id for item in canonical},
+                    parameter_indices={item.operand_index: item.parameter_index for item in canonical},
+                    proof_identity=str(approval["proofIdentity"]),
+                    dependency_graph_identity=graph.graph_identity,
+                    dependency_edges=graph.edges,
+                    instrumentation_plan_identity=instrumentation_plan_identity,
+                    canonical_bindings=canonical)
+                if any(b.closure_kind == 'sink' and b.observation_kind != 'function_return'
+                       for b in observation_authority.bindings):
+                    raise ValueError('local use requires an approved runtime observer')
+            except ValueError:
+                if not function_boundary.get('localObserverBoundary'): raise
+                from .l2_local_observation import plan as local_plan, authority as local_authority
+                base_sidecar = L2AuthoritySidecar(fragment_id,
+                    L2AuthorityProducer('frontend-compiler-sidecar', 'automatic-fragment-authority', 'v6', producer_digest),
+                    shell_identity, tuple(operands), (), source_effects, relations, (), (), True,
+                    control_flow=control_flow, internal_values=internal_values,
+                    schema_version='riscv2x86.l2-authority-sidecar.v3')
+                observation_plan = local_plan(finding, function, canonical, base_sidecar=base_sidecar)
+                observation_authority = local_authority(parsed_boundary, canonical, observation_plan,
+                    proof_identity=str(approval['proofIdentity']), graph_identity=graph.graph_identity)
+                approval['l2LocalOperandObservationPlan'] = observation_plan
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ScalarAuthorityFailure('operand_observation_authority', str(exc)) from exc
     return L2AuthoritySidecar(
         fragment_id,
         L2AuthorityProducer("frontend-compiler-sidecar", "automatic-joint-fragment-authority" if joint_observer else "automatic-fragment-authority",
@@ -899,6 +938,7 @@ def materialize_automatic_l2_authority(
                             if isinstance(raw_fragment, Mapping)
                             and item.get("name") == raw_fragment.get("enclosingFunction")]
         scalar_decision = None
+        scalar_failures = []
         if is_scalar and isinstance(approval, dict):
             function = function_matches[0] if len(function_matches) == 1 else None
             raw_boundary = approval.get("l2FragmentOperandBoundary")
@@ -961,7 +1001,8 @@ def materialize_automatic_l2_authority(
                        or _asm_goto_authority(finding, functions, producer_digest)
                        or _fence_authority(finding, functions, producer_digest)
                        or _memory_authority(finding, functions, producer_digest)
-                       or _scalar_authority(finding, functions, producer_digest))
+                       or _scalar_authority(finding, functions, producer_digest,
+                                            failure_details=scalar_failures))
         try:
             dimensions = required_dimensions_for_finding(finding)
             unified_decision = assess_fragment_l2_materializability(
@@ -980,7 +1021,10 @@ def materialize_automatic_l2_authority(
             assert scalar_decision is not None
             if sidecar is None and scalar_decision.proof_authority_materializable:
                 scalar_decision = scalar_decision.with_reason(
+                    'L2_SCALAR_AUTHORITY_PRODUCTION_REJECTED' if scalar_failures else
                     "L2_SCALAR_EFFECT_RELATION_MISSING")
+            if scalar_failures:
+                approval['l2ScalarAuthorityFailure'] = scalar_failures[0]
             elif sidecar is not None and not scalar_decision.proof_authority_materializable:
                 # Execution capacity is separate; no proof failure is waived.
                 sidecar = None

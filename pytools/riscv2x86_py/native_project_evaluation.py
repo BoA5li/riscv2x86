@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from .verification_session import measured
+from .verification_session import measured, pure, ContentBytes
 from . import native_captured_deployment as d
 from . import native_original_pipeline as route
 from .native_external_providers import checked
@@ -110,6 +110,28 @@ def gmp_cases(seeds, repetitions):
                                                     'GMP_CHECK_REPFACTOR': '1', 'LC_ALL': 'C'}} for s in seeds])
 
 
+@measured('native-project.source-action-identities')
+def checked_source_actions(path):
+    """Reuse only canonical hash calculations keyed by freshly read bytes.
+
+    File availability, schema, claimed identities and all live compiler/link
+    inputs are checked again. No receipt validity or file digest is cached.
+    """
+    raw = ContentBytes(Path(path).read_bytes())
+    record = d.strict_json(raw.raw)
+    if record.get('schemaVersion') != 'riscv2x86.project-build-records.v1':
+        raise ValueError('PROJECT_SOURCE_RECORD_SCHEMA_INVALID')
+    actions = record['actions']
+    if not isinstance(actions, list) or any(not isinstance(a, dict) for a in actions):
+        raise ValueError('PROJECT_SOURCE_ACTION_ARRAY_REQUIRED')
+    hashes = pure('project-source-action-canonical-identities.v1', (raw,),
+        lambda: [d.identity({k: v for k, v in a.items() if k != 'actionIdentity'}) for a in actions], readonly=True)
+    for action, computed in zip(actions, hashes):
+        if action.get('actionIdentity') != computed:
+            raise ValueError('EXTERNAL_EVIDENCE_IDENTITY_INVALID:actionIdentity')
+    return actions
+
+
 def freeze(run_path, target_plan_path, source_records, output, *, qemu,
            runtime_prefix, cases, source_entry_action=None, timeout=600):
     run = route.check_run(run_path)
@@ -119,11 +141,8 @@ def freeze(run_path, target_plan_path, source_records, output, *, qemu,
     actions = {}
     records = list(dict.fromkeys(str(Path(p).resolve(strict=True)) for p in source_records))
     for path in records:
-        record = d.read(path)
-        if record.get('schemaVersion') != 'riscv2x86.project-build-records.v1':
-            raise ValueError('PROJECT_SOURCE_RECORD_SCHEMA_INVALID')
-        for action in record['actions']:
-            checked(action, 'actionIdentity'); actions[action['actionIdentity']] = action
+        for action in checked_source_actions(path):
+            actions[action['actionIdentity']] = action
     actions = list(actions.values())
     entries = []
     for a in actions:

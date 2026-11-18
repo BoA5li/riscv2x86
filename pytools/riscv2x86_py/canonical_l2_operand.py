@@ -357,7 +357,18 @@ def bind_canonical_l2_operands(
         declaration = declarations.get(binding.declaration_identity)
         if not isinstance(declaration, Mapping):
             raise ValueError("canonical operand declaration join failed")
-        type_kind, width, signedness = _type_authority(str(declaration.get("type") or ""))
+        spelling = declaration.get('canonicalType') or declaration.get('type')
+        type_kind, width, signedness = _type_authority(str(spelling or ''))
+        compiler_type = raw.get('compilerType')
+        if isinstance(compiler_type, Mapping):
+            # Both views are compiler-owned. A canonical alias is not a license
+            # to disagree with the expression's actual carrier contract.
+            expected = _type_authority(str(compiler_type.get('canonicalType') or ''))
+            if ((type_kind, width, signedness) != expected
+                    or compiler_type.get('widthBits') != width
+                    or bool(compiler_type.get('isPointer')) != (type_kind == 'pointer')
+                    or type_kind == 'integer' and compiler_type.get('isSigned') != (signedness == 'signed')):
+                raise ValueError('canonical operand compiler type views disagree')
         # Typed fragment boundaries are authoritative and must agree with C type
         # and GNU access.  Compatibility boundaries carry no duplicate fields.
         if binding.access and binding.access != access:

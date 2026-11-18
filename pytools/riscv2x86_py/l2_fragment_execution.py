@@ -175,7 +175,7 @@ class L2OperandObservationBinding:
         consumer = self.closure_kind == "consumer"
         instrumentation = self.closure_kind == "instrumentation"
         if parameter != (self.parameter_index is not None
-                          and self.access == "input"):
+                          and self.access == "input" and not instrumentation):
             raise ValueError("operand parameter observation authority is inconsistent")
         if self.access == "read_write" and self.parameter_index is None:
             raise ValueError("read-write operand lacks before-value authority")

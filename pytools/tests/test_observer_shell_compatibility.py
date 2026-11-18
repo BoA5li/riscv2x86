@@ -206,3 +206,19 @@ def test_rejected_shell_contract_remains_not_produced_with_typed_diagnostic(tmp_
     assert detail['evidenceProductionDisposition'] == 'not_produced'
     assert detail['failureStage'] == 'authority_join'
     assert detail['observerShellCompatibility']['reasonCodes'] == ['L2_OBSERVER_MEMORY_CLOBBER_UNSUPPORTED']
+
+
+def test_commutative_constraint_requires_original_permutation_proof(tmp_path):
+    from riscv2x86_py.l2_observer_shell import assess_observer_shell
+    from riscv2x86_py.l2_fragment_execution import fragment_boundary_from_dict, fragment_dependency_graph_from_dict
+    findings, function = prepared(tmp_path)
+    finding = findings[0]
+    finding['fragment']['inputs'][0]['constraint'] = '%r'
+    approval = finding['approvalArtifact']
+    compiler = function['l2OperandBoundary']['scalarObserverBoundary']
+    decision = assess_observer_shell(finding, compiler,
+        fragment_boundary_from_dict(approval['l2FragmentOperandBoundary']),
+        fragment_dependency_graph_from_dict(approval['l2FragmentDependencyGraph']),
+        compiler['statements'][0])
+    assert not decision.supported
+    assert 'L2_OBSERVER_OPERAND_PERMUTATION_PROOF_REQUIRED' in decision.reason_codes

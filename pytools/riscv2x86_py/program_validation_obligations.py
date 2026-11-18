@@ -236,6 +236,8 @@ def original_layer_readiness(spec):
             except (KeyError, TypeError, ValueError) as exc:
                 permutation.update(status='invalid', detail=str(exc))
         rows.append({'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
+                     'entryAdmissionScope': 'legacy-scalar-entry-not-finite-typed-project-entry',
+                     'authorityDiagnostic': approval.get('l2ScalarAuthorityFailure'),
                      'originalProvider': 'automatic-l2-operand-differential',
                      'authorityConsumerReady': authority is not None,
                      'authorityComplete': artifact.l2_authority_complete,

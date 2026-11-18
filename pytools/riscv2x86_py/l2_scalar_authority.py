@@ -303,6 +303,7 @@ def scalar_authority_decision_matches_assessment(
     )
     allowed = set(assessed.reason_codes)
     allowed.add("L2_SCALAR_EFFECT_RELATION_MISSING")
+    allowed.add('L2_SCALAR_AUTHORITY_PRODUCTION_REJECTED')
     return (same_subject
             and set(assessed.reason_codes).issubset(stored.reason_codes)
             and set(stored.reason_codes).issubset(allowed)

@@ -118,6 +118,7 @@ def derive(root, *, readback, checking_path=None):
         rows.append({'findingId': key, 'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
             'typedEntryIdentity': entry['entryIdentity'], 'operandAuthorityReady': authority is not None,
             'authorityReasonCode': reason, 'sourceConditionExcluded': excluded,
+            'authorityDiagnostic': (finding.get('approvalArtifact') or {}).get('l2ScalarAuthorityFailure'),
             'status': layer.status.value, 'evidenceIdentity': layer.evidence_identity, 'detail': detail,
             'logicalOperandEvidenceChecked': closure is not None,
             'canonicalInstructionCoverageVerified': False})
