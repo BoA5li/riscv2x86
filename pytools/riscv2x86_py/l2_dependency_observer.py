@@ -157,7 +157,7 @@ def build_dependency_plan(report, function):
     return plan
 
 
-def materialize_pair(source: Path, target: Path, report, plan, work):
+def materialize_pair(source: Path, target: Path, report, plan, work, *, readback=False):
     if plan.get('schemaVersion') == SCHEMA:
         validate_plan_compatibility(plan, report)
     elif any(x.get('fragment', {}).get('clobbers') for x in report.get('findings', [])):
@@ -201,7 +201,11 @@ def materialize_pair(source: Path, target: Path, report, plan, work):
         dst = dst[:target_offset] + call + dst[target_offset:]
     declaration = b'extern void __r2x_l2_dependency(const char*,unsigned long long);\n'
     left, right = work / 'dependency-source.c', work / 'dependency-target.c'
-    left.write_bytes(declaration + src); right.write_bytes(declaration + dst)
+    if readback:
+        if left.read_bytes() != declaration + src or right.read_bytes() != declaration + dst:
+            raise DependencyObserverError('L2_OBSERVER_REPLAY_CONTENT_CHANGED', 'instrumented source differs from checked plan')
+    else:
+        left.write_bytes(declaration + src); right.write_bytes(declaration + dst)
     return left, right
 
 

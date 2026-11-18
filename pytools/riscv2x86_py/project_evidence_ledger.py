@@ -124,6 +124,13 @@ def _derive(state, facts):
 def inspect(path):
     ref = d.snapshot(path)
     from . import native_original_api
+    from . import native_api_campaign
+    if d.read(path).get('schemaVersion') == native_api_campaign.RESULT:
+        value = native_api_campaign.check(path)
+        d.verify_snapshot(ref)
+        return dict(value['evidenceConsumption'], checkedCampaign=ref,
+                    originalProjectL2=value['originalProjectL2'],
+                    originalL2Instances=value['originalL2Instances'])
     if d.read(path).get('schemaVersion') == native_original_api.SCHEMA:
         from .native_api_evidence import inspect as inspect_api
         return inspect_api(path)

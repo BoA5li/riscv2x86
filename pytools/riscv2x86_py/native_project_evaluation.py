@@ -487,7 +487,7 @@ def factory(config):
     return validator
 
 
-def request_payload(spec_path, output, applicability_path=None):
+def request_payload(spec_path, output, applicability_path=None, *, api_l2_result=None):
     """Produce a real ORIGINAL EvaluationRequest; no manually fabricated template."""
     from .evaluation import EVALUATION_REQUEST_SCHEMA, evaluation_request_from_dict
     from .translation_validation import validation_plan_from_dict, target_environment_from_dict
@@ -536,23 +536,35 @@ def request_payload(spec_path, output, applicability_path=None):
         if app['project'] != d.snapshot(spec_path): raise ValueError('PROJECT_APPLICABILITY_BINDING_MISMATCH')
         for descriptor in raw['runtimeRegistryTemplate']['validators'].values():
             descriptor['config']['applicabilityPath'] = str(Path(applicability_path).resolve())
+    if api_l2_result is not None:
+        from . import native_project_l2 as typed_l2
+        l2 = typed_l2.check(api_l2_result)
+        l2_inputs = d.read(Path(api_l2_result).resolve().parent / 'inputs.json')
+        api_inputs = d.read(Path(l2_inputs['apiResult']['path']).parent / 'inputs.json')
+        if api_inputs['spec'] != d.snapshot(spec_path):
+            raise ValueError('PROJECT_L2_SPEC_BINDING_MISMATCH')
+        if applicability_path is None or l2_inputs['applicability'] != d.snapshot(applicability_path):
+            raise ValueError('PROJECT_L2_APPLICABILITY_BINDING_MISMATCH')
+        # An ordinary requirement-driven original registry. Other dimensions
+        # remain required and cannot be replaced by finite API observations.
+        raw['runtimeRegistryTemplate']['validators']['L2'] = d.read(l2['registryDescriptor']['path'])
     evaluation_request_from_dict(raw); validation_plan_from_dict(plan_value); target_environment_from_dict(env_value)
     return {'validation-plan.json': plan_value, 'environment.json': env_value, 'request.json': raw}
 
 
-def request(spec_path, output, applicability_path=None):
-    payload = request_payload(spec_path, output, applicability_path)
+def request(spec_path, output, applicability_path=None, *, api_l2_result=None):
+    payload = request_payload(spec_path, output, applicability_path, api_l2_result=api_l2_result)
     root = Path(output).resolve(); root.mkdir()
     for name, value in payload.items(): write(root / name, value)
-    check_request(root / 'request.json', spec_path, applicability_path)
+    check_request(root / 'request.json', spec_path, applicability_path, api_l2_result=api_l2_result)
     return root / 'request.json'
 
 
-def check_request(path, spec_path, applicability_path=None):
+def check_request(path, spec_path, applicability_path=None, *, api_l2_result=None):
     """Rederive all contracts without overwriting or executing anything."""
     path = Path(path).resolve(strict=True)
     if path.name != 'request.json': raise ValueError('PROJECT_REQUEST_NAME_INVALID')
-    expected = request_payload(spec_path, path.parent, applicability_path)
+    expected = request_payload(spec_path, path.parent, applicability_path, api_l2_result=api_l2_result)
     for name, value in expected.items():
         # These are exclusively generated contracts, so their original byte
         # representation is known. Do not lose companion-file mutations when

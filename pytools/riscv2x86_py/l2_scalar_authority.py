@@ -57,6 +57,17 @@ class ScalarAuthorityMaterializationDecision:
     def decision_identity(self) -> str:
         return _identity(self.to_dict(include_identity=False))
 
+    @property
+    def proof_authority_materializable(self) -> bool:
+        """Preserve proof facts independently of legacy wrapper capacity.
+
+        This grants no execution admission. A consumer still needs either the
+        unchanged scalar admission or a checked typed entry contract. Every
+        semantic, boundary and effect failure remains a producer rejection.
+        """
+        return (bool(self.boundary_identity and self.semantic_profile_identity and self.proof_identity)
+                and not (set(self.reason_codes) - {'L2_SCALAR_AUTOMATIC_HARNESS_UNSUPPORTED'}))
+
     def with_reason(self, reason_code: str) -> "ScalarAuthorityMaterializationDecision":
         return replace(self, materializable=False,
                        reason_codes=tuple(sorted(set(self.reason_codes + (reason_code,)))))
@@ -121,6 +132,7 @@ def _proof_identity(approval: Mapping[str, object], fragment_id: str) -> tuple[s
 def assess_scalar_authority_materializability(
     finding: Mapping[str, object], function: Mapping[str, object] | None,
     fragment_boundary: Mapping[str, object] | None,
+    *, typed_entry: Mapping[str, object] | None = None,
 ) -> ScalarAuthorityMaterializationDecision:
     """Assess only structured compiler/proof facts; never inspect asm text."""
     fragment = finding.get("fragment")
@@ -223,9 +235,13 @@ def assess_scalar_authority_materializability(
 
     if function is not None:
         arity = function.get("arity")
-        if (isinstance(arity, bool) or not isinstance(arity, int)
-                or not 1 <= arity <= 4):
-            reasons.add("L2_SCALAR_AUTOMATIC_HARNESS_UNSUPPORTED")
+        if typed_entry is None:
+            if (isinstance(arity, bool) or not isinstance(arity, int) or not 1 <= arity <= 4):
+                reasons.add("L2_SCALAR_AUTOMATIC_HARNESS_UNSUPPORTED")
+        else:
+            from .l2_typed_entry import validate
+            try: validate(typed_entry, function)
+            except (KeyError, TypeError, ValueError): reasons.add('L2_TYPED_ENTRY_CONTRACT_INVALID')
         raw_function_boundary = function.get("l2OperandBoundary")
         candidates = (raw_function_boundary.get("fragmentCandidates")
                       if isinstance(raw_function_boundary, Mapping) else None)

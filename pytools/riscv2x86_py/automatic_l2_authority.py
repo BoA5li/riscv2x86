@@ -313,7 +313,7 @@ def _scalar_authority(
     decision = assess_scalar_authority_materializability(
         finding, function,
         decision_boundary if isinstance(decision_boundary, Mapping) else None)
-    if not decision.materializable:
+    if not decision.proof_authority_materializable:
         return None
     outputs, inputs = fragment.get("outputs"), fragment.get("inputs")
     if (not isinstance(boundary, Mapping) or boundary.get("complete") is not True
@@ -352,7 +352,11 @@ def _scalar_authority(
     output_ids = [item.declaration_id for item in operands
                   if item.access_mode in {"output", "read_write"}]
     arity = function.get("arity")
-    if isinstance(arity, bool) or not isinstance(arity, int) or not 1 <= arity <= 4:
+    # Proof-sidecar construction does not execute the legacy scalar wrapper.
+    # Preserve the compiler partition; executable admission belongs to each
+    # original consumer and its explicit scalar/typed input contract.
+    if (type(arity) is not int or arity < 0
+            or arity != len(boundary.get('parameterDeclarationIds', ()))):
         return None
     raw_profile = finding.get("l2SemanticProfile")
     if not isinstance(raw_profile, Mapping):
@@ -974,11 +978,11 @@ def materialize_automatic_l2_authority(
         }
         if is_scalar and isinstance(approval, dict):
             assert scalar_decision is not None
-            if sidecar is None and scalar_decision.materializable:
+            if sidecar is None and scalar_decision.proof_authority_materializable:
                 scalar_decision = scalar_decision.with_reason(
                     "L2_SCALAR_EFFECT_RELATION_MISSING")
-            elif sidecar is not None and not scalar_decision.materializable:
-                # A sidecar must never bypass a failed common decision.
+            elif sidecar is not None and not scalar_decision.proof_authority_materializable:
+                # Execution capacity is separate; no proof failure is waived.
                 sidecar = None
             approval["l2ScalarAuthorityDecision"] = scalar_decision.to_dict()
             approval["l2AuthorityMaterializationReasonCode"] = (

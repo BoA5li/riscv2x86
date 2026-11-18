@@ -217,10 +217,17 @@ def current_builds(spec, inputs):
 
 def compare_runs(rows, root, selected, domain):
     """Original comparator plus mandatory per-case/object completion protocol."""
+    streams = {side: ((Path(root) / ('run-' + side) / 'stdout.log').read_bytes(),
+                      (Path(root) / ('run-' + side) / 'stderr.log').read_bytes()) for side in SIDES}
+    return compare_outputs(rows, streams, selected, domain)
+
+
+def compare_outputs(rows, streams, selected, domain):
+    """Pure comparison shared by natural and approved observation variants."""
     observations = {}; protocols = {}; returns = {}; failures = {}; preservation = {}
     for side in SIDES:
-        row = rows['run-' + side]; folder = Path(root) / ('run-' + side)
-        stdout = (folder / 'stdout.log').read_bytes(); stderr = (folder / 'stderr.log').read_bytes()
+        row = rows['run-' + side]
+        stdout, stderr = streams[side]
         if domain.get('schemaVersion')==api.SCHEMA_V2:
             from .native_api_projection import inspect_output
             projection = inspect_output(stdout, selected['interface'], domain)

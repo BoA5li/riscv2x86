@@ -27,6 +27,12 @@ def api_campaign(native_pair, monkeypatch):
     monkeypatch.setattr(obligations, 'original_layer_readiness', lambda spec: {
         'scope': 'fixture-original-authority-consumer',
         'instances': [{'authorityConsumerReady': False, 'reasonCode': 'L2_SCALAR_AUTOMATIC_HARNESS_UNSUPPORTED'}]})
+    # This fixture owns only campaign orchestration and host API execution.
+    # The original typed operand backend and its rejected observations have
+    # separate tests; do not manufacture an L2 pass here.
+    monkeypatch.setattr(c, 'l2_attempt', lambda root, reference, **kwargs:
+        (reference, {'originalLogicalOperandsVerified': False,
+                     'instances': [{'status': 'inconclusive', 'detail': {'reasonCode': 'FIXTURE_NO_ASM_AUTHORITY'}}]}))
     return config, dom, root / 'main.c', root, calls
 
 

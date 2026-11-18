@@ -11,6 +11,7 @@ from . import native_project_diagnostic as diagnostic
 from . import native_original_api as api
 from . import native_api_evidence as evidence
 from . import native_project_evaluation as project
+from . import native_project_l2 as project_l2
 from .native_external_providers import checked
 from .native_original_corpus import lock
 from .native_verifier_manifest import current, compare
@@ -54,12 +55,37 @@ def _request_matches(request, selected, plan):
         raise ValueError('API_CAMPAIGN_REQUEST_MISMATCH')
 
 
+def l2_attempt(root, api_reference, *, acquire=False):
+    """Retain failed attempts; checking never executes or repairs a stage."""
+    root = Path(root)
+    prefix = d.read(root / 'diagnostic/preparation/progress.json')
+    applicability = prefix['checkpoints']['applicability']
+    d.verify_snapshot(applicability)
+    folders = sorted((root / 'l2-attempts').glob('*'))
+    for folder in reversed(folders):
+        if not (folder / 'result.json').is_file(): continue
+        inputs = d.read(folder / 'inputs.json')
+        if inputs['apiResult'] != api_reference or inputs['applicability'] != applicability: continue
+        return d.snapshot(folder / 'result.json'), project_l2.check(folder / 'result.json')
+    if not acquire: raise ValueError('API_CAMPAIGN_ORIGINAL_L2_ATTEMPT_REQUIRED')
+    parent = root / 'l2-attempts'; parent.mkdir(exist_ok=True)
+    output = parent / ('%06d' % len(folders))
+    value = project_l2.acquire(api_reference['path'], applicability['path'], output)
+    return d.snapshot(output / 'result.json'), value
+
+
 @measured('native_api_campaign.derive')
 def derive(root, result_ref):
     root = Path(root).resolve(); plan = check_plan(root / 'plan.json')
     spec, _, applicability = api.from_progress(root / 'diagnostic/progress.json', with_applicability=True)
     d.verify_snapshot(result_ref)
     consumption, value = evidence.inspect_with_result(result_ref['path'])
+    l2_reference, l2 = l2_attempt(root, result_ref)
+    consumption['claims'].append({
+        'kind': 'original-logical-operands-under-finite-typed-entry',
+        'status': 'checked' if l2['originalLogicalOperandsVerified'] else 'inconclusive',
+        'evidence': l2_reference,
+        'scope': 'original-operand-dimension-not-all-applicable-effects-or-canonical-coverage'})
     # The API checker just validated this request and selection against its
     # recorded input snapshots; compare policy without traversing that DAG again.
     _request_matches(d.read(root / 'request.json'), value['function'], plan)
@@ -73,11 +99,15 @@ def derive(root, result_ref):
     readiness = original_layer_readiness(d.read(spec))
     body = {'schemaVersion': RESULT, 'plan': d.snapshot(root / 'plan.json'), 'result': result_ref,
             'request': d.snapshot(root / 'request.json'),
-            'completedStages': ['original-preparation-and-audit', 'input-contract', 'api-execution', 'independent-check'],
+            'completedStages': ['original-preparation-and-audit', 'input-contract', 'api-execution',
+                                'original-L2-operand-attempt', 'independent-check'],
             'caseCount': value['caseCount'], 'processObservationStatus': value['processObservationStatus'],
             'bodyLinkAttributionComplete': value['bodyLinkAttributionComplete'],
             'linkAttributedObservationStatus': value['linkAttributedObservationStatus'],
             'instanceApplicability': applicability,
+            'originalProjectL2': l2_reference,
+            'originalLogicalOperandsVerified': l2['originalLogicalOperandsVerified'],
+            'originalL2Instances': l2['instances'],
             'evidenceConsumption': consumption, 'originalLayerReadiness': readiness,
             'formalMatrixCellsExecuted': 0, 'formalValidationPerformed': False,
             'semanticApproval': False, 'productionAcceptanceComplete': False,
@@ -145,7 +175,9 @@ def execute(configuration, domain, function_path, sources, output, *, resume=Fal
         folders = sorted(p for p in attempts.iterdir() if p.is_dir())
         for folder in folders:
             if (folder / 'result.json').is_file():
-                value = derive(root, d.snapshot(folder / 'result.json'))
+                reference = d.snapshot(folder / 'result.json')
+                l2_attempt(root, reference, acquire=True)
+                value = derive(root, reference)
                 publish_checked(root / 'result.json', value, check)
                 return value
         # Reuse only successfully completed, independently checked body builds
@@ -161,6 +193,8 @@ def execute(configuration, domain, function_path, sources, output, *, resume=Fal
                     builds[side] = str(ref)
         target = attempts / ('%06d' % len(folders))
         api.acquire(spec, root / 'request.json', target, builds=builds)
-        value = derive(root, d.snapshot(target / 'result.json'))
+        reference = d.snapshot(target / 'result.json')
+        l2_attempt(root, reference, acquire=True)
+        value = derive(root, reference)
         publish_checked(root / 'result.json', value, check)
         return value

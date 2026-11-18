@@ -68,11 +68,14 @@ def main(argv=None):
     api_replay = sub.add_parser('api-replay', help='rerun old campaign inputs under the current verifier in a fresh output')
     api_replay.add_argument('--previous-result', required=True)
     api_replay.add_argument('--output', required=True)
+    api_eval = sub.add_parser('api-evaluation-request', help='connect a checked typed entry to the original requirement-driven L2 registry')
+    api_eval.add_argument('--l2-result', required=True)
+    api_eval.add_argument('--output', required=True)
     for command in (api_inspect, api_run, api_request):
         origin = command.add_mutually_exclusive_group(required=True)
         origin.add_argument('--spec', help='checked original-project-evaluation contract')
         origin.add_argument('--progress', help='checked diagnostic progress; discover project and reuse existing builds')
-    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay):
+    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay, api_eval):
         command.add_argument('--profile-output', help='new diagnostic JSON file outside the evidence output directory')
         command.add_argument('--verification-cache-mib', type=int, default=256,
                              help='operation-local pure-derivation budget; 0 disables reuse')
@@ -103,6 +106,14 @@ def main(argv=None):
 
 def execute(args):
     try:
+        if args.operation == 'api-evaluation-request':
+            from riscv2x86_py import native_project_l2 as typed_l2
+            typed_l2.check(args.l2_result)
+            refs = project.d.read(Path(args.l2_result).resolve().parent / 'inputs.json')
+            api_refs = project.d.read(Path(refs['apiResult']['path']).parent / 'inputs.json')
+            path = project.request(api_refs['spec']['path'], args.output,
+                refs['applicability']['path'], api_l2_result=args.l2_result)
+            print(json.dumps({'request': str(path), 'semanticApproval': False})); return 0
         if args.operation == 'api-replay':
             value = api_campaign.replay(args.previous_result, args.output)
             print(json.dumps(value))
@@ -159,6 +170,9 @@ def execute(args):
                               **campaign.facts(value)}))
             return 0 if value['evaluationStatus'] == 'verified' else 1
         if args.operation == 'check':
+            from riscv2x86_py import native_project_l2 as typed_l2
+            if project.d.read(args.input).get('schemaVersion') == typed_l2.SCHEMA:
+                print(json.dumps(typed_l2.check(args.input))); return 0
             if project.d.read(args.input).get('schemaVersion') == api_campaign.RESULT:
                 print(json.dumps(api_campaign.check(args.input))); return 0
             if project.d.read(args.input).get('schemaVersion') == original_api.SCHEMA:

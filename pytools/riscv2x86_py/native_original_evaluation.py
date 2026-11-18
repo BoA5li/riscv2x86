@@ -41,6 +41,22 @@ def contracts(request_path):
     # later change to its case list, environments or captured build recipes.
     checked_specs = {}; checked_apps = {}
     for level, descriptor in request.runtime_registry_template.get('validators', {}).items():
+        if isinstance(descriptor, dict) and descriptor.get('type') == 'requirement-driven':
+            config = descriptor['config']
+            for index, provider in enumerate(config.get('providers', [])):
+                if provider.get('validatorType') != 'automatic-l2-operand-differential': continue
+                typed = provider.get('config', {}).get('typedProjectEntry')
+                if typed is None: continue
+                from .native_project_l2_entry import ProjectEntry
+                ProjectEntry(provider['config'])  # original checked project ingress
+                # Pin only schema-defined dependencies; never guess paths by
+                # scanning arbitrary strings in an execution template.
+                paths = {**typed, 'report': provider['config']['translatedReport'],
+                         'requirements': config['requirementManifestPath']}
+                for name, path in paths.items():
+                    if not Path(path).is_absolute():
+                        raise ValueError('ORIGINAL_TYPED_L2_ABSOLUTE_CONTRACT_REQUIRED:' + name)
+                    refs[f'typedL2:{level}:{index}:{name}'] = d.snapshot(path)
         if isinstance(descriptor, dict) and descriptor.get('type') == 'original-captured-project':
             from . import native_project_evaluation as project
             path = descriptor['config']['specPath']

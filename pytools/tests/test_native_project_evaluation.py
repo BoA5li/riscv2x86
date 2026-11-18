@@ -351,6 +351,37 @@ def test_request_companion_is_checked_without_rewriting_it(toy_project, monkeypa
     assert companion.read_bytes() == changed
 
 
+def test_project_request_admits_checked_original_l2_descriptor_only_for_same_project(toy_project, monkeypatch):
+    from riscv2x86_py import native_project_l2 as typed_l2
+    from riscv2x86_py import native_original_applicability as applicability
+    root, _, spec, _ = toy_project
+    run = d.read(spec['run']['path']); translated = d.read(run['translation']['path'])
+    translated.update(report={'path': '/fixture/report.json'}, attemptArchive={'path': '/fixture/archive.json'})
+    p.write(run['translation']['path'], translated)
+    spec['profiles']['source']['compile']['flags'] += ['-march=rv64gc', '-mabi=lp64d']
+    spec['python'] = d.snapshot(__import__('sys').executable)
+    specfile = root / 'spec.json'; p.write(specfile, spec)
+    monkeypatch.setattr(p.route, 'check_run', lambda path: run)
+    app = root / 'app.json'; p.write(app, {'project': d.snapshot(specfile)})
+    monkeypatch.setattr(applicability, 'check', lambda path: d.read(path))
+    l2root = root / 'typed-l2'; l2root.mkdir()
+    apiroot = root / 'api'; apiroot.mkdir()
+    p.write(apiroot / 'inputs.json', {'spec': d.snapshot(specfile)})
+    p.write(l2root / 'inputs.json', {'apiResult': {'path': str(apiroot / 'result.json')},
+                                   'applicability': d.snapshot(app)})
+    descriptor = {'type': 'requirement-driven', 'config': {'fixture': 'unresolved-original-dimensions'}}
+    desc = l2root / 'descriptor.json'; p.write(desc, descriptor)
+    # Only upstream L2 checking is fixture-owned; exercise exact request and
+    # project binding here. Original provider execution is tested separately.
+    monkeypatch.setattr(typed_l2, 'check', lambda path: {'registryDescriptor': d.snapshot(desc)})
+    payload = p.request_payload(specfile, root / 'out', app, api_l2_result=l2root / 'result.json')
+    assert payload['request.json']['runtimeRegistryTemplate']['validators']['L2'] == descriptor
+    assert set(payload['request.json']['runtimeRegistryTemplate']['validators']) == {'L0', 'L1', 'L2'}
+    p.write(apiroot / 'inputs.json', {'spec': {'digest': 'wrong-project'}})
+    with pytest.raises(ValueError, match='L2_SPEC_BINDING_MISMATCH'):
+        p.request_payload(specfile, root / 'out', app, api_l2_result=l2root / 'result.json')
+
+
 def test_selected_observation_replays_original_comparator_and_rejects_changed_context(toy_project, monkeypatch):
     from riscv2x86_py import native_experiment_driver as driver
     root, _, spec, programs = toy_project

@@ -265,7 +265,8 @@ def literal(value,typ):
     return f'(({typ["elementType"]}){value}ULL)'
 
 
-def harness(name,interface,domain):
+def harness(name,interface,domain,*,operand_trace=False):
+    if type(operand_trace) is not bool: raise ValueError('API_OPERAND_TRACE_POLICY_INVALID')
     if not isinstance(name,str) or not IDENT.fullmatch(name):raise ValueError('API_C_LINKER_IDENTIFIER_REQUIRED')
     cases=validate(domain,interface)
     result=interface['return'];ret=result['cType'];parameters=interface['parameters']
@@ -291,6 +292,16 @@ def harness(name,interface,domain):
             for i,(oid,obj) in enumerate(case['objects'].items()):
                 # Legacy domains deliberately retain full-object comparison.
                 lines.append(f'for(unsigned long j=0;j<{len(obj["values"])};j++) printf("case:{index}:object:{i}:%lu:%llu\\n",j,(unsigned long long){names[oid]}[j]);')
+        if operand_trace:
+            # This is an entry protocol, not a pointer value/address proof.
+            # Void's final carrier is a completion sentinel, never a return.
+            ids=list(case['objects'])
+            values=[a['integer'] % 2**64 if t['kind']=='integer' else
+                    ((ids.index(a['object'])+1)<<32)|a['offsetElements']
+                    for a,t in zip(case['arguments'],parameters)]
+            prefix='operand_trace='+name+''.join(';%016x'%v for v in values)
+            lines.append('printf("'+prefix+';%016llx\\n",'+
+                         ('0ULL' if result['kind']=='void' else '(unsigned long long)result')+');')
         lines.append(f'puts("case:{index}:complete:1");')
         lines.append('}')
     lines.extend(['return 0;','}'])
