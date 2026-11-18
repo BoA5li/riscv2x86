@@ -114,6 +114,7 @@ class VerificationSession:
         self.timings = {}
         self.memo = {}
         self.file_reads = {}; self.file_read_overflow = 0
+        self.file_read_totals = {'reads': 0, 'bytes': 0, 'seconds': 0.0, 'failedReads': 0}
         self.started = time.monotonic()
         self.elapsed = None
 
@@ -127,6 +128,7 @@ class VerificationSession:
             'memoization': deepcopy(self.memo),
             'timings': deepcopy(self.timings),
             'fileReads': {'scope': 'project_compile_context.digest-only-not-all-IO',
+                'totals': dict(self.file_read_totals),
                 'trackedPathCount': len(self.file_reads), 'pathBudget': 2048,
                 'untrackedReadCount': self.file_read_overflow,
                 'topPathsBySeconds': sorted(({'path': p, **row} for p, row in self.file_reads.items()),
@@ -141,6 +143,9 @@ def record_file_read(path, size, seconds, failed):
     """Bounded diagnostic accounting only; never supplies a validity decision."""
     current = _ACTIVE.get()
     if current is None: return
+    totals = current.file_read_totals
+    totals['reads'] += 1; totals['bytes'] += size; totals['seconds'] += seconds
+    totals['failedReads'] += int(failed)
     if path not in current.file_reads and len(current.file_reads) >= 2048:
         current.file_read_overflow += 1
         return

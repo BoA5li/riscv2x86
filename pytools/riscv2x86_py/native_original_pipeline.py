@@ -379,7 +379,13 @@ def _permutation_projection_snapshot(translation):
 
 
 @measured('native_original_pipeline.check_replay')
-def check_replay(path):
+def _checked_replay_context(path):
+    """One traversal returns the checked replay and its checked ancestors.
+
+    This is call-graph factoring, not a cache: every invocation checks live
+    original AND independently rebuilt translations and their input artifacts.
+    No caller can supply prechecked values or reuse this across operations.
+    """
     value=d.read(path);checked(value,'originalReplayIdentity')
     if value['schemaVersion']!='riscv2x86.native-original-replay.v1':raise ValueError('ORIGINAL_REPLAY_SCHEMA_INVALID')
     for key in ('original','fresh','freshFrontendReport'):d.verify_snapshot(value[key])
@@ -403,7 +409,11 @@ def check_replay(path):
             or value['originalBackendReplayComplete'] is not True
             or value['semanticApproval'] is not False or value['productionAcceptanceComplete'] is not False):
         raise ValueError('ORIGINAL_REPLAY_REDERIVATION_MISMATCH')
-    return value
+    return value, old, prepared
+
+
+def check_replay(path):
+    return _checked_replay_context(path)[0]
 
 
 def bound_evaluation_request(translation_path,request_path):
@@ -492,8 +502,12 @@ def check_run(path):
     value=d.read(path);checked(value,'originalRunIdentity');compare_verifier(value['verifier'],verifier())
     if value['schemaVersion']!='riscv2x86.native-original-run.v1':raise ValueError('ORIGINAL_RUN_SCHEMA_INVALID')
     for key in ('bundle','preflight','input','translation','audit'):d.verify_snapshot(value[key])
-    preflight=ghidra_preflight.check(value['preflight']['path']);inp=check_input(value['input']['path'])
-    translated=check_translation(value['translation']['path']);replayed=check_replay(value['audit']['path'])
+    preflight=ghidra_preflight.check(value['preflight']['path'])
+    replayed, translated, inp = _checked_replay_context(value['audit']['path'])
+    # Replay checks the complete original translation/input graph already.
+    # Bind those exact checked ancestors to this run rather than recursively
+    # walking the same graph twice more. Fresh audit remains independently
+    # checked inside _checked_replay_context, with live reference snapshots.
     if (inp['bundle']!=value['bundle'] or translated['input']!=value['input']
             or replayed['original']!=value['translation'] or not translation_complete(translated)
             or preflight['installationDirectory']!=translated['ghidraInstallDir']
@@ -501,4 +515,5 @@ def check_run(path):
             or value['originalCandidateRouteComplete'] is not True
             or any(value[k] is not False for k in ('programValidationPerformed','semanticApproval','productionAcceptanceComplete'))):
         raise ValueError('ORIGINAL_RUN_REDERIVATION_MISMATCH')
+    for key in ('bundle','preflight','input','translation','audit'):d.verify_snapshot(value[key])
     return value

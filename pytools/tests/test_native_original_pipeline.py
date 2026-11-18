@@ -238,3 +238,23 @@ def test_incomplete_translation_cannot_be_bound_to_program_evaluation(adapted,mo
     with pytest.raises(ValueError,match='COMPLETE_TRANSLATION_REQUIRED'):
         route.evaluation_request(root/'translated/result.json',root/'absent-request.json',root/'never.json')
     assert not (root/'never.json').exists()
+
+
+def test_composed_check_factors_replay_graph_without_skipping_fresh_input_validation(adapted, monkeypatch):
+    from .test_ghidra_preflight import payload
+    root, prepared, _, raw = adapted
+    launcher = Path(os.environ['GHIDRA_INSTALL_DIR']) / 'support/pythonRun'
+    launcher.write_text('#!' + sys.executable + '\nprint(' + repr(json.dumps(payload())) + ')\n')
+    backend_fixture(monkeypatch, prepared, raw)
+    route.run(root / 'bundle.json', root / 'success')
+    original = route.check_input; calls = []
+    def traced(path):
+        calls.append(str(path)); return original(path)
+    monkeypatch.setattr(route, 'check_input', traced)
+    route.check_run(root / 'success/result.json')
+    # Both translations' native inputs and the fresh frontend comparison still
+    # validate; two redundant traversals formerly added by check_run disappear.
+    assert len(calls) == 3
+    inp = d.read(root / 'success/input/result.json')
+    Path(inp['source']['path']).write_bytes(raw + b'\n')
+    with pytest.raises(ValueError): route.check_run(root / 'success/result.json')
