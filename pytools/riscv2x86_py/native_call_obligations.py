@@ -51,6 +51,18 @@ def derive(ast, records, raw, model, checked_answers):
     for (fid, function, call), guard in zip(subjects, guards):
         path = call['astPath']
         witnessed = tuple(path) in proofs
+        local_contract = None
+        if witnessed:
+            local_contract = proofs[tuple(path)]['query']['contract']
+        elif call['resolution'] == 'builtin-contract-required':
+            try:
+                candidate = builtin_contract(nodes[tuple(path)], model, lambda ref: ref)
+                # Consume the ORIGINAL typed rule. A constant query still
+                # needs its two compiler witnesses; hints grant no L3 fact.
+                if candidate['operation'] == 'typed-value-with-branch-expectation':
+                    local_contract = candidate
+            except (KeyError, TypeError, ValueError):
+                pass
         row = {'functionContextIdentity': fid, 'callAstPath': path,
                'resolution': call['resolution'],
                'targetDeclaration': call['targetDeclaration'],
@@ -59,15 +71,39 @@ def derive(ast, records, raw, model, checked_answers):
                'guards': guard['guards'],
                'localQueryContractStatus': 'checked-source-target-witness' if witnessed else 'not-discharged',
                'queryWitnessIdentity': identity(proofs[tuple(path)]) if witnessed else None,
+               'localBuiltinContract': local_contract,
+               'localValueContractChecked': local_contract is not None,
                'callEffectClosureVerified': False, 'machineAbiVerified': False}
         row['callObligationIdentity'] = identity(row)
         rows.append(row)
-    # Historical inventory stays unchanged; this is an additional checked view.
+    # Preserve historical facts, and separately derive a current source-only
+    # view. Never subtract overlapping query/exclusion counts heuristically.
+    roots = []
+    for root in inventory['asmOwningFunctionContexts']:
+        relevant = [r for r in rows if r['functionContextIdentity'] in root['reachableFunctionContexts']]
+        obligations = []
+        for row in relevant:
+            excluded = row['sourceGuardClassification'] == 'excluded-under-compiler-query-contracts'
+            state = ('source-excluded-machine-unproved' if excluded else
+                     'local-value-contract-checked' if row['localValueContractChecked'] else
+                     'emitted-definition-effect-proof-required' if row['resolution'] == 'emitted-definition' else
+                     row['resolution'])
+            obligations.append({'callObligationIdentity': row['callObligationIdentity'],
+                                'disposition': state})
+        body = {'functionContextIdentity': root['functionContextIdentity'],
+                'calls': obligations,
+                'remainingSourceResolutionCount': sum(r['disposition'] not in {
+                    'source-excluded-machine-unproved', 'local-value-contract-checked',
+                    'emitted-definition-effect-proof-required'} for r in obligations),
+                'effectClosureVerified': False, 'abiClosureVerified': False,
+                'scope': 'current-source-call-obligations-not-runtime-or-program-closure'}
+        roots.append(dict(body, rootObligationIdentity=identity(body)))
     return {'schemaVersion': 'riscv2x86.source-call-obligations.v1',
             'contextInventoryIdentity': inventory['contextInventoryIdentity'],
             'analysisInputIdentity': analysis_identity,
             'selectedInstanceBindingIdentities': [r['instanceBindingIdentity'] for r in records],
             'rootCallObligations': inventory['asmOwningFunctionContexts'],
+            'checkedRootCallObligations': roots,
             'globalEffectCandidatePaths': inventory['globalEffectCandidatePaths'],
             'calls': rows, 'callSiteCount': len(rows),
             'sourceExcludedCallSiteCount': sum(r['sourceGuardClassification'] ==

@@ -956,11 +956,15 @@ def build_auto_l2_operand_validator(config: Mapping[str, object], *, readback=Fa
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail(
                     reason, failureStage=L2OperandFailureStage.AUTHORITY_JOIN.value,
                     artifactPath=str(artifact_path))))
-            if backend is not None and kwargs.get('source_instance_excluded') is True:
+            disposition = backend.instance_disposition(finding) if backend is not None else None
+            if kwargs.get('source_instance_excluded') is True and disposition is None:
+                raise ValueError('L2_TYPED_CHECKED_APPLICABILITY_REQUIRED')
+            if disposition is not None and disposition['sourceConditionExcluded']:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                     detail=json.dumps(provider_precondition_detail(
                         'L2_TYPED_SOURCE_INSTANCE_EXCLUDED', typedEntryIdentity=typed_entry['entryIdentity'],
-                        functionIdentity=typed_entry['functionIdentity'], sampleCount=typed_entry['sampleCount'])))
+                        functionIdentity=typed_entry['functionIdentity'], sampleCount=typed_entry['sampleCount'],
+                        instanceExecutionDisposition=disposition)))
             raw_sample_plan = authority.get("sampleObservationPlan")
             if not isinstance(raw_sample_plan, Mapping):
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,

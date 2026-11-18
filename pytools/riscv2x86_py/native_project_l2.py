@@ -73,6 +73,7 @@ def derive(root, *, readback, checking_path=None):
     app = check_applicability(inputs['applicability']['path'])
     if app['project'] != api_inputs['spec']:
         raise ValueError('L2_TYPED_APPLICABILITY_PROJECT_MISMATCH')
+    config['typedProjectEntry']['applicabilityPath'] = inputs['applicability']['path']
     selected = value['function']
     functions = [f for f in report['functions'] if f.get('nativeCompilerDeclarationId') == selected['compilerDeclarationIdentity']]
     if len(functions) != 1: raise ValueError('L2_TYPED_SELECTED_DECLARATION_NOT_UNIQUE')
@@ -97,19 +98,13 @@ def derive(root, *, readback, checking_path=None):
             continue
         cfg = {**config, 'workDirectory': str(root / ('finding-%06d' % i) / 'work'),
                'replayDirectory': str(root / ('finding-%06d' % i) / 'replay')}
-        applicable = [r for r in app['facts']['instances']
-                      if r['instanceBindingIdentity'] in selected['instanceBindingIdentities']
-                      and r.get('astPath') == (finding.get('physicalEditBinding') or {}).get('astPath')]
-        # If the report does not carry an AST path, an exclusion may be used
-        # only when EVERY compiler-bound instance in this selection is excluded.
-        if not applicable:
-            applicable = [r for r in app['facts']['instances'] if r['instanceBindingIdentity'] in selected['instanceBindingIdentities']]
-        excluded = bool(applicable) and all(r['sourceGuardClassification'] == 'excluded-under-compiler-query-contracts' for r in applicable)
+        from .native_instance_execution import classify
+        disposition = classify(finding, selected, app, api_inputs['spec'])
+        excluded = disposition['sourceConditionExcluded']
         authority, reason = _authority(finding, report['functions'], artifact, typed_entry=entry)
         validator = build_auto_l2_operand_validator(cfg, readback=readback)
         layer = validator(level=ValidationLevel.L2, comparison_policy=ARCHITECTURAL_COMPARISON_POLICY,
-                          translation_artifact=artifact, l2_provider_id=PROVIDER,
-                          source_instance_excluded=excluded)
+                          translation_artifact=artifact, l2_provider_id=PROVIDER)
         detail = json.loads(layer.detail)
         closure, closure_reasons = (validated_provider_evidence(detail, artifact,
             dimension='logical_operands', provider_id=PROVIDER) if layer.status is ValidationStatus.VERIFIED else (None, ()))
@@ -118,6 +113,7 @@ def derive(root, *, readback, checking_path=None):
         rows.append({'findingId': key, 'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
             'typedEntryIdentity': entry['entryIdentity'], 'operandAuthorityReady': authority is not None,
             'authorityReasonCode': reason, 'sourceConditionExcluded': excluded,
+            'instanceExecutionDisposition': disposition,
             'authorityDiagnostic': (finding.get('approvalArtifact') or {}).get('l2ScalarAuthorityFailure'),
             'status': layer.status.value, 'evidenceIdentity': layer.evidence_identity, 'detail': detail,
             'logicalOperandEvidenceChecked': closure is not None,

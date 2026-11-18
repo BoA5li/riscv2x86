@@ -16,7 +16,7 @@ from .project_build_contract import source_arguments
 from .project_build_records import identity
 from .project_compile_context import validate as validate_context, digest, PAIRS
 from .project_tool_resolution import resolve_executable
-from .verification_session import ContentBytes, measured, pure, span
+from .verification_session import ContentBytes, measured, pure, span, ReadOnlyDict, ReadOnlyList
 
 SCHEMA = 'riscv2x86.native-analysis-input.v1'
 AST_POLICY = 'clang-json-reference-graph-alpha-renaming.v1'
@@ -52,7 +52,7 @@ def analysis_arguments(arguments):
 
 
 @measured('native-input.canonical_ast')
-def canonical_ast(ast):
+def canonical_ast(ast, *, readonly=False):
     """Retain all JSON fields and reference relationships, not pointer values.
 
     IDs are renamed bijectively in traversal order, including references to
@@ -60,6 +60,8 @@ def canonical_ast(ast):
     strings are not rewritten. The raw AST is retained as separate evidence.
     This is replay identity, not a projection granting semantic authority.
     """
+    if type(readonly) is not bool:
+        raise ValueError('NATIVE_INPUT_READ_ONLY_POLICY_INVALID')
     identifiers = {}
     def visit(value, key=None):
         if key in REFERENCE_KEYS and isinstance(value, str):
@@ -69,9 +71,11 @@ def canonical_ast(ast):
                 identifiers[value] = 'node:' + str(len(identifiers))
             return identifiers[value]
         if isinstance(value, dict):
-            return {k: visit(v, k) for k, v in sorted(value.items())}
+            result = {k: visit(v, k) for k, v in sorted(value.items())}
+            return ReadOnlyDict(result) if readonly else result
         if isinstance(value, list):
-            return [visit(v) for v in value]
+            result = [visit(v) for v in value]
+            return ReadOnlyList(result) if readonly else result
         return value
     if not isinstance(ast, dict) or ast.get('kind') != 'TranslationUnitDecl':
         raise ValueError('NATIVE_INPUT_TRANSLATION_UNIT_REQUIRED')
@@ -289,7 +293,9 @@ def bytes_identity(raw):
 def _native_graph(ast_bytes, analysis_identity):
     content = ast_bytes if type(ast_bytes) is ContentBytes else ContentBytes(ast_bytes)
     def derive_graph():
-        canonical = canonical_ast(json.loads(content.raw.decode('utf-8')))
+        # Freeze while constructing the canonical graph, avoiding a second
+        # recursive graph copy even when memoization is disabled.
+        canonical = canonical_ast(json.loads(content.raw.decode('utf-8')), readonly=True)
         inventory = ast_inventory(canonical, analysis_identity)
         return {'canonicalAst': canonical, 'canonicalIdentity': identity(canonical),
                 'inventory': inventory, 'inventoryBodyIdentity': identity(inventory)}

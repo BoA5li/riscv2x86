@@ -16,7 +16,8 @@ class ProjectEntry:
     def __init__(self, config, *, readback=False):
         self.config = config; self.readback = readback
         cfg = config['typedProjectEntry']
-        if set(cfg) != {'specPath', 'requestPath', 'sourceBuild', 'targetBuild'}:
+        required = {'specPath', 'requestPath', 'sourceBuild', 'targetBuild'}
+        if set(cfg) not in (required, required | {'applicabilityPath'}):
             raise ValueError('L2_TYPED_PROJECT_CONFIG_INVALID')
         self.refs = [d.snapshot(cfg[k]) for k in cfg]
         self.spec, self.request, self.selected, _, _ = api.request_context(cfg['specPath'], cfg['requestPath'])
@@ -52,6 +53,19 @@ class ProjectEntry:
     def bind(self, function):
         self.profile = entry.bind(function, self.selected, self.request['domain'])
         return self.profile
+
+    def instance_disposition(self, finding):
+        """Recheck the bound receipt, rather than trusting an invocation flag."""
+        cfg = self.config['typedProjectEntry']
+        if 'applicabilityPath' not in cfg:
+            return None  # legacy configurations retain their original admission
+        from .native_original_applicability import check
+        from .native_instance_execution import classify
+        self.verify()
+        app = check(cfg['applicabilityPath'])
+        value = classify(finding, self.selected, app, d.snapshot(cfg['specPath']))
+        self.verify()
+        return value
 
     def execute(self, harness, source, target, work, wrapper):
         self.verify(); results = {}; rows = {}; streams = {}
