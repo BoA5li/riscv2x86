@@ -42,6 +42,11 @@ def collect(root, output):
         contexts = read(bundle['contextsPath'], bundle['contextsDigest'])
     else:
         gaps.append('NATIVE_CALL_CONTEXT_INVENTORY_NOT_SUPPLIED')
+    applicability = None
+    if 'applicability' in progress['checkpoints']:
+        applicability = ref(progress['checkpoints']['applicability'])
+    else:
+        gaps.append('CHECKED_APPLICABILITY_CHECKPOINT_NOT_SUPPLIED')
     report = ref(translation['report'])
     backend = ref(translation['backendReport'])
     frontend = ref(prepared['frontendReport'])
@@ -50,6 +55,16 @@ def collect(root, output):
     owners = []
     paths = sorted({tuple(r['functionAstPath']) for r in bindings['records']
                     if r.get('functionAstPath') is not None})
+    owner_paths = set(paths)
+    reachable_ids = set()
+    if contexts is not None:
+        for row in contexts['asmOwningFunctionContexts']:
+            reachable_ids.update(row['reachableFunctionContexts'])
+        if reachable_ids - {r['functionContextIdentity'] for r in contexts['functions']}:
+            raise ValueError('ANALYSIS_REACHABLE_FUNCTION_CONTEXT_MISSING')
+        paths = sorted(owner_paths | {tuple(row['astPath']) for row in contexts['functions']
+            if row['functionContextIdentity'] in reachable_ids})
+    reachable = []
     for path in paths:
         node = ast
         for index in path:
@@ -58,18 +73,24 @@ def collect(root, output):
             node = node['inner'][index]
         if node.get('kind') != 'FunctionDecl':
             raise ValueError('ANALYSIS_FUNCTION_AST_OWNER_REQUIRED')
-        owners.append({'functionAstPath': list(path), 'functionAst': node})
+        exported = {'functionAstPath': list(path), 'functionAst': node}
+        reachable.append(exported)
+        if path in owner_paths:
+            owners.append(exported)
     scope = 'content-bound-analysis-export-not-independent-proof-or-semantic-approval'
     files = {
         '01-l2-details.json': {'scope': scope, 'translatedReport': report,
             'backendReport': backend, 'frontendReport': frontend,
             'instanceBindings': bindings, 'callContexts': contexts,
+            'recordedApplicability': applicability,
             'collectionGaps': gaps,
             'nativeInputConfiguration': {key: receipt.get('analysisInput', {}).get(key)
                 for key in ('contextIdentity', 'sourceDigest', 'nativeInputDigest',
                             'inspectionArguments', 'dataModels')}},
         '02-owning-function-asts.json': {'scope': scope,
-            'canonicalAstDigest': receipt['canonicalAstDigest'], 'owners': owners},
+            'canonicalAstDigest': receipt['canonicalAstDigest'], 'owners': owners,
+            'reachableFunctions': reachable,
+            'reachabilityScope': 'compiler-declaration-graph-not-runtime-call-coverage'},
     }
     # Recheck resolution and bytes at the end; the copied JSON itself was
     # decoded from the content whose expected digest was checked above.

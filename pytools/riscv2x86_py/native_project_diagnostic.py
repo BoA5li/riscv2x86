@@ -275,11 +275,11 @@ def facts(state):
     for index in selected:
         stage = 'case-%06d' % index
         if stage in cp: observations.append(d.read(cp[stage]['path'])['facts']['observation'])
-    pending = []; readiness = None; instance_applicability = None
+    pending = []; readiness = None; instance_applicability = None; call_obligations = None
     if 'preparation' in cp:
         prefix = d.read(cp['preparation']['path'])['facts']['prefixCheckpoints']
         pending = d.read(prefix['project']['path'])['gaps']
-        app = d.read(prefix['applicability']['path']); readiness = app['layerReadiness']; instance_applicability = app['facts']
+        app = d.read(prefix['applicability']['path']); readiness = app['layerReadiness']; instance_applicability = app['facts']; call_obligations = app.get('callObligations')
     return {'status': state['status'], 'diagnosticAcquisitionComplete': state['status'] == 'complete',
             'completedStages': list(cp), 'uncompletedStages': [s for s in graph(plan) if s not in cp],
             'blockedStages': state['blocked'],
@@ -289,7 +289,7 @@ def facts(state):
             'unselectedCaseIndices': [i for i in range(len(plan['basePlan']['cases'])) if i not in selected],
             'observedCaseCount': sum(len(o['cases']) for o in observations), 'observations': observations,
             'machineFactGaps': inventory_gaps, 'machineInventoryAcquired': 'machine-inventory' in cp,
-            'instanceApplicability': instance_applicability, 'attemptCount': len(state['attempts']), 'unresolvedProgramObligations': pending, 'originalLayerReadiness': readiness,
+            'sourceCallObligations': call_obligations, 'instanceApplicability': instance_applicability, 'attemptCount': len(state['attempts']), 'unresolvedProgramObligations': pending, 'originalLayerReadiness': readiness,
             'operationTimings': [{k: a[k] for k in ('index', 'stage', 'status', 'elapsedSeconds')} for a in state['attempts']],
             'resultPaths': {s: r['path'] for s, r in cp.items()}, 'formalMatrixCellsExecuted': 0,
             'formalValidationPerformed': False, 'semanticApproval': False, 'productionAcceptanceComplete': False,

@@ -44,10 +44,13 @@ def context(spec_path):
 
 def obligations(ast, records, raw, model):
     nodes = {tuple(path): node for node, path, _ in _nodes(ast)}
-    instances = []; queries = {}
+    instances = []; queries = {}; unsafe_functions = {}
     for record in records:
         path = record['astPath']; fn = nodes.get(tuple(record['functionAstPath'] or []), {})
-        unsafe = any(n.get('kind') in _UNSTRUCTURED for n, _, _ in _nodes(fn))
+        owner = tuple(record['functionAstPath'] or [])
+        if owner not in unsafe_functions:
+            unsafe_functions[owner] = any(n.get('kind') in _UNSTRUCTURED for n, _, _ in _nodes(fn))
+        unsafe = unsafe_functions[owner]
         guards = []
         for length in range(len(path)):
             prefix = path[:length]; node = nodes[tuple(prefix)]; branch = path[length]
@@ -135,7 +138,9 @@ def derive(spec_path, root):
         answers.append({'query': query, 'probe': d.snapshot(probe), 'witnesses': witnesses,
                         'sourceAndTargetWitnessVerified': verified})
     from .program_validation_obligations import original_layer_readiness
-    return {'queries': answers, 'facts': facts(ast, records, raw, model, answers),
+    from .native_call_obligations import derive as call_obligations
+    return {'queries': answers, 'callObligations': call_obligations(ast, records, raw, model, answers),
+            'facts': facts(ast, records, raw, model, answers),
             'layerReadiness': original_layer_readiness(spec)}
 
 

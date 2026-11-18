@@ -199,6 +199,7 @@ def derive(ast, frontend_report, raw, analysis_input_identity):
     return dict(body, bindingInventoryIdentity=identity(body))
 
 
+@measured('compiler_native_instance_binding.call_contexts')
 def call_contexts(ast, bindings, analysis_input_identity, *, schema=None):
     """Export reachable AST declarations/effects, never infer pointer domains."""
     from .compiler_native_calls import resolve, CONTEXT_V1, CONTEXT_V2

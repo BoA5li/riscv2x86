@@ -35,7 +35,7 @@ def tree():
     cond = {'kind': 'BinaryOperator', 'opcode': '!=', 'type': INT, 'inner': [call, literal(1)]}
     ast = {'kind': 'TranslationUnitDecl', 'inner': [{'kind': 'FunctionDecl', 'inner': [
         {'kind': 'IfStmt', 'inner': [cond, {'kind': 'GCCAsmStmt'}]}]}]}
-    records = [{'astPath': [0, 0, 1], 'functionAstPath': [0], 'instanceBindingIdentity': 'fixture-instance'}]
+    records = [{'astPath': [0, 0, 1], 'functionAstPath': [0], 'instanceBindingIdentity': 'fixture-instance', 'analysisInputIdentity': 'analysis'}]
     return ast, records, raw
 
 

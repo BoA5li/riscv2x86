@@ -36,6 +36,19 @@ def _derive_checked(artifacts, report, raw, analysis_identity):
         lambda: derive(artifacts['canonicalAst'], report, raw, analysis_identity))
 
 
+@measured('native-binding.checked-call-contexts')
+def _contexts_checked(artifacts, bindings, analysis_identity, schema):
+    """Reuse only a pure graph derived from live-validated AST and bindings."""
+    canonical = artifacts.get('canonicalAstIdentity')
+    def calculate():
+        return call_contexts(artifacts['canonicalAst'], bindings,
+                             analysis_identity, schema=schema)
+    if canonical is None or not isinstance(artifacts['canonicalAst'], ReadOnlyDict):
+        return calculate()
+    return pure('native-call-contexts.v1',
+                (canonical, identity(bindings), analysis_identity, identity(schema)), calculate)
+
+
 def read(path):
     return json.loads(Path(path).read_text())
 
@@ -130,6 +143,7 @@ def acquire(receipt_path, frontend, output, *, timeout=300, context_schema=None)
         runner.failure(runner.state['currentStage'], exc); raise
 
 
+@measured('native-binding.validate-artifacts')
 def validate_artifacts(bundle):
     if (not isinstance(bundle, dict) or bundle.get('schemaVersion') != SCHEMA
             or bundle.get('bindingBundleIdentity') != identity({
@@ -167,15 +181,15 @@ def validate_artifacts(bundle):
     report = read(bundle['frontendReportPath'])
     bindings = _derive_checked(artifacts, report, artifacts['inputBytes'], receipt['analysisInputIdentity'])
     stored_contexts = read(bundle['contextsPath'])
-    contexts = call_contexts(artifacts['canonicalAst'], bindings, receipt['analysisInputIdentity'],
-        schema=stored_contexts.get('schemaVersion'))
+    contexts = _contexts_checked(artifacts, bindings, receipt['analysisInputIdentity'],
+        stored_contexts.get('schemaVersion'))
     if (bundle['nativeInputIdentity'] != receipt['nativeInputIdentity']
             or bundle['analysisInputIdentity'] != receipt['analysisInputIdentity']
             or bundle['frontendReportIdentity'] != identity(report)
             or bundle['bindingInventoryIdentity'] != bindings['bindingInventoryIdentity']
             or bundle['contextInventoryIdentity'] != contexts['contextInventoryIdentity']
             or identity(read(bundle['bindingsPath'])) != identity(bindings)
-            or identity(read(bundle['contextsPath'])) != identity(contexts)
+            or identity(stored_contexts) != identity(contexts)
             or type(bundle['occurrenceCount']) is not int or bundle['occurrenceCount'] != bindings['occurrenceCount']
             or bundle['allEmittedAstAsmOccurrencesBound'] is not True
             or bundle['derivedInputInstanceBindingComplete'] is not True
@@ -184,6 +198,10 @@ def validate_artifacts(bundle):
                 'editAuthorizationComplete', 'endToEndEligibilityAssessed',
                 'semanticApproval', 'productionAcceptanceComplete'))):
         raise ValueError('NATIVE_BINDING_DERIVATION_MISMATCH')
+    # The stored value above was decoded from this invocation's bytes. Recheck
+    # its file at exit as well, including on a pure-derivation cache hit.
+    if digest(bundle['contextsPath']) != bundle['contextsDigest']:
+        raise ValueError('NATIVE_BINDING_ARTIFACT_CHANGED:contexts')
     return bindings, contexts
 
 
