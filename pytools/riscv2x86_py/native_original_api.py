@@ -19,6 +19,7 @@ from .project_build_records import identity
 from .translation_validation import ProgramArtifact
 from .l1_differential import HarnessObservation, ProcessObservation, compare_l1_observations
 from .validation_case import ComparisonContract
+from .verification_session import measured
 
 SCHEMA = 'riscv2x86.original-project-api-execution.v1'
 REQUEST = 'riscv2x86.original-project-api-request.v1'
@@ -188,6 +189,7 @@ def recipe(spec, builds, selected, root):
         # system library or archive member to supply the tested definition.
         argv.insert(1, builds[side]['object']['path'])
         argv += ['-Xlinker', '-Map', '-Xlinker', str(root / (side + '-link.map'))]
+        argv += ['-Xlinker', '--trace-symbol', '-Xlinker', selected['name']]
         rows += [('witness-' + side, [compiler['compiler']['path'], *compiler['flags'], '-Werror', '-c',
                      str(root / (side + '-witness.i')), '-o', str(root / (side + '-witness.o'))], *common),
                  ('driver-' + side, [compiler['compiler']['path'], *compiler['flags'], '-x', 'c', '-std=gnu11',
@@ -219,11 +221,14 @@ def compare_runs(rows, root, selected, domain):
     for side in SIDES:
         row = rows['run-' + side]; folder = Path(root) / ('run-' + side)
         stdout = (folder / 'stdout.log').read_bytes(); stderr = (folder / 'stderr.log').read_bytes()
-        protocols[side] = api.output_protocol(stdout, selected['interface'], domain)
         if domain.get('schemaVersion')==api.SCHEMA_V2:
             from .native_api_projection import inspect_output
-            preservation[side] = inspect_output(stdout, selected['interface'], domain)['preservationViolations']
-        else: preservation[side] = []
+            projection = inspect_output(stdout, selected['interface'], domain)
+            protocols[side] = projection['protocolComplete']
+            preservation[side] = projection['preservationViolations']
+        else:
+            protocols[side] = api.output_protocol(stdout, selected['interface'], domain)
+            preservation[side] = []
         returns[side] = row['returnCode']; failures[side] = row['failureReason']
         observations[side] = ProcessObservation(HarnessObservation(None, (), (), (), ()), row['returnCode'],
             base64.b64encode(stdout).decode(), base64.b64encode(stderr).decode(), ())
@@ -266,6 +271,13 @@ def derive(result_path):
         try:
             facts = d.attribution(builds[side]['object']['path'], root / (side + '-program'), root / (side + '-link.map'))
             attribution[side] = [r for r in facts['definitions'] if r['symbol']['name'] == selected['name']]
+            trace = (root / ('link-' + side) / 'stderr.log').read_text().splitlines()
+            expected_trace = builds[side]['object']['path'] + ': definition of ' + selected['name']
+            exact = [line for line in trace if line == expected_trace or line.endswith(': ' + expected_trace)]
+            for row in attribution[side]:
+                row['definitionTrace'] = exact
+                if len(exact) != 1:
+                    row.update(verified=False, reason='DEFINITION_OBJECT_TRACE_NOT_UNIQUE')
         except ValueError as exc:
             attribution[side] = [{'verified': False, 'reason': str(exc)}]
     rows = {}; logs = []
@@ -280,6 +292,8 @@ def derive(result_path):
         logs.extend(d.snapshot(root / name / f) for f in ('execution.json', 'stdout.log', 'stderr.log'))
     # Hash equality alone is not sufficient: regenerate driver, commands, type
     # witnesses, output protocol and comparison from their checked authorities.
+    comparison = compare_runs(rows, root, selected, request['domain'])
+    attributed = all(len(attribution[side]) == 1 and attribution[side][0]['verified'] is True for side in SIDES)
     result = {'schemaVersion': SCHEMA, 'apiInputIdentity': inputs['apiInputIdentity'],
               'function': selected, 'caseCount': len(request['domain']['cases']),
               'objectConstructionContract': objects,
@@ -287,7 +301,10 @@ def derive(result_path):
               'assumptionSources': request['assumptionSources'],
               'artifacts': artifacts, 'executionEvidence': logs,
               'bodyLinkAttribution': attribution,
-              **compare_runs(rows, root, selected, request['domain']),
+              'bodyLinkAttributionComplete': attributed,
+              'linkAttributedObservationStatus': (comparison['processObservationStatus'] if attributed
+                   or comparison['processObservationStatus'] == 'failed' else 'inconclusive'),
+              **comparison,
               'compilerDeclarationWitnessesComplete': True,
               'sourceTargetInputRelation': 'same-finite-typed-values-and-object-alias-graph',
               'gaps': list(spec['gaps']), 'canonicalInstructionExecutionVerified': False,
@@ -297,6 +314,7 @@ def derive(result_path):
     return d.seal(result, 'apiExecutionIdentity')
 
 
+@measured('native_original_api.check')
 def check(path):
     value = d.read(path); checked(value, 'apiExecutionIdentity')
     if value != derive(path):

@@ -269,33 +269,19 @@ def _argv(link, output, replacements, search_directory=None):
 
 
 def attribution(candidate, library, mapfile):
-    from .native_link_attribution import sections, contributions
+    from .native_link_attribution import sections
+    from .native_link_ownership import definition, map_records
     raw = Path(candidate).read_bytes(); elf = parse(raw); table = sections(raw)
-    final = parse(Path(library).read_bytes())
-    mapped = contributions(Path(mapfile).read_text())
+    final_raw = Path(library).read_bytes(); final = parse(final_raw)
+    mapped = map_records(Path(mapfile).read_text())
+    if elf['elfType'] != 1 or final['elfType'] not in (2, 3) or elf['machine'] != final['machine']:
+        raise ValueError('LINK_ATTRIBUTION_ELF_ROLES_MISMATCH')
+    final_sections = sections(final_raw)
     rows = []
     for s in elf['staticSymbols']:
         if not s['name'] or not s['defined'] or s['binding'] == 0:
             continue
-        index = s['sectionIndex']; reason = None
-        supported = (s['binding'] == 1 and s['type'] in (1, 2) and s['size'] > 0
-                     and 0 < index < len(table) and table[index]['flags'] & 2
-                     and not table[index]['flags'] & 0x400)
-        owners = []; symbols = []
-        if not supported:
-            reason = 'DEFINITION_KIND_UNSUPPORTED'
-        else:
-            sec = table[index]
-            owners = [r for r in mapped if r['owner'] == str(candidate)
-                      and r['section'] == sec['name'] and r['size'] == sec['size']]
-            symbols = [x for x in final['staticSymbols'] if x['name'] == s['name'] and x['defined']
-                       and x['binding'] == 1 and x['type'] == s['type']]
-            if (len(owners) != 1 or len(symbols) != 1 or s['value']+s['size'] > sec['size']
-                    or symbols[0]['value'] != owners[0]['address']+s['value']
-                    or symbols[0]['size'] != s['size']):
-                reason = 'DEFINITION_CONTRIBUTION_AMBIGUOUS'
-        rows.append({'symbol': s, 'inputContributions': owners, 'finalSymbols': symbols,
-                     'verified': reason is None, 'reason': reason})
+        rows.append({'symbol': s, **definition(s, candidate, table, final, final_sections, mapped)})
     return {'definitions': rows, 'candidateDefinitionAttributionVerified': bool(rows) and all(r['verified'] for r in rows),
             'scope': 'gnu-bfd-explicit-object-input-contributions-not-runtime-binding'}
 

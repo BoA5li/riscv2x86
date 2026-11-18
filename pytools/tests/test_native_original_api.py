@@ -111,6 +111,44 @@ def test_eight_argument_object_execution_and_independent_check(native_pair):
     assert command[1] == builds['target'].replace('build.json', 'body.o')
 
 
+def test_process_agreement_cannot_hide_missing_function_ownership(native_pair, monkeypatch):
+    spec, request, builds, root, _ = native_pair
+    monkeypatch.setattr(d, 'attribution', lambda *args: {'definitions': []})
+    value = a.acquire(spec, request, root / 'unattributed', builds=builds)
+    assert value['processObservationStatus'] == 'observed-agreement'
+    assert not value['bodyLinkAttributionComplete']
+    assert value['linkAttributedObservationStatus'] == 'inconclusive'
+    assert not value['semanticApproval']
+
+
+def test_cached_and_uncached_api_rechecks_agree_and_changed_logs_reject(native_pair):
+    spec, request, builds, root, _ = native_pair; out = root / 'execution'
+    a.acquire(spec, request, out, builds=builds)
+    with session(256 * 1024 * 1024): cached = a.check(out / 'result.json')
+    with session(0): uncached = a.check(out / 'result.json')
+    assert cached == uncached
+    log = out / 'run-source/stdout.log'; before = log.stat(); raw = log.read_bytes()
+    log.write_bytes(raw.replace(b'31', b'32')); os.utime(log, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with session(256 * 1024 * 1024):
+        with pytest.raises(ValueError): a.check(out / 'result.json')
+
+
+def test_consumer_rejects_input_reference_swap_after_inner_check(native_pair, monkeypatch):
+    from riscv2x86_py.native_api_evidence import inspect_with_result
+    spec, request, builds, root, _ = native_pair; out = root / 'execution'
+    a.acquire(spec, request, out, builds=builds)
+    original = a.check
+    def swapped(path):
+        value = original(path)
+        other = root / 'unvalidated-project.json'; p.write(other, {'unvalidated': True})
+        inputs = d.read(out / 'inputs.json'); inputs['spec'] = d.snapshot(other)
+        p.write(out / 'inputs.json', inputs)
+        return value
+    monkeypatch.setattr(a, 'check', swapped)
+    with pytest.raises(ValueError, match='DEPLOYMENT_INPUT_CHANGED'):
+        inspect_with_result(out / 'result.json')
+
+
 @pytest.mark.parametrize('change', ['driver', 'command', 'approval', 'log', 'source'])
 def test_independent_check_rejects_tampering_even_with_resealed_outer_result(native_pair, change):
     spec, request, builds, root, _ = native_pair

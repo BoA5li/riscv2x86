@@ -26,7 +26,8 @@ def sections(raw):
     result = []
     for row in rows:
         end = table.index(b'\0', row[0])
-        result.append({'name': table[row[0]:end].decode('utf-8'), 'flags': row[2], 'size': row[5]})
+        result.append({'name': table[row[0]:end].decode('utf-8'), 'flags': row[2], 'size': row[5],
+                       'type': row[1], 'address': row[3], 'offset': row[4]})
     return result
 
 
@@ -74,7 +75,9 @@ def derive(value, directory):
     if program != value['outputElf']:
         raise ValueError('LINK_ATTRIBUTION_OUTPUT_CHANGED')
     elf = parse(raw);table = sections(raw)
-    mapped = contributions((root/'link.map').read_text())
+    from .native_link_ownership import definition, map_records
+    mapped = map_records((root/'link.map').read_text())
+    final_sections = sections((root/'program').read_bytes())
     stderr = (root/'link.stderr').read_text().splitlines()
     results = [];blockers = []
     for symbol in elf['staticSymbols']:
@@ -87,21 +90,16 @@ def derive(value, directory):
             reason = 'CANDIDATE_DEFINITION_KIND_UNSUPPORTED'
         else:
             section = table[index]
-            own = [r for r in mapped if r['owner'] == str(obj) and
-                   r['section'] == section['name'] and r['size'] == section['size']]
-            final = [s for s in program['staticSymbols'] if s['name'] == name and s['defined']
-                     and s['binding'] == 1 and s['type'] == symbol['type']]
+            ownership = definition(symbol, obj, table, program, final_sections, mapped)
+            own = ownership['inputContributions']; final = ownership['finalSymbols']
             trace = [line for line in stderr if line.endswith(': definition of '+name)]
             exact_trace = [line for line in trace if line == str(obj)+': definition of '+name
                            or line.endswith(': '+str(obj)+': definition of '+name)]
-            if len(own) != 1 or len(final) != 1 or len(trace) != 1 or len(exact_trace) != 1:
+            if not ownership['verified'] or len(trace) != 1 or len(exact_trace) != 1:
                 reason = 'CANDIDATE_DEFINITION_ATTRIBUTION_AMBIGUOUS'
-            elif (symbol['value']+symbol['size'] > section['size'] or
-                  final[0]['value'] != own[0]['address']+symbol['value'] or
-                  final[0]['size'] != symbol['size']):
-                reason = 'CANDIDATE_DEFINITION_ADDRESS_OR_SIZE_MISMATCH'
         row = {'name': name, 'sourceSectionIndex': index, 'objectDigest': digest(obj),
-               'linkTimeDefinitionAttributed': reason is None}
+               'linkTimeDefinitionAttributed': reason is None,
+               'instructionCorrespondenceVerified': False, 'functionExtentVerified': False}
         if reason:
             blockers.append({'symbol': name, 'reason': reason})
         else:

@@ -20,8 +20,14 @@ def test_observation_does_not_discharge_preconditions_or_erase_final_requirement
     assert len(value['obligations']) == len(spec['gaps'])
     for reason in ('PROGRAM_L2_AUTHORITY_REQUIRED', 'INDEPENDENT_PROGRAM_AUDIT_REQUIRED'):
         assert reason not in value['l1ReasonCodes']
-        assert any(r['reasonCode'] == reason and r['status'] == 'evidence-production-required'
-                   for r in value['obligations'])
+        row = next(r for r in value['obligations'] if r['reasonCode'] == reason)
+        # Assessment consumes the registered claim graph's status vocabulary.
+        # The older evidence-production-required spelling belongs to the plan
+        # producer, not this consumer. Missing full proofs must still be named.
+        assert row['status'] == 'producer-required'
+        assert row['checkedSubclaims'] == [] and row['missingProofFacts']
+        consumed = next(r for r in value['claimConsumption']['obligations'] if r['reasonCode'] == reason)
+        assert not consumed['fullObligationDischarged']
     assert not value['programRequirementsComplete']
 
 

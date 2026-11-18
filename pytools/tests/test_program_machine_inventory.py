@@ -89,6 +89,25 @@ def test_symbol_metadata_is_unique_and_region_is_bounded(binary):
     with pytest.raises(ValueError, match='ELF64_LE_REQUIRED'): m.derive(b'not-elf', 'absent')
 
 
+def test_stale_rv_symbol_size_cannot_hide_a_direct_branch_target():
+    # beq zero,zero,+6; c.nop; c.ret. Deliberately stale symbol extent = 4.
+    raw = bytearray(rv_elf(bytes.fromhex('6303000001008280')))
+    shoff = struct.unpack_from('<Q', raw, 40)[0]
+    symoff = struct.unpack_from('<Q', raw, shoff + 2 * 64 + 24)[0]
+    struct.pack_into('<Q', raw, symoff + 24 + 16, 4)
+    row = m.derive(bytes(raw), 'rv')
+    assert row['linearByteDecodeComplete']  # separate subclaim
+    assert row['declaredFunctionBoundaryContradicted']
+    assert any(g['reasonCode'] == 'MACHINE_FUNCTION_BOUNDARY_CONTRADICTED' for g in row['gaps'])
+    assert not row['functionExtentVerified'] and not row['controlFlowGraphVerified']
+
+
+def test_direct_branch_into_the_middle_of_an_instruction_rejects_boundary():
+    row = m.derive(rv_elf(bytes.fromhex('63030000130515008280')), 'rv')
+    assert row['declaredFunctionBoundaryContradicted']
+    assert row['directBranchBoundaryObservations'][0]['disposition'] == 'not-an-instruction-boundary'
+
+
 @pytest.fixture
 def machine_project(toy_project, monkeypatch):
     root, _, spec, programs = toy_project

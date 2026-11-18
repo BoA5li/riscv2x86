@@ -15,6 +15,7 @@ from .native_external_providers import checked
 from .native_original_corpus import lock
 from .native_verifier_manifest import current, compare
 from .project_acquisition import publish_checked
+from .verification_session import measured
 
 PLAN = 'riscv2x86.original-api-campaign-plan.v1'
 RESULT = 'riscv2x86.original-api-campaign-result.v1'
@@ -43,17 +44,25 @@ def check_plan(path):
 
 def request_matches(spec, request_path, plan):
     _, request, selected, _, _ = api.request_context(spec, request_path)
+    _request_matches(request, selected, plan)
+
+
+def _request_matches(request, selected, plan):
     if (selected['functionAstPath'] != plan['functionAstPath']
             or request['domain'] != d.read(plan['domain']['path'])
             or request['assumptionSources'] != plan['assumptionSources']):
         raise ValueError('API_CAMPAIGN_REQUEST_MISMATCH')
 
 
+@measured('native_api_campaign.derive')
 def derive(root, result_ref):
     root = Path(root).resolve(); plan = check_plan(root / 'plan.json')
     spec, _, applicability = api.from_progress(root / 'diagnostic/progress.json', with_applicability=True)
-    request_matches(spec, root / 'request.json', plan)
-    d.verify_snapshot(result_ref); value = api.check(result_ref['path'])
+    d.verify_snapshot(result_ref)
+    consumption, value = evidence.inspect_with_result(result_ref['path'])
+    # The API checker just validated this request and selection against its
+    # recorded input snapshots; compare policy without traversing that DAG again.
+    _request_matches(d.read(root / 'request.json'), value['function'], plan)
     attempt = Path(result_ref['path']).parent
     if attempt.parent != root / 'attempts' or not attempt.name.isdecimal():
         raise ValueError('API_CAMPAIGN_RESULT_LOCATION_INVALID')
@@ -62,18 +71,43 @@ def derive(root, result_ref):
         raise ValueError('API_CAMPAIGN_EXECUTION_BINDING_MISMATCH')
     from .program_validation_obligations import original_layer_readiness
     readiness = original_layer_readiness(d.read(spec))
-    consumption = evidence.inspect(result_ref['path'])
     body = {'schemaVersion': RESULT, 'plan': d.snapshot(root / 'plan.json'), 'result': result_ref,
             'request': d.snapshot(root / 'request.json'),
             'completedStages': ['original-preparation-and-audit', 'input-contract', 'api-execution', 'independent-check'],
             'caseCount': value['caseCount'], 'processObservationStatus': value['processObservationStatus'],
+            'bodyLinkAttributionComplete': value['bodyLinkAttributionComplete'],
+            'linkAttributedObservationStatus': value['linkAttributedObservationStatus'],
             'instanceApplicability': applicability,
             'evidenceConsumption': consumption, 'originalLayerReadiness': readiness,
             'formalMatrixCellsExecuted': 0, 'formalValidationPerformed': False,
             'semanticApproval': False, 'productionAcceptanceComplete': False,
             'scope': 'finite-api-campaign-not-complete-L0-L1-L2-L3'}
     check_plan(root / 'plan.json')
+    d.verify_snapshot(result_ref)
     return d.seal(body, 'apiCampaignIdentity')
+
+
+def replay(previous_result, output):
+    """Use old campaign inputs as selectors, never as current evidence.
+
+    A fresh output, current verifier, original preparation/translation/audit,
+    link commands and execution are mandatory. Old success flags are ignored.
+    """
+    reference = d.snapshot(previous_result)
+    previous = d.read(reference['path']); checked(previous, 'apiCampaignIdentity')
+    if previous.get('schemaVersion') != RESULT:
+        raise ValueError('API_REPLAY_PREVIOUS_CAMPAIGN_REQUIRED')
+    d.verify_snapshot(previous['plan'])
+    plan = d.read(previous['plan']['path']); checked(plan, 'apiCampaignPlanIdentity')
+    if plan.get('schemaVersion') != PLAN:
+        raise ValueError('API_REPLAY_PREVIOUS_PLAN_REQUIRED')
+    # No old verifier authority is carried into the new campaign. Nevertheless
+    # require the original selector files to remain exactly those recorded.
+    for row in (plan['configuration'], plan['domain'], *plan['assumptionSources']):
+        d.verify_snapshot(row)
+    d.verify_snapshot(reference)
+    return execute(plan['configuration']['path'], plan['domain']['path'], plan['functionAstPath'],
+                   [r['path'] for r in plan['assumptionSources']], output)
 
 
 def check(path):

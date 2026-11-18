@@ -93,11 +93,38 @@ def derive(raw, symbol):
             if op['opcode'] in ('LOAD', 'STORE'): memory.append(ref)
             if op['opcode'] in ('CALL', 'CALLIND', 'BRANCH', 'CBRANCH', 'BRANCHIND', 'RETURN', 'CALLOTHER'):
                 control.append(ref)
+    # A positive linear decode does not validate the symbol's extent. In
+    # particular, some linked RV symbols retain stale st_size after relaxation.
+    # Do not silently extend to the next symbol or truncate a branch target.
+    starts = {r['address'] for r in rows}; transfers = []
+    other_entries = {s['value'] for s in elf['staticSymbols'] if s['defined'] and s['type'] == 2
+                     and s['value'] != address}
+    for op in control:
+        if op['opcode'] not in ('BRANCH', 'CBRANCH') or not op['inputs']: continue
+        target = op['inputs'][0]
+        if target.get('space') != 'ram': continue  # p-code-local const branches are not machine addresses
+        dest = target['offset']; kind = 'within-decoded-symbol'
+        if dest not in starts:
+            if address <= dest < address + len(code):
+                kind = 'not-an-instruction-boundary'
+            elif op['opcode'] == 'BRANCH' and dest in other_entries:
+                kind = 'external-function-entry-not-a-proved-tail-call'
+            else:
+                kind = 'outside-declared-function'
+            if kind != 'external-function-entry-not-a-proved-tail-call':
+                gaps.append({'reasonCode': 'MACHINE_FUNCTION_BOUNDARY_CONTRADICTED',
+                             'instructionAddress': op['instructionAddress'], 'targetAddress': dest,
+                             'disposition': kind})
+        transfers.append({'instructionAddress': op['instructionAddress'], 'targetAddress': dest,
+                          'disposition': kind})
     return {'functionSymbol': symbol, 'machine': elf['machine'], 'language': LANGUAGES[elf['machine']],
             'virtualAddress': address, 'byteSize': len(code), 'codeDigest': d.identity(code.hex()),
             'decodedByteCount': cursor, 'linearByteDecodeComplete': cursor == len(code),
             'instructions': rows, 'opcodeCounts': dict(sorted(counts.items())),
             'memoryOperations': memory, 'controlOperations': control,
+            'directBranchBoundaryObservations': transfers,
+            'declaredFunctionBoundaryContradicted': any(g['reasonCode'] == 'MACHINE_FUNCTION_BOUNDARY_CONTRADICTED' for g in gaps),
+            'functionExtentVerified': False,
             'relocations': [r for r in elf['relocations'] if address <= r['offset'] < address + len(code)],
             'gaps': gaps, 'controlFlowGraphVerified': False, 'machineAbiClosureVerified': False,
             'legalObjectDomainVerified': False, 'candidateInstructionExecutionCoverageVerified': False,
@@ -139,6 +166,7 @@ def project_facts(spec_path, builds):
                         row['facts'] = derive(raw, symbol)
                         if not row['facts']['linearByteDecodeComplete']:
                             row['reasonCodes'].append('MACHINE_LINEAR_DECODE_INCOMPLETE')
+                        row['reasonCodes'].extend(sorted({g['reasonCode'] for g in row['facts']['gaps']}))
                         if machine not in decoders: decoders[machine] = decoder(machine)
                     except ValueError as exc:
                         row['reasonCodes'].append(str(exc))

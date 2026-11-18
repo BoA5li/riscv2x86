@@ -65,11 +65,14 @@ def main(argv=None):
     api_full.add_argument('--assumption-source', action='append', required=True)
     api_full.add_argument('--output', required=True)
     api_full.add_argument('--resume', action='store_true')
+    api_replay = sub.add_parser('api-replay', help='rerun old campaign inputs under the current verifier in a fresh output')
+    api_replay.add_argument('--previous-result', required=True)
+    api_replay.add_argument('--output', required=True)
     for command in (api_inspect, api_run, api_request):
         origin = command.add_mutually_exclusive_group(required=True)
         origin.add_argument('--spec', help='checked original-project-evaluation contract')
         origin.add_argument('--progress', help='checked diagnostic progress; discover project and reuse existing builds')
-    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full):
+    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay):
         command.add_argument('--profile-output', help='new diagnostic JSON file outside the evidence output directory')
         command.add_argument('--verification-cache-mib', type=int, default=256,
                              help='operation-local pure-derivation budget; 0 disables reuse')
@@ -100,11 +103,15 @@ def main(argv=None):
 
 def execute(args):
     try:
+        if args.operation == 'api-replay':
+            value = api_campaign.replay(args.previous_result, args.output)
+            print(json.dumps(value))
+            return 0 if value['linkAttributedObservationStatus'] == 'observed-agreement' else 1
         if args.operation == 'api-campaign':
             value = api_campaign.execute(args.configuration, args.domain, json.loads(args.function_ast_path),
                                          args.assumption_source, args.output, resume=args.resume)
             print(json.dumps(value))
-            return 0 if value['processObservationStatus'] == 'observed-agreement' else 1
+            return 0 if value['linkAttributedObservationStatus'] == 'observed-agreement' else 1
         if args.operation == 'api-request':
             spec = original_api.from_progress(args.progress)[0] if args.progress else args.spec
             value = original_api.create_request(spec, args.domain, json.loads(args.function_ast_path),
@@ -122,7 +129,7 @@ def execute(args):
                            if getattr(args, s + '_build')})
             value = original_api.acquire(spec, args.request, args.output, builds=builds)
             print(json.dumps(value))
-            return 0 if value['processObservationStatus'] == 'observed-agreement' else 1
+            return 0 if value['linkAttributedObservationStatus'] == 'observed-agreement' else 1
         if args.operation == 'replan':
             mode, plan, reference = campaign.replan_configuration(args.configuration)
             if mode == 'diagnostic':

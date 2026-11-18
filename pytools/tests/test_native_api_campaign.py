@@ -74,3 +74,30 @@ def test_resealed_program_approval_or_wrong_result_cannot_pass_independent_check
     value['semanticApproval'] = True
     a.project.write(out / 'result.json', a.d.seal({k: v for k, v in value.items() if k != 'apiCampaignIdentity'}, 'apiCampaignIdentity'))
     with pytest.raises(ValueError, match='REDERIVATION'): c.check(out / 'result.json')
+
+
+def test_one_campaign_derivation_checks_inner_result_once(api_campaign, monkeypatch):
+    config, dom, basis, root, _ = api_campaign; out = root / 'campaign'
+    result = c.execute(config, dom, [0], [basis], out)
+    calls = []; original = a.check
+    def checked(path):
+        calls.append(str(path)); return original(path)
+    monkeypatch.setattr(a, 'check', checked)
+    assert c.derive(out, result['result']) == result
+    assert calls == [result['result']['path']]
+    # Independent invocations recheck; nothing is cached as a validity flag.
+    assert c.derive(out, result['result']) == result
+    assert len(calls) == 2
+
+
+def test_replay_uses_original_pipeline_in_fresh_output_and_rejects_changed_selectors(api_campaign):
+    config, dom, basis, root, calls = api_campaign; old = root / 'old'
+    c.execute(config, dom, [0], [basis], old)
+    value = c.replay(old / 'result.json', root / 'new')
+    assert len(calls) == 2
+    assert value['bodyLinkAttributionComplete'] and value['linkAttributedObservationStatus'] == 'observed-agreement'
+    assert value['result']['path'].startswith(str(root / 'new'))
+    assert not value['semanticApproval']
+    data = a.d.read(dom); data['cases'][0]['arguments'][1]['integer'] = 7; a.project.write(dom, data)
+    with pytest.raises(ValueError, match='INPUT_CHANGED'): c.replay(old / 'result.json', root / 'changed')
+    assert not (root / 'changed').exists()
