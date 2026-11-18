@@ -8,6 +8,7 @@ import re
 from .project_build_records import identity
 
 SCHEMA='riscv2x86.native-api-domain.v1'
+SCHEMA_V2='riscv2x86.native-api-domain.v2'
 IDENT=re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 MAX_ELEMENTS=65536
 BASE={
@@ -113,11 +114,26 @@ def integer(value,typ):
 
 
 def expression(node,arguments,objects,*,depth=0):
+    """Bounded mathematical contract expressions, never guessed C semantics.
+
+    Checked storage types come from compiler declarations. Arithmetic here is
+    mathematical and bounded; fitsSigned/fitsUnsigned explicitly constrain C
+    intermediates where the source contract requires that relation.
+    """
     if depth>16:raise ValueError('API_PRECONDITION_DEPTH_EXCEEDED')
     if not isinstance(node,dict) or len(node)!=1:raise ValueError('API_PRECONDITION_INVALID')
     op,value=next(iter(node.items()))
+    def evaluate(n):return expression(n,arguments,objects,depth=depth+1)
+    def pointer(index):
+        if type(index) is not int or not 0<=index<len(arguments):
+            raise ValueError('API_PRECONDITION_PARAMETER_INVALID')
+        arg=arguments[index]
+        if set(arg)!={'object','offsetElements'} or arg['object'] not in objects:
+            raise ValueError('API_PRECONDITION_POINTER_REQUIRED')
+        return arg,objects[arg['object']]
     if op=='constant':
-        if type(value) is not int or abs(value)>2**63:raise ValueError('API_PRECONDITION_CONSTANT_INVALID')
+        if type(value) is not int or not -(2**63)<=value<=2**64-1:
+            raise ValueError('API_PRECONDITION_CONSTANT_INVALID')
         return value
     if op in ('argument','remainingElements'):
         if type(value) is not int or not 0<=value<len(arguments):raise ValueError('API_PRECONDITION_PARAMETER_INVALID')
@@ -125,46 +141,75 @@ def expression(node,arguments,objects,*,depth=0):
         if op=='argument':
             if set(arg)!={'integer'}:raise ValueError('API_PRECONDITION_INTEGER_REQUIRED')
             return arg['integer']
-        if set(arg)!={'object','offsetElements'}:raise ValueError('API_PRECONDITION_POINTER_REQUIRED')
-        return len(objects[arg['object']]['values'])-arg['offsetElements']
+        arg,obj=pointer(value)
+        return len(obj['values'])-arg['offsetElements']
+    if op=='element':
+        if not isinstance(value,list) or len(value)!=2:raise ValueError('API_ELEMENT_FIELDS_INVALID')
+        arg,obj=pointer(value[0]);index=evaluate(value[1])
+        if type(index) is not int or not 0<=index<len(obj['values'])-arg['offsetElements']:
+            raise ValueError('API_ELEMENT_OUTSIDE_OBJECT')
+        return obj['values'][arg['offsetElements']+index]
+    if op in ('all','any','not'):
+        if not isinstance(value,list) or not 1<=len(value)<=64 or (op=='not' and len(value)!=1):
+            raise ValueError('API_BOOLEAN_ARITY_INVALID')
+        values=[evaluate(n) for n in value]
+        if any(type(v) is not bool for v in values):raise ValueError('API_BOOLEAN_OPERANDS_REQUIRED')
+        return all(values) if op=='all' else any(values) if op=='any' else not values[0]
     if op in ('sameObject','disjoint','aligned'):
         arity=4 if op=='disjoint' else 2
         if not isinstance(value,list) or len(value)!=arity:raise ValueError('API_POINTER_PREDICATE_ARITY_INVALID')
-        def pointer(index):
-            if type(index) is not int or not 0<=index<len(arguments) or set(arguments[index])!={'object','offsetElements'}:
-                raise ValueError('API_POINTER_PREDICATE_PARAMETER_INVALID')
-            return arguments[index]
-        a=pointer(value[0])
+        a,obj=pointer(value[0])
         if op=='aligned':
-            alignment=value[1];obj=objects[a['object']]
+            alignment=value[1]
             if type(alignment) is not int or not 1<=alignment<=4096 or alignment&(alignment-1):
                 raise ValueError('API_POINTER_ALIGNMENT_INVALID')
             return obj['alignment']%alignment==0 and (a['offsetElements']*(obj['type']['bits']//8))%alignment==0
-        b=pointer(value[1])
+        b,_=pointer(value[1])
         if op=='sameObject':return a['object']==b['object']
-        lengths=[expression(v,arguments,objects,depth=depth+1) for v in value[2:]]
+        lengths=[evaluate(v) for v in value[2:]]
         for arg,length in zip((a,b),lengths):
             if type(length) is not int or not 0<=length<=len(objects[arg['object']]['values'])-arg['offsetElements']:
                 raise ValueError('API_POINTER_SPAN_OUTSIDE_OBJECT')
         return (a['object']!=b['object'] or a['offsetElements']+lengths[0]<=b['offsetElements']
                 or b['offsetElements']+lengths[1]<=a['offsetElements'])
-    if op not in ('add','multiply','eq','ne','lt','le','gt','ge') or not isinstance(value,list) or len(value)!=2:
+    binary={'add','subtract','multiply','eq','ne','lt','le','gt','ge','max','min',
+            'ceilDivide','modulo','bitAnd','shiftLeft','fitsSigned','fitsUnsigned'}
+    if op not in binary or not isinstance(value,list) or len(value)!=2:
         raise ValueError('API_PRECONDITION_OPERATOR_UNSUPPORTED')
-    a,b=[expression(n,arguments,objects,depth=depth+1) for n in value]
+    a,b=[evaluate(n) for n in value]
     if type(a) is not int or type(b) is not int:raise ValueError('API_PRECONDITION_INTEGER_OPERANDS_REQUIRED')
-    result={'add':lambda:a+b,'multiply':lambda:a*b,'eq':lambda:a==b,'ne':lambda:a!=b,
-            'lt':lambda:a<b,'le':lambda:a<=b,'gt':lambda:a>b,'ge':lambda:a>=b}[op]()
+    if op in ('fitsSigned','fitsUnsigned'):
+        if not 1<=a<=64:raise ValueError('API_INTEGER_WIDTH_INVALID')
+        return (-(1<<(a-1))<=b<(1<<(a-1))) if op=='fitsSigned' else 0<=b<(1<<a)
+    if op in ('ceilDivide','modulo') and (a<0 or b<=0):
+        raise ValueError('API_NONNEGATIVE_DIVISION_DOMAIN_REQUIRED')
+    if op=='bitAnd' and not (0<=a<2**64 and 0<=b<2**64):
+        raise ValueError('API_UNSIGNED_BIT_OPERANDS_REQUIRED')
+    if op=='shiftLeft' and not (a>=0 and 0<=b<=63):
+        raise ValueError('API_SHIFT_DOMAIN_INVALID')
+    operations={'add':lambda:a+b,'subtract':lambda:a-b,'multiply':lambda:a*b,
+        'eq':lambda:a==b,'ne':lambda:a!=b,'lt':lambda:a<b,'le':lambda:a<=b,
+        'gt':lambda:a>b,'ge':lambda:a>=b,'max':lambda:max(a,b),'min':lambda:min(a,b),
+        'ceilDivide':lambda:a//b+int(a%b!=0),'modulo':lambda:a%b,
+        'bitAnd':lambda:a&b,'shiftLeft':lambda:a<<b}
+    result=operations[op]()
     if type(result) is int and abs(result)>2**127:raise ValueError('API_PRECONDITION_ARITHMETIC_BUDGET_EXCEEDED')
     return result
 
 
 def validate(domain,interface):
-    fields(domain,('schemaVersion','cases','preconditions','claimScope'),'API_DOMAIN')
-    if (domain['schemaVersion']!=SCHEMA or domain['claimScope']!='bounded-api-under-declared-preconditions'
+    version=domain.get('schemaVersion') if isinstance(domain,dict) else None
+    names=('schemaVersion','cases','preconditions','claimScope')
+    fields(domain,(*names,'sourceDigest','regions') if version==SCHEMA_V2 else names,'API_DOMAIN')
+    if (domain['schemaVersion'] not in (SCHEMA,SCHEMA_V2) or domain['claimScope']!='bounded-api-under-declared-preconditions'
             or not isinstance(domain['cases'],list) or not 1<=len(domain['cases'])<=256
             or not isinstance(domain['preconditions'],list) or len(domain['preconditions'])>64):
         raise ValueError('API_DOMAIN_INVALID')
     budget=[0];pending=list(domain['preconditions'])
+    if version==SCHEMA_V2 and isinstance(domain['regions'],list):
+        for row in domain['regions']:
+            if isinstance(row,dict):
+                pending.extend(row.get(k) for k in ('offsetElements','lengthElements'))
     while pending:
         node=pending.pop();budget[0]+=1
         if budget[0]>1024:raise ValueError('API_PRECONDITION_NODE_BUDGET_EXCEEDED')
@@ -204,7 +249,11 @@ def validate(domain,interface):
                     raise ValueError('API_POINTER_OBJECT_TYPE_OR_BOUNDS_INVALID')
         for condition in domain['preconditions']:
             if expression(condition,args,objects) is not True:raise ValueError('API_DECLARED_PRECONDITION_NOT_SATISFIED')
-        cases.append({'arguments':args,'objects':objects})
+        case={'arguments':args,'objects':objects}
+        if version==SCHEMA_V2:
+            from .native_api_projection import regions
+            case['regions']=regions(domain,interface,case)
+        cases.append(case)
     return cases
 
 
@@ -233,9 +282,15 @@ def harness(name,interface,domain):
         call=f'{name}('+','.join(args)+')'
         if result['kind']=='void':lines.append(call+';')
         else:lines.append(f'{ret} result = {call}; printf("case:{index}:return:%llu\\n",(unsigned long long)result);')
-        for i,(oid,obj) in enumerate(case['objects'].items()):
-            # Print typed integer values, not padding or host-endian encodings.
-            lines.append(f'for(unsigned long j=0;j<{len(obj["values"])};j++) printf("case:{index}:object:{i}:%lu:%llu\\n",j,(unsigned long long){names[oid]}[j]);')
+        if 'regions' in case:
+            for region in case['regions']:
+                if region['mode']=='scratch':continue
+                i=region['objectIndex'];oid=region['object'];start=region['start'];stop=start+region['length']
+                lines.append(f'for(unsigned long j={start};j<{stop};j++) printf("case:{index}:object:{i}:%lu:%llu\\n",j,(unsigned long long){names[oid]}[j]);')
+        else:
+            for i,(oid,obj) in enumerate(case['objects'].items()):
+                # Legacy domains deliberately retain full-object comparison.
+                lines.append(f'for(unsigned long j=0;j<{len(obj["values"])};j++) printf("case:{index}:object:{i}:%lu:%llu\\n",j,(unsigned long long){names[oid]}[j]);')
         lines.append(f'puts("case:{index}:complete:1");')
         lines.append('}')
     lines.extend(['return 0;','}'])
@@ -277,6 +332,9 @@ def abi_layout(interface,profile):
 
 def output_protocol(raw,interface,domain):
     """Require every planned case/result/object element, not two empty logs."""
+    if domain.get('schemaVersion')==SCHEMA_V2:
+        from .native_api_projection import inspect_output
+        return inspect_output(raw,interface,domain)['protocolComplete']
     cases=validate(domain,interface);labels=[]
     for index,case in enumerate(cases):
         if interface['return']['kind']!='void':labels.append(f'case:{index}:return:')

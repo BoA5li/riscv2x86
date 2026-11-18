@@ -261,6 +261,8 @@ def read_domain(path,report,declaration):
             or wrapper['contractEvidenceIdentity']!=report['contractEvidenceIdentity']
             or wrapper['functionEvidenceIdentity']!=declaration['functionEvidenceIdentity']):
         raise ValueError('API_DOMAIN_FUNCTION_OR_CONTRACT_BINDING_MISMATCH')
+    if wrapper['domain'].get('schemaVersion')==api.SCHEMA_V2:
+        raise ValueError('API_V2_REQUIRES_ORIGINAL_PROJECT_BINDING')
     return wrapper['domain']
 
 

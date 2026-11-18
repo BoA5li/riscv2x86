@@ -27,7 +27,7 @@ MODEL = {'__CHAR_BIT__': '8', '__SIZEOF_POINTER__': '8', '__SIZEOF_SHORT__': '2'
          '__SIZEOF_INT__': '4', '__SIZEOF_LONG__': '8', '__SIZEOF_LONG_LONG__': '8'}
 
 
-def from_progress(path):
+def from_progress(path, *, with_applicability=False):
     """Consume the existing diagnostic checker, including all upstream joins.
 
     The returned build references may be reused only after build_record checks
@@ -40,6 +40,14 @@ def from_progress(path):
     builds = {side: str(Path(row['program']['path']).parent /
                        (Path(row['program']['path']).name + '.project/result.json'))
               for side, row in ctx.builds.items()}
+    if with_applicability:
+        ref = ctx.prefix['checkpoints']['applicability']
+        d.verify_snapshot(ref)
+        applicability = d.read(ref['path'])
+        if applicability['project'] != d.snapshot(ctx.spec_path):
+            raise ValueError('ORIGINAL_API_APPLICABILITY_PROJECT_MISMATCH')
+        d.verify_snapshot(ref)
+        return str(ctx.spec_path), builds, applicability['facts']
     return str(ctx.spec_path), builds
 
 
@@ -86,7 +94,7 @@ def inspect(spec_path):
     spec, selections, unsupported = context(spec_path)
     return {'projectEvaluationIdentity': spec['projectEvaluationIdentity'],
             'functions': selections, 'unsupportedFunctions': unsupported,
-            'requestSchema': REQUEST, 'domainSchema': api.SCHEMA,
+            'requestSchema': REQUEST, 'domainSchema': api.SCHEMA, 'supportedDomainSchemas': [api.SCHEMA, api.SCHEMA_V2],
             'requestRequiredFields': ['schemaVersion', 'projectEvaluationIdentity', 'functionBindingIdentity',
                                       'domain', 'assumptionSources'],
             'inputPolicy': 'explicit-finite-cases-with-object-values-and-declared-preconditions',
@@ -102,6 +110,9 @@ def request_context(spec_path, request_path):
         raise ValueError('ORIGINAL_API_REQUEST_PROJECT_MISMATCH')
     selected = project.unique([f for f in selections if f['functionBindingIdentity'] == request['functionBindingIdentity']],
                               'ORIGINAL_API_DECLARATION_BINDING_MISMATCH')
+    if (request['domain'].get('schemaVersion')==api.SCHEMA_V2
+            and request['domain'].get('sourceDigest')!=selected['sourceDigest']):
+        raise ValueError('ORIGINAL_API_DOMAIN_SOURCE_MISMATCH')
     sources = request['assumptionSources']
     if not isinstance(sources, list) or not sources:
         raise ValueError('ORIGINAL_API_PRECONDITION_SOURCES_REQUIRED')
@@ -120,6 +131,8 @@ def create_request(spec_path, domain_path, function_path, assumption_sources, ou
     selected = project.unique([f for f in functions if f['functionAstPath'] == function_path],
                               'ORIGINAL_API_FUNCTION_SELECTION_REQUIRED')
     # The exact original API contract validator owns domain legality checks.
+    if domain.get('schemaVersion')==api.SCHEMA_V2 and domain.get('sourceDigest')!=selected['sourceDigest']:
+        raise ValueError('ORIGINAL_API_DOMAIN_SOURCE_MISMATCH')
     api.validate(domain, selected['interface'])
     refs = [d.snapshot(p) for p in assumption_sources]
     if not refs: raise ValueError('ORIGINAL_API_PRECONDITION_SOURCES_REQUIRED')
@@ -202,20 +215,25 @@ def current_builds(spec, inputs):
 
 def compare_runs(rows, root, selected, domain):
     """Original comparator plus mandatory per-case/object completion protocol."""
-    observations = {}; protocols = {}; returns = {}; failures = {}
+    observations = {}; protocols = {}; returns = {}; failures = {}; preservation = {}
     for side in SIDES:
         row = rows['run-' + side]; folder = Path(root) / ('run-' + side)
         stdout = (folder / 'stdout.log').read_bytes(); stderr = (folder / 'stderr.log').read_bytes()
         protocols[side] = api.output_protocol(stdout, selected['interface'], domain)
+        if domain.get('schemaVersion')==api.SCHEMA_V2:
+            from .native_api_projection import inspect_output
+            preservation[side] = inspect_output(stdout, selected['interface'], domain)['preservationViolations']
+        else: preservation[side] = []
         returns[side] = row['returnCode']; failures[side] = row['failureReason']
         observations[side] = ProcessObservation(HarnessObservation(None, (), (), (), ()), row['returnCode'],
             base64.b64encode(stdout).decode(), base64.b64encode(stderr).decode(), ())
     mismatches = list(compare_l1_observations(observations['source'], observations['target'],
                                            ComparisonContract(False, True, True, True, False, (), (), (), ())))
-    status = ('failed' if any(failures.values()) or any(code != 0 for code in returns.values()) or mismatches
+    status = ('failed' if any(failures.values()) or any(code != 0 for code in returns.values()) or mismatches or any(preservation.values())
               else 'inconclusive' if not all(protocols.values()) else 'observed-agreement')
     return {'processObservationStatus': status, 'mismatches': mismatches, 'protocolComplete': protocols,
-            'returnCodes': returns, 'executionFailures': failures}
+            'returnCodes': returns, 'executionFailures': failures,
+            'preservationViolations': preservation}
 
 
 def derive(result_path):
@@ -264,7 +282,9 @@ def derive(result_path):
     # witnesses, output protocol and comparison from their checked authorities.
     result = {'schemaVersion': SCHEMA, 'apiInputIdentity': inputs['apiInputIdentity'],
               'function': selected, 'caseCount': len(request['domain']['cases']),
-              'objectConstructionContract': objects, 'assumptionSources': request['assumptionSources'],
+              'objectConstructionContract': objects,
+              'regionProjection': [c.get('regions') for c in api.validate(request['domain'], selected['interface'])],
+              'assumptionSources': request['assumptionSources'],
               'artifacts': artifacts, 'executionEvidence': logs,
               'bodyLinkAttribution': attribution,
               **compare_runs(rows, root, selected, request['domain']),

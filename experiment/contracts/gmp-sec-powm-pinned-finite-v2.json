@@ -1,0 +1,1021 @@
+{
+  "schemaVersion": "riscv2x86.native-api-domain.v2",
+  "sourceDigest": "sha256:f9ce6d85143c6ac6763aa1af2ea733a70a3355b63b575cfa5b6eb37dedded13d",
+  "claimScope": "bounded-api-under-declared-preconditions",
+  "preconditions": [
+    {
+      "eq": [
+        {
+          "argument": 2
+        },
+        {
+          "constant": 1
+        }
+      ]
+    },
+    {
+      "eq": [
+        {
+          "argument": 6
+        },
+        {
+          "constant": 1
+        }
+      ]
+    },
+    {
+      "ge": [
+        {
+          "argument": 4
+        },
+        {
+          "constant": 1
+        }
+      ]
+    },
+    {
+      "le": [
+        {
+          "argument": 4
+        },
+        {
+          "constant": 2
+        }
+      ]
+    },
+    {
+      "eq": [
+        {
+          "bitAnd": [
+            {
+              "element": [
+                5,
+                {
+                  "constant": 0
+                }
+              ]
+            },
+            {
+              "constant": 1
+            }
+          ]
+        },
+        {
+          "constant": 1
+        }
+      ]
+    },
+    {
+      "gt": [
+        {
+          "element": [
+            5,
+            {
+              "constant": 0
+            }
+          ]
+        },
+        {
+          "constant": 0
+        }
+      ]
+    },
+    {
+      "fitsSigned": [
+        {
+          "constant": 64
+        },
+        {
+          "max": [
+            {
+              "add": [
+                {
+                  "shiftLeft": [
+                    {
+                      "argument": 6
+                    },
+                    {
+                      "constant": 1
+                    }
+                  ]
+                },
+                {
+                  "multiply": [
+                    {
+                      "constant": 4
+                    },
+                    {
+                      "argument": 6
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "add": [
+                {
+                  "add": [
+                    {
+                      "multiply": [
+                        {
+                          "constant": 2
+                        },
+                        {
+                          "argument": 2
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 6
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "constant": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "fitsUnsigned": [
+        {
+          "constant": 64
+        },
+        {
+          "multiply": [
+            {
+              "constant": 8
+            },
+            {
+              "max": [
+                {
+                  "add": [
+                    {
+                      "shiftLeft": [
+                        {
+                          "argument": 6
+                        },
+                        {
+                          "constant": 1
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 4
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "add": [
+                    {
+                      "add": [
+                        {
+                          "multiply": [
+                            {
+                              "constant": 2
+                            },
+                            {
+                              "argument": 2
+                            }
+                          ]
+                        },
+                        {
+                          "multiply": [
+                            {
+                              "constant": 6
+                            },
+                            {
+                              "argument": 6
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "constant": 2
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ge": [
+        {
+          "remainingElements": 7
+        },
+        {
+          "max": [
+            {
+              "add": [
+                {
+                  "shiftLeft": [
+                    {
+                      "argument": 6
+                    },
+                    {
+                      "constant": 1
+                    }
+                  ]
+                },
+                {
+                  "multiply": [
+                    {
+                      "constant": 4
+                    },
+                    {
+                      "argument": 6
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "add": [
+                {
+                  "add": [
+                    {
+                      "multiply": [
+                        {
+                          "constant": 2
+                        },
+                        {
+                          "argument": 2
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 6
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "constant": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ge": [
+        {
+          "remainingElements": 0
+        },
+        {
+          "argument": 6
+        }
+      ]
+    },
+    {
+      "ge": [
+        {
+          "remainingElements": 1
+        },
+        {
+          "argument": 2
+        }
+      ]
+    },
+    {
+      "ge": [
+        {
+          "remainingElements": 3
+        },
+        {
+          "ceilDivide": [
+            {
+              "argument": 4
+            },
+            {
+              "constant": 64
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "ge": [
+        {
+          "remainingElements": 5
+        },
+        {
+          "argument": 6
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        0,
+        1,
+        {
+          "argument": 6
+        },
+        {
+          "argument": 2
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        0,
+        3,
+        {
+          "argument": 6
+        },
+        {
+          "ceilDivide": [
+            {
+              "argument": 4
+            },
+            {
+              "constant": 64
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        0,
+        5,
+        {
+          "argument": 6
+        },
+        {
+          "argument": 6
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        0,
+        7,
+        {
+          "argument": 6
+        },
+        {
+          "max": [
+            {
+              "add": [
+                {
+                  "shiftLeft": [
+                    {
+                      "argument": 6
+                    },
+                    {
+                      "constant": 1
+                    }
+                  ]
+                },
+                {
+                  "multiply": [
+                    {
+                      "constant": 4
+                    },
+                    {
+                      "argument": 6
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "add": [
+                {
+                  "add": [
+                    {
+                      "multiply": [
+                        {
+                          "constant": 2
+                        },
+                        {
+                          "argument": 2
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 6
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "constant": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        1,
+        3,
+        {
+          "argument": 2
+        },
+        {
+          "ceilDivide": [
+            {
+              "argument": 4
+            },
+            {
+              "constant": 64
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        1,
+        5,
+        {
+          "argument": 2
+        },
+        {
+          "argument": 6
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        1,
+        7,
+        {
+          "argument": 2
+        },
+        {
+          "max": [
+            {
+              "add": [
+                {
+                  "shiftLeft": [
+                    {
+                      "argument": 6
+                    },
+                    {
+                      "constant": 1
+                    }
+                  ]
+                },
+                {
+                  "multiply": [
+                    {
+                      "constant": 4
+                    },
+                    {
+                      "argument": 6
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "add": [
+                {
+                  "add": [
+                    {
+                      "multiply": [
+                        {
+                          "constant": 2
+                        },
+                        {
+                          "argument": 2
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 6
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "constant": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        3,
+        5,
+        {
+          "ceilDivide": [
+            {
+              "argument": 4
+            },
+            {
+              "constant": 64
+            }
+          ]
+        },
+        {
+          "argument": 6
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        3,
+        7,
+        {
+          "ceilDivide": [
+            {
+              "argument": 4
+            },
+            {
+              "constant": 64
+            }
+          ]
+        },
+        {
+          "max": [
+            {
+              "add": [
+                {
+                  "shiftLeft": [
+                    {
+                      "argument": 6
+                    },
+                    {
+                      "constant": 1
+                    }
+                  ]
+                },
+                {
+                  "multiply": [
+                    {
+                      "constant": 4
+                    },
+                    {
+                      "argument": 6
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "add": [
+                {
+                  "add": [
+                    {
+                      "multiply": [
+                        {
+                          "constant": 2
+                        },
+                        {
+                          "argument": 2
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 6
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "constant": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "disjoint": [
+        5,
+        7,
+        {
+          "argument": 6
+        },
+        {
+          "max": [
+            {
+              "add": [
+                {
+                  "shiftLeft": [
+                    {
+                      "argument": 6
+                    },
+                    {
+                      "constant": 1
+                    }
+                  ]
+                },
+                {
+                  "multiply": [
+                    {
+                      "constant": 4
+                    },
+                    {
+                      "argument": 6
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "add": [
+                {
+                  "add": [
+                    {
+                      "multiply": [
+                        {
+                          "constant": 2
+                        },
+                        {
+                          "argument": 2
+                        }
+                      ]
+                    },
+                    {
+                      "multiply": [
+                        {
+                          "constant": 6
+                        },
+                        {
+                          "argument": 6
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "constant": 2
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "regions": [
+    {
+      "argument": 0,
+      "offsetElements": {
+        "constant": 0
+      },
+      "lengthElements": {
+        "argument": 6
+      },
+      "mode": "output"
+    },
+    {
+      "argument": 1,
+      "offsetElements": {
+        "constant": 0
+      },
+      "lengthElements": {
+        "argument": 2
+      },
+      "mode": "preserve"
+    },
+    {
+      "argument": 3,
+      "offsetElements": {
+        "constant": 0
+      },
+      "lengthElements": {
+        "ceilDivide": [
+          {
+            "argument": 4
+          },
+          {
+            "constant": 64
+          }
+        ]
+      },
+      "mode": "preserve"
+    },
+    {
+      "argument": 5,
+      "offsetElements": {
+        "constant": 0
+      },
+      "lengthElements": {
+        "argument": 6
+      },
+      "mode": "preserve"
+    },
+    {
+      "argument": 7,
+      "offsetElements": {
+        "constant": 0
+      },
+      "lengthElements": {
+        "remainingElements": 7
+      },
+      "mode": "scratch"
+    }
+  ],
+  "cases": [
+    {
+      "objects": [
+        {
+          "id": "out",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            0
+          ]
+        },
+        {
+          "id": "base",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            2
+          ]
+        },
+        {
+          "id": "exp",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            1
+          ]
+        },
+        {
+          "id": "mod",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            3
+          ]
+        },
+        {
+          "id": "work",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "arguments": [
+        {
+          "object": "out",
+          "offsetElements": 0
+        },
+        {
+          "object": "base",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "exp",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "mod",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "work",
+          "offsetElements": 0
+        }
+      ]
+    },
+    {
+      "objects": [
+        {
+          "id": "out",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            0
+          ]
+        },
+        {
+          "id": "base",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            2
+          ]
+        },
+        {
+          "id": "exp",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            2
+          ]
+        },
+        {
+          "id": "mod",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            5
+          ]
+        },
+        {
+          "id": "work",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "arguments": [
+        {
+          "object": "out",
+          "offsetElements": 0
+        },
+        {
+          "object": "base",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "exp",
+          "offsetElements": 0
+        },
+        {
+          "integer": 2
+        },
+        {
+          "object": "mod",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "work",
+          "offsetElements": 0
+        }
+      ]
+    },
+    {
+      "objects": [
+        {
+          "id": "out",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            0
+          ]
+        },
+        {
+          "id": "base",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            3
+          ]
+        },
+        {
+          "id": "exp",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            2
+          ]
+        },
+        {
+          "id": "mod",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            7
+          ]
+        },
+        {
+          "id": "work",
+          "type": "unsigned long",
+          "alignment": 16,
+          "values": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "arguments": [
+        {
+          "object": "out",
+          "offsetElements": 0
+        },
+        {
+          "object": "base",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "exp",
+          "offsetElements": 0
+        },
+        {
+          "integer": 2
+        },
+        {
+          "object": "mod",
+          "offsetElements": 0
+        },
+        {
+          "integer": 1
+        },
+        {
+          "object": "work",
+          "offsetElements": 0
+        }
+      ]
+    }
+  ]
+}

@@ -123,6 +123,10 @@ def _derive(state, facts):
 @measured('project-evidence-ledger.inspect')
 def inspect(path):
     ref = d.snapshot(path)
+    from . import native_original_api
+    if d.read(path).get('schemaVersion') == native_original_api.SCHEMA:
+        from .native_api_evidence import inspect as inspect_api
+        return inspect_api(path)
     state = diagnostic.check_progress(path)
     result = _derive(state, diagnostic.facts(state))
     d.verify_snapshot(ref)

@@ -13,6 +13,7 @@ from riscv2x86_py import native_project_diagnostic as diagnostic
 from riscv2x86_py.verification_session import session
 from riscv2x86_py import project_evidence_ledger as ledger
 from riscv2x86_py import native_original_api as original_api
+from riscv2x86_py import native_api_campaign as api_campaign
 
 
 def main(argv=None):
@@ -57,11 +58,18 @@ def main(argv=None):
     api_request.add_argument('--function-ast-path', required=True, help='JSON array from api-inspect')
     api_request.add_argument('--assumption-source', action='append', required=True)
     api_request.add_argument('--output', required=True)
+    api_full = sub.add_parser('api-campaign', help='resume original translation, finite API execution and independent checks')
+    api_full.add_argument('--configuration', required=True)
+    api_full.add_argument('--domain', required=True)
+    api_full.add_argument('--function-ast-path', required=True)
+    api_full.add_argument('--assumption-source', action='append', required=True)
+    api_full.add_argument('--output', required=True)
+    api_full.add_argument('--resume', action='store_true')
     for command in (api_inspect, api_run, api_request):
         origin = command.add_mutually_exclusive_group(required=True)
         origin.add_argument('--spec', help='checked original-project-evaluation contract')
         origin.add_argument('--progress', help='checked diagnostic progress; discover project and reuse existing builds')
-    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request):
+    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full):
         command.add_argument('--profile-output', help='new diagnostic JSON file outside the evidence output directory')
         command.add_argument('--verification-cache-mib', type=int, default=256,
                              help='operation-local pure-derivation budget; 0 disables reuse')
@@ -92,6 +100,11 @@ def main(argv=None):
 
 def execute(args):
     try:
+        if args.operation == 'api-campaign':
+            value = api_campaign.execute(args.configuration, args.domain, json.loads(args.function_ast_path),
+                                         args.assumption_source, args.output, resume=args.resume)
+            print(json.dumps(value))
+            return 0 if value['processObservationStatus'] == 'observed-agreement' else 1
         if args.operation == 'api-request':
             spec = original_api.from_progress(args.progress)[0] if args.progress else args.spec
             value = original_api.create_request(spec, args.domain, json.loads(args.function_ast_path),
@@ -139,6 +152,8 @@ def execute(args):
                               **campaign.facts(value)}))
             return 0 if value['evaluationStatus'] == 'verified' else 1
         if args.operation == 'check':
+            if project.d.read(args.input).get('schemaVersion') == api_campaign.RESULT:
+                print(json.dumps(api_campaign.check(args.input))); return 0
             if project.d.read(args.input).get('schemaVersion') == original_api.SCHEMA:
                 print(json.dumps(original_api.check(args.input))); return 0
             if project.d.read(args.input).get('schemaVersion') == diagnostic.PROGRESS:
