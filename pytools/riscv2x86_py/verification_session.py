@@ -113,6 +113,7 @@ class VerificationSession:
         self.peak_cache_bytes = 0
         self.timings = {}
         self.memo = {}
+        self.file_reads = {}; self.file_read_overflow = 0
         self.started = time.monotonic()
         self.elapsed = None
 
@@ -125,10 +126,28 @@ class VerificationSession:
             'retainedCacheBytes': self.cache_bytes,
             'memoization': deepcopy(self.memo),
             'timings': deepcopy(self.timings),
+            'fileReads': {'scope': 'project_compile_context.digest-only-not-all-IO',
+                'trackedPathCount': len(self.file_reads), 'pathBudget': 2048,
+                'untrackedReadCount': self.file_read_overflow,
+                'topPathsBySeconds': sorted(({'path': p, **row} for p, row in self.file_reads.items()),
+                    key=lambda row: (-row['seconds'], row['path']))[:32]},
             'scope': 'diagnostic-timings-and-pure-derivation-reuse-not-validation-evidence',
             'timingPolicy': 'inclusive-spans-overlap-exclusive-spans-exclude-measured-children',
         }
 
+
+
+def record_file_read(path, size, seconds, failed):
+    """Bounded diagnostic accounting only; never supplies a validity decision."""
+    current = _ACTIVE.get()
+    if current is None: return
+    if path not in current.file_reads and len(current.file_reads) >= 2048:
+        current.file_read_overflow += 1
+        return
+    row = current.file_reads.setdefault(path, {'reads': 0, 'bytes': 0,
+                                              'seconds': 0.0, 'failedReads': 0})
+    row['reads'] += 1; row['bytes'] += size; row['seconds'] += seconds
+    row['failedReads'] += int(failed)
 
 @contextmanager
 def session(max_cache_bytes=256 * 1024 * 1024):

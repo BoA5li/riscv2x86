@@ -13,7 +13,8 @@ from .project_build_records import identity
 from .project_compile_context import digest, validate as validate_context
 from .project_tool_resolution import resolve_executable
 from . import project_native_input as native_input
-from .verification_session import ContentBytes, ReadOnlyDict, measured, pure
+from .verification_session import ContentBytes, ReadOnlyDict, measured, pure, span, readonly_json
+from copy import deepcopy
 
 SCHEMA = 'riscv2x86.native-instance-binding-bundle.v1'
 
@@ -37,16 +38,19 @@ def _derive_checked(artifacts, report, raw, analysis_identity):
 
 
 @measured('native-binding.checked-call-contexts')
-def _contexts_checked(artifacts, bindings, analysis_identity, schema):
+def _contexts_checked(artifacts, bindings, analysis_identity, schema, *, readonly=False):
     """Reuse only a pure graph derived from live-validated AST and bindings."""
+    if type(readonly) is not bool:
+        raise ValueError('NATIVE_BINDING_READ_ONLY_POLICY_INVALID')
     canonical = artifacts.get('canonicalAstIdentity')
     def calculate():
         return call_contexts(artifacts['canonicalAst'], bindings,
                              analysis_identity, schema=schema)
     if canonical is None or not isinstance(artifacts['canonicalAst'], ReadOnlyDict):
-        return calculate()
+        value = calculate()
+        return readonly_json(value) if readonly else value
     return pure('native-call-contexts.v1',
-                (canonical, identity(bindings), analysis_identity, identity(schema)), calculate)
+                (canonical, identity(bindings), analysis_identity, identity(schema)), calculate, readonly=readonly)
 
 
 def read(path):
@@ -144,7 +148,9 @@ def acquire(receipt_path, frontend, output, *, timeout=300, context_schema=None)
 
 
 @measured('native-binding.validate-artifacts')
-def validate_artifacts(bundle):
+def validate_artifacts(bundle, *, readonly=False):
+    if type(readonly) is not bool:
+        raise ValueError('NATIVE_BINDING_READ_ONLY_POLICY_INVALID')
     if (not isinstance(bundle, dict) or bundle.get('schemaVersion') != SCHEMA
             or bundle.get('bindingBundleIdentity') != identity({
                 k: v for k, v in bundle.items() if k != 'bindingBundleIdentity'})):
@@ -182,7 +188,7 @@ def validate_artifacts(bundle):
     bindings = _derive_checked(artifacts, report, artifacts['inputBytes'], receipt['analysisInputIdentity'])
     stored_contexts = read(bundle['contextsPath'])
     contexts = _contexts_checked(artifacts, bindings, receipt['analysisInputIdentity'],
-        stored_contexts.get('schemaVersion'))
+        stored_contexts.get('schemaVersion'), readonly=True)
     if (bundle['nativeInputIdentity'] != receipt['nativeInputIdentity']
             or bundle['analysisInputIdentity'] != receipt['analysisInputIdentity']
             or bundle['frontendReportIdentity'] != identity(report)
@@ -202,6 +208,9 @@ def validate_artifacts(bundle):
     # its file at exit as well, including on a pure-derivation cache hit.
     if digest(bundle['contextsPath']) != bundle['contextsDigest']:
         raise ValueError('NATIVE_BINDING_ARTIFACT_CHANGED:contexts')
+    if not readonly:
+        with span('native-binding.context-result-copy'):
+            contexts = deepcopy(contexts)
     return bindings, contexts
 
 

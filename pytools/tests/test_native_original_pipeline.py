@@ -32,7 +32,7 @@ def adapted(tmp_path,monkeypatch):
     bundle_path=tmp_path/'bundle.json';bundle_path.write_text(json.dumps(bundle))
     # Already verified native boundary is isolated here. Exact physical binding
     # and original artifact parsing/materialization run without mocks.
-    monkeypatch.setattr(route.binding,'validate_artifacts',lambda value:None)
+    monkeypatch.setattr(route.binding,'validate_artifacts',lambda value, **kwargs:None)
     monkeypatch.setattr(route,'validated_input',lambda value:{'inputBytes':raw,'canonicalAst':ast})
     calls=[]
     def run(command,**kwargs):

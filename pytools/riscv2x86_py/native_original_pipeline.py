@@ -132,7 +132,7 @@ def authority_report(raw_report, functions, frontend):
 def prepare(bundle_path, output, *, timeout=300):
     """Re-export from an isolated, byte-identical CPP file; never edit AST facts."""
     if type(timeout) is not int or not 1<=timeout<=86400:raise ValueError('ORIGINAL_INPUT_TIMEOUT_INVALID')
-    bundle=d.read(bundle_path);binding.validate_artifacts(bundle)
+    bundle=d.read(bundle_path);binding.validate_artifacts(bundle, readonly=True)
     if digest(bundle['frontend'])!=bundle['frontendDigest']:raise ValueError('ORIGINAL_INPUT_FRONTEND_CHANGED')
     receipt=d.read(bundle['nativeInputReceiptPath']);artifacts=validated_input(receipt)
     if receipt['target']!='riscv64':raise ValueError('ORIGINAL_INPUT_RISCV64_REQUIRED')
@@ -179,7 +179,7 @@ def check_input(path):
     if value['schemaVersion']!=PREPARED:raise ValueError('ORIGINAL_INPUT_SCHEMA_INVALID')
     compare_verifier(value['adapterVerifier'],verifier());d.verify_snapshot(value['python'])
     for key in ('bundle','frontend','source','rawFrontendReport','frontendReport','bindings'):d.verify_snapshot(value[key])
-    bundle=d.read(value['bundle']['path']);binding.validate_artifacts(bundle)
+    bundle=d.read(value['bundle']['path']);binding.validate_artifacts(bundle, readonly=True)
     if digest(bundle['frontend'])!=bundle['frontendDigest']:raise ValueError('ORIGINAL_INPUT_FRONTEND_CHANGED')
     receipt=d.read(bundle['nativeInputReceiptPath']);artifacts=validated_input(receipt)
     source=Path(value['source']['path']);root=Path(path).resolve().parent
@@ -450,7 +450,7 @@ def run(bundle_path,output,*,ghidra_install_dir=None,ghidra_language_id=None,tim
     install=str(resolve_install_dir(ghidra_install_dir))
     if ghidra_language_id not in (None,'RISCV:LE:64:default'):
         raise ValueError('ORIGINAL_RV64_LANGUAGE_UNSUPPORTED')
-    bundle=d.read(bundle_path);binding.validate_artifacts(bundle)
+    bundle=d.read(bundle_path);binding.validate_artifacts(bundle, readonly=True)
     receipt=d.read(bundle['nativeInputReceiptPath']);validated_input(receipt)
     env=runtime_environment();runner=Runner(output,'original-pipeline-composed-run')
     try:

@@ -10,6 +10,9 @@ from hashlib import sha256
 import os
 from pathlib import Path
 import re
+import time
+
+from .verification_session import record_file_read
 
 from .project_build_records import identity, classify
 from .project_compile_arguments import action_option
@@ -34,7 +37,13 @@ ENV_KEYS = ('PATH', 'CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'SDKROOT',
 
 
 def digest(path):
-    return 'sha256:' + sha256(Path(path).read_bytes()).hexdigest()
+    started = time.monotonic(); size = 0; failed = True
+    try:
+        raw = Path(path).read_bytes(); size = len(raw)
+        value = 'sha256:' + sha256(raw).hexdigest(); failed = False
+        return value
+    finally:
+        record_file_read(str(Path(path).absolute()), size, time.monotonic() - started, failed)
 
 
 def absolute(path, cwd):

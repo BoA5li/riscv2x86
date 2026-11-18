@@ -19,13 +19,17 @@ from .compiler_native_instance_binding import _nodes, byte_range
 from .native_integer_contracts import builtin_contract, integer_type
 from .native_instance_applicability import guard_value
 
-SCHEMA = 'riscv2x86.original-source-applicability.v1'
+SCHEMA = 'riscv2x86.original-source-applicability.v2'
 _UNSTRUCTURED = {'GotoStmt', 'IndirectGotoStmt', 'LabelStmt', 'SwitchStmt', 'CaseStmt', 'DefaultStmt'}
 
 
 @measured('native_original_applicability.context')
 def context(spec_path):
-    spec = project.check(spec_path); run = route.check_run(spec['run']['path'])
+    spec = project.check(spec_path)
+    # project.check rederives freeze(), which checks this complete original
+    # run graph. Re-read its exact snapshot, rather than recursively validating
+    # the same graph a second time. Public checks still start from live inputs.
+    d.verify_snapshot(spec['run']); run = d.read(spec['run']['path']); d.verify_snapshot(spec['run'])
     prepared = d.read(run['input']['path']); bundle = d.read(run['bundle']['path'])
     receipt = d.read(bundle['nativeInputReceiptPath']); native = validated_input(receipt)
     inventory = d.read(prepared['bindings']['path']); checked(inventory, 'bindingInventoryIdentity')
@@ -42,9 +46,30 @@ def context(spec_path):
     return spec, native['canonicalAst'], selected, native['inputBytes'], receipt['analysisInput']['dataModels']['native']
 
 
-def obligations(ast, records, raw, model):
+def obligations(ast, records, raw, model, *, collect_queries=True):
     nodes = {tuple(path): node for node, path, _ in _nodes(ast)}
     instances = []; queries = {}; unsafe_functions = {}
+    def register(call, call_path):
+        try:
+            contract = builtin_contract(call, model, lambda ref: ref)
+            if contract['operation'] != 'compiler-integer-literal-constant-query': return
+            argument = call['inner'][1]
+            span = byte_range(call, len(raw)); arg_span = byte_range(argument, len(raw))
+            if not span[0] <= arg_span[0] < arg_span[1] <= span[1]: raise ValueError('QUERY_RANGE')
+            typ = integer_type(argument, model)
+            call_text = raw[span[0]:span[1]].decode('utf-8')
+            arg_text = raw[arg_span[0]:arg_span[1]].decode('utf-8')
+            probe = (f'_Static_assert(sizeof(({arg_text}))*__CHAR_BIT__=={typ["bits"]},"query width");\n'
+                     f'_Static_assert((((__typeof__(({arg_text})))-1)<0)=={int(typ["signed"])},"query signedness");\n'
+                     f'_Static_assert(({call_text})==1,"literal constant query");\n')
+            if len(queries) >= 4096 and tuple(call_path) not in queries:
+                raise OverflowError('APPLICABILITY_QUERY_OCCURRENCE_BUDGET_EXCEEDED')
+            queries[tuple(call_path)] = {'astPath': list(call_path), 'contract': contract,
+                'callRange': span, 'argumentRange': arg_span, 'probe': probe}
+        except (KeyError, TypeError, ValueError):
+            # Unsupported queries remain visible in the call inventory. No
+            # query is guessed from source text or a reserved-looking name.
+            pass
     for record in records:
         path = record['astPath']; fn = nodes.get(tuple(record['functionAstPath'] or []), {})
         owner = tuple(record['functionAstPath'] or [])
@@ -58,34 +83,45 @@ def obligations(ast, records, raw, model):
                     or len(node.get('inner', [])) not in (2, 3) or branch not in (1, 2)):
                 continue
             guards.append({'ifAstPath': prefix, 'branch': branch})
-            if unsafe: continue
-            for call, relative, _ in _nodes(node['inner'][0]):
-                if call.get('kind') != 'CallExpr': continue
-                call_path = [*prefix, 0, *relative]
-                try:
-                    contract = builtin_contract(call, model, lambda ref: ref)
-                    if contract['operation'] != 'compiler-integer-literal-constant-query': continue
-                    argument = call['inner'][1]
-                    span = byte_range(call, len(raw)); arg_span = byte_range(argument, len(raw))
-                    if not span[0] <= arg_span[0] < arg_span[1] <= span[1]: raise ValueError('QUERY_RANGE')
-                    typ = integer_type(argument, model)
-                    call_text = raw[span[0]:span[1]].decode('utf-8')
-                    arg_text = raw[arg_span[0]:arg_span[1]].decode('utf-8')
-                    probe = (f'_Static_assert(sizeof(({arg_text}))*__CHAR_BIT__=={typ["bits"]},"query width");\n'
-                             f'_Static_assert((((__typeof__(({arg_text})))-1)<0)=={int(typ["signed"])},"query signedness");\n'
-                             f'_Static_assert(({call_text})==1,"literal constant query");\n')
-                    queries[tuple(call_path)] = {'astPath': call_path, 'contract': contract,
-                        'callRange': span, 'argumentRange': arg_span, 'probe': probe}
-                except (KeyError, TypeError, ValueError):
-                    # No query is guessed from source text or a reserved name.
-                    pass
         instances.append({'instanceBindingIdentity': record['instanceBindingIdentity'],
                           'astPath': path, 'guards': guards, 'unstructuredControlFlow': unsafe})
+    if collect_queries:
+        # Use compiler declaration-family reachability, never a project name.
+        from .compiler_native_instance_binding import call_contexts
+        ids = {r['analysisInputIdentity'] for r in records}
+        if len(ids) > 1: raise ValueError('APPLICABILITY_ANALYSIS_IDENTITY_MISMATCH')
+        inventory = call_contexts(ast, {'records': records}, next(iter(ids), ''))
+        required = {fid for root in inventory['asmOwningFunctionContexts']
+                    for fid in root['reachableFunctionContexts']}
+        owners = {tuple(r['functionAstPath']) for r in records if r['functionAstPath'] is not None}
+        scope = owners | {tuple(f['astPath']) for f in inventory['functions']
+                          if f['functionContextIdentity'] in required}
+        for node, path, owner in _nodes(ast):
+            if node.get('kind') == 'CallExpr' and tuple(owner or ()) in scope:
+                register(node, path)
     return nodes, instances, [queries[k] for k in sorted(queries)]
 
 
+def query_groups(queries):
+    """Share exact typed literal probes only within this pinned project context.
+
+    Every occurrence keeps its own AST/range/contract identity. Different
+    spellings or types may produce extra groups; never merge by numeric value.
+    """
+    groups = {}; indices = []
+    for query in queries:
+        subject = {'contract': query['contract'], 'probe': query['probe']}
+        key = d.identity(subject)
+        if key not in groups:
+            if len(groups) >= 256: raise ValueError('APPLICABILITY_QUERY_GROUP_BUDGET_EXCEEDED')
+            groups[key] = {'groupIdentity': key, **subject, 'occurrenceAstPaths': []}
+        groups[key]['occurrenceAstPaths'].append(query['astPath'])
+        indices.append(key)
+    return list(groups.values()), indices
+
+
 def facts(ast, records, raw, model, answers):
-    nodes, instances, _ = obligations(ast, records, raw, model)
+    nodes, instances, _ = obligations(ast, records, raw, model, collect_queries=False)
     proofs = {tuple(q['query']['astPath']): {'contract': q['query']['contract']}
               for q in answers if q['sourceAndTargetWitnessVerified']}
     rows = []
@@ -119,10 +155,11 @@ def argv(profile, probe):
 @measured('native_original_applicability.derive')
 def derive(spec_path, root):
     spec, ast, records, raw, model = context(spec_path)
-    _, _, queries = obligations(ast, records, raw, model); answers = []
-    for i, query in enumerate(queries):
+    _, _, queries = obligations(ast, records, raw, model)
+    groups, membership = query_groups(queries); receipts = {}
+    for i, group in enumerate(groups):
         folder = root / ('query-%06d' % i); probe = folder / 'query.c'
-        if probe.read_bytes() != query['probe'].encode('utf-8'): raise ValueError('APPLICABILITY_PROBE_CHANGED')
+        if probe.read_bytes() != group['probe'].encode('utf-8'): raise ValueError('APPLICABILITY_PROBE_CHANGED')
         witnesses = {}; verified = True
         for side in ('source', 'target'):
             row = d.read(folder / side / 'execution.json')
@@ -135,11 +172,13 @@ def derive(spec_path, root):
             witnesses[side] = {'execution': d.snapshot(folder / side / 'execution.json'),
                                'stdout': d.snapshot(folder / side / 'stdout.log'),
                                'stderr': d.snapshot(folder / side / 'stderr.log')}
-        answers.append({'query': query, 'probe': d.snapshot(probe), 'witnesses': witnesses,
-                        'sourceAndTargetWitnessVerified': verified})
+        receipts[group['groupIdentity']] = {'probe': d.snapshot(probe), 'witnesses': witnesses,
+            'sourceAndTargetWitnessVerified': verified}
+    answers = [{'query': query, 'witnessGroupIdentity': key, **receipts[key]}
+               for query, key in zip(queries, membership)]
     from .program_validation_obligations import original_layer_readiness
     from .native_call_obligations import derive as call_obligations
-    return {'queries': answers, 'callObligations': call_obligations(ast, records, raw, model, answers),
+    return {'queries': answers, 'queryWitnessGroups': groups, 'callObligations': call_obligations(ast, records, raw, model, answers),
             'facts': facts(ast, records, raw, model, answers),
             'layerReadiness': original_layer_readiness(spec)}
 
@@ -148,7 +187,8 @@ def acquire(spec_path, output):
     spec, ast, records, raw, model = context(spec_path)
     root = Path(output).resolve(); root.mkdir()
     _, _, queries = obligations(ast, records, raw, model)
-    for i, query in enumerate(queries):
+    groups, _ = query_groups(queries)
+    for i, query in enumerate(groups):
         folder = root / ('query-%06d' % i); folder.mkdir()
         probe = folder / 'query.c'; probe.write_bytes(query['probe'].encode('utf-8'))
         for side in ('source', 'target'):
