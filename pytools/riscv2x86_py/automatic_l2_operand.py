@@ -901,6 +901,8 @@ def build_auto_l2_operand_validator(config: Mapping[str, object], *, readback=Fa
                 "timeoutSeconds", "seed", "qemuBinary"}
     typed_config = config.get('typedProjectEntry')
     if typed_config is not None: expected.add('typedProjectEntry')
+    if typed_config is not None and 'compilerEliminationDirectory' in config:
+        expected.add('compilerEliminationDirectory')
     if set(config) != expected or config.get("schemaVersion") != AUTO_L2_OPERAND_SCHEMA:
         raise ValueError("automatic L2 operand config fields/schema are invalid")
     functions = config.get("functions")
@@ -915,7 +917,9 @@ def build_auto_l2_operand_validator(config: Mapping[str, object], *, readback=Fa
         backend = ProjectEntry(config, readback=readback)
     if readback and backend is None: raise ValueError('L2_READBACK_PROJECT_ENTRY_REQUIRED')
 
-    def validate(**kwargs: object) -> ValidationLayerResult:
+    admission = {}
+
+    def run(**kwargs: object) -> ValidationLayerResult:
         if kwargs.get("level") is not ValidationLevel.L2:
             return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.FAILED, detail="automatic L2-A invoked for wrong level")
         if kwargs.get("comparison_policy") != ARCHITECTURAL_COMPARISON_POLICY:
@@ -951,15 +955,25 @@ def build_auto_l2_operand_validator(config: Mapping[str, object], *, readback=Fa
             stage = L2OperandFailureStage.AUTHORITY_JOIN
             function_matches = [fn for fn in functions if isinstance(fn, Mapping) and fn.get('name') == finding.get('fragment', {}).get('enclosingFunction')]
             typed_entry = backend.bind(function_matches[0]) if backend is not None and len(function_matches) == 1 else None
+            # The ORIGINAL provider owns admission. The campaign consumes this
+            # invocation's checked result instead of checking its DAG twice.
+            disposition = backend.instance_disposition(finding) if backend is not None else None
+            if disposition is not None:
+                admission['instanceExecutionDisposition'] = disposition
             authority, reason = _authority(finding, functions, artifact, typed_entry=typed_entry)
+            if backend is not None:
+                admission.update(operandAuthorityReady=authority is not None, authorityReasonCode=reason)
             if authority is None:
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE, detail=json.dumps(provider_precondition_detail(
                     reason, failureStage=L2OperandFailureStage.AUTHORITY_JOIN.value,
                     artifactPath=str(artifact_path))))
-            disposition = backend.instance_disposition(finding) if backend is not None else None
             if kwargs.get('source_instance_excluded') is True and disposition is None:
                 raise ValueError('L2_TYPED_CHECKED_APPLICABILITY_REQUIRED')
             if disposition is not None and disposition['sourceConditionExcluded']:
+                if config.get('compilerEliminationDirectory'):
+                    from .native_compiler_elimination import inspect
+                    admission['compilerEliminationEvidence'] = inspect(
+                        backend.spec, backend.builds, config['compilerEliminationDirectory'], readback=readback)
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                     detail=json.dumps(provider_precondition_detail(
                         'L2_TYPED_SOURCE_INSTANCE_EXCLUDED', typedEntryIdentity=typed_entry['entryIdentity'],
@@ -1215,4 +1229,18 @@ def build_auto_l2_operand_validator(config: Mapping[str, object], *, readback=Fa
                 reason_code=(exc.reason_code
                              if isinstance(exc, (L2OperandObservationError, DependencyObserverError)) else ""),
             )
+    def validate(**kwargs: object) -> ValidationLayerResult:
+        # Never retain an admission decision between invocations, including
+        # readback or a later artifact on the same validator object.
+        admission.clear()
+        result = run(**kwargs)
+        if not admission:
+            return result
+        detail = json.loads(result.detail)
+        for key, value in admission.items():
+            if key in detail and detail[key] != value:
+                raise ValueError('L2_TYPED_ADMISSION_RESULT_CONFLICT')
+            detail[key] = value
+        return ValidationLayerResult(result.level, result.status, result.evidence_identity,
+                                     json.dumps(detail, sort_keys=True))
     return validate

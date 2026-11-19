@@ -122,12 +122,20 @@ def test_campaign_l2_receipt_consumes_original_provider_refusal_and_checks_reado
         {'instanceBindingIdentity': 'instance-1', 'astPath': [0, 1],
          'sourceGuardClassification': 'excluded-under-compiler-query-contracts'}]}}
     p.write(apath, appvalue)
-    monkeypatch.setattr(app, 'check', lambda path: deepcopy(appvalue))
+    checked_app_calls = []
+    def checked_app(path):
+        checked_app_calls.append(str(path))
+        return deepcopy(appvalue)
+    monkeypatch.setattr(app, 'check', checked_app)
     value = l2.acquire(root / 'api/result.json', apath, root / 'l2')
     assert len(value['instances']) == 1
     assert value['instances'][0]['status'] == 'inconclusive'
     assert not value['originalLogicalOperandsVerified'] and not value['semanticApproval']
     assert l2.check(root / 'l2/result.json') == value
+    before = len(checked_app_calls)
+    assert l2.derive(root / 'l2', readback=True) == value
+    assert len(checked_app_calls) == before + 1
+    assert value['instances'][0]['instanceExecutionDisposition'] == value['instances'][0]['detail']['instanceExecutionDisposition']
     def forbidden(*args, **kwargs): raise AssertionError('readback ran compiler')
     monkeypatch.setattr(p, 'command', forbidden)
     assert l2.check(root / 'l2/result.json') == value

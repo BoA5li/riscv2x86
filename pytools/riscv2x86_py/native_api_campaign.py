@@ -86,6 +86,14 @@ def derive(root, result_ref):
         'status': 'checked' if l2['originalLogicalOperandsVerified'] else 'inconclusive',
         'evidence': l2_reference,
         'scope': 'original-operand-dimension-not-all-applicable-effects-or-canonical-coverage'})
+    for row in l2['instances']:
+        compiler = row.get('detail', {}).get('compilerEliminationEvidence')
+        if compiler is not None:
+            consumption['claims'].append({
+                'kind': 'compiler-final-RTL-inline-asm-absence',
+                'status': 'observed' if compiler['compilerInlineAsmAbsenceObserved'] else 'inconclusive',
+                'fragmentId': row['fragmentId'], 'evidence': compiler['receipt'],
+                'scope': compiler['scope']})
     # The API checker just validated this request and selection against its
     # recorded input snapshots; compare policy without traversing that DAG again.
     _request_matches(d.read(root / 'request.json'), value['function'], plan)

@@ -31,6 +31,7 @@ def configuration(api_result, output):
     config = {'schemaVersion': 'riscv2x86.auto-l2-operand-runner.v1',
         'translatedReport': translation['report']['path'], 'functions': report['functions'],
         'workDirectory': str(Path(output) / 'work'), 'replayDirectory': str(Path(output) / 'replay'),
+        'compilerEliminationDirectory': str(Path(output) / 'compiler-elimination'),
         'timeoutSeconds': spec['timeoutSeconds'], 'seed': 0, 'qemuBinary': spec['qemu']['path'],
         'typedProjectEntry': {'specPath': inputs['spec']['path'], 'requestPath': inputs['request']['path'],
             **{s + 'Build': inputs['builds'][s]['path'] for s in api.SIDES}}}
@@ -59,7 +60,7 @@ def registry_descriptor(config, fragment_ids, manifest, report, resolved):
 
 @measured('native_project_l2.derive')
 def derive(root, *, readback, checking_path=None):
-    from .automatic_l2_operand import build_auto_l2_operand_validator, _authority, _emit
+    from .automatic_l2_operand import build_auto_l2_operand_validator, _emit
     from .native_original_applicability import check as check_applicability
     from .translation_attempt import load_translation_attempt_archive
     from .translation_artifact_binding import artifacts_from_report
@@ -70,9 +71,6 @@ def derive(root, *, readback, checking_path=None):
     checked(inputs, 'l2InputsIdentity'); compare(inputs['verifier'], current())
     for k in ('apiResult', 'applicability'): d.verify_snapshot(inputs[k])
     value, api_inputs, spec, translation, report, config = configuration(inputs['apiResult']['path'], root)
-    app = check_applicability(inputs['applicability']['path'])
-    if app['project'] != api_inputs['spec']:
-        raise ValueError('L2_TYPED_APPLICABILITY_PROJECT_MISMATCH')
     config['typedProjectEntry']['applicabilityPath'] = inputs['applicability']['path']
     selected = value['function']
     functions = [f for f in report['functions'] if f.get('nativeCompilerDeclarationId') == selected['compilerDeclarationIdentity']]
@@ -91,28 +89,41 @@ def derive(root, *, readback, checking_path=None):
         artifact = artifacts.get(key)
         ids.append(fragment_id)
         if artifact is None:
+            # There is no provider invocation to check admission in this case.
+            # Keep the applicability dependency live even for a missing artifact.
+            app = check_applicability(inputs['applicability']['path'])
+            from .native_instance_execution import classify
+            disposition = classify(finding, selected, app, api_inputs['spec'])
             rows.append({'findingId': key, 'fragmentId': fragment_id,
                 'typedEntryIdentity': entry['entryIdentity'], 'status': 'inconclusive',
+                'sourceConditionExcluded': disposition['sourceConditionExcluded'],
+                'instanceExecutionDisposition': disposition,
                 'detail': {'reasonCode': 'L2_TYPED_TRANSLATION_ARTIFACT_UNAVAILABLE'},
                 'logicalOperandEvidenceChecked': False, 'canonicalInstructionCoverageVerified': False})
             continue
         cfg = {**config, 'workDirectory': str(root / ('finding-%06d' % i) / 'work'),
                'replayDirectory': str(root / ('finding-%06d' % i) / 'replay')}
-        from .native_instance_execution import classify
-        disposition = classify(finding, selected, app, api_inputs['spec'])
-        excluded = disposition['sourceConditionExcluded']
-        authority, reason = _authority(finding, report['functions'], artifact, typed_entry=entry)
         validator = build_auto_l2_operand_validator(cfg, readback=readback)
         layer = validator(level=ValidationLevel.L2, comparison_policy=ARCHITECTURAL_COMPARISON_POLICY,
                           translation_artifact=artifact, l2_provider_id=PROVIDER)
         detail = json.loads(layer.detail)
+        disposition = detail.get('instanceExecutionDisposition')
+        if disposition is None:
+            raise ValueError('L2_TYPED_PROVIDER_CHECKED_ADMISSION_REQUIRED:' + layer.detail)
+        # Recheck the subject, not the entire applicability graph a second
+        # time. The provider has just checked the receipt and its dependencies.
+        checked(disposition, 'dispositionIdentity')
+        if (disposition['project'] != api_inputs['spec'] or disposition['fragmentId'] != fragment_id
+                or disposition['functionBindingIdentity'] != selected['functionBindingIdentity']):
+            raise ValueError('L2_TYPED_PROVIDER_ADMISSION_SUBJECT_MISMATCH')
+        excluded = disposition['sourceConditionExcluded']
         closure, closure_reasons = (validated_provider_evidence(detail, artifact,
             dimension='logical_operands', provider_id=PROVIDER) if layer.status is ValidationStatus.VERIFIED else (None, ()))
         if layer.status is ValidationStatus.VERIFIED and (closure is None or closure_reasons):
             raise ValueError('L2_TYPED_ORIGINAL_EVIDENCE_CLOSURE_REJECTED:' + ','.join(closure_reasons))
         rows.append({'findingId': key, 'fragmentId': fragment_id, 'translationArtifactIdentity': artifact.identity,
-            'typedEntryIdentity': entry['entryIdentity'], 'operandAuthorityReady': authority is not None,
-            'authorityReasonCode': reason, 'sourceConditionExcluded': excluded,
+            'typedEntryIdentity': entry['entryIdentity'], 'operandAuthorityReady': detail['operandAuthorityReady'],
+            'authorityReasonCode': detail['authorityReasonCode'], 'sourceConditionExcluded': excluded,
             'instanceExecutionDisposition': disposition,
             'authorityDiagnostic': (finding.get('approvalArtifact') or {}).get('l2ScalarAuthorityFailure'),
             'status': layer.status.value, 'evidenceIdentity': layer.evidence_identity, 'detail': detail,
@@ -122,6 +133,7 @@ def derive(root, *, readback, checking_path=None):
     manifest = classify_l2_requirements(report)
     _emit(root / 'requirements.json', json.dumps(manifest, indent=2)+'\n', readback)
     template_config = {**config, 'workDirectory': '${WORK_DIR}/project-typed-L2/${ATTEMPT_ID}',
+                       'compilerEliminationDirectory': '${WORK_DIR}/project-typed-L2/${ATTEMPT_ID}/compiler-elimination',
                        'replayDirectory': '${REPLAY_DIR}/${ATTEMPT_ID}-project-typed-L2'}
     descriptor = registry_descriptor(template_config, ids, root / 'requirements.json',
         translation['report']['path'], '${REPLAY_DIR}/${ATTEMPT_ID}-project-L2-plan.json')
