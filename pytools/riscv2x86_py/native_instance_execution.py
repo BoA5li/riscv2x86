@@ -17,11 +17,22 @@ def classify(finding, selected, applicability, project_snapshot):
     if (set(identities) != {r['instanceBindingIdentity'] for r in rows}
             or len(rows) != len(identities)):
         raise ValueError('L2_TYPED_APPLICABILITY_INSTANCE_JOIN_REQUIRED')
-    path = (finding.get('physicalEditBinding') or {}).get('astPath')
-    if path is not None:
+    physical = finding.get('physicalEditBinding') or {}
+    # Production physical bindings carry the canonical INSTANCE identity, not
+    # an astPath. Never classify every edited site in the selected function as
+    # though it were the current finding (mixed live/excluded sites are legal).
+    instance = physical.get('instanceBindingIdentity')
+    path = physical.get('astPath')
+    if instance is not None:
+        rows = [r for r in rows if r['instanceBindingIdentity'] == instance]
+        if len(rows) != 1 or (path is not None and rows[0]['astPath'] != path):
+            raise ValueError('L2_TYPED_APPLICABILITY_PHYSICAL_INSTANCE_JOIN_REQUIRED')
+    elif path is not None:
         rows = [r for r in rows if r['astPath'] == path]
         if len(rows) != 1:
             raise ValueError('L2_TYPED_APPLICABILITY_AST_JOIN_REQUIRED')
+    elif len(rows) != 1:
+        raise ValueError('L2_TYPED_APPLICABILITY_FINDING_INSTANCE_AMBIGUOUS')
     excluded = all(r['sourceGuardClassification'] ==
                    'excluded-under-compiler-query-contracts' for r in rows)
     body = {'schemaVersion': 'riscv2x86.instance-execution-disposition.v1',

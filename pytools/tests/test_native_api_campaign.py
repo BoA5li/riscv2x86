@@ -33,6 +33,11 @@ def api_campaign(native_pair, monkeypatch):
     monkeypatch.setattr(c, 'l2_attempt', lambda root, reference, **kwargs:
         (reference, {'originalLogicalOperandsVerified': False,
                      'instances': [{'status': 'inconclusive', 'detail': {'reasonCode': 'FIXTURE_NO_ASM_AUTHORITY'}}]}))
+    # This fixture owns preparation ingress; it contains no original translated
+    # report. Real per-instance accounting has separate adversarial tests.
+    from riscv2x86_py import native_evaluation_coverage as coverage
+    monkeypatch.setattr(coverage, 'from_spec', lambda *args: coverage.summarize(
+        {'findings': []}, {'instances': []}, {'instances': []}))
     return config, dom, root / 'main.c', root, calls
 
 

@@ -94,6 +94,13 @@ def derive(root, result_ref):
                 'status': 'observed' if compiler['compilerInlineAsmAbsenceObserved'] else 'inconclusive',
                 'fragmentId': row['fragmentId'], 'evidence': compiler['receipt'],
                 'scope': compiler['scope']})
+        erasure = row.get('detail', {}).get('instanceErasureEvidence')
+        if erasure is not None and erasure.get('receipt'):
+            consumption['claims'].append({
+                'kind': 'source-excluded-instance-object-erasure-invariance',
+                'status': 'observed' if erasure['objectErasureInvariant'] else 'inconclusive',
+                'fragmentId': row['fragmentId'], 'evidence': erasure['receipt'],
+                'subject': erasure['subject'], 'scope': erasure['scope']})
     # The API checker just validated this request and selection against its
     # recorded input snapshots; compare policy without traversing that DAG again.
     _request_matches(d.read(root / 'request.json'), value['function'], plan)
@@ -105,6 +112,8 @@ def derive(root, result_ref):
         raise ValueError('API_CAMPAIGN_EXECUTION_BINDING_MISMATCH')
     from .program_validation_obligations import original_layer_readiness
     readiness = original_layer_readiness(d.read(spec))
+    from .native_evaluation_coverage import from_spec
+    coverage = from_spec(d.read(spec), applicability, l2)
     body = {'schemaVersion': RESULT, 'plan': d.snapshot(root / 'plan.json'), 'result': result_ref,
             'request': d.snapshot(root / 'request.json'),
             'completedStages': ['original-preparation-and-audit', 'input-contract', 'api-execution',
@@ -117,6 +126,7 @@ def derive(root, result_ref):
             'originalLogicalOperandsVerified': l2['originalLogicalOperandsVerified'],
             'originalL2Instances': l2['instances'],
             'evidenceConsumption': consumption, 'originalLayerReadiness': readiness,
+            'evaluationCoverage': coverage,
             'formalMatrixCellsExecuted': 0, 'formalValidationPerformed': False,
             'semanticApproval': False, 'productionAcceptanceComplete': False,
             'scope': 'finite-api-campaign-not-complete-L0-L1-L2-L3'}

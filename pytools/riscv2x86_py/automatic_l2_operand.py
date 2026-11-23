@@ -164,11 +164,14 @@ def _finding(report: Mapping[str, object], fragment_id: str) -> Mapping[str, obj
     findings = report.get("findings")
     if not isinstance(findings, list):
         return None
+    matches = []
     for item in findings:
         fragment = item.get("fragment") if isinstance(item, Mapping) else None
         if isinstance(fragment, Mapping) and (fragment.get("id") or fragment.get("fragmentId")) == fragment_id:
-            return item
-    return None
+            matches.append(item)
+    # Repeated macro expansions must have distinct compiler-instance subjects.
+    # Never bind an artifact to the first occurrence of an ambiguous ID.
+    return matches[0] if len(matches) == 1 else None
 
 
 def _operand_join_reason(actual: Mapping[str, object],
@@ -974,6 +977,19 @@ def build_auto_l2_operand_validator(config: Mapping[str, object], *, readback=Fa
                     from .native_compiler_elimination import inspect
                     admission['compilerEliminationEvidence'] = inspect(
                         backend.spec, backend.builds, config['compilerEliminationDirectory'], readback=readback)
+                    if (finding.get('physicalEditBinding') or {}).get('instanceBindingIdentity'):
+                        from .native_instance_erasure import inspect as inspect_erasure
+                        subject_key = _digest_bytes(json.dumps(
+                            disposition['instanceBindingIdentities'], sort_keys=True).encode())[7:]
+                        admission['instanceErasureEvidence'] = inspect_erasure(
+                            backend, finding, disposition,
+                            Path(config['compilerEliminationDirectory']) / 'instance-erasure' / subject_key,
+                            readback=readback)
+                    else:
+                        admission['instanceErasureEvidence'] = {
+                            'objectErasureInvariant': False,
+                            'reasonCode': 'ERASURE_PHYSICAL_INSTANCE_BINDING_REQUIRED',
+                            'scope': 'instance-erasure-unavailable-not-execution-coverage'}
                 return ValidationLayerResult(ValidationLevel.L2, ValidationStatus.INCONCLUSIVE,
                     detail=json.dumps(provider_precondition_detail(
                         'L2_TYPED_SOURCE_INSTANCE_EXCLUDED', typedEntryIdentity=typed_entry['entryIdentity'],

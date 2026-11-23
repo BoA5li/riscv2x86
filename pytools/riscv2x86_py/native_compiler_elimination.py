@@ -8,8 +8,10 @@ import re
 from pathlib import Path
 from . import native_captured_deployment as d
 from . import native_project_evaluation as project
+from .verification_session import measured
 
 
+@measured('compiler-final-rtl.parse')
 def rtl_facts(raw):
     if len(raw) > 32 * 1024 * 1024:
         raise ValueError('COMPILER_RTL_BUDGET_EXCEEDED')
@@ -60,6 +62,7 @@ def rtl_facts(raw):
             'asmNodeCount': sum(h.startswith('asm_') for h in heads)}
 
 
+@measured('compiler-final-rtl.inspect')
 def inspect(spec, builds, output, *, readback=False):
     from .automatic_l2_operand import _emit
     root = Path(output).resolve()

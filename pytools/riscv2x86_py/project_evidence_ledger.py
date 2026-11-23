@@ -130,7 +130,8 @@ def inspect(path):
         d.verify_snapshot(ref)
         return dict(value['evidenceConsumption'], checkedCampaign=ref,
                     originalProjectL2=value['originalProjectL2'],
-                    originalL2Instances=value['originalL2Instances'])
+                    originalL2Instances=value['originalL2Instances'],
+                    evaluationCoverage=value['evaluationCoverage'])
     if d.read(path).get('schemaVersion') == native_original_api.SCHEMA:
         from .native_api_evidence import inspect as inspect_api
         return inspect_api(path)
