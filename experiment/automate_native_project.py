@@ -14,6 +14,7 @@ from riscv2x86_py.verification_session import session
 from riscv2x86_py import project_evidence_ledger as ledger
 from riscv2x86_py import native_original_api as original_api
 from riscv2x86_py import native_api_campaign as api_campaign
+from riscv2x86_py import native_api_corpus as api_corpus
 
 
 def main(argv=None):
@@ -65,9 +66,17 @@ def main(argv=None):
     api_full.add_argument('--assumption-source', action='append', required=True)
     api_full.add_argument('--output', required=True)
     api_full.add_argument('--resume', action='store_true')
+    api_full.add_argument('--stop-after', choices=('preflight',))
     api_replay = sub.add_parser('api-replay', help='rerun old campaign inputs under the current verifier in a fresh output')
     api_replay.add_argument('--previous-result', required=True)
     api_replay.add_argument('--output', required=True)
+    api_replay.add_argument('--stop-after', choices=('preflight',))
+    api_batch = sub.add_parser('api-corpus', help='bounded original API tasks with checked source-exclusion preflight')
+    api_batch.add_argument('--manifest', required=True)
+    api_batch.add_argument('--output', required=True)
+    api_batch.add_argument('--max-tasks', type=int, default=1)
+    api_batch.add_argument('--resume', action='store_true')
+    api_batch.add_argument('--retry-blocked', action='store_true')
     api_eval = sub.add_parser('api-evaluation-request', help='connect a checked typed entry to the original requirement-driven L2 registry')
     api_eval.add_argument('--l2-result', required=True)
     api_eval.add_argument('--output', required=True)
@@ -75,7 +84,7 @@ def main(argv=None):
         origin = command.add_mutually_exclusive_group(required=True)
         origin.add_argument('--spec', help='checked original-project-evaluation contract')
         origin.add_argument('--progress', help='checked diagnostic progress; discover project and reuse existing builds')
-    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay, api_eval):
+    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay, api_eval, api_batch):
         command.add_argument('--profile-output', help='new diagnostic JSON file outside the evidence output directory')
         command.add_argument('--verification-cache-mib', type=int, default=256,
                              help='operation-local pure-derivation budget; 0 disables reuse')
@@ -114,14 +123,22 @@ def execute(args):
             path = project.request(api_refs['spec']['path'], args.output,
                 refs['applicability']['path'], api_l2_result=args.l2_result)
             print(json.dumps({'request': str(path), 'semanticApproval': False})); return 0
-        if args.operation == 'api-replay':
-            value = api_campaign.replay(args.previous_result, args.output)
+        if args.operation == 'api-corpus':
+            value = api_corpus.execute(args.manifest, args.output, max_tasks=args.max_tasks,
+                                       resume=args.resume, retry_blocked=args.retry_blocked)
             print(json.dumps(value))
+            return 1 if value['allTasksAccounted'] else 3
+        if args.operation == 'api-replay':
+            value = api_campaign.replay(args.previous_result, args.output, stop_after=args.stop_after)
+            print(json.dumps(value))
+            if args.stop_after == 'preflight': return 1
             return 0 if value['linkAttributedObservationStatus'] == 'observed-agreement' else 1
         if args.operation == 'api-campaign':
             value = api_campaign.execute(args.configuration, args.domain, json.loads(args.function_ast_path),
-                                         args.assumption_source, args.output, resume=args.resume)
+                                         args.assumption_source, args.output, resume=args.resume,
+                                         stop_after=args.stop_after)
             print(json.dumps(value))
+            if args.stop_after == 'preflight': return 1
             return 0 if value['linkAttributedObservationStatus'] == 'observed-agreement' else 1
         if args.operation == 'api-request':
             spec = original_api.from_progress(args.progress)[0] if args.progress else args.spec
@@ -171,6 +188,11 @@ def execute(args):
             return 0 if value['evaluationStatus'] == 'verified' else 1
         if args.operation == 'check':
             from riscv2x86_py import native_project_l2 as typed_l2
+            schema = project.d.read(args.input).get('schemaVersion')
+            if schema == api_corpus.PROGRESS:
+                print(json.dumps(api_corpus.check_progress(args.input))); return 0
+            if schema == api_campaign.PREFLIGHT:
+                print(json.dumps(api_campaign.check_preflight(args.input))); return 0
             if project.d.read(args.input).get('schemaVersion') == typed_l2.SCHEMA:
                 print(json.dumps(typed_l2.check(args.input))); return 0
             if project.d.read(args.input).get('schemaVersion') == api_campaign.RESULT:

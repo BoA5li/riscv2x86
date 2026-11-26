@@ -20,6 +20,7 @@ from .verification_session import measured
 
 PLAN = 'riscv2x86.original-api-campaign-plan.v1'
 RESULT = 'riscv2x86.original-api-campaign-result.v1'
+PREFLIGHT = 'riscv2x86.original-api-preflight.v1'
 
 
 def inputs(configuration, domain, function_path, sources):
@@ -135,7 +136,7 @@ def derive(root, result_ref):
     return d.seal(body, 'apiCampaignIdentity')
 
 
-def replay(previous_result, output):
+def replay(previous_result, output, *, stop_after=None):
     """Use old campaign inputs as selectors, never as current evidence.
 
     A fresh output, current verifier, original preparation/translation/audit,
@@ -155,7 +156,7 @@ def replay(previous_result, output):
         d.verify_snapshot(row)
     d.verify_snapshot(reference)
     return execute(plan['configuration']['path'], plan['domain']['path'], plan['functionAstPath'],
-                   [r['path'] for r in plan['assumptionSources']], output)
+                   [r['path'] for r in plan['assumptionSources']], output, stop_after=stop_after)
 
 
 def check(path):
@@ -165,7 +166,9 @@ def check(path):
     return value
 
 
-def execute(configuration, domain, function_path, sources, output, *, resume=False):
+def execute(configuration, domain, function_path, sources, output, *, resume=False, stop_after=None):
+    if stop_after not in (None, 'preflight'):
+        raise ValueError('API_CAMPAIGN_STOP_STAGE_INVALID')
     plan = inputs(configuration, domain, function_path, sources)
     requested = Path(output).absolute()
     if requested.is_symlink(): raise ValueError('API_CAMPAIGN_OUTPUT_LINK_UNSUPPORTED')
@@ -177,7 +180,9 @@ def execute(configuration, domain, function_path, sources, output, *, resume=Fal
             if check_plan(root / 'plan.json') != plan: raise ValueError('API_CAMPAIGN_RESUME_CHANGED')
         else:
             publish_checked(root / 'plan.json', plan, check_plan)
-        if (root / 'result.json').is_file(): return check(root / 'result.json')
+        if stop_after == 'preflight' and (root / 'preflight.json').is_file():
+            return check_preflight(root / 'preflight.json')
+        if stop_after is None and (root / 'result.json').is_file(): return check(root / 'result.json')
         if (root / 'diagnostic/progress.json').is_file():
             diagnostic.execute(d.read(root / 'diagnostic/diagnostic-plan.json'), root / 'diagnostic',
                                resume=True, stop_after='preparation')
@@ -189,6 +194,12 @@ def execute(configuration, domain, function_path, sources, output, *, resume=Fal
         if not (root / 'request.json').exists():
             api.create_request(spec, domain, function_path, sources, root / 'request.json')
         request_matches(spec, root / 'request.json', plan)
+        if stop_after == 'preflight':
+            value = derive_preflight(root)
+            publish_checked(root / 'preflight.json', value, check_preflight)
+            return value
+        # A preflight is a scheduler hint, never execution authority. A resumed
+        # normal campaign still goes through the original API and L2 producers.
         attempts = root / 'attempts'; attempts.mkdir(exist_ok=True)
         folders = sorted(p for p in attempts.iterdir() if p.is_dir())
         for folder in folders:
@@ -216,3 +227,73 @@ def execute(configuration, domain, function_path, sources, output, *, resume=Fal
         value = derive(root, reference)
         publish_checked(root / 'result.json', value, check)
         return value
+
+def preflight_selection(selected, applicability):
+    """Pure exact-instance join AFTER original request/applicability checking.
+
+    An unknown or nonexcluded instance needs an execution attempt. Only a
+    nonempty, complete, unambiguous set of checked source exclusions permits
+    skipping runtime acquisition. This says nothing about machine elimination.
+    """
+    identities = selected['instanceBindingIdentities']
+    if (not identities or any(not isinstance(i, str) or not i for i in identities)
+            or len(set(identities)) != len(identities)):
+        raise ValueError('API_PREFLIGHT_INSTANCE_SELECTION_INVALID')
+    all_rows = applicability['instances']
+    by_id = {r['instanceBindingIdentity']: r for r in all_rows}
+    if len(by_id) != len(all_rows) or any(i not in by_id for i in identities):
+        raise ValueError('API_PREFLIGHT_INSTANCE_JOIN_REQUIRED')
+    rows = [by_id[i] for i in identities]
+    excluded = [r['instanceBindingIdentity'] for r in rows
+                if r['sourceGuardClassification'] == 'excluded-under-compiler-query-contracts'
+                and r['unstructuredControlFlow'] is False]
+    skip = len(excluded) == len(identities)
+    return {
+        'selectedInstanceIdentities': list(identities),
+        'sourceExcludedInstanceIdentities': excluded,
+        'unselectedInstanceIdentities': sorted(set(by_id) - set(identities)),
+        'instances': rows,
+        'disposition': ('all-selected-instances-source-excluded' if skip
+                        else 'original-runtime-attempt-required'),
+        'runtimeAcquisitionRecommended': not skip,
+        'canonicalInstructionCoverageVerified': False,
+        'machineEliminationVerified': False,
+    }
+
+
+@measured('native_api_campaign.preflight')
+def derive_preflight(root):
+    root = Path(root).resolve()
+    plan = check_plan(root / 'plan.json')
+    spec, _, facts = api.from_progress(root / 'diagnostic/progress.json', with_applicability=True)
+    spec_ref = d.snapshot(spec); request_ref = d.snapshot(root / 'request.json')
+    _, request, selected, _, _ = api.request_context(spec, request_ref['path'])
+    _request_matches(request, selected, plan)
+    selection = preflight_selection(selected, facts)
+    from .native_evaluation_coverage import from_spec
+    coverage = from_spec(d.read(spec), facts, {'instances': []})
+    represented = [r['instanceBindingIdentity'] for r in coverage['findings']]
+    for instance in selection['selectedInstanceIdentities']:
+        if represented.count(instance) != 1:
+            raise ValueError('API_PREFLIGHT_REPORT_INSTANCE_JOIN_REQUIRED')
+    body = {'schemaVersion': PREFLIGHT, 'plan': d.snapshot(root / 'plan.json'),
+            'project': spec_ref, 'request': request_ref,
+            'functionBindingIdentity': selected['functionBindingIdentity'],
+            'functionAstPath': selected['functionAstPath'],
+            'selection': selection, 'reportCoverage': coverage,
+            'caseCount': len(request['domain']['cases']),
+            'runtimeAcquisitionPerformed': False,
+            'formalValidationPerformed': False, 'semanticApproval': False,
+            'productionAcceptanceComplete': False,
+            'scope': 'original-preparation-and-input-contract-not-execution-or-layer-acceptance'}
+    check_plan(root / 'plan.json')
+    d.verify_snapshot(spec_ref); d.verify_snapshot(request_ref)
+    return d.seal(body, 'apiPreflightIdentity')
+
+
+def check_preflight(path):
+    path = Path(path).resolve()
+    value = d.read(path); checked(value, 'apiPreflightIdentity')
+    if value != derive_preflight(path.parent):
+        raise ValueError('API_PREFLIGHT_REDERIVATION_MISMATCH')
+    return value
