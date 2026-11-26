@@ -171,9 +171,17 @@ PHASE209_STATUS=$?
 printf 'corpus_check_status=%s\n' "$PHASE209_STATUS"
 ```
 
-If an explicit full finite API replay is still needed, omit `--stop-after`.
+If an explicit full finite API replay is still needed, omit `--stop-after`
+and use a NEW `--output` directory. `api-replay` does not accept `--resume`.
 The default original replay/campaign behavior is unchanged; this may correctly
 remain inconclusive for source-excluded instances.
+
+## Recorded regression
+
+GitHub Actions run 45823983678 tested implementation commit
+`2c93ad520c0ec2ffba38de3b2f2b48a2af8088ca`: 227 passed in 29.50 seconds,
+with no skips. This is host regression coverage, not real RV64 corpus acceptance.
+The subsequent documentation clarification does not change package/verifier code.
 
 ## Files to return
 
