@@ -15,6 +15,8 @@ from riscv2x86_py import project_evidence_ledger as ledger
 from riscv2x86_py import native_original_api as original_api
 from riscv2x86_py import native_api_campaign as api_campaign
 from riscv2x86_py import native_api_corpus as api_corpus
+from riscv2x86_py import native_api_assessment as api_assessment
+from riscv2x86_py import native_project_inventory as instance_inventory
 
 
 def main(argv=None):
@@ -77,6 +79,16 @@ def main(argv=None):
     api_batch.add_argument('--max-tasks', type=int, default=1)
     api_batch.add_argument('--resume', action='store_true')
     api_batch.add_argument('--retry-blocked', action='store_true')
+    api_batch.add_argument('--evaluate', action='store_true', help='invoke original formal evaluation for every task')
+    api_assess = sub.add_parser('api-assess', help='run original formal project evaluation after checked API preflight')
+    api_assess.add_argument('--preflight', required=True)
+    api_assess.add_argument('--campaign-result')
+    api_assess.add_argument('--complete-api', action='store_true', help='finish the same original API task when runtime is required')
+    api_assess.add_argument('--output', required=True)
+    api_assess.add_argument('--resume', action='store_true')
+    api_inventory = sub.add_parser('api-inventory', help='inventory all findings in registered checked project contexts')
+    api_inventory.add_argument('--preflight', action='append', required=True)
+    api_inventory.add_argument('--output', required=True)
     api_eval = sub.add_parser('api-evaluation-request', help='connect a checked typed entry to the original requirement-driven L2 registry')
     api_eval.add_argument('--l2-result', required=True)
     api_eval.add_argument('--output', required=True)
@@ -84,7 +96,7 @@ def main(argv=None):
         origin = command.add_mutually_exclusive_group(required=True)
         origin.add_argument('--spec', help='checked original-project-evaluation contract')
         origin.add_argument('--progress', help='checked diagnostic progress; discover project and reuse existing builds')
-    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay, api_eval, api_batch):
+    for command in (run, resume, formal, build, check, timings, evidence, replan, api_inspect, api_run, api_request, api_full, api_replay, api_eval, api_batch, api_assess, api_inventory):
         command.add_argument('--profile-output', help='new diagnostic JSON file outside the evidence output directory')
         command.add_argument('--verification-cache-mib', type=int, default=256,
                              help='operation-local pure-derivation budget; 0 disables reuse')
@@ -123,9 +135,20 @@ def execute(args):
             path = project.request(api_refs['spec']['path'], args.output,
                 refs['applicability']['path'], api_l2_result=args.l2_result)
             print(json.dumps({'request': str(path), 'semanticApproval': False})); return 0
+        if args.operation == 'api-inventory':
+            print(json.dumps(instance_inventory.acquire(args.preflight, args.output))); return 0
+        if args.operation == 'api-assess':
+            if args.complete_api:
+                if args.campaign_result: raise ValueError('API_ASSESS_EXPLICIT_OR_AUTOMATIC_RUNTIME_REQUIRED')
+                value = api_assessment.complete(args.preflight, args.output, resume=args.resume)
+            else:
+                value = api_assessment.acquire(args.preflight, args.output,
+                    campaign_path=args.campaign_result, resume=args.resume)
+            print(json.dumps(value))
+            return 0 if value['evaluationStatus'] == 'verified' else 1
         if args.operation == 'api-corpus':
             value = api_corpus.execute(args.manifest, args.output, max_tasks=args.max_tasks,
-                                       resume=args.resume, retry_blocked=args.retry_blocked)
+                                       resume=args.resume, retry_blocked=args.retry_blocked, evaluate=args.evaluate)
             print(json.dumps(value))
             return 1 if value['allTasksAccounted'] else 3
         if args.operation == 'api-replay':
@@ -189,7 +212,11 @@ def execute(args):
         if args.operation == 'check':
             from riscv2x86_py import native_project_l2 as typed_l2
             schema = project.d.read(args.input).get('schemaVersion')
-            if schema == api_corpus.PROGRESS:
+            if schema == instance_inventory.SCHEMA:
+                print(json.dumps(instance_inventory.check(args.input))); return 0
+            if schema == api_assessment.RESULT:
+                print(json.dumps(api_assessment.check(args.input))); return 0
+            if schema in (api_corpus.PROGRESS, api_corpus.EVALUATION_PROGRESS):
                 print(json.dumps(api_corpus.check_progress(args.input))); return 0
             if schema == api_campaign.PREFLIGHT:
                 print(json.dumps(api_campaign.check_preflight(args.input))); return 0

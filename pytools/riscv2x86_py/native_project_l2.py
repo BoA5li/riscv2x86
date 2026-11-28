@@ -40,6 +40,28 @@ def configuration(api_result, output):
     return value, inputs, spec, translation, report, config
 
 
+def selected_findings(report, selected):
+    """Select by compiler INSTANCE identity; names never grant membership."""
+    identities = selected['instanceBindingIdentities']
+    if (not identities or any(not isinstance(i, str) or not i for i in identities)
+            or len(set(identities)) != len(identities)):
+        raise ValueError('L2_TYPED_SELECTED_INSTANCES_INVALID')
+    rows = []
+    for index, finding in enumerate(report['findings']):
+        physical = finding.get('physicalEditBinding') or {}
+        if physical.get('instanceBindingIdentity') in identities:
+            rows.append((index, finding))
+    actual = [(f.get('physicalEditBinding') or {})['instanceBindingIdentity'] for _, f in rows]
+    if len(actual) != len(identities) or set(actual) != set(identities):
+        raise ValueError('L2_TYPED_SELECTED_FINDING_INSTANCE_JOIN_REQUIRED')
+    all_ids = [(f.get('fragment') or {}).get('id') for f in report['findings']]
+    for _, finding in rows:
+        fid = (finding.get('fragment') or {}).get('id')
+        if not isinstance(fid, str) or not fid or all_ids.count(fid) != 1:
+            raise ValueError('L2_TYPED_SELECTED_FRAGMENT_ID_AMBIGUOUS')
+    return rows
+
+
 def registry_descriptor(config, fragment_ids, manifest, report, resolved):
     """An ordinary ORIGINAL requirement-driven descriptor, with no new gate."""
     return {'type': 'requirement-driven', 'config': {
@@ -82,9 +104,8 @@ def derive(root, *, readback, checking_path=None):
     rows = []; ids = []
     # All original findings remain in the manifest. This attempt supplies only
     # the selected compiler declaration and only the logical operand dimension.
-    for i, finding in enumerate(report['findings']):
+    for i, finding in selected_findings(report, selected):
         fragment = finding.get('fragment') or {}
-        if fragment.get('enclosingFunction') != function['name']: continue
         fragment_id = fragment.get('id', ''); key = f'finding:{i}:{fragment_id}'
         artifact = artifacts.get(key)
         ids.append(fragment_id)
