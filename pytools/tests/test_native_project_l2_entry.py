@@ -111,6 +111,11 @@ def test_campaign_l2_receipt_consumes_original_provider_refusal_and_checks_reado
     p.write(translation, {'report': d.snapshot(config['translatedReport']), 'attemptArchive': d.snapshot(archive)})
     p.write(root / 'run.json', {'translation': d.snapshot(translation)})
     # The fixture owns original compiler/translation ingress, not L2 acceptance.
+    # This deliberately synthetic legacy report has no physical edit receipt.
+    # Own its upstream selection boundary too; Phase210 adversarial tests check
+    # the real exact-instance join. Keep the real provider refusal/readback.
+    monkeypatch.setattr(l2, 'selected_findings',
+                        lambda report, selected: [(0, report['findings'][0])])
     monkeypatch.setattr(translation_attempt, 'load_translation_attempt_archive', lambda path: SimpleNamespace())
     monkeypatch.setattr(translation_artifact_binding, 'artifacts_from_report', lambda *args:
                         {'finding:0:fragment': _artifact()})
