@@ -1,0 +1,57 @@
+name: Phase 211 checked program evidence
+on:
+  push:
+    branches: [phase211-checked-program-evidence]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-legacy.txt
+      - name: Original evaluator, compiler-instance joins and corpus regression
+        env:
+          PYTHONPATH: pytools
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: >-
+          python -m pytest -q -rs --junitxml=phase211-tests.xml
+          pytools/tests/test_phase211_checked_program_evidence.py
+          pytools/tests/test_program_claim_consumption.py
+          pytools/tests/test_project_obligation_assessment.py
+          pytools/tests/test_native_original_evaluation.py
+          pytools/tests/test_phase210_original_assessment.py
+          pytools/tests/test_evaluation_runner.py
+          pytools/tests/test_phase209_api_preflight.py
+          pytools/tests/test_phase208_instance_accounting.py
+          pytools/tests/test_native_instance_erasure.py
+          pytools/tests/test_phase207_admission_ownership.py
+          pytools/tests/test_native_compiler_elimination.py
+          pytools/tests/test_phase206_execution_contracts.py
+          pytools/tests/test_phase199_context_obligations.py
+          pytools/tests/test_verification_session.py
+          pytools/tests/test_native_verifier_manifest.py
+          pytools/tests/test_l2_local_observation.py
+          pytools/tests/test_project_action_identity_reuse.py
+          pytools/tests/test_observer_shell_compatibility.py
+          pytools/tests/test_canonical_l2_operand.py
+          pytools/tests/test_l2_typed_entry.py
+          pytools/tests/test_native_project_l2_entry.py
+          pytools/tests/test_automatic_l2_authority.py
+          pytools/tests/test_automatic_l2_operand.py
+          pytools/tests/test_l2_scalar_authority.py
+          pytools/tests/test_dependency_observer_production.py
+          pytools/tests/test_native_original_api.py
+          pytools/tests/test_native_api_campaign.py
+          pytools/tests/test_native_project_evaluation.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase211-regression
+          path: phase211-tests.xml
+          if-no-files-found: warn

@@ -528,6 +528,29 @@ def _environment_provenance(
     }
 
 
+def _native_l2_requirements(request, report_path):
+    """Only independently audited native reports use explicit native manifests.
+
+    All other routes retain their original automatic-command staging checks.
+    No request flag can authorize bypassing staging for an arbitrary report.
+    """
+    validators = request.runtime_registry_template.get('validators', {})
+    descriptor = validators.get('L2', {})
+    if descriptor.get('type') != 'requirement-driven': return None
+    owners = [validators.get(level, {}) for level in ('L0', 'L1')]
+    if any(owner.get('type') != 'original-captured-project' for owner in owners): return None
+    paths = {owner['config']['specPath'] for owner in owners}
+    if len(paths) != 1:
+        raise ValueError('PROJECT_REQUIREMENTS_OWNER_AMBIGUOUS')
+    if _digest_file(Path(descriptor['config']['semanticProfilePath'])) != _digest_file(Path(report_path)):
+        raise ValueError('PROJECT_REQUIREMENTS_PROFILE_REPORT_MISMATCH')
+    if Path(descriptor['config']['semanticProfilePath']).resolve() != Path(report_path).resolve():
+        raise ValueError('PROJECT_REQUIREMENTS_PROFILE_REPORT_MISMATCH')
+    from .native_project_l2 import checked_requirements
+    return checked_requirements(next(iter(paths)), report_path,
+                                descriptor['config']['requirementManifestPath'])
+
+
 def _materialize_l2_resolution_plans(
     request: EvaluationRequest, report_path: Path,
     archive: TranslationAttemptArchive, replay_directory: Path,
@@ -557,7 +580,8 @@ def _materialize_l2_resolution_plans(
     from .l2_eligibility import load_l2_requirement_manifest
     manifest_path = report_path.with_name(report_path.name + ".l2-requirements.json")
     from .requirement_staging import read_staged_requirements
-    manifest = read_staged_requirements(report_path)["l2"]
+    manifest = _native_l2_requirements(request, report_path)
+    if manifest is None: manifest = read_staged_requirements(report_path)["l2"]
     from .l2_semantic_profile import profile_from_finding
     report = json.loads(report_path.read_text(encoding="utf-8"))
     findings = report.get("findings") if isinstance(report, Mapping) else None
@@ -1083,8 +1107,8 @@ def _translation_evaluation_linkage(
     report_path = _path(request.translated_report, work)
     archive_path = _path(request.attempt_archive, work)
     l2_path = report_path.with_name(report_path.name + ".l2-requirements.json")
-    l2_requirements: object = None
-    if l2_path.is_file():
+    l2_requirements = _native_l2_requirements(request, report_path)
+    if l2_requirements is None and l2_path.is_file():
         from .requirement_staging import read_staged_requirements
         l2_requirements = read_staged_requirements(report_path)["l2"]
     l3_path = report_path.with_name(report_path.name + ".l3-requirements.json")

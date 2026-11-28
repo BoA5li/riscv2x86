@@ -20,6 +20,65 @@ SCHEMA = 'riscv2x86.original-project-finite-L2-operands.v1'
 PROVIDER = 'original-project-finite-typed-operands-v1'
 
 
+def checked_requirements(spec_path, report_path, manifest_path):
+    """Classify the exact independently audited native report, not a flag.
+
+    The native adapter enriches the public CLI report with compiler authority.
+    Its own original run/audit owns this report; automatic-command staging
+    markers for a different report must not be invented or reused.
+    """
+    from .l2_eligibility import classify_l2_requirements, load_l2_requirement_manifest
+    spec = project.check(spec_path)
+    run = d.read(spec['run']['path']); d.verify_snapshot(run['translation'])
+    translation = d.read(run['translation']['path']); reference = translation['report']
+    d.verify_snapshot(reference)
+    if d.snapshot(report_path) != reference:
+        raise ValueError('PROJECT_REQUIREMENTS_AUDITED_REPORT_MISMATCH')
+    manifest_ref = d.snapshot(manifest_path)
+    value = load_l2_requirement_manifest(manifest_path)
+    if value != classify_l2_requirements(d.read(report_path)):
+        raise ValueError('PROJECT_REQUIREMENTS_REDERIVATION_MISMATCH')
+    for ref in (spec['run'], run['translation'], reference, manifest_ref): d.verify_snapshot(ref)
+    return value
+
+
+def planning_descriptor(manifest, report, resolved):
+    """Register ORIGINAL requirement resolution before runtime evidence exists.
+
+    An empty catalogue is honest: the original resolver reports each missing
+    provider/capability rather than a missing layer or a fabricated L2 pass.
+    """
+    value = registry_descriptor(None, [], manifest, report, resolved)
+    config = value['config']
+    config['providers'] = []; config['environmentCapabilities'] = []
+    return value
+
+
+def resolve_requirements(manifest, report, config):
+    """Inspect every required dimension with the ORIGINAL resolver before runs."""
+    from .l2_validator_resolution import provider_from_dict, resolve_fragment_execution_plan
+    from .l2_semantic_profile import profile_from_finding
+    providers = tuple(provider_from_dict(p) for p in config['providers'])
+    rows = []
+    for requirement in manifest['requirements']:
+        fid = requirement['fragmentId']
+        findings = [f for f in report['findings'] if (f.get('fragment') or {}).get('id') == fid]
+        if len(findings) != 1: raise ValueError('PROJECT_REQUIREMENT_FRAGMENT_JOIN_REQUIRED')
+        try:
+            profile = profile_from_finding(findings[0])
+            plan = resolve_fragment_execution_plan(manifest, providers, fid,
+                execution_profile=config['executionProfile'], profile=profile,
+                available_capabilities=config['environmentCapabilities'],
+                environment_execution_profiles=config['environmentExecutionProfiles'])
+            if plan is None: raise ValueError('PROJECT_REQUIREMENT_PLAN_MISSING')
+            rows.append({'fragmentId': fid, 'requiredDimensions': requirement['requiredDimensions'],
+                         'resolutionComplete': plan.complete, 'plan': plan.to_dict(), 'error': None})
+        except ValueError as exc:
+            rows.append({'fragmentId': fid, 'requiredDimensions': requirement['requiredDimensions'],
+                         'resolutionComplete': False, 'plan': None, 'error': str(exc)})
+    return rows
+
+
 def configuration(api_result, output):
     """API checker is mandatory; paths alone never admit a new function."""
     value = api.check(api_result)
@@ -64,7 +123,7 @@ def selected_findings(report, selected):
 
 def registry_descriptor(config, fragment_ids, manifest, report, resolved):
     """An ordinary ORIGINAL requirement-driven descriptor, with no new gate."""
-    return {'type': 'requirement-driven', 'config': {
+    descriptor = {'type': 'requirement-driven', 'config': {
         'schemaVersion': 'riscv2x86.l2-requirement-driven-registry.v3',
         'requirementManifestPath': str(manifest), 'semanticProfilePath': str(report),
         'fragmentId': '${FRAGMENT_ID}', 'semanticProfileSource': 'translated-report',
@@ -77,7 +136,12 @@ def registry_descriptor(config, fragment_ids, manifest, report, resolved):
             'requiredCapabilities': ['logical_operand_observation'],
             'executionProfiles': ['rv64gc-user-to-x86_64-user'], 'bindingKind': 'automatic',
             'validatorType': 'automatic-l2-operand-differential',
-            'configSchemaVersion': config['schemaVersion'], 'config': config, 'fragmentIds': sorted(fragment_ids)}]}}
+            'configSchemaVersion': config['schemaVersion'] if config is not None else '',
+            'config': config, 'fragmentIds': sorted(fragment_ids)}]}}
+    if config is None:
+        descriptor['config']['providers'] = []
+        descriptor['config']['environmentCapabilities'] = []
+    return descriptor
 
 
 @measured('native_project_l2.derive')

@@ -108,7 +108,7 @@ _PROJECT_PHASES = {
 }
 
 
-def project_assessment(spec, observation=None, applicability=None):
+def project_assessment(spec, observation=None, applicability=None, *, project_evidence=None):
     """Classify actual obligations; process agreement is a bounded subgoal.
 
     Full preconditions do not currently have connected proof producers. Nothing
@@ -121,7 +121,7 @@ def project_assessment(spec, observation=None, applicability=None):
     consumption = consume(spec['projectEvaluationIdentity'], {
         'observations': [observation] if observation is not None else [],
         'selectedCaseIndices': observation.get('caseIndices', []) if observation is not None else [],
-        'plannedCaseCount': len(spec.get('cases', []))})
+        'plannedCaseCount': len(spec.get('cases', []))}, project_evidence=project_evidence)
     derived = {r['reasonCode']: r for r in consumption['obligations']}
     rows = []
     for reason in spec['gaps']:

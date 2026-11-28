@@ -76,6 +76,11 @@ def contracts(request_path):
                 d.verify_snapshot(app_snapshot)
                 if app['project'] != d.snapshot(path): raise ValueError('ORIGINAL_APPLICABILITY_PROJECT_MISMATCH')
                 refs['applicability:' + level] = app_snapshot
+    native_requirements = original._native_l2_requirements(request, Path(request.translated_report))
+    if native_requirements is not None:
+        config = request.runtime_registry_template['validators']['L2']['config']
+        refs['projectL2Requirements'] = d.snapshot(config['requirementManifestPath'])
+        refs['projectL2Report'] = d.snapshot(config['semanticProfilePath'])
     return refs, plan
 
 
@@ -99,6 +104,11 @@ def inspect(run_path, request_path=None):
                       requiredLevels=[level.value for level in plan.required_levels])
         report['gaps'].extend('ORIGINAL_LAYER_RUNNER_NOT_DECLARED:' + level.value
                               for level in plan.required_levels if level.value not in validators)
+        if 'projectL2Requirements' in refs:
+            from .native_project_l2 import resolve_requirements
+            report['l2ProviderResolution'] = resolve_requirements(
+                d.read(refs['projectL2Requirements']['path']),
+                d.read(refs['projectL2Report']['path']), validators['L2']['config'])
     report['scope'] = 'request-availability-not-semantic-readiness'
     return report
 
@@ -169,27 +179,54 @@ def check_original_result(result, request, work):
 
 
 def check_project_machine_inventory(result, request, work):
-    """Re-derive machine receipts bound to this request and both current builds."""
+    """Replay bounded L1 observations AND receipt consumption, not just hashes."""
     descriptor = request.runtime_registry_template.get('validators', {}).get('L1', {})
-    if descriptor.get('type') == 'original-captured-project' and descriptor.get('config', {}).get('applicabilityPath'):
-        from .program_machine_inventory import check as check_machine_inventory
-        for attempt in result['attempts']:
-            for layer in (attempt.get('validation') or {}).get('layers', []):
-                if layer['level'] != 'L1': continue
-                detail = json.loads(layer['detail']); ref = detail.get('machineInventory')
-                if not isinstance(ref, dict): raise ValueError('ORIGINAL_MACHINE_INVENTORY_REQUIRED')
-                d.verify_snapshot(ref)
-                if not Path(ref['path']).resolve().is_relative_to(Path(work).resolve()):
-                    raise ValueError('ORIGINAL_MACHINE_INVENTORY_PATH_INVALID')
-                evidence = check_machine_inventory(ref['path'])
-                if evidence['project'] != d.snapshot(descriptor['config']['specPath']):
-                    raise ValueError('ORIGINAL_MACHINE_INVENTORY_PROJECT_MISMATCH')
-                for side in ('source', 'target'):
-                    build = d.read(evidence['builds'][side]['path'])
-                    program = result[side + 'ProgramArtifact']
-                    if (build['program']['path'] != program['artifact_path']
-                            or build['program']['digest'] != program['artifact_digest']):
-                        raise ValueError('ORIGINAL_MACHINE_INVENTORY_PROGRAM_MISMATCH')
+    if descriptor.get('type') != 'original-captured-project': return
+    from . import native_project_evaluation as project
+    from .program_validation_obligations import project_assessment
+    from .translation_validation import ProgramArtifact
+    config = descriptor['config']; spec = project.check(config['specPath'])
+    app = None
+    if config.get('applicabilityPath'):
+        from .native_original_applicability import check as check_applicability
+        app = check_applicability(config['applicabilityPath'])
+        if app['project'] != d.snapshot(config['specPath']):
+            raise ValueError('ORIGINAL_APPLICABILITY_PROJECT_MISMATCH')
+    for attempt in result['attempts']:
+        for layer in (attempt.get('validation') or {}).get('layers', []):
+            if layer['level'] != 'L1': continue
+            detail = json.loads(layer['detail']); refs = detail.get('projectEvidence')
+            if not isinstance(refs, dict) or refs.get('project') != d.snapshot(config['specPath']):
+                raise ValueError('ORIGINAL_PROGRAM_SUBCLAIM_REFERENCES_REQUIRED')
+            programs = {}
+            for side in ('source', 'target'):
+                program = result[side + 'ProgramArtifact']
+                programs[side] = ProgramArtifact(**program)
+                build = d.read(refs['builds'][side]['path'])
+                if (build['program']['path'] != program['artifact_path']
+                        or build['program']['digest'] != program['artifact_digest']):
+                    raise ValueError('ORIGINAL_SUBCLAIM_PROGRAM_MISMATCH')
+            directory = Path(config['workDirectory'].replace('${WORK_DIR}', str(work)).replace(
+                '${ATTEMPT_ID}', attempt['attemptArtifactId'])).resolve()
+            if not directory.is_relative_to(Path(work).resolve()):
+                raise ValueError('ORIGINAL_OBSERVATION_DIRECTORY_INVALID')
+            machine = refs.get('machineInventory')
+            if detail.get('machineInventory') != machine or bool(machine) != bool(app):
+                raise ValueError('ORIGINAL_MACHINE_INVENTORY_REQUIRED')
+            if machine is not None and (not Path(machine['path']).resolve().is_relative_to(directory)
+                    or Path(machine['path']).name != 'machine-inventory.json'):
+                raise ValueError('ORIGINAL_MACHINE_INVENTORY_PATH_INVALID')
+            observed = detail['observations']
+            fresh = project.rederive_observations(spec, programs['source'], programs['target'],
+                                                  directory, observed['caseIndices'])
+            if observed != fresh:
+                raise ValueError('ORIGINAL_OBSERVATIONS_REDERIVATION_MISMATCH')
+            expected = project_assessment(spec, fresh, app, project_evidence=refs)
+            file = directory / 'obligation-assessment.json'
+            if (detail['obligationAssessment'] != expected or d.read(file) != expected
+                    or detail['reasonCodes'] != expected['l1ReasonCodes']
+                    or layer['status'] != expected['l1Status'] or d.digest(file) != layer['evidenceIdentity']):
+                raise ValueError('ORIGINAL_OBLIGATION_ASSESSMENT_REDERIVATION_MISMATCH')
 
 
 def acquire(run_path, request_path, output):

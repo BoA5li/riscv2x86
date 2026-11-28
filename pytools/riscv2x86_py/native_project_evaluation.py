@@ -495,14 +495,17 @@ def factory(config):
             machines.acquire(config['specPath'], {'source': src, 'target': tgt}, root / 'machine-inventory.json')
             machine_seconds = time.monotonic() - machine_started
             machine_inventory = d.snapshot(root / 'machine-inventory.json')
-        assessment = project_assessment(spec, value, applicability)
+        from .program_checked_evidence import references
+        evidence_refs = references(config['specPath'], {'source': src, 'target': tgt}, machine_inventory)
+        assessment = project_assessment(spec, value, applicability, project_evidence=evidence_refs)
         write(root / 'obligation-assessment.json', assessment)
         write(root / 'phase-timings.json', {'schemaVersion': 'riscv2x86.project-layer-timing.v1',
             'level': 'L1', 'observationSeconds': observation_seconds, 'machineInventorySeconds': machine_seconds,
             'layerElapsedSeconds': time.monotonic() - started})
         return ValidationLayerResult(level, ValidationStatus(assessment['l1Status']),
             d.digest(root / 'obligation-assessment.json'), json.dumps({'reasonCodes': assessment['l1ReasonCodes'],
-                'observations': value, 'obligationAssessment': assessment, 'machineInventory': machine_inventory}))
+                'observations': value, 'obligationAssessment': assessment, 'machineInventory': machine_inventory,
+                'projectEvidence': evidence_refs}))
     return validator
 
 
@@ -555,6 +558,12 @@ def request_payload(spec_path, output, applicability_path=None, *, api_l2_result
         if app['project'] != d.snapshot(spec_path): raise ValueError('PROJECT_APPLICABILITY_BINDING_MISMATCH')
         for descriptor in raw['runtimeRegistryTemplate']['validators'].values():
             descriptor['config']['applicabilityPath'] = str(Path(applicability_path).resolve())
+    from .native_project_l2 import planning_descriptor
+    from .l2_eligibility import classify_l2_requirements
+    requirements = classify_l2_requirements(d.read(translation['report']['path']))
+    raw['runtimeRegistryTemplate']['validators']['L2'] = planning_descriptor(
+        root / 'l2-requirements.json', translation['report']['path'],
+        '${REPLAY_DIR}/${ATTEMPT_ID}-project-L2-plan.json')
     if api_l2_result is not None:
         from . import native_project_l2 as typed_l2
         l2 = typed_l2.check(api_l2_result)
@@ -568,7 +577,8 @@ def request_payload(spec_path, output, applicability_path=None, *, api_l2_result
         # remain required and cannot be replaced by finite API observations.
         raw['runtimeRegistryTemplate']['validators']['L2'] = d.read(l2['registryDescriptor']['path'])
     evaluation_request_from_dict(raw); validation_plan_from_dict(plan_value); target_environment_from_dict(env_value)
-    return {'validation-plan.json': plan_value, 'environment.json': env_value, 'request.json': raw}
+    return {'validation-plan.json': plan_value, 'environment.json': env_value,
+            'l2-requirements.json': requirements, 'request.json': raw}
 
 
 def request(spec_path, output, applicability_path=None, *, api_l2_result=None):

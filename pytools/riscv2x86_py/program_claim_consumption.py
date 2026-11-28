@@ -22,22 +22,30 @@ RULES = {
 }
 
 
-def consume(project_identity, facts):
+def consume(project_identity, facts, *, project_evidence=None):
     """Consume already checked finite diagnostic facts; keep full scope explicit."""
     scope = {'projectEvaluationIdentity': project_identity,
              'selectedCaseIndices': list(facts.get('selectedCaseIndices', [])),
              'plannedCaseCount': facts.get('plannedCaseCount'),
              'scope': 'checked-diagnostic-subclaims-not-program-acceptance'}
+    if project_evidence is not None:
+        scope['evidenceReferencesIdentity'] = identity(project_evidence)
     scope_id = identity(scope)
     claims = []
     def claim(kind):
         body = {'kind': kind, 'scopeIdentity': scope_id,
                 'status': 'verified-within-diagnostic-scope'}
         claims.append(dict(body, claimIdentity=identity(body)))
-    completed = set(facts.get('completedStages', []))
-    if {'source-build', 'target-build'} <= completed:
+    evidence_kinds = set()
+    if project_evidence is not None:
+        from .program_checked_evidence import inspect
+        evidence_kinds.update(inspect(project_identity, project_evidence))
+    # Legacy callers own the original checked diagnostic ingress. New formal
+    # callers supply receipts, never invented scheduler-stage strings.
+    completed = set(facts.get('completedStages', [])) if project_evidence is None else set()
+    if 'recorded-project-builds' in evidence_kinds or {'source-build', 'target-build'} <= completed:
         claim('recorded-project-builds')
-    if 'machine-inventory' in completed:
+    if 'bounded-machine-inventory' in evidence_kinds or 'machine-inventory' in completed:
         claim('bounded-machine-inventory')
     observations = facts.get('observations', [])
     if observations and all(
@@ -60,7 +68,10 @@ def consume(project_identity, facts):
             'status': 'verified' if not missing else 'partial-evidence' if verified.intersection(required) else 'producer-required',
             'checkedSubclaims': [kind for kind in required if kind in verified],
             'missingProofFacts': missing, 'fullObligationDischarged': not missing})
-    return {'schemaVersion': 'riscv2x86.program-claim-consumption.v1',
+    result = {'schemaVersion': 'riscv2x86.program-claim-consumption.v1',
             'scope': scope, 'scopeIdentity': scope_id, 'claims': claims,
             'obligations': obligations, 'semanticApproval': False,
             'productionAcceptanceComplete': False}
+    if project_evidence is not None:
+        result['evidenceReferences'] = project_evidence
+    return result

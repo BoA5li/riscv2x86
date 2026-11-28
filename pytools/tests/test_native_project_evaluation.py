@@ -69,6 +69,7 @@ def toy_project(captured, monkeypatch):
             'targetLoader': d.snapshot(d.parse((build / 'test-program').read_bytes())['interpreter']),
             'cases': [{'caseId': 'default', 'arguments': [], 'expectedExitCodes': [0], 'environmentOverrides': {}}],
             'timeoutSeconds': 30, 'gaps': ['THREE_COMPILE_CONTEXT_REFINEMENT_REQUIRED', *p.GAPS]}
+    p.write(root / 'project.json', spec)
     monkeypatch.setattr(p, 'check', lambda path: spec)
     output = root / 'artifacts'; output.mkdir()
     records = {}
@@ -107,7 +108,7 @@ def test_l1_collects_both_processes_with_original_comparator_and_cannot_approve(
         if argv[:2] == ['/usr/bin/env', '-L']: argv = argv[3:]
         return original_command(argv, *args)
     monkeypatch.setattr(driver, 'command', command)
-    f = p.factory({'specPath': 'fixture', 'workDirectory': str(root / 'observed'), 'level': 'L1'})
+    f = p.factory({'specPath': str(root / 'project.json'), 'workDirectory': str(root / 'observed'), 'level': 'L1'})
     result = f(level=ValidationLevel.L1, source_program_artifact=programs['source'],
                target_program_artifact=programs['target'])
     assert result.status is ValidationStatus.INCONCLUSIVE
@@ -121,11 +122,14 @@ def test_l1_collects_both_processes_with_original_comparator_and_cannot_approve(
     assert (root / 'observed/case-000000/target/stderr.log').is_file()
 
 
-def test_request_producer_uses_original_schema_and_keeps_l2_missing(toy_project, monkeypatch):
+def test_request_producer_resolves_original_l2_requirements_without_runtime(toy_project, monkeypatch):
     root, _, spec, _ = toy_project
     run = d.read(spec['run']['path']); translation = d.read(run['translation']['path'])
-    translation.update(report={'path': '/fixture/report.json'}, attemptArchive={'path': '/fixture/archive.json'})
-    p.write(run['translation']['path'], translation)
+    report = root / 'request-report.json'; p.write(report, {'findings': []})
+    translation.update(report=d.snapshot(report), attemptArchive={'path': '/fixture/archive.json'})
+    translation_path = run['translation']['path']; p.write(translation_path, translation)
+    run['translation'] = d.snapshot(translation_path)
+    run_path = spec['run']['path']; p.write(run_path, run); spec['run'] = d.snapshot(run_path)
     spec['profiles']['source']['compile']['flags'] += ['-march=rv64gc', '-mabi=lp64d']
     spec['python'] = d.snapshot(__import__('sys').executable)
     spec['sourceLoader'] = {'digest': 'fixture-loader'}; spec['qemu']['digest'] = 'fixture-qemu'
@@ -134,7 +138,8 @@ def test_request_producer_uses_original_schema_and_keeps_l2_missing(toy_project,
     request = p.request(specfile, root / 'contracts')
     parsed = evaluation.original.load_evaluation_request(request)
     assert parsed.validation_unit == 'program'
-    assert set(parsed.runtime_registry_template['validators']) == {'L0', 'L1'}
+    assert set(parsed.runtime_registry_template['validators']) == {'L0', 'L1', 'L2'}
+    assert parsed.runtime_registry_template['validators']['L2']['config']['providers'] == []
     assert '${SOURCE_PATH}' in parsed.source_build.command
     assert parsed.runtime_registry_template['validators']['L0']['type'] == 'original-captured-project'
     assert '${WORK_DIR}' in parsed.runtime_registry_template['validators']['L1']['config']['workDirectory']
@@ -170,7 +175,7 @@ def test_l0_adapter_delegates_full_positional_matrix_without_its_own_pass_rule(t
         return original_result
     monkeypatch.setattr(l0_manifest_builder, 'build_l0_reference_manifest', reference)
     monkeypatch.setattr(l0_build_matrix, 'run_l0_build_matrix', matrix)
-    f = p.factory({'specPath': 'fixture', 'workDirectory': str(root / 'matrix'), 'level': 'L0'})
+    f = p.factory({'specPath': str(root / 'project.json'), 'workDirectory': str(root / 'matrix'), 'level': 'L0'})
     result = f(level=ValidationLevel.L0, translation_artifact=marker,
                source_program_artifact=programs['source'], target_program_artifact=programs['target'])
     assert result is original_result
@@ -334,15 +339,18 @@ def test_build_output_does_not_follow_a_broken_symlink(toy_project):
 def test_request_companion_is_checked_without_rewriting_it(toy_project, monkeypatch):
     root, _, spec, _ = toy_project
     run = d.read(spec['run']['path']); translated = d.read(run['translation']['path'])
-    translated.update(report={'path': '/fixture/report.json'}, attemptArchive={'path': '/fixture/archive.json'})
-    p.write(run['translation']['path'], translated)
+    report = root / 'request-report.json'; p.write(report, {'findings': []})
+    translated.update(report=d.snapshot(report), attemptArchive={'path': '/fixture/archive.json'})
+    translation_path = run['translation']['path']; p.write(translation_path, translated)
+    run['translation'] = d.snapshot(translation_path)
+    run_path = spec['run']['path']; p.write(run_path, run); spec['run'] = d.snapshot(run_path)
     spec['profiles']['source']['compile']['flags'] += ['-march=rv64gc', '-mabi=lp64d']
     spec['python'] = d.snapshot(__import__('sys').executable)
     specfile = root / 'spec.json'; p.write(specfile, spec)
     monkeypatch.setattr(p.route, 'check_run', lambda path: run)
     request = p.request(specfile, root / 'request-contracts')
     files = p.check_request(request, specfile)
-    assert len(files) == 3
+    assert len(files) == 4
     companion = request.parent / 'environment.json'
     companion.write_bytes(companion.read_bytes() + b' ')
     changed = companion.read_bytes()
@@ -356,8 +364,11 @@ def test_project_request_admits_checked_original_l2_descriptor_only_for_same_pro
     from riscv2x86_py import native_original_applicability as applicability
     root, _, spec, _ = toy_project
     run = d.read(spec['run']['path']); translated = d.read(run['translation']['path'])
-    translated.update(report={'path': '/fixture/report.json'}, attemptArchive={'path': '/fixture/archive.json'})
-    p.write(run['translation']['path'], translated)
+    report = root / 'request-report.json'; p.write(report, {'findings': []})
+    translated.update(report=d.snapshot(report), attemptArchive={'path': '/fixture/archive.json'})
+    translation_path = run['translation']['path']; p.write(translation_path, translated)
+    run['translation'] = d.snapshot(translation_path)
+    run_path = spec['run']['path']; p.write(run_path, run); spec['run'] = d.snapshot(run_path)
     spec['profiles']['source']['compile']['flags'] += ['-march=rv64gc', '-mabi=lp64d']
     spec['python'] = d.snapshot(__import__('sys').executable)
     specfile = root / 'spec.json'; p.write(specfile, spec)
